@@ -3,10 +3,9 @@
 EXACT (EXtracting Attributes from Clinical Trials) is a stateless search and
 matching engine for clinical trials. It connects to an external database that
 holds the trial catalog and reference data — EXACT does not own or manage that
-data. Patient profiles are passed inline with each API request; nothing is
-persisted.
+data. 
 
-The only data EXACT stores locally is authentication (users and tokens).
+Patient profiles are passed inline with each API request. They can also be retrieved from an external database that has a PatientInfo table in the form implemented by [CTOMOP](https://github.com/healthkey-ai/ctomop), which exposes a flat projection of a patient record from underlying OMOP tables. 
 
 ## Documentation
 
