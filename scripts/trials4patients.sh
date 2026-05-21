@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+SCRIPT_DIR_TMP="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-$([ -x "$(dirname "$SCRIPT_DIR_TMP")/.venv/bin/python" ] && echo "$(dirname "$SCRIPT_DIR_TMP")/.venv/bin/python" || command -v python3 || command -v python)}"
 # Local end-to-end test: match patients against trials via EXACT ORM.
 #
 # No web server required — runs entirely in-process.
@@ -54,7 +56,7 @@ echo "=============================================="
 echo "  Trials DB: $TRIALS_DATABASE_URL"
 echo "  Patient DB: $PATIENT_DATABASE_URL"
 
-TRIAL_COUNT=$(python manage.py shell -c "
+TRIAL_COUNT=$($PYTHON manage.py shell -c "
 from trials.models import Trial
 count = Trial.objects.count()
 print(count)
@@ -84,13 +86,13 @@ if [ -n "$PATIENT_LIMIT" ]; then
   SEARCH_ARGS+=(--patient-limit "$PATIENT_LIMIT")
 fi
 
-python manage.py search_trials_for_patients "${SEARCH_ARGS[@]}"
+$PYTHON manage.py search_trials_for_patients "${SEARCH_ARGS[@]}"
 
 echo ""
 echo "=============================================="
 echo "Step 3: Summary"
 echo "=============================================="
-python manage.py shell -c "
+$PYTHON manage.py shell -c "
 import json
 with open('/tmp/exact_local_test_results.json') as f:
     results = json.load(f)
