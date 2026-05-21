@@ -49,6 +49,8 @@ def _build_in_memory(data: dict):
     _coerce_numerics(filtered, PatientInfo)
     # Coerce string-encoded lists/dicts for JSONField columns (CB can send "[{...}]" as str)
     _coerce_json_fields(filtered, PatientInfo)
+    # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
+    _normalize_structured_json_fields(filtered)
 
     pi = PatientInfo(**filtered)
 
@@ -102,6 +104,35 @@ def _coerce_numerics(data: dict, model_cls):
                 data[f.name] = Decimal(val)
             except (InvalidOperation, TypeError):
                 data[f.name] = None
+
+
+def _normalize_structured_json_fields(data: dict):
+    """Enforce list-of-dicts shape on JSON fields whose consumers call `.get(...)` per item.
+
+    Bare-string items (legacy rows, malformed CTOMOP input) would otherwise crash
+    the matcher and trial-details renderer with `'str' object has no attribute 'get'`.
+    """
+    for key in ('later_therapies', 'supportive_therapies'):
+        val = data.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, list):
+            data[key] = []
+            continue
+        coerced = []
+        for item in val:
+            if isinstance(item, dict):
+                coerced.append(item)
+            elif isinstance(item, str) and item.strip():
+                coerced.append({'therapy': item.strip()})
+        data[key] = coerced
+
+    val = data.get('genetic_mutations')
+    if val is not None:
+        if not isinstance(val, list):
+            data['genetic_mutations'] = []
+        else:
+            data['genetic_mutations'] = [item for item in val if isinstance(item, dict)]
 
 
 def _coerce_json_fields(data: dict, model_cls):
