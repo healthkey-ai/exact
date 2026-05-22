@@ -38,7 +38,7 @@ from datetime import date
 from decimal import Decimal
 from functools import lru_cache
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 
 
@@ -341,7 +341,7 @@ def _normalize_ctomop_row(row: dict) -> dict:
 
     # ── Stage — strip trailing sub-stage letter (IIA → II, IIIB → III) ─
     stage = row.get('stage')
-    if stage:
+    if isinstance(stage, str) and stage:
         row['stage'] = re.sub(r'[A-C]$', '', stage)
 
     # ── Therapy line outcomes — map full-text labels to abbreviated IDs ──────────
@@ -368,11 +368,11 @@ def _normalize_ctomop_row(row: dict) -> dict:
                 normalized.append(m)
                 continue
             m = dict(m)
-            if m.get('gene'):
+            if isinstance(m.get('gene'), str):
                 m['gene'] = m['gene'].lower()
-            if m.get('interpretation'):
+            if isinstance(m.get('interpretation'), str):
                 m['interpretation'] = m['interpretation'].lower().replace(' ', '_')
-            if m.get('origin'):
+            if isinstance(m.get('origin'), str):
                 raw_origin = m['origin'].lower()
                 m['origin'] = raw_origin if raw_origin in ('somatic', 'germline') else None
             # Rename 'mutation' → 'variant' and normalize to EXACT code format
@@ -461,9 +461,9 @@ def _normalize_ctomop_row(row: dict) -> dict:
         gsv = row.get('gender_source_value', '')
         if gsv in ('M', 'F'):
             row['gender'] = gsv
-        elif gsv and gsv.lower().startswith('m'):
+        elif isinstance(gsv, str) and gsv.lower().startswith('m'):
             row['gender'] = 'M'
-        elif gsv and gsv.lower().startswith('f'):
+        elif isinstance(gsv, str) and gsv.lower().startswith('f'):
             row['gender'] = 'F'
         else:
             gci = row.get('gender_concept_id')
@@ -710,10 +710,20 @@ class Command(BaseCommand):
         if options['person_ids']:
             person_ids = [int(x.strip()) for x in options['person_ids'].split(',') if x.strip()]
 
+        # Pre-warm the reference DB lookup so a connection/permission failure
+        # surfaces as a single clear error instead of N identical per-patient
+        # exceptions inside the loop. Skipped for --dry-run, which only inspects
+        # the raw row and doesn't call _normalize_ctomop_row.
+        if not options['dry_run']:
+            try:
+                _build_code_lookup()
+            except Exception as exc:
+                raise CommandError(f'Trials DB reference lookup failed: {exc}')
+
         rows = self._fetch_via_db(options, person_ids)
 
         if rows is None:
-            return  # error already reported
+            raise CommandError('Patient DB fetch failed — see error above.')
 
         all_results = []
         processed = 0
@@ -840,10 +850,20 @@ class Command(BaseCommand):
             return None
 
         rows = []
+        skipped = 0
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                skipped += 1
+                logger.warning('Skipping non-JSON line from psql: %.80s — %s', line, exc)
+        if skipped:
+            self.stderr.write(self.style.WARNING(
+                f'  Skipped {skipped} non-JSON line(s) from psql output.'
+            ))
 
         return rows
 

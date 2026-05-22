@@ -74,6 +74,11 @@ class TestStageNormalization:
     def test_roman_numeral_without_suffix_unchanged(self):
         assert _normalize_ctomop_row(_row(stage='IV'))['stage'] == 'IV'
 
+    def test_non_string_stage_does_not_crash(self):
+        # Defends re.sub against unexpected int/None coming from upstream
+        assert _normalize_ctomop_row(_row(stage=4))['stage'] == 4
+        assert _normalize_ctomop_row(_row(stage=None))['stage'] is None
+
     def test_stage_i_unchanged(self):
         assert _normalize_ctomop_row(_row(stage='I'))['stage'] == 'I'
 
@@ -260,6 +265,14 @@ class TestGeneticMutationsNormalization:
         row = _row(genetic_mutations=['some_string'])
         assert _normalize_ctomop_row(row)['genetic_mutations'] == ['some_string']
 
+    def test_non_string_gene_does_not_crash(self):
+        # Defends .lower() against numeric/None values that slipped through CTOMOP
+        row = _row(genetic_mutations=[{'gene': 1234, 'interpretation': None, 'origin': 42}])
+        result = _normalize_ctomop_row(row)['genetic_mutations'][0]
+        assert result['gene'] == 1234
+        assert result['interpretation'] is None
+        assert result['origin'] == 42
+
 
 # ---------------------------------------------------------------------------
 # Lab value fallbacks — CTOMOP renamed columns
@@ -321,6 +334,11 @@ class TestGenderNormalization:
     def test_existing_gender_not_overridden(self):
         result = _normalize_ctomop_row(_row(gender='F', gender_source_value='M'))
         assert result['gender'] == 'F'
+
+    def test_non_string_gender_source_value_does_not_crash(self):
+        # Defends .lower() against int gender_source_value (concept-id fallback used)
+        result = _normalize_ctomop_row(_row(gender_source_value=8507, gender_concept_id=8507))
+        assert result['gender'] == 'M'
 
 
 # ---------------------------------------------------------------------------
