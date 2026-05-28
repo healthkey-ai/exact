@@ -63,6 +63,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -158,8 +159,27 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'rest_framework.schemas.coreapi.AutoSchema',
 }
 
-STATIC_URL = '/static/'
+# ── Subpath mounting ─────────────────────────────────────────────────────────
+# SUB_PATH lets this app live under a prefix (e.g. /exact) behind a reverse
+# proxy without a dedicated subdomain. Blank = mounted at root (default).
+# FORCE_SCRIPT_NAME is Django's "I live under this prefix" switch — it
+# prefixes everything reverse() / redirects / admin / login generate.
+SUB_PATH = os.environ.get('SUB_PATH', '').rstrip('/')   # '' or '/exact'
+
+FORCE_SCRIPT_NAME = SUB_PATH or None   # None when blank, so root still works
+
+# Static must carry the same prefix or every asset 404s under the subpath.
+STATIC_URL = f'{SUB_PATH}/static/'      # → '/exact/static/' (or '/static/' if blank)
 STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 LOGGING = {
     "version": 1,

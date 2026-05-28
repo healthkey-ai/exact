@@ -30,4 +30,5 @@ RUN python manage.py collectstatic --no-input
 
 EXPOSE 8000
 
-CMD ["/app/docker/entrypoint.sh"]
+# Fixing since it was broken at /app
+CMD ["/docker/entrypoint.sh"]
