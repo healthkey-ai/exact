@@ -209,9 +209,11 @@ class TestTrialTemplates:
 
     @pytest.mark.django_db
     def test_potential_attributes_first_view_having_select_potential(self, patient_info):
-        t1 = TrialFactory(tumor_grade_min=20, tumor_grade_max=40)
+        # Grade 4 (40) was removed from the FL Tumor Grade dropdown — use
+        # Grade 3B (32) as the max-bound fixture value instead.
+        t1 = TrialFactory(tumor_grade_min=20, tumor_grade_max=32)
         t2 = TrialFactory(tumor_grade_min=20, tumor_grade_max=None)
-        t3 = TrialFactory(tumor_grade_min=None, tumor_grade_max=40)
+        t3 = TrialFactory(tumor_grade_min=None, tumor_grade_max=32)
         t4 = TrialFactory(tumor_grade_min=None, tumor_grade_max=None)
 
         pi = patient_info
@@ -224,7 +226,7 @@ class TestTrialTemplates:
             'name': 'tumorGrade',
             'label': 'Tumor Grade Range',
             'type': 'string',
-            'value': 'Grade 2 - Grade 4',
+            'value': 'Grade 2 - Grade 3B',
             'options': None,
             'ufield': 'tumorGrade',
             'uvalue': None,
@@ -236,7 +238,6 @@ class TestTrialTemplates:
                 {'value': '30', 'label': 'Grade 3'},
                 {'value': '31', 'label': 'Grade 3A'},
                 {'value': '32', 'label': 'Grade 3B'},
-                {'value': '40', 'label': 'Grade 4'}
             ], 'dependencies': [],
             'ureadonly': False,
             'matchingType': 'unknown'
@@ -260,7 +261,6 @@ class TestTrialTemplates:
                 {'value': '30', 'label': 'Grade 3'},
                 {'value': '31', 'label': 'Grade 3A'},
                 {'value': '32', 'label': 'Grade 3B'},
-                {'value': '40', 'label': 'Grade 4'}
             ], 'dependencies': [],
             'ureadonly': False,
             'matchingType': 'unknown'
@@ -272,7 +272,7 @@ class TestTrialTemplates:
             'name': 'tumorGradeMax',
             'label': 'Tumor Grade Maximum',
             'type': 'string',
-            'value': 'Grade 4',
+            'value': 'Grade 3B',
             'options': None,
             'ufield': 'tumorGrade',
             'uvalue': None,
@@ -284,7 +284,6 @@ class TestTrialTemplates:
                 {'value': '30', 'label': 'Grade 3'},
                 {'value': '31', 'label': 'Grade 3A'},
                 {'value': '32', 'label': 'Grade 3B'},
-                {'value': '40', 'label': 'Grade 4'}
             ], 'dependencies': [],
             'ureadonly': False,
             'matchingType': 'unknown'
