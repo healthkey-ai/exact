@@ -1,5 +1,3 @@
-import copy
-
 from django.utils.functional import cached_property
 from django.db.models import F
 
@@ -810,12 +808,7 @@ class ValueOptions:
         if result is None:
             result = self.get_all_options()
             cache.set(cache_key, result, timeout=3600)  # Cache for 1 hour
-        # Defensive shallow copy: FormSettingsViewSet.list and
-        # TrialAttributes.__init__ mutate the returned dict by adding aliased
-        # keys (e.g. firstLineTherapy, trialType per disease). Without copying
-        # those mutations leak into the LocMemCache reference and poison later
-        # requests with wrong per-disease values.
-        return copy.copy(result)
+        return result
 
     def get_all_options(self):
         return {

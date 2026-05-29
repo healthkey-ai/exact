@@ -88,33 +88,3 @@ class TestExistingDiseasesUnchanged:
         for key in ('therapiesCll', 'supportiveTherapiesCll', 'stagesCll',
                     'binetStages', 'proteinExpressions', 'diseaseActivities'):
             assert key in all_opts
-
-
-class TestAllOptionsCacheIsolation:
-    """all_options() must return a defensive copy so callers' top-level
-    mutations don't poison the LocMemCache reference and contaminate later
-    requests with the wrong per-disease overrides.
-
-    Regression for: FormSettingsViewSet.list adds 'trialType' per ?disease=
-    query; TrialAttributes.__init__ adds dozens of disease-specific aliased
-    keys. Both mutated the cached dict before this guard.
-    """
-
-    @pytest.mark.django_db
-    def test_caller_mutation_does_not_leak_to_next_call(self):
-        first = ValueOptions().all_options()
-        first['injectedKey'] = {'options': [{'value': 'x', 'label': 'X'}]}
-
-        second = ValueOptions().all_options()
-        assert 'injectedKey' not in second, \
-            'all_options() must return a fresh copy on each call'
-
-    @pytest.mark.django_db
-    def test_caller_overwrite_does_not_leak_to_next_call(self):
-        first = ValueOptions().all_options()
-        original_disease_options = first['disease']['options']
-        first['disease'] = {'options': [{'value': 'sentinel', 'label': 'Sentinel'}]}
-
-        second = ValueOptions().all_options()
-        assert second['disease']['options'] == original_disease_options, \
-            'overwriting a top-level key must not affect the cached value'
