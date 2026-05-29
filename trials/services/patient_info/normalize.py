@@ -202,10 +202,16 @@ def _normalize_measurable_disease_imwg(pi) -> None:
             return False
         return pi.kappa_flc >= 100 or pi.lambda_flc >= 100
 
-    for component in [serum_m_protein_high(), serum_m_urine_high(), kappa_lambda_abnormal_and_high()]:
+    components = [serum_m_protein_high(), serum_m_urine_high(), kappa_lambda_abnormal_and_high()]
+    for component in components:
         if component is True:
             pi.measurable_disease_imwg = True
             return
+    # All components None → no relevant lab data, result is unknown.
+    # Avoids the "shows No by default" UX bug (#4143 / #4156).
+    if all(c is None for c in components):
+        pi.measurable_disease_imwg = None
+        return
     pi.measurable_disease_imwg = False
 
 

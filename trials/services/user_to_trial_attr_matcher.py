@@ -6,6 +6,7 @@ from trials.services.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
     THERAPY_LINES_ATTRS_UNDERSCORED,
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
+    sct_value_is_none,
 )
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
@@ -265,23 +266,26 @@ class UserToTrialAttrMatcher:
                 trial_attr_sct_history_required = getattr(self.trial, 'stem_cell_transplant_history_required')
                 trial_attr_sct_history_excluded = getattr(self.trial, 'stem_cell_transplant_history_excluded')
 
-                user_has_sct = str(patient_info_attr_value).lower() == 'none'
+                # See sct_value_is_none() — tolerates both storage shapes
+                # ('None' bare string from signal cleanup; ['None'] list
+                # from the multiselect) and whitespace/casing variants
+                # (#4333, #4340).
+                user_has_no_sct = sct_value_is_none(patient_info_attr_value)
                 if not trial_attr_sct_history_required and not trial_attr_sct_history_excluded:
                     return 'matched'
 
                 if patient_info_attr_is_blank:
                     return 'unknown'
 
-                if trial_attr_sct_history_required and user_has_sct:
+                if trial_attr_sct_history_required and user_has_no_sct:
                     return 'not_matched'
 
                 def has_mapped_items(pi_vals, excluded_list):
                     mapped_items = []
+                    if sct_value_is_none(pi_vals):
+                        return False
                     if not isinstance(pi_vals, (list, tuple)):
                         pi_vals = [pi_vals]
-
-                    if pi_vals == ['None']:
-                        return False
 
                     for pi_val in pi_vals:
                         for rec in SCT_HISTORY_EXCLUDED_MAPPING.get(pi_val, [pi_val]):
@@ -390,7 +394,8 @@ class UserToTrialAttrMatcher:
                 if trial_attr_active_required is not True and trial_attr_smoldering_required is not True:
                     return 'matched'
 
-                if patient_info_attr_value is None:
+                # "Unknown" is sent from the UI as an empty string (see ValueOptions.progressions)
+                if patient_info_attr_value is None or patient_info_attr_value == '':
                     return 'unknown'
 
                 if patient_info_attr_value == 'active' and trial_attr_smoldering_required is not True:

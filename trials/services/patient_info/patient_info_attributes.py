@@ -325,6 +325,11 @@ class PatientInfoAttributes:
             if component is True:
                 return True
 
+        # All components None → no relevant lab data, result is unknown.
+        # Avoids the "shows No by default" UX bug (#4143 / #4156).
+        if all(c is None for c in components):
+            return None
+
         return False
 
     @cached_property

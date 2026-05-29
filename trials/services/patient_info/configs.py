@@ -64,6 +64,32 @@ SCT_HISTORY_EXCLUDED_MAPPING = {
     'completedAllogeneicSCT': ['priorAllogeneicSCT']
 }
 
+
+def sct_value_is_none(value):
+    """True iff `value` represents "no SCT history", tolerant to shape.
+
+    `stem_cell_transplant_history` is stored as a JSONField but two
+    canonical "no SCT" shapes coexist:
+      - bare string `'None'`  (signal cleanup at trials/signals.py:105)
+      - one-element list `['None']`  (user picked "None" from the
+        multiselect on the form)
+
+    Defensive against whitespace + casing drift on either shape so that
+    `[' None ']`, `['none']`, `'NONE'`, etc. all match — preventing the
+    silent require-SCT match regression class (#4333) from returning
+    under casing/whitespace variants (#4340).
+
+    Python `None` is rejected: it means "patient hasn't answered"
+    (Unknown), which is semantically distinct from the explicit "None"
+    answer.
+    """
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple)):
+        return len(value) == 1 and str(value[0]).strip().lower() == 'none'
+    return str(value).strip().lower() == 'none'
+
+
 TRIAL_ATTRS_JSON_AS_A_LIST = (
     "planned_therapies_required",
     "planned_therapies_excluded",
@@ -189,6 +215,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "karnofsky_performance_score": {
         "type": "min_max_value",
         "searchable": True,
+        "allow_blank_values": True,
         "attr": "karnofsky_performance_score",
     },
     "ecog_performance_status": {
@@ -211,6 +238,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "peripheral_neuropathy_grade": {
         "type": "min_max_value",
         "searchable": True,
+        "allow_blank_values": True,
         "attr": "peripheral_neuropathy_grade",
     },
 
@@ -258,6 +286,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "disease": "MM",
         "searchable": True,
         "is_computed_value": True,
+        "under_user_control": True,
         "attr": "measurable_disease_imwg_required",
     },
     # MM-specific END
@@ -923,7 +952,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "type": "bool_restriction",
         "searchable": True,
         "is_computed_value": True,
-        # "under_user_control": True,
+        "under_user_control": True,
         "attr": "meets_slim",
     },
     # "meets_lugano": {
