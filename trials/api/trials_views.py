@@ -268,6 +268,7 @@ class FormSettingsViewSet(viewsets.ViewSet):
         'follicular lymphoma': 'FL',
         'breast cancer': 'BC',
         'chronic lymphocytic leukemia': 'CLL',
+        'mantle cell lymphoma': 'MCL',
     }
 
     def list(self, request, *args, **kwargs):
