@@ -234,7 +234,6 @@ class ValueOptions:
             '30': 'Grade 3',
             '31': 'Grade 3A',
             '32': 'Grade 3B',
-            '40': 'Grade 4',
         }
 
     @property
@@ -256,7 +255,7 @@ class ValueOptions:
     def planned_therapies(self, disease_code):
         from trials.models import PlannedTherapy
         items = PlannedTherapy.objects.filter(plannedtherapydiseaseconnection__disease__code__in=[disease_code.lower(), disease_code.upper()]).order_by('id')
-        return {x.code: x.title for x in items}
+        return {'none': 'No planned therapy', **{x.code: x.title for x in items}}
 
     @property
     def cytogenic_markers(self):
@@ -265,7 +264,7 @@ class ValueOptions:
         category = MarkerCategory.objects.get(code='cytogenic')
         markers = Marker.objects.filter(categories=category).order_by('id')
 
-        return {x.code: x.title for x in markers}
+        return {'none': 'None', **{x.code: x.title for x in markers}}
 
     @property
     def molecular_markers(self):
@@ -274,7 +273,7 @@ class ValueOptions:
         category = MarkerCategory.objects.get(code='molecular')
         markers = Marker.objects.filter(categories=category).order_by('id')
 
-        return {x.code: x.title for x in markers}
+        return {'none': 'None', **{x.code: x.title for x in markers}}
 
     @property
     def gelf_criteria_statuses(self):
@@ -338,6 +337,7 @@ class ValueOptions:
             "1": "1",
             "2": "2",
             "3": "3",
+            "4": "4",
         }
 
     @property
@@ -378,6 +378,25 @@ class ValueOptions:
             'PD': 'Progressive Disease (PD)',
         }
 
+    def therapy_outcomes_by_disease_code(self, disease_code):
+        """Return the clinically-applicable treatment outcomes per disease.
+
+        Per #4137: Breast Cancer doesn't use IMWG-derived categories
+        (sCR / VGPR / MRD) — those are MM-specific. BC patients should see
+        only CR / PR / SD / PD. All other diseases keep the full enum
+        until product asks otherwise.
+        """
+        bc_outcomes = {
+            'CR': self.therapy_outcomes['CR'],
+            'PR': self.therapy_outcomes['PR'],
+            'SD': self.therapy_outcomes['SD'],
+            'PD': self.therapy_outcomes['PD'],
+        }
+        per_disease = {
+            'BC': bc_outcomes,
+        }
+        return per_disease.get((disease_code or '').upper(), self.therapy_outcomes)
+
     @property
     def ethnicities(self):
         from trials.models import Ethnicity
@@ -387,12 +406,12 @@ class ValueOptions:
     @property
     def peripheral_neuropathy_grades(self):
         return {
-            '': 'None',
+            '': 'Unknown',
+            '0': 'Grade 0',
             '1': 'Grade 1',
             '2': 'Grade 2',
             '3': 'Grade 3',
             '4': 'Grade 4',
-            '5': 'Grade 5',
         }
 
     @property
@@ -751,6 +770,20 @@ class ValueOptions:
             },
             'therapyOutcome': {
                 'options': self.to_value_and_label(self.therapy_outcomes)
+            },
+            # Per-disease outcome enums (#4137). Keep `therapyOutcome` above as
+            # the union for back-compat with callers that haven't been updated.
+            'therapyOutcomeMm': {
+                'options': self.to_value_and_label(self.therapy_outcomes_by_disease_code('MM'))
+            },
+            'therapyOutcomeFl': {
+                'options': self.to_value_and_label(self.therapy_outcomes_by_disease_code('FL'))
+            },
+            'therapyOutcomeBc': {
+                'options': self.to_value_and_label(self.therapy_outcomes_by_disease_code('BC'))
+            },
+            'therapyOutcomeCll': {
+                'options': self.to_value_and_label(self.therapy_outcomes_by_disease_code('CLL'))
             },
             'ethnicity': {
                 'options': self.to_value_and_label(self.ethnicities)

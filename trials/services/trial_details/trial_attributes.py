@@ -57,9 +57,13 @@ class TrialAttributes:
         self.all_options['mutationOriginsRequired'] = self.all_options['geneticMutationAllOrigins']
         self.all_options['mutationInterpretationsRequired'] = self.all_options['geneticMutationAllInterpretations']
 
-        self.all_options['firstLineOutcome'] = self.all_options['therapyOutcome']
-        self.all_options['secondLineOutcome'] = self.all_options['therapyOutcome']
-        self.all_options['laterOutcome'] = self.all_options['therapyOutcome']
+        # Per #4137 the treatment-outcome dropdown is disease-aware: BC drops
+        # the MM-specific IMWG categories (sCR / VGPR / MRD). Other diseases
+        # still see the full enum.
+        outcome_options_key = self._therapy_outcome_options_key()
+        self.all_options['firstLineOutcome'] = self.all_options[outcome_options_key]
+        self.all_options['secondLineOutcome'] = self.all_options[outcome_options_key]
+        self.all_options['laterOutcome'] = self.all_options[outcome_options_key]
         self.all_options['preExistingConditionsExcluded'] = self.all_options['preExistingConditionCategories']
         self.all_options['therapyTypesRequired'] = self.all_options['therapyTypesAll']
         self.all_options['therapyTypesExcluded'] = self.all_options['therapyTypesAll']
@@ -147,6 +151,22 @@ class TrialAttributes:
         for k, v in self.all_options.items():
             self._all_value_options[k] = v
             self._all_value_options[f'u{k}'] = v
+
+    # Map PatientInfo.disease (title, lowercased) → the per-disease therapy
+    # outcomes options key in all_options. Diseases not listed here fall back
+    # to the union `therapyOutcome` key.
+    _DISEASE_TO_OUTCOME_KEY = {
+        'multiple myeloma': 'therapyOutcomeMm',
+        'follicular lymphoma': 'therapyOutcomeFl',
+        'breast cancer': 'therapyOutcomeBc',
+        'chronic lymphocytic leukemia': 'therapyOutcomeCll',
+    }
+
+    def _therapy_outcome_options_key(self):
+        if not self._patient_info:
+            return 'therapyOutcome'
+        disease = (self._patient_info.disease or '').lower()
+        return self._DISEASE_TO_OUTCOME_KEY.get(disease, 'therapyOutcome')
 
     def get_context_from_user(self):
         out = {}
