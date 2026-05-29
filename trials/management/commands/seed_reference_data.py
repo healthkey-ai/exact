@@ -7,6 +7,7 @@ from trials.services.loaders.load_ethnicity_options import LoadEthnicityOptions
 from trials.services.loaders.load_genetic_mutations import LoadGeneticMutations
 from trials.services.loaders.load_lang_options import LoadLangOptions
 from trials.services.loaders.load_markers import LoadMarkers
+from trials.services.loaders.load_mcl_options import LoadMclOptions
 from trials.services.loaders.load_planned_therapy_options import LoadPlannedTherapyOptions
 from trials.services.loaders.load_preferred_countries_options import LoadPreferredCountriesOptions
 from trials.services.loaders.load_scth_options import LoadScthOptions
@@ -120,6 +121,9 @@ class Command(BaseCommand):
         self.stdout.write('Seeding markers...')
         LoadMarkers().load_all()
 
+        self.stdout.write('Seeding MCL options (protein expressions, morphologic variants)...')
+        LoadMclOptions().load_all()
+
         self.stdout.write('Seeding supportive therapies...')
         LoadSupportiveTherapies().load_all()
 
@@ -141,6 +145,7 @@ class Command(BaseCommand):
             'MM': 'Multiple Myeloma',
             'FL': 'Follicular Lymphoma',
             'CLL': 'Chronic Lymphocytic Leukemia',
+            'MCL': 'Mantle Cell Lymphoma',
         }
         for code, title in diseases.items():
             Disease.objects.update_or_create(code=code, defaults={'title': title})

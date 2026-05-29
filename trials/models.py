@@ -927,6 +927,10 @@ class ProteinExpression(OptionsListMixin):
     pass
 
 
+class MorphologicVariant(OptionsListMixin):
+    pass
+
+
 class RichterTransformation(OptionsListMixin):
     pass
 
