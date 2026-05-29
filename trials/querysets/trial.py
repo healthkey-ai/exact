@@ -21,6 +21,7 @@ from trials.services.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
     THERAPY_LINES_ATTRS_UNDERSCORED,
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
+    sct_value_is_none,
 )
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
@@ -914,7 +915,10 @@ class TrialQuerySet(models.QuerySet):
         if stem_cell_transplant_history is None or str(stem_cell_transplant_history) == '':
             return self
 
-        if str(stem_cell_transplant_history).lower() == 'none':
+        # See sct_value_is_none() — tolerates both storage shapes
+        # ('None' bare string from signal cleanup; ['None'] list from
+        # the multiselect) and whitespace/casing variants (#4333, #4340).
+        if sct_value_is_none(stem_cell_transplant_history):
             return self.exclude(stem_cell_transplant_history_required=True)
 
         if not isinstance(stem_cell_transplant_history, (list, tuple)):
@@ -1187,12 +1191,14 @@ class TrialQuerySet(models.QuerySet):
             else:
                 user_attr_type = type(patient_info.__class__._meta.get_field(user_attr))
 
-            if user_attr_type in ['int', models.fields.IntegerField] and user_attr_value == 0:
-                continue
-            if user_attr_type in ['float', models.fields.DecimalField] and user_attr_value == 0.0:
-                continue
-            if user_attr_type in ['float', models.fields.FloatField] and user_attr_value == 0.0:
-                continue
+            allow_blank_values = trial_attr_meta.get("allow_blank_values", False)
+            if not allow_blank_values:
+                if user_attr_type in ['int', models.fields.IntegerField] and user_attr_value == 0:
+                    continue
+                if user_attr_type in ['float', models.fields.DecimalField] and user_attr_value == 0.0:
+                    continue
+                if user_attr_type in ['float', models.fields.FloatField] and user_attr_value == 0.0:
+                    continue
 
             # do the search now
             trial_attr_name = trial_attr_meta["attr"]
@@ -1339,14 +1345,14 @@ class TrialQuerySet(models.QuerySet):
                     attr_min_name = trial_attr_meta["attr_min"]
                 else:
                     attr_min_name = f'{trial_attr_meta["attr"]}_min'
-                scope = scope.eligible_for_min_max_value(attr_min_name, None, user_attr_value)
+                scope = scope.eligible_for_min_max_value(attr_min_name, None, user_attr_value, skip_blank=not allow_blank_values)
 
             elif trial_attr_meta["type"] == "max_value":
                 if 'attr_max' in trial_attr_meta:
                     attr_max_name = trial_attr_meta["attr_max"]
                 else:
                     attr_max_name = f'{trial_attr_meta["attr"]}_max'
-                scope = scope.eligible_for_min_max_value(None, attr_max_name, user_attr_value)
+                scope = scope.eligible_for_min_max_value(None, attr_max_name, user_attr_value, skip_blank=not allow_blank_values)
 
             elif trial_attr_meta["type"] == "min_max_value":
                 if "attr_min" in trial_attr_meta:
@@ -1357,7 +1363,7 @@ class TrialQuerySet(models.QuerySet):
                     attr_max_name = trial_attr_meta["attr_max"]
                 else:
                     attr_max_name = f'{trial_attr_meta["attr"]}_max'
-                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value)
+                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value, skip_blank=not allow_blank_values)
 
                 user_attr_value_uln = patient_info_attr.get_uln_value(user_attr)
                 if user_attr_value_uln:
