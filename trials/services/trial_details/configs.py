@@ -30,6 +30,7 @@ ATTR_FALSE_VALUE_IS_BLANK = [
     'meetsCRAB',
     'meetsSLIM',
     'meetsLugano',
+    'meetsGELF',
     'pulmonaryFunctionTestResultRequired',
     'boneImagingResultRequired',
     'noGeographicExposureRiskRequired',
