@@ -955,13 +955,22 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "under_user_control": True,
         "attr": "meets_slim",
     },
-    # "meets_lugano": {
-    #     "type": "bool_restriction",
-    #     "searchable": True,
-    #     "is_computed_value": True,
-    #     "under_user_control": True,
-    #     "attr": "meets_slim",
-    # },
+    "meets_lugano": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "under_user_control": True,
+        "disease": "FL",
+        "attr": "meets_lugano",
+    },
+    "meets_gelf": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "under_user_control": True,
+        "disease": "FL",
+        "attr": "meets_gelf",
+    },
 
     # --------
     # Labs tab

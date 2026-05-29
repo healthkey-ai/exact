@@ -130,6 +130,8 @@ _FIELDS = [
     _f(IntegerField, 'kappa_flc'),
     _f(IntegerField, 'lambda_flc'),
     _f(BooleanField, 'meets_slim'),
+    _f(BooleanField, 'meets_lugano'),
+    _f(BooleanField, 'meets_gelf'),
     # Labs block
     _f(DecimalField, 'monoclonal_protein_serum', decimal_places=2, max_digits=10),
     _f(DecimalField, 'monoclonal_protein_urine', decimal_places=2, max_digits=10),
