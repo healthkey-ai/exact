@@ -1,3 +1,5 @@
+import copy
+
 from django.utils.functional import cached_property
 from django.db.models import F
 
@@ -224,6 +226,22 @@ class ValueOptions:
     @cached_property
     def supportive_therapies_cll(self):
         return self.therapies_by_disease_code_and_line_code('CLL', 'supportive_therapy')
+
+    @cached_property
+    def therapies_first_line_mcl(self):
+        return self.therapies_by_disease_code_and_line_code('MCL', 'first_line_therapy')
+
+    @cached_property
+    def therapies_second_line_mcl(self):
+        return self.therapies_by_disease_code_and_line_code('MCL', 'second_line_therapy')
+
+    @cached_property
+    def therapies_later_mcl(self):
+        return self.therapies_by_disease_code_and_line_code('MCL', 'later_therapy')
+
+    @cached_property
+    def supportive_therapies_mcl(self):
+        return self.therapies_by_disease_code_and_line_code('MCL', 'supportive_therapy')
 
     @property
     def tumor_grades(self):
@@ -719,6 +737,60 @@ class ValueOptions:
         }
 
     @property
+    def disease_behaviors_mcl(self):
+        return {
+            '': 'Unknown',
+            'indolent': 'Indolent',
+            'aggressive': 'Aggressive',
+        }
+
+    @property
+    def disease_subtypes_mcl(self):
+        return {
+            '': 'Unknown',
+            'ismcn': 'In situ MCN (ISMCN)',
+            'cmcl': 'Conventional nodal MCL (cMCL)',
+            'nnmcl': 'Leukemic non-nodal MCL (nnMCL)',
+        }
+
+    @property
+    def protein_expressions_mcl(self):
+        from trials.models import ProteinExpression
+        mcl_codes = [
+            'cyclin_d1_plus_ve', 'cyclin_d1_minus_ve',
+            'sox11_plus_ve', 'sox11_minus_ve',
+            'cd10_plus_ve', 'cd10_minus_ve',
+            'bcl6_plus_ve', 'bcl6_minus_ve',
+        ]
+        items = ProteinExpression.objects.filter(code__in=mcl_codes).order_by('id')
+        out = {x.code: x.title for x in items}
+        return {'': 'Unknown', **out}
+
+    @property
+    def morphologic_variants(self):
+        from trials.models import MorphologicVariant
+        items = MorphologicVariant.objects.order_by('id')
+        out = {x.code: x.title for x in items}
+        return {'': 'Unknown', **out}
+
+    @property
+    def mipi_risks(self):
+        return {
+            'low': 'Low',
+            'intermediate': 'Intermediate',
+            'high': 'High',
+        }
+
+    @property
+    def mipi_c_risks(self):
+        return {
+            'low': 'Low',
+            'low_intermediate': 'Low-Intermediate',
+            'high_intermediate': 'High-Intermediate',
+            'high': 'High',
+        }
+
+    @property
     def er_statuses(self):
         from trials.models import EstrogenReceptorStatus
         items = EstrogenReceptorStatus.objects.order_by('id')
@@ -738,7 +810,12 @@ class ValueOptions:
         if result is None:
             result = self.get_all_options()
             cache.set(cache_key, result, timeout=3600)  # Cache for 1 hour
-        return result
+        # Defensive shallow copy: FormSettingsViewSet.list and
+        # TrialAttributes.__init__ mutate the returned dict by adding aliased
+        # keys (e.g. firstLineTherapy, trialType per disease). Without copying
+        # those mutations leak into the LocMemCache reference and poison later
+        # requests with wrong per-disease values.
+        return copy.copy(result)
 
     def get_all_options(self):
         return {
@@ -921,6 +998,15 @@ class ValueOptions:
             'therapiesLaterLineCll': {
                 'options': self.to_value_and_label(self.therapies_later_cll)
             },
+            'therapiesFirstLineMcl': {
+                'options': self.to_value_and_label(self.therapies_first_line_mcl)
+            },
+            'therapiesSecondLineMcl': {
+                'options': self.to_value_and_label(self.therapies_second_line_mcl)
+            },
+            'therapiesLaterLineMcl': {
+                'options': self.to_value_and_label(self.therapies_later_mcl)
+            },
             'supportiveTherapiesMm': {
                 'options': self.to_value_and_label(self.supportive_therapies_mm)
             },
@@ -933,6 +1019,9 @@ class ValueOptions:
             'supportiveTherapiesCll': {
                 'options': self.to_value_and_label(self.supportive_therapies_cll)
             },
+            'supportiveTherapiesMcl': {
+                'options': self.to_value_and_label(self.supportive_therapies_mcl)
+            },
             'concomitantMedicationsMm': {
                 'options': self.to_value_and_label(self.concomitant_medications_by_disease_code('MM'))
             },
@@ -941,6 +1030,9 @@ class ValueOptions:
             },
             'concomitantMedicationsBc': {
                 'options': self.to_value_and_label(self.concomitant_medications_by_disease_code('BC'))
+            },
+            'concomitantMedicationsMcl': {
+                'options': self.to_value_and_label(self.concomitant_medications_by_disease_code('MCL'))
             },
             'menopausalStatus': {
                 'options': self.to_value_and_label(self.menopausal_status)
@@ -1020,6 +1112,9 @@ class ValueOptions:
             'stagesCll': {
                 'options': self.to_value_and_label(self.stages('CLL'))
             },
+            'stagesMcl': {
+                'options': self.to_value_and_label(self.stages('MCL'))
+            },
             'languagesSkills': {
                 'options': self.to_value_and_label(self.languages_skills)
             },
@@ -1040,5 +1135,23 @@ class ValueOptions:
             },
             'diseaseActivities': {
                 'options': self.to_value_and_label(self.disease_activities)
+            },
+            'diseaseBehaviorsMcl': {
+                'options': self.to_value_and_label(self.disease_behaviors_mcl)
+            },
+            'diseaseSubtypesMcl': {
+                'options': self.to_value_and_label(self.disease_subtypes_mcl)
+            },
+            'proteinExpressionsMcl': {
+                'options': self.to_value_and_label(self.protein_expressions_mcl)
+            },
+            'morphologicVariants': {
+                'options': self.to_value_and_label(self.morphologic_variants)
+            },
+            'mipiRisks': {
+                'options': self.to_value_and_label(self.mipi_risks)
+            },
+            'mipiCRisks': {
+                'options': self.to_value_and_label(self.mipi_c_risks)
             },
         }
