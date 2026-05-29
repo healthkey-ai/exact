@@ -327,6 +327,7 @@ class ValueOptions:
             "follicular lymphoma": "Follicular Lymphoma",
             "breast cancer": "Breast Cancer",
             "chronic lymphocytic leukemia": "Chronic Lymphocytic Leukemia",
+            "mantle cell lymphoma": "Mantle Cell Lymphoma",
         }
 
     @property

@@ -45,6 +45,8 @@ class UserToTrialAttrMatcher:
             return 'BC'
         elif disease == 'chronic lymphocytic leukemia':
             return 'CLL'
+        elif disease == 'mantle cell lymphoma':
+            return 'MCL'
         return None
 
     def trial_match_status(self):

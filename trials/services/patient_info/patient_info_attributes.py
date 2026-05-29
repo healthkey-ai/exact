@@ -145,6 +145,8 @@ class PatientInfoAttributes:
             return 'BC'
         elif disease == 'chronic lymphocytic leukemia':
             return 'CLL'
+        elif disease == 'mantle cell lymphoma':
+            return 'MCL'
         return None
 
     @cached_property

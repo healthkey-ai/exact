@@ -6,6 +6,23 @@ from tests.factories import TrialFactory
 
 
 class TestUserToTrialAttrMatcher:
+    @pytest.mark.parametrize('disease, expected_code', [
+        ('multiple myeloma', 'MM'),
+        ('follicular lymphoma', 'FL'),
+        ('breast cancer', 'BC'),
+        ('chronic lymphocytic leukemia', 'CLL'),
+        ('mantle cell lymphoma', 'MCL'),
+        ('Mantle Cell Lymphoma', 'MCL'),  # casing tolerance
+        ('something else', None),
+    ])
+    @pytest.mark.django_db
+    def test_disease_code_normalization(self, disease, expected_code):
+        trial = TrialFactory(disease=disease)
+        patient_info = PatientInfo(disease=disease)
+
+        service = UserToTrialAttrMatcher(trial, patient_info)
+        assert service.disease_code == expected_code
+
     @pytest.mark.django_db
     def test_potential_attrs_to_check(self):
         trial = TrialFactory()
