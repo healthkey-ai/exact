@@ -171,3 +171,27 @@ class TestMclFieldRoundTrip:
         pi = _build_in_memory(data)
         assert pi.extranodal_sites == []
         assert pi.bulky_disease_criteria == []
+
+    @pytest.mark.django_db
+    def test_mcl_list_fields_none_coerced_to_empty_list(self):
+        # Caller sends explicit null — default=list contract must hold so
+        # downstream iteration (matcher overlap checks) doesn't crash.
+        data = {
+            'disease': 'mantle cell lymphoma',
+            'extranodal_sites': None,
+            'bulky_disease_criteria': None,
+        }
+        pi = _build_in_memory(data)
+        assert pi.extranodal_sites == []
+        assert pi.bulky_disease_criteria == []
+
+    @pytest.mark.django_db
+    def test_mcl_list_fields_drop_non_string_items(self):
+        data = {
+            'disease': 'mantle cell lymphoma',
+            'extranodal_sites': ['bone_marrow', 42, None, '  gi_tract  ', ''],
+            'bulky_disease_criteria': [{'nested': 'dict'}, 'largest_node_ge_10cm'],
+        }
+        pi = _build_in_memory(data)
+        assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
+        assert pi.bulky_disease_criteria == ['largest_node_ge_10cm']

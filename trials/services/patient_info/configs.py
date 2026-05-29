@@ -135,6 +135,14 @@ TRIAL_ATTRS_JSON_AS_A_LIST = (
     "richter_transformations_excluded",
     "tumor_burdens_required",
     "disease_activities_required",
+    "morphologic_variants_required",
+    "morphologic_variants_excluded",
+    "disease_behaviors_required",
+    "disease_subtypes_required",
+    "extranodal_sites_required",
+    "bulky_disease_criteria_required",
+    "mipi_risks_required",
+    "mipi_c_risks_required",
 )
 
 USER_TO_TRIAL_ATTRS_MAPPING = {
@@ -483,6 +491,90 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": "bone_marrow_involvement_required",
     },
     # CLL-specific END
+
+    # MCL-specific START
+    "morphologic_variant": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["morphologic_variants_required", "morphologic_variants_excluded"],
+        "uvalue_function": {
+            "morphologic_variants_required":
+                lambda patient_info: patient_info.morphologic_variant,
+            "morphologic_variants_excluded":
+                lambda patient_info: patient_info.morphologic_variant,
+        }
+    },
+    "lesion_size_mcl": {
+        "type": "min_max_value",
+        "custom_search": True,
+        "searchable": True,
+        "disease": "MCL",
+        "attr_min": "lesion_size_mcl_min",
+        "attr_max": "lesion_size_mcl_max",
+        "attr": ["lesion_size_mcl_min", "lesion_size_mcl_max"],
+    },
+    "disease_behavior": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["disease_behaviors_required"],
+        "uvalue_function": {
+            "disease_behaviors_required":
+                lambda patient_info: patient_info.disease_behavior,
+        }
+    },
+    "disease_subtype": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["disease_subtypes_required"],
+        "uvalue_function": {
+            "disease_subtypes_required":
+                lambda patient_info: patient_info.disease_subtype,
+        }
+    },
+    "extranodal_sites": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["extranodal_sites_required"],
+        "uvalue_function": {
+            "extranodal_sites_required":
+                lambda patient_info: patient_info.extranodal_sites,
+        }
+    },
+    "mipi_risk": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["mipi_risks_required"],
+        "uvalue_function": {
+            "mipi_risks_required":
+                lambda patient_info: patient_info.mipi_risk,
+        }
+    },
+    "mipi_c_risk": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["mipi_c_risks_required"],
+        "uvalue_function": {
+            "mipi_c_risks_required":
+                lambda patient_info: patient_info.mipi_c_risk,
+        }
+    },
+    "bulky_disease_criteria": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["bulky_disease_criteria_required"],
+        "uvalue_function": {
+            "bulky_disease_criteria_required":
+                lambda patient_info: patient_info.bulky_disease_criteria,
+        }
+    },
+    # MCL-specific END
 
     # BC-specific START
     "menopausal_status": {

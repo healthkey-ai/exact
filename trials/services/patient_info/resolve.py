@@ -134,6 +134,19 @@ def _normalize_structured_json_fields(data: dict):
         else:
             data['genetic_mutations'] = [item for item in val if isinstance(item, dict)]
 
+    # MCL list-of-strings fields: code lists (e.g. ['bone_marrow', 'gi_tract']).
+    # Coerce None / non-list / non-string items to [] so the default=list
+    # contract holds when CB sends `null` or `_coerce_json_fields` falls
+    # through on malformed input (which sets the value to None).
+    for key in ('extranodal_sites', 'bulky_disease_criteria'):
+        val = data.get(key)
+        if key not in data:
+            continue
+        if not isinstance(val, list):
+            data[key] = []
+            continue
+        data[key] = [s.strip() for s in val if isinstance(s, str) and s.strip()]
+
 
 def _coerce_json_fields(data: dict, model_cls):
     """Parse string-encoded JSON/Python-repr values for JSONField columns."""
