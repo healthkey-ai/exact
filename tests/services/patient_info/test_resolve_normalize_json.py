@@ -122,3 +122,76 @@ class TestBuildInMemoryRegression:
         }
         pi = _build_in_memory(data)
         assert pi.genetic_mutations == [{'gene': 'tp53'}]
+
+
+class TestMclFieldRoundTrip:
+    """Round-trip MCL-specific PatientInfo fields through the resolver (#38)."""
+
+    @pytest.mark.django_db
+    def test_mcl_fields_round_trip_through_resolve(self):
+        data = {
+            'disease': 'mantle cell lymphoma',
+            'morphologic_variant': 'blastoid',
+            'lesion_size_mcl': 7.5,
+            'disease_behavior': 'classic',
+            'disease_subtype': 'nodal',
+            'extranodal_sites': ['bone_marrow', 'gi_tract'],
+            'mipi_risk': 'intermediate',
+            'mipi_c_risk': 'high_intermediate',
+            'bulky_disease_criteria': ['largest_node_ge_10cm'],
+        }
+        pi = _build_in_memory(data)
+        assert pi.disease == 'mantle cell lymphoma'
+        assert pi.morphologic_variant == 'blastoid'
+        assert pi.lesion_size_mcl == 7.5
+        assert pi.disease_behavior == 'classic'
+        assert pi.disease_subtype == 'nodal'
+        assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
+        assert pi.mipi_risk == 'intermediate'
+        assert pi.mipi_c_risk == 'high_intermediate'
+        assert pi.bulky_disease_criteria == ['largest_node_ge_10cm']
+
+    @pytest.mark.django_db
+    def test_mcl_fields_camel_case_round_trip(self):
+        # API surface uses camelCase; resolve._to_snake_case handles conversion
+        data = {
+            'disease': 'mantle cell lymphoma',
+            'morphologicVariant': 'pleomorphic',
+            'lesionSizeMcl': 5.0,
+            'mipiRisk': 'low',
+        }
+        pi = _build_in_memory(data)
+        assert pi.morphologic_variant == 'pleomorphic'
+        assert pi.lesion_size_mcl == 5.0
+        assert pi.mipi_risk == 'low'
+
+    @pytest.mark.django_db
+    def test_mcl_list_fields_default_to_empty_list(self):
+        data = {'disease': 'mantle cell lymphoma'}
+        pi = _build_in_memory(data)
+        assert pi.extranodal_sites == []
+        assert pi.bulky_disease_criteria == []
+
+    @pytest.mark.django_db
+    def test_mcl_list_fields_none_coerced_to_empty_list(self):
+        # Caller sends explicit null — default=list contract must hold so
+        # downstream iteration (matcher overlap checks) doesn't crash.
+        data = {
+            'disease': 'mantle cell lymphoma',
+            'extranodal_sites': None,
+            'bulky_disease_criteria': None,
+        }
+        pi = _build_in_memory(data)
+        assert pi.extranodal_sites == []
+        assert pi.bulky_disease_criteria == []
+
+    @pytest.mark.django_db
+    def test_mcl_list_fields_drop_non_string_items(self):
+        data = {
+            'disease': 'mantle cell lymphoma',
+            'extranodal_sites': ['bone_marrow', 42, None, '  gi_tract  ', ''],
+            'bulky_disease_criteria': [{'nested': 'dict'}, 'largest_node_ge_10cm'],
+        }
+        pi = _build_in_memory(data)
+        assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
+        assert pi.bulky_disease_criteria == ['largest_node_ge_10cm']

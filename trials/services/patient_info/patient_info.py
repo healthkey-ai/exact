@@ -211,6 +211,18 @@ _FIELDS = [
     _f(FloatField, 'clonal_bone_marrow_b_lymphocytes'),
     _f(IntegerField, 'clonal_b_lymphocyte_count'),
     _f(BooleanField, 'bone_marrow_involvement'),
+    # MCL-specific
+    # mipi_risk / mipi_c_risk / bulky_disease_criteria will be computed in
+    # normalize.py per #41. Caller-supplied values are accepted now (for
+    # forward compat) but will be overwritten by the normalizer once wired.
+    _f(TextField, 'morphologic_variant'),
+    _f(FloatField, 'lesion_size_mcl'),
+    _f(TextField, 'disease_behavior'),
+    _f(TextField, 'disease_subtype'),
+    _f(JSONField, 'extranodal_sites', default=list),
+    _f(TextField, 'mipi_risk'),
+    _f(TextField, 'mipi_c_risk'),
+    _f(JSONField, 'bulky_disease_criteria', default=list),
 ]
 
 _FIELD_MAP = {f.name: f for f in _FIELDS}
