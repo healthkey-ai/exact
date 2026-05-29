@@ -550,6 +550,18 @@ class Trial(TimeStampMixin):
     clonal_b_lymphocyte_count_max = models.IntegerField(blank=True, null=True)
     bone_marrow_involvement_required = models.BooleanField(blank=True, null=True, db_index=True)
 
+    # MCL
+    lesion_size_mcl_min = models.FloatField(blank=True, null=True)
+    lesion_size_mcl_max = models.FloatField(blank=True, null=True)
+    morphologic_variants_required = models.JSONField(blank=True, null=False, default=list)
+    morphologic_variants_excluded = models.JSONField(blank=True, null=False, default=list)
+    disease_behaviors_required = models.JSONField(blank=True, null=False, default=list)
+    disease_subtypes_required = models.JSONField(blank=True, null=False, default=list)
+    extranodal_sites_required = models.JSONField(blank=True, null=False, default=list)
+    bulky_disease_criteria_required = models.JSONField(blank=True, null=False, default=list)
+    mipi_risks_required = models.JSONField(blank=True, null=False, default=list)
+    mipi_c_risks_required = models.JSONField(blank=True, null=False, default=list)
+
     locations = models.ManyToManyField(
         'Location',
         blank=True,
@@ -595,6 +607,13 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['tumor_stages_required', 'tumor_stages_excluded'], name='idx_tumor_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['nodes_stages_required', 'nodes_stages_excluded'], name='idx_nodes_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['distant_metastasis_stages_required', 'distant_metastasis_stages_excluded'], name='idx_d_m_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['morphologic_variants_required', 'morphologic_variants_excluded'], name='idx_morph_variants_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['disease_behaviors_required'], name='idx_disease_behaviors_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['disease_subtypes_required'], name='idx_disease_subtypes_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['extranodal_sites_required'], name='idx_extranodal_sites_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['bulky_disease_criteria_required'], name='idx_bulky_disease_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['mipi_risks_required'], name='idx_mipi_risks_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['mipi_c_risks_required'], name='idx_mipi_c_risks_gin', opclasses=['jsonb_ops']),
         ]
 
     def attrs_to_fill_in(self, counts):
