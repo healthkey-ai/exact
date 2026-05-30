@@ -68,6 +68,7 @@ class TestMclFormSettingsRegistry:
             'bulkyDiseaseCriteria',
             'therapiesMcl',
             'plannedTherapiesMcl',
+            'therapyOutcomeMcl',
         }
         missing = expected_keys - set(all_opts.keys())
         assert not missing, f'MCL keys not in get_all_options(): {missing}'

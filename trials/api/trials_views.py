@@ -278,12 +278,17 @@ class FormSettingsViewSet(viewsets.ViewSet):
         if disease_code:
             trial_types = ValueOptions.trial_types_by_disease_code(disease_code)
             out['trialType'] = {'options': ValueOptions.to_value_and_label(trial_types)}
+            # Disease-aware treatment outcomes (#60 / #70 / CB #4137).
+            # Without this override callers reading the union `therapyOutcome`
+            # would still see IMWG-specific sCR / VGPR / MRD for BC patients.
+            outcomes = ValueOptions().therapy_outcomes_by_disease_code(disease_code)
+            out['therapyOutcome'] = {'options': ValueOptions.to_value_and_label(outcomes)}
         return Response(out)
 
     def _normalize_disease_code(self, disease_param: str) -> str:
         if not disease_param:
             return ''
         lower = disease_param.lower().strip()
-        if lower.upper() in ('MM', 'BC', 'FL', 'CLL'):
+        if lower.upper() in ('MM', 'BC', 'FL', 'CLL', 'MCL'):
             return lower.upper()
         return self.DISEASE_NAME_TO_CODE.get(lower, '')

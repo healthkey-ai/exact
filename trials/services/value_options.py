@@ -874,6 +874,9 @@ class ValueOptions:
             'therapyOutcomeCll': {
                 'options': self.to_value_and_label(self.therapy_outcomes_by_disease_code('CLL'))
             },
+            'therapyOutcomeMcl': {
+                'options': self.to_value_and_label(self.therapy_outcomes_by_disease_code('MCL'))
+            },
             'ethnicity': {
                 'options': self.to_value_and_label(self.ethnicities)
             },
