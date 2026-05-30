@@ -50,3 +50,53 @@ class TestTrialAttributes:
 
         assert TrialAttributes(trial=trial, patient_info=patient_info).is_blank('negativePregnancyTestResultRequired', True, None) is False
         assert TrialAttributes(trial=trial, patient_info=patient_info).is_blank('noPregnancyOrLactationRequired', True, None) is False
+
+
+class TestMclTrialAttributes:
+    """Verify the MCL disease branch in __init__ aliases therapy / stage option
+    lists to the MCL-specific keys, mirroring the CLL pattern (#73).
+    """
+
+    @pytest.mark.django_db
+    def test_mcl_trial_aliases_therapy_options_to_mcl_keys(self):
+        patient_info = PatientInfo(disease='mantle cell lymphoma')
+        trial = TrialFactory(disease='mantle cell lymphoma')
+
+        attrs = TrialAttributes(trial, patient_info=patient_info)
+
+        # Each canonical key the UI consumes for trial detail rendering must
+        # point at the MCL-specific options list, not the union or any other
+        # disease.
+        for canonical, mcl_key in [
+            ('firstLineTherapy', 'therapiesFirstLineMcl'),
+            ('secondLineTherapy', 'therapiesSecondLineMcl'),
+            ('laterTherapy', 'therapiesLaterLineMcl'),
+            ('supportiveTherapiesRequired', 'supportiveTherapiesMcl'),
+            ('supportiveTherapiesExcluded', 'supportiveTherapiesMcl'),
+            ('therapiesRequired', 'therapiesMcl'),
+            ('therapiesExcluded', 'therapiesMcl'),
+            ('plannedTherapies', 'plannedTherapiesMcl'),
+            ('plannedTherapiesRequired', 'plannedTherapiesMcl'),
+            ('plannedTherapiesExcluded', 'plannedTherapiesMcl'),
+            ('stage', 'stagesMcl'),
+            ('stages', 'stagesMcl'),
+        ]:
+            assert attrs.all_options[canonical] is attrs.all_options[mcl_key], \
+                f'{canonical} should point at {mcl_key} for an MCL trial'
+
+    @pytest.mark.django_db
+    def test_non_mcl_trial_does_not_get_mcl_aliases(self):
+        # A CLL trial must continue to alias the canonical keys to CLL options,
+        # not MCL.
+        patient_info = PatientInfo(disease='chronic lymphocytic leukemia')
+        trial = TrialFactory(disease='chronic lymphocytic leukemia')
+
+        attrs = TrialAttributes(trial, patient_info=patient_info)
+
+        assert attrs.all_options['firstLineTherapy'] is attrs.all_options['therapiesFirstLineCll']
+        assert attrs.all_options['stages'] is attrs.all_options['stagesCll']
+        # CLL options must NOT be wired to MCL options. Identity check, not
+        # equality: both keys may resolve to a structurally identical
+        # `Unknown/Other`-only placeholder in the test DB (no MCL or CLL
+        # therapy-round seed data), so dict equality is meaningless.
+        assert attrs.all_options['therapiesFirstLineCll'] is not attrs.all_options['therapiesFirstLineMcl']
