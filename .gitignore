@@ -24,3 +24,4 @@ scripts/*.zip
 trials/management/commands/evaluate_ethalon_live.py
 tests/management/test_evaluate_ethalon_live.py
 scripts/evaluator/evaluate_live.sh
+republish_latest.sh

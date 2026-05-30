@@ -633,30 +633,54 @@ class Trial(TimeStampMixin):
         return [self.locations_name[0]] if len(self.locations_name) > 0 else []
 
     def get_distance_obj(self, pi, recruitment_status=None):
+        """Closest distance from patient to any LocationTrial of this Trial.
+
+        Materializes locationtrial_set as a Python list and filters in
+        Python so the TrialsViewSet prefetch (`Prefetch('locationtrial_set',
+        select_related('location'))`) is honored. The previous version
+        cloned the queryset via `.filter(recruitment_status__in=...)`
+        which issued a fresh DB query per Trial — the production N+1
+        flagged in #26.
+        """
         from trials.querysets.trial import get_recruitment_status_filter_values
 
         if hasattr(self, 'distance') and self.distance:
             return self.distance
 
-        if hasattr(self, 'locationtrial_set') and self.locationtrial_set.exists():
-            status_values = get_recruitment_status_filter_values(recruitment_status)
-            location_trials = self.locationtrial_set.all()
-            if status_values is not None:
-                location_trials = location_trials.filter(recruitment_status__in=status_values)
+        if not hasattr(self, 'locationtrial_set'):
+            return None
+        # `.all()` honors a `Prefetch` cache when one was declared;
+        # `list(...)` then materializes once, after which subsequent
+        # filtering happens in Python without further DB hits.
+        location_trials = list(self.locationtrial_set.all())
+        if not location_trials:
+            return None
 
-            for lt in location_trials:
-                if hasattr(lt, 'distance'):
-                    return lt.distance
+        status_values = get_recruitment_status_filter_values(recruitment_status)
+        if status_values is not None:
+            location_trials = [
+                lt for lt in location_trials
+                if lt.recruitment_status in status_values
+            ]
 
-            min_distance = None
-            for lt in location_trials:
-                if lt.location and lt.location.geo_point and pi.geo_point:
-                    p1 = Point(lt.location.geo_point.y, lt.location.geo_point.x, srid=4326)
-                    p2 = Point(pi.geo_point.y, pi.geo_point.x, srid=4326)
-                    dist = geopy_distance(p1, p2)
-                    if min_distance is None or dist < min_distance:
-                        min_distance = dist
-            return min_distance
+        for lt in location_trials:
+            if hasattr(lt, 'distance'):
+                return lt.distance
+
+        if pi is None or pi.geo_point is None:
+            return None
+
+        # Hoist the patient Point out of the loop (was rebuilt per
+        # LocationTrial in the prior version).
+        pi_point = Point(pi.geo_point.y, pi.geo_point.x, srid=4326)
+        min_distance = None
+        for lt in location_trials:
+            if lt.location and lt.location.geo_point:
+                p1 = Point(lt.location.geo_point.y, lt.location.geo_point.x, srid=4326)
+                dist = geopy_distance(p1, pi_point)
+                if min_distance is None or dist < min_distance:
+                    min_distance = dist
+        return min_distance
 
     def get_distance_penalty(self, pi, recruitment_status=None):
         if not pi or not pi.geo_point:
@@ -687,8 +711,53 @@ class Trial(TimeStampMixin):
         )
 
     def sorted_locations_by_distance(self, user_geo_point, recruitment_status=None):
+        """Return LocationTrial rows ordered by distance from user_geo_point.
+
+        Honors a `locationtrial_set` prefetch when present (TrialsViewSet
+        prefetches with `select_related('location')` for the list endpoint
+        — see #26), filtering and sorting in Python so the prefetched
+        cache isn't bypassed by a fresh `.select_related(...)` call.
+        Falls back to the QuerySet path for callers that didn't prefetch,
+        keeping the original DB-annotated `distance` ordering for those.
+
+        When user_geo_point is None: returns all matching LocationTrial
+        rows. When set: returns a single-element list with the closest one,
+        matching the prior contract.
+        """
         from trials.querysets.trial import get_recruitment_status_filter_values
         status_values = get_recruitment_status_filter_values(recruitment_status)
+
+        cached = (
+            self._prefetched_objects_cache.get('locationtrial_set')
+            if hasattr(self, '_prefetched_objects_cache') else None
+        )
+        if cached is not None:
+            location_trials = list(cached)
+            if status_values is not None:
+                location_trials = [
+                    lt for lt in location_trials
+                    if lt.recruitment_status in status_values
+                ]
+            if not user_geo_point:
+                return location_trials
+
+            # Hoist the patient Point so it's built once, not per LT.
+            user_point = Point(user_geo_point.y, user_geo_point.x, srid=4326)
+
+            def _distance_key(lt):
+                # Sort LocationTrials with missing geo last (matches the
+                # DB-side null_distance_flag ordering in the fallback).
+                # `lt.pk` is the stable tie-breaker so the prefetched and
+                # fallback paths can't drift apart when all-null inputs
+                # tie at (1, 0.0).
+                if not lt.location or not lt.location.geo_point:
+                    return (1, 0.0, lt.pk)
+                lt_point = Point(lt.location.geo_point.y, lt.location.geo_point.x, srid=4326)
+                return (0, geopy_distance(lt_point, user_point).km, lt.pk)
+            location_trials.sort(key=_distance_key)
+            return [location_trials[0]] if location_trials else location_trials
+
+        # Fallback: no prefetch cached — issue a DB query like before.
         location_trials = self.locationtrial_set.select_related('location')
         if status_values is not None:
             location_trials = location_trials.filter(recruitment_status__in=status_values)
