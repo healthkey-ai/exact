@@ -398,19 +398,20 @@ class ValueOptions:
     def therapy_outcomes_by_disease_code(self, disease_code):
         """Return the clinically-applicable treatment outcomes per disease.
 
-        Per #4137: Breast Cancer doesn't use IMWG-derived categories
-        (sCR / VGPR / MRD) — those are MM-specific. BC patients should see
-        only CR / PR / SD / PD. All other diseases keep the full enum
-        until product asks otherwise.
+        Per #4137 / #83: Breast Cancer uses RECIST (CR/PR/SD/PD) and Mantle
+        Cell Lymphoma uses Cheson 2014 / Lugano 2014 (also CR/PR/SD/PD).
+        Neither uses IMWG-derived sCR/VGPR/MRD categories — those are
+        MM-specific. MM/FL/CLL keep the full enum.
         """
-        bc_outcomes = {
+        recist_outcomes = {
             'CR': self.therapy_outcomes['CR'],
             'PR': self.therapy_outcomes['PR'],
             'SD': self.therapy_outcomes['SD'],
             'PD': self.therapy_outcomes['PD'],
         }
         per_disease = {
-            'BC': bc_outcomes,
+            'BC': recist_outcomes,
+            'MCL': recist_outcomes,
         }
         return per_disease.get((disease_code or '').upper(), self.therapy_outcomes)
 

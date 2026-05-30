@@ -100,3 +100,28 @@ class TestMclTrialAttributes:
         # `Unknown/Other`-only placeholder in the test DB (no MCL or CLL
         # therapy-round seed data), so dict equality is meaningless.
         assert attrs.all_options['therapiesFirstLineCll'] is not attrs.all_options['therapiesFirstLineMcl']
+
+    @pytest.mark.django_db
+    def test_mcl_patient_outcome_aliases_to_mcl_subset(self):
+        """Regression for #83 second leg: MCL patients must see Cheson/Lugano
+        4-value outcome options on firstLineOutcome / secondLineOutcome /
+        laterOutcome. The patient disease drives _therapy_outcome_options_key.
+        Without 'mantle cell lymphoma' in _DISEASE_TO_OUTCOME_KEY, MCL fell
+        through to the union 'therapyOutcome' (7-value IMWG enum), leaking
+        sCR / VGPR / MRD codes that don't apply clinically.
+        """
+        patient_info = PatientInfo(disease='mantle cell lymphoma')
+        trial = TrialFactory(disease='mantle cell lymphoma')
+
+        attrs = TrialAttributes(trial, patient_info=patient_info)
+
+        # Each outcome key must alias to therapyOutcomeMcl, NOT the union.
+        for canonical in ('firstLineOutcome', 'secondLineOutcome', 'laterOutcome'):
+            assert attrs.all_options[canonical] is attrs.all_options['therapyOutcomeMcl'], \
+                f'{canonical} should point at therapyOutcomeMcl for an MCL patient'
+            assert attrs.all_options[canonical] is not attrs.all_options['therapyOutcome'], \
+                f'{canonical} must not leak the union 7-value enum for MCL'
+
+        # Sanity: the MCL outcome set is the 4-value Cheson/Lugano subset.
+        codes = {opt['value'] for opt in attrs.all_options['firstLineOutcome']['options']}
+        assert codes == {'CR', 'PR', 'SD', 'PD'}
