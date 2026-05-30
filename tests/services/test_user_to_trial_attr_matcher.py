@@ -202,3 +202,60 @@ class TestUserToTrialAttrMatcher:
             pi.treatment_refractory_status = value
             assert matcher.attr_match_status('treatment_refractory_status') == 'matched', \
                 f'Expected matched for value={value!r}'
+
+    @pytest.mark.django_db
+    def test_progression_empty_string_is_unknown(self):
+        """Regression for #52 / CB #4306: the UI represents "Unknown"
+        progression as '' (see ValueOptions.progressions). The matcher must
+        treat '' the same as None, returning 'unknown' instead of falling
+        through to 'not_matched' against a trial requiring active disease.
+        """
+        trial = TrialFactory(disease_progression_active_required=True)
+        pi = PatientInfo(disease='multiple myeloma')
+        matcher = UserToTrialAttrMatcher(trial, pi)
+
+        # None → unknown (control, unchanged behavior)
+        pi.progression = None
+        assert matcher.attr_match_status('progression') == 'unknown'
+
+        # Empty string → unknown (the fix path)
+        pi.progression = ''
+        assert matcher.attr_match_status('progression') == 'unknown'
+
+        # 'active' patient → matched (sanity check)
+        pi.progression = 'active'
+        assert matcher.attr_match_status('progression') == 'matched'
+
+        # 'smoldering' patient against active-required trial → not_matched
+        pi.progression = 'smoldering'
+        assert matcher.attr_match_status('progression') == 'not_matched'
+
+    @pytest.mark.django_db
+    def test_peripheral_neuropathy_grade_zero_matches(self):
+        """Regression for #53 / CB #4307: Grade 0 is a real clinical value,
+        not blank. The configs.py entry must carry allow_blank_values=True
+        so is_attr_blank() does not coerce 0 to 'unknown' against trials
+        with peripheral_neuropathy_grade_max=0.
+        """
+        trial_no_limit = TrialFactory(disease='multiple myeloma')
+        trial_max_zero = TrialFactory(disease='multiple myeloma', peripheral_neuropathy_grade_max=0)
+        trial_max_two = TrialFactory(disease='multiple myeloma', peripheral_neuropathy_grade_max=2)
+
+        pi = PatientInfo(disease='multiple myeloma')
+
+        # Blank patient: no-limit trial matches; max=0 trial is unknown.
+        pi.peripheral_neuropathy_grade = None
+        assert UserToTrialAttrMatcher(trial_no_limit, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
+        assert UserToTrialAttrMatcher(trial_max_zero, pi).attr_match_status('peripheral_neuropathy_grade') == 'unknown'
+
+        # Grade 0 patient: matches every trial (this is the fix path — used
+        # to be 'unknown' against max=0 because 0 was treated as blank).
+        pi.peripheral_neuropathy_grade = 0
+        assert UserToTrialAttrMatcher(trial_no_limit, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
+        assert UserToTrialAttrMatcher(trial_max_zero, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
+        assert UserToTrialAttrMatcher(trial_max_two, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
+
+        # Grade 3 patient: excluded by any max< 3 trial.
+        pi.peripheral_neuropathy_grade = 3
+        assert UserToTrialAttrMatcher(trial_max_zero, pi).attr_match_status('peripheral_neuropathy_grade') == 'not_matched'
+        assert UserToTrialAttrMatcher(trial_max_two, pi).attr_match_status('peripheral_neuropathy_grade') == 'not_matched'
