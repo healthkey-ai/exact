@@ -892,6 +892,9 @@ class ValueOptions:
             'plannedTherapiesCll': {
                 'options': self.to_value_and_label(self.planned_therapies('CLL'))
             },
+            'plannedTherapiesMcl': {
+                'options': self.to_value_and_label(self.planned_therapies('MCL'))
+            },
             'cytogenicMarkers': {
                 'options': self.to_value_and_label(self.cytogenic_markers)
             },
@@ -954,6 +957,9 @@ class ValueOptions:
             },
             'therapiesCll': {
                 'options': self.to_value_and_label(self.therapies_by_disease_code('CLL'))
+            },
+            'therapiesMcl': {
+                'options': self.to_value_and_label(self.therapies_by_disease_code('MCL'))
             },
             'therapyComponentsMm': {
                 'options': self.to_value_and_label(self.therapy_components_by_disease_code('mm'))

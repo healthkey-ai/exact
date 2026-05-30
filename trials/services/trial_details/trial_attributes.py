@@ -147,6 +147,20 @@ class TrialAttributes:
             self.all_options['plannedTherapiesExcluded'] = self.all_options['plannedTherapiesCll']
             self.all_options['stage'] = self.all_options['stagesCll']
             self.all_options['stages'] = self.all_options['stagesCll']
+        elif self._trial.disease.lower() == 'mantle cell lymphoma':
+            self.all_options['firstLineTherapy'] = self.all_options['therapiesFirstLineMcl']
+            self.all_options['secondLineTherapy'] = self.all_options['therapiesSecondLineMcl']
+            self.all_options['laterTherapy'] = self.all_options['therapiesLaterLineMcl']
+            self.all_options['laterTherapies'] = self.all_options['laterTherapy']
+            self.all_options['supportiveTherapiesRequired'] = self.all_options['supportiveTherapiesMcl']
+            self.all_options['supportiveTherapiesExcluded'] = self.all_options['supportiveTherapiesMcl']
+            self.all_options['therapiesRequired'] = self.all_options['therapiesMcl']
+            self.all_options['therapiesExcluded'] = self.all_options['therapiesMcl']
+            self.all_options['plannedTherapies'] = self.all_options['plannedTherapiesMcl']
+            self.all_options['plannedTherapiesRequired'] = self.all_options['plannedTherapiesMcl']
+            self.all_options['plannedTherapiesExcluded'] = self.all_options['plannedTherapiesMcl']
+            self.all_options['stage'] = self.all_options['stagesMcl']
+            self.all_options['stages'] = self.all_options['stagesMcl']
 
         for k, v in self.all_options.items():
             self._all_value_options[k] = v
