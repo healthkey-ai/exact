@@ -8,7 +8,7 @@ from rest_framework.response import Response
 
 from trials.api.graph_serializers import GraphTrialNodeSerializer
 from trials.api.patient_info_serializers import PatientInfoSerializer
-from trials.api.trials_views import TrailsViewSet
+from trials.api.trials_views import TrialsViewSet
 from trials.services.attribute_names import AttributeNames
 from trials.services.patient_info.resolve import resolve_patient_info
 from trials.services.trial_details.trial_templates import TrialTemplates
@@ -57,9 +57,9 @@ class GraphPatientInfoSerializer(PatientInfoSerializer):
         return data
 
 
-class TrialsGraphViewSet(TrailsViewSet):
+class TrialsGraphViewSet(TrialsViewSet):
     """
-    Reuses TrailsViewSet queryset logic to build a graph-oriented response.
+    Reuses TrialsViewSet queryset logic to build a graph-oriented response.
     """
     http_method_names = ["get"]
 

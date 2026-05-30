@@ -324,8 +324,8 @@ ATTR_GROUP_MAPPING = {
     'isValidated': 'ignore',
     'isLabeled': 'ignore',
 
-    'matchScore': ['general'],  # TODO: add to `general` on another level
-    'disease': ['general', 'disease'],  # TODO: add to `general` on another level
+    'matchScore': ['general'],
+    'disease': ['general', 'disease'],
 
     # == Disease group ==
     # + Patient Age

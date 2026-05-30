@@ -6,7 +6,7 @@ from rest_framework import serializers
 
 from trials.api.pagination import TrialsPagination
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
-from trials.models import Trial, Location, PreferredCountry, State
+from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
 from trials.services.patient_info.resolve import resolve_patient_info
 from trials.services.study_preferences import study_preferences_from_query_params
 from trials.services.value_options import ValueOptions
@@ -60,7 +60,7 @@ class _BlankAttributeRecordsCount:
 # Trials ViewSet
 # ---------------------------------------------------------------------------
 
-class TrailsViewSet(viewsets.ReadOnlyModelViewSet):
+class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     default_serializer_class = TrialDetailsSerializer
     serializer_classes = {
@@ -167,7 +167,7 @@ class TrailsViewSet(viewsets.ReadOnlyModelViewSet):
         if self.action in ['list', 'search']:
             queryset = queryset.prefetch_related(
                 Prefetch('locationtrial_set',
-                         queryset=__import__('trials.models', fromlist=['LocationTrial']).LocationTrial.objects.select_related('location'))
+                         queryset=LocationTrial.objects.select_related('location'))
             )
 
         return queryset
