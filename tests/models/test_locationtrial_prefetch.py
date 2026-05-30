@@ -96,10 +96,13 @@ class TestLocationTrialPrefetch:
     def test_recruitment_status_filter_applies_in_python_when_prefetched(self):
         """Filter must work the same whether we're using the prefetched
         cache (Python filter) or the fallback (DB filter)."""
-        loc = LocationFactory(title='filterloc')
+        # Need two distinct locations: (trial, location) is uniquely
+        # constrained on LocationTrial.
+        loc_a = LocationFactory(title='filterloc_a')
+        loc_b = LocationFactory(title='filterloc_b')
         trial = TrialFactory()
-        LocationTrial.objects.create(trial=trial, location=loc, recruitment_status='RECRUITING')
-        LocationTrial.objects.create(trial=trial, location=loc, recruitment_status='COMPLETED')
+        LocationTrial.objects.create(trial=trial, location=loc_a, recruitment_status='RECRUITING')
+        LocationTrial.objects.create(trial=trial, location=loc_b, recruitment_status='COMPLETED')
 
         # Prefetched path
         trial_prefetched = _list_qs().get(pk=trial.pk)
