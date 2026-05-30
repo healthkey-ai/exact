@@ -1,6 +1,7 @@
 import pytest
 
 from trials.services.patient_info.patient_info import PatientInfo
+from trials.services.patient_info.normalize import normalize_patient_info
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from tests.factories import TrialFactory
 
@@ -229,6 +230,85 @@ class TestUserToTrialAttrMatcher:
         # 'smoldering' patient against active-required trial → not_matched
         pi.progression = 'smoldering'
         assert matcher.attr_match_status('progression') == 'not_matched'
+
+    @pytest.mark.django_db
+    def test_measurable_disease_imwg_unknown_for_empty_labs(self):
+        """Regression for #54 / CB #4143-#4156: a patient with no IMWG-relevant
+        lab values must show as Potential ('unknown'), not Ineligible
+        ('not_matched'), against a trial requiring measurable_disease_imwg.
+
+        Even when labs ARE present but the patient doesn't qualify (real False),
+        the matcher should still return 'unknown' because measurable_disease_imwg
+        is a derived/computed field the user cannot directly answer — surfacing
+        the trial as Potential is the desired UX. The under_user_control flag
+        in configs.py is what enforces this.
+        """
+        # Patient with all IMWG lab inputs blank → measurable_disease_imwg=None.
+        pi = PatientInfo(
+            disease='multiple myeloma',
+            monoclonal_protein_serum=None,
+            monoclonal_protein_urine=None,
+            kappa_flc=None,
+            lambda_flc=None,
+        )
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is None
+
+        # Trial doesn't require → matched regardless of patient value.
+        trial_no_req = TrialFactory(measurable_disease_imwg_required=None)
+        assert UserToTrialAttrMatcher(trial_no_req, pi).attr_match_status('measurable_disease_imwg') == 'matched'
+
+        # Trial requires + empty labs → 'unknown' (NOT 'not_matched').
+        trial_requires = TrialFactory(measurable_disease_imwg_required=True)
+        assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'unknown'
+
+        # Patient has qualifying labs (serum M-protein >= 0.5) → 'matched'.
+        pi.monoclonal_protein_serum = 5
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is True
+        assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'matched'
+
+        # Patient has labs but doesn't qualify (real False) → still 'unknown'
+        # because under_user_control prefers Potential over hard-reject on a
+        # derived value the user couldn't have answered themselves.
+        pi.monoclonal_protein_serum = 0.1  # below 0.5 g/dL threshold
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is False
+        assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'unknown'
+
+    @pytest.mark.django_db
+    def test_meets_slim_unknown_for_empty_labs(self):
+        """Regression for #54 / CB #4143-#4156: same UX rule for meets_slim.
+
+        The derivation (PatientInfoAttributes.meets_slim) already returns None
+        for all-blank inputs, but without under_user_control in the config the
+        matcher coerced None -> False and returned 'not_matched'. The fix is
+        the under_user_control flag added when the meets_slim entry was
+        uncommented in configs.py.
+        """
+        pi = PatientInfo(
+            disease='multiple myeloma',
+            clonal_plasma_cells=None,
+            kappa_flc=None,
+            lambda_flc=None,
+            bone_lesions='',
+        )
+        normalize_patient_info(pi)
+        assert pi.meets_slim is None
+
+        # Trial doesn't require → matched.
+        trial_no_req = TrialFactory(meets_slim=None)
+        assert UserToTrialAttrMatcher(trial_no_req, pi).attr_match_status('meets_slim') == 'matched'
+
+        # Trial requires + empty labs → 'unknown' (NOT 'not_matched').
+        trial_requires = TrialFactory(meets_slim=True)
+        assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('meets_slim') == 'unknown'
+
+        # Patient meets SLiM via the S component (>=60% clonal plasma cells).
+        pi.clonal_plasma_cells = 65
+        normalize_patient_info(pi)
+        assert pi.meets_slim is True
+        assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('meets_slim') == 'matched'
 
     @pytest.mark.django_db
     def test_peripheral_neuropathy_grade_zero_matches(self):
