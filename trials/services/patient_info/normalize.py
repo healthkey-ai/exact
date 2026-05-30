@@ -26,6 +26,7 @@ def normalize_patient_info(pi) -> None:
     _normalize_metastatic_status(pi)
     _normalize_measurable_disease_imwg(pi)
     _normalize_last_treatment(pi)
+    _normalize_mcl_derivations(pi)
 
     attr = PatientInfoAttributes(pi)
     pi.bmi = attr.bmi
@@ -217,3 +218,26 @@ def _normalize_measurable_disease_imwg(pi) -> None:
 
 def _normalize_last_treatment(pi) -> None:
     pi.last_treatment = pi.later_date or pi.second_line_date or pi.first_line_date
+
+
+def _normalize_mcl_derivations(pi) -> None:
+    """Overwrite caller-supplied MCL risk scores with derived values.
+
+    The PatientInfo field declarations note these are caller-settable for
+    forward-compat but always overwritten here (#41 / see
+    patient_info.py:215). Skips non-MCL patients so other diseases keep
+    whatever defaults / inputs they had.
+    """
+    if str(pi.disease).lower() != 'mantle cell lymphoma':
+        return
+
+    # Late import: PatientInfoAttributes imports normalize indirectly via
+    # configs -> matcher, so resolving it at module load creates a cycle.
+    from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+    attr = PatientInfoAttributes(pi)
+    pi.mipi_risk = attr.mipi_risk
+    pi.mipi_c_risk = attr.mipi_c_risk
+    # Defensive copy: bulky_disease_criteria is a cached_property; without
+    # copying, downstream mutation of pi.bulky_disease_criteria would also
+    # mutate the cached property's stored list.
+    pi.bulky_disease_criteria = list(attr.bulky_disease_criteria)
