@@ -277,6 +277,58 @@ class TestUserToTrialAttrMatcher:
         assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'unknown'
 
     @pytest.mark.django_db
+    def test_measurable_disease_imwg_zero_lab_is_real_false(self):
+        """Regression for #81: serum / urine M-protein / FLC = 0 are real
+        clinical measurements, not missing data. The IMWG normalizer
+        previously used `if not pi.X` on serum and urine, and
+        `if not ratio` on the kappa/lambda ratio — all three collapsed
+        0 to None or False, misclassifying patients with real zero values.
+        """
+        # Patient with serum=0 + urine=0 + no FLC → serum and urine
+        # components produce real False (was None pre-fix), FLC stays None.
+        # Outer function: components=[False, False, None] → not-all-None →
+        # derived value is False, not None.
+        pi = PatientInfo(
+            disease='multiple myeloma',
+            monoclonal_protein_serum=0,
+            monoclonal_protein_urine=0,
+            kappa_flc=None,
+            lambda_flc=None,
+        )
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is False
+
+        # End-to-end: matcher must still bucket this as 'unknown' against
+        # a requiring trial because measurable_disease_imwg is under user
+        # control (#54 contract preserved by this PR).
+        trial_requires = TrialFactory(measurable_disease_imwg_required=True)
+        assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'unknown'
+
+        # Patient with serum=0 + qualifying urine → True (urine wins).
+        pi.monoclonal_protein_urine = 300  # >= 200 threshold
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is True
+
+        # Kappa FLC = 0, lambda FLC = 200: ratio = 0.0, well below the
+        # 0.26 abnormal threshold. Pre-fix `if not ratio` returned False
+        # here; post-fix the ratio is treated as the real abnormal value
+        # it is. Lambda >= 100 makes kappa_lambda_abnormal_and_high True,
+        # so derived IMWG flips to True.
+        pi.monoclonal_protein_serum = None
+        pi.monoclonal_protein_urine = None
+        pi.kappa_flc = 0
+        pi.lambda_flc = 200
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is True
+
+        # Sanity: all-None inputs (true missing data) still derive None
+        # (the #54 contract — Potential bucket).
+        pi.kappa_flc = None
+        pi.lambda_flc = None
+        normalize_patient_info(pi)
+        assert pi.measurable_disease_imwg is None
+
+    @pytest.mark.django_db
     def test_meets_slim_unknown_for_empty_labs(self):
         """Regression for #54 / CB #4143-#4156: same UX rule for meets_slim.
 

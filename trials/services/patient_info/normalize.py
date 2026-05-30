@@ -177,12 +177,14 @@ def _normalize_metastatic_status(pi) -> None:
 
 def _normalize_measurable_disease_imwg(pi) -> None:
     def serum_m_protein_high():
-        if not pi.monoclonal_protein_serum:
+        # Use `is None` not `not X`: 0 is a real clinical measurement
+        # ("no monoclonal protein detected"), not missing data (#81).
+        if pi.monoclonal_protein_serum is None:
             return None
         return pi.monoclonal_protein_serum >= 0.5
 
     def serum_m_urine_high():
-        if not pi.monoclonal_protein_urine:
+        if pi.monoclonal_protein_urine is None:
             return None
         return pi.monoclonal_protein_urine >= 200
 
@@ -197,7 +199,10 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         if pi.kappa_flc is None or pi.lambda_flc is None:
             return None
         ratio = kappa_lambda_ratio()
-        if not ratio:
+        # Use `is None` not `not ratio`: ratio=0 (kappa=0/lambda>0) is a
+        # real clinical signal — well below the 0.26 abnormal threshold —
+        # not missing data (#81).
+        if ratio is None:
             return False
         if not (ratio < 0.26 or ratio > 1.65):
             return False

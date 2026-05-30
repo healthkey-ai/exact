@@ -174,6 +174,7 @@ class TrialAttributes:
         'follicular lymphoma': 'therapyOutcomeFl',
         'breast cancer': 'therapyOutcomeBc',
         'chronic lymphocytic leukemia': 'therapyOutcomeCll',
+        'mantle cell lymphoma': 'therapyOutcomeMcl',
     }
 
     def _therapy_outcome_options_key(self):
