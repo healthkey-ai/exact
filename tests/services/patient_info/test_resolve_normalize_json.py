@@ -125,7 +125,14 @@ class TestBuildInMemoryRegression:
 
 
 class TestMclFieldRoundTrip:
-    """Round-trip MCL-specific PatientInfo fields through the resolver (#38)."""
+    """Round-trip MCL-specific PatientInfo fields through the resolver (#38).
+
+    Note: mipi_risk / mipi_c_risk / bulky_disease_criteria are derived by
+    normalize._normalize_mcl_derivations (#41), so caller-supplied values
+    get overwritten. These tests assert the resolver preserves the
+    non-derived fields and that the derived ones reflect the algorithm
+    output, not the caller input.
+    """
 
     @pytest.mark.django_db
     def test_mcl_fields_round_trip_through_resolve(self):
@@ -136,20 +143,28 @@ class TestMclFieldRoundTrip:
             'disease_behavior': 'classic',
             'disease_subtype': 'nodal',
             'extranodal_sites': ['bone_marrow', 'gi_tract'],
+            # Caller-supplied derived values; will be overwritten by the
+            # normalizer (see assertions below).
             'mipi_risk': 'intermediate',
             'mipi_c_risk': 'high_intermediate',
-            'bulky_disease_criteria': ['largest_node_ge_10cm'],
+            'bulky_disease_criteria': ['caller_supplied_ignored'],
         }
         pi = _build_in_memory(data)
+        # Non-derived fields preserved.
         assert pi.disease == 'mantle cell lymphoma'
         assert pi.morphologic_variant == 'blastoid'
         assert pi.lesion_size_mcl == 7.5
         assert pi.disease_behavior == 'classic'
         assert pi.disease_subtype == 'nodal'
         assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
-        assert pi.mipi_risk == 'intermediate'
-        assert pi.mipi_c_risk == 'high_intermediate'
-        assert pi.bulky_disease_criteria == ['largest_node_ge_10cm']
+        # Derived fields overwritten: no age/ECOG/WBC/LDH/Ki67 in payload, so
+        # MIPI inputs are missing and the score is None. lesion_size_mcl=7.5
+        # fires the 5cm and 7.5cm bulky-lesion thresholds.
+        assert pi.mipi_risk is None
+        assert pi.mipi_c_risk is None
+        assert pi.bulky_disease_criteria == [
+            'bulky_lesion_5cm', 'bulky_lesion_7_5cm',
+        ]
 
     @pytest.mark.django_db
     def test_mcl_fields_camel_case_round_trip(self):
@@ -158,12 +173,14 @@ class TestMclFieldRoundTrip:
             'disease': 'mantle cell lymphoma',
             'morphologicVariant': 'pleomorphic',
             'lesionSizeMcl': 5.0,
-            'mipiRisk': 'low',
+            'mipiRisk': 'low',  # overwritten by derivation
         }
         pi = _build_in_memory(data)
         assert pi.morphologic_variant == 'pleomorphic'
         assert pi.lesion_size_mcl == 5.0
-        assert pi.mipi_risk == 'low'
+        # Caller-supplied mipi_risk overwritten; with no scoring inputs the
+        # derived value is None.
+        assert pi.mipi_risk is None
 
     @pytest.mark.django_db
     def test_mcl_list_fields_default_to_empty_list(self):
@@ -190,8 +207,11 @@ class TestMclFieldRoundTrip:
         data = {
             'disease': 'mantle cell lymphoma',
             'extranodal_sites': ['bone_marrow', 42, None, '  gi_tract  ', ''],
-            'bulky_disease_criteria': [{'nested': 'dict'}, 'largest_node_ge_10cm'],
+            # bulky_disease_criteria is overwritten by the normalizer (#41);
+            # exercise the resolver hardening on extranodal_sites only.
+            'bulky_disease_criteria': [{'nested': 'dict'}, 'caller_supplied_ignored'],
         }
         pi = _build_in_memory(data)
         assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
-        assert pi.bulky_disease_criteria == ['largest_node_ge_10cm']
+        # No size fields in payload, so derived bulky list is empty.
+        assert pi.bulky_disease_criteria == []

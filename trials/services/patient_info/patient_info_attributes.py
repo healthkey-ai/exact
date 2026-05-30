@@ -1,3 +1,5 @@
+from math import log10
+
 import inflection
 from django.db import models
 from django.db.models import Q
@@ -551,3 +553,105 @@ class PatientInfoAttributes:
 
             self.patient_info.stem_cell_transplant_history = 'None'
             return
+
+    # ---------------------------------------------------------------------
+    # MCL derivations (#41).
+    # Ported from CB patient_info_attributes.py:488-567 with two adaptations:
+    # 1. bulky_disease_criteria returns a list (matches EXACT's JSONField),
+    #    not a comma-joined string.
+    # 2. Bulky lesion thresholds key off lesion_size_mcl (EXACT's MCL field),
+    #    not CB's largest_lesion_size.
+    # MIPI: Hoster et al. 2008 (Blood 111:558-565).
+    # MIPI-C: categorical MIPI x Ki-67 table (Hoster et al. 2014, ASH 2014
+    # abstract — full JCO 2016 publication uses a continuous variant).
+    # See follow-up issue for clinical-cutoff verification.
+    # ---------------------------------------------------------------------
+
+    @cached_property
+    def mipi_risk(self):
+        pi = self.patient_info
+        age = pi.patient_age
+        ecog = pi.ecog_performance_status
+        wbc = pi.white_blood_cell_count
+        ldh = pi.lactate_dehydrogenase_level
+
+        if any(v is None for v in (age, ecog, wbc, ldh)):
+            return None
+        if float(wbc) <= 0 or float(ldh) <= 0:
+            return None
+
+        wbc_in_cells_per_l = float(BaseConvertor.call(
+            wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/L'
+        ))
+        # MIPI = 0.03535*age + 0.6978*[ECOG>=2] + 1.367*log10(LDH/ULN) + 0.9393*log10(WBC[10^9/L])
+        # ULN proxy 250 mirrors CB; revisit if a per-lab ULN becomes available.
+        score = (
+            0.03535 * age
+            + 0.6978 * (1 if ecog >= 2 else 0)
+            + 1.367 * log10(float(ldh) / 250)
+            + 0.9393 * log10(wbc_in_cells_per_l / 1e9)
+        )
+
+        if score < 5.7:
+            return 'low'
+        elif score < 6.5:
+            return 'intermediate'
+        return 'high'
+
+    @cached_property
+    def mipi_c_risk(self):
+        mipi = self.mipi_risk
+        ki67 = self.patient_info.ki67_proliferation_index
+
+        if mipi is None or ki67 is None:
+            return None
+
+        # 4-tier table (Hoster 2014). Threshold Ki-67 = 30%.
+        if mipi == 'low':
+            return 'low' if ki67 < 30 else 'low_intermediate'
+        if mipi == 'intermediate':
+            return 'low_intermediate' if ki67 < 30 else 'high_intermediate'
+        # high
+        return 'high_intermediate' if ki67 < 30 else 'high'
+
+    @cached_property
+    def bulky_disease_criteria(self):
+        """Codes for each bulky-disease criterion the patient meets.
+
+        Multiple thresholds can fire at once (e.g. a 12cm lesion produces
+        bulky_lesion_5cm, _7_5cm, and _10cm) so trials requiring any one of
+        them all match. Returns [] when no inputs or no thresholds met.
+        """
+        pi = self.patient_info
+        criteria = []
+
+        lesion = pi.lesion_size_mcl
+        if lesion is not None:
+            if lesion >= 5:
+                criteria.append('bulky_lesion_5cm')
+            if lesion >= 7.5:
+                criteria.append('bulky_lesion_7_5cm')
+            if lesion >= 10:
+                criteria.append('bulky_lesion_10cm')
+
+        node = pi.largest_lymph_node_size
+        if node is not None:
+            if node >= 5:
+                criteria.append('bulky_node_5cm')
+            if node >= 7.5:
+                criteria.append('bulky_node_7_5cm')
+            if node >= 10:
+                criteria.append('bulky_node_10cm')
+
+        spleen = pi.spleen_size
+        if spleen is not None:
+            if spleen > 13:
+                criteria.append('bulky_spleen_13cm')
+            if spleen > 15:
+                criteria.append('bulky_spleen_15cm')
+            if spleen > 20:
+                criteria.append('bulky_spleen_20cm_gt')
+            if spleen >= 20:
+                criteria.append('bulky_spleen_20cm_gte')
+
+        return criteria

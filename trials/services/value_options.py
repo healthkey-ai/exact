@@ -789,6 +789,24 @@ class ValueOptions:
         }
 
     @property
+    def bulky_disease_criteria(self):
+        # Canonical codes emitted by PatientInfoAttributes.bulky_disease_criteria.
+        # Trial-side bulky_disease_criteria_required values must overlap with
+        # this set for the matcher to fire.
+        return {
+            'bulky_lesion_5cm': 'Largest lesion >= 5 cm',
+            'bulky_lesion_7_5cm': 'Largest lesion >= 7.5 cm',
+            'bulky_lesion_10cm': 'Largest lesion >= 10 cm',
+            'bulky_node_5cm': 'Largest lymph node >= 5 cm',
+            'bulky_node_7_5cm': 'Largest lymph node >= 7.5 cm',
+            'bulky_node_10cm': 'Largest lymph node >= 10 cm',
+            'bulky_spleen_13cm': 'Spleen > 13 cm',
+            'bulky_spleen_15cm': 'Spleen > 15 cm',
+            'bulky_spleen_20cm_gt': 'Spleen > 20 cm',
+            'bulky_spleen_20cm_gte': 'Spleen >= 20 cm',
+        }
+
+    @property
     def er_statuses(self):
         from trials.models import EstrogenReceptorStatus
         items = EstrogenReceptorStatus.objects.order_by('id')
@@ -1146,5 +1164,8 @@ class ValueOptions:
             },
             'mipiCRisks': {
                 'options': self.to_value_and_label(self.mipi_c_risks)
+            },
+            'bulkyDiseaseCriteria': {
+                'options': self.to_value_and_label(self.bulky_disease_criteria)
             },
         }
