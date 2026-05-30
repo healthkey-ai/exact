@@ -9,6 +9,7 @@ from trials.services.loaders.load_ethnicity_options import LoadEthnicityOptions
 from trials.services.loaders.load_genetic_mutations import LoadGeneticMutations
 from trials.services.loaders.load_markers import LoadMarkers
 from trials.services.loaders.load_mcl_options import LoadMclOptions
+from trials.services.loaders.load_planned_therapy_options import LoadPlannedTherapyOptions
 from trials.services.loaders.load_supportive_therapies import LoadSupportiveTherapies
 from trials.services.loaders.load_therapies import LoadTherapies
 from trials.services.loaders.load_toxicity_grade_options import LoadToxicityGradeOptions
@@ -27,6 +28,7 @@ def django_db_setup(django_db_setup, django_db_blocker):
         LoadGeneticMutations().load_all(skip_genes_origins=False)
         LoadBcOptions().load_all(skip_hrd=False, skip_hr=False, skip_histologic_types=False)
         LoadMclOptions().load_all()
+        LoadPlannedTherapyOptions().load_all(skip_diseases=False)
 
 
 @pytest.fixture
