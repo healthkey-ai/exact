@@ -375,7 +375,9 @@ All list endpoints return a standard paginated envelope:
 }
 ```
 
-Default page size is 200. Override with `?page_size=<n>`.
+Default page size is 20. Override with `?limit=<n>` up to a maximum of 200.
+Requests with `limit` < 1, > 200, non-integer, or empty return
+`400 Bad Request` with details under the `limit` key (#33).
 
 ---
 
