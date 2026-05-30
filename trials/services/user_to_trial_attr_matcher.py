@@ -566,7 +566,9 @@ class UserToTrialAttrMatcher:
                 matching_results = []
 
                 def get_matching_result(tr_attr_name, uvalue_func):
-                    # TODO: it's a bit hackish, but should be OK as long as we follow internal naming convention
+                    # Naming convention: trial attrs ending in `_excluded` are
+                    # restriction lists (patient must NOT be in them); anything
+                    # else (typically `_required`) is the inclusion list.
                     is_exclude = '_excluded' in trial_subattr_name
 
                     tr_attr_value = getattr(self.trial, tr_attr_name)

@@ -325,7 +325,6 @@ class TrialQuerySet(models.QuerySet):
                 'records': new_count,
                 'dropped': count-new_count
             })
-            # count = new_count
 
         return query, traces
 
@@ -619,7 +618,10 @@ class TrialQuerySet(models.QuerySet):
         max_burden = Value(20.0, output_field=FloatField())
         max_risk = Value(20.0, output_field=FloatField())
 
-        # score = (0.50×Benefit + 0.25(1-PB) + 0.15(1-Risk) + 0.10(1-DistancePenalty)) × 100 + 0.5
+        # score = (Wb×Benefit/20 + Wpb×(1−PB/20) + Wr×(1−Risk/20) + Wd×(1−DistancePenalty)) × 100 / ΣW + 0.5
+        # Wb / Wpb / Wr / Wd are the caller-supplied benefit / patient-burden /
+        # risk / distance weights (default 25/25/25/25 — equal). +0.5 is a
+        # rounding nudge before the IntegerField cast.
         score_expr = ExpressionWrapper(
             (
                     benefit_weight * Coalesce(F('benefit_score'), Value(0.0)) / max_benefit +
@@ -632,7 +634,6 @@ class TrialQuerySet(models.QuerySet):
 
         return self.annotate(
             goodness_score=score_expr,
-            # distance_expr=distance_expr
         )
 
     def eligible_for_min_max_value(self, attr_min_name, attr_max_name, value, skip_blank=True):
@@ -1204,13 +1205,6 @@ class TrialQuerySet(models.QuerySet):
             trial_attr_name = trial_attr_meta["attr"]
             if "disease" in trial_attr_meta and (patient_info_attr.disease_code is None or patient_info_attr.disease_code not in trial_attr_meta["disease"]):
                 continue
-
-            # if "search_conditions" in trial_attr_meta:
-            #     # check for skip the filter
-            #     conditions_value = getattr(patient_info, trial_attr_meta["search_conditions"]["attr_name"])
-            #     if conditions_value == trial_attr_meta["search_conditions"]["attr_value"]:
-            #         if trial_attr_meta["search_conditions"]["action"] == "skip":
-            #             continue
 
             if "custom_search" in trial_attr_meta and trial_attr_meta["custom_search"] is True:
                 if user_attr == "stage":

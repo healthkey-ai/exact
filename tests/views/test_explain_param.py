@@ -2,14 +2,14 @@
 Tests for the ?explain=true query parameter.
 
 The flag is threaded through two layers:
-  1. TrailsViewSet.get_serializer_context() sets context['explain'] = True/False
+  1. TrialsViewSet.get_serializer_context() sets context['explain'] = True/False
   2. TrialSerializer.to_representation() reads it and populates matchReasons
      (non-null list) or leaves it null.
 """
 import pytest
 from unittest.mock import patch, MagicMock
 
-from trials.api.trials_views import TrailsViewSet
+from trials.api.trials_views import TrialsViewSet
 from trials.api.trials_serializers import TrialSerializer
 from tests.factories import TrialFactory
 from trials.services.patient_info.patient_info import PatientInfo
@@ -19,8 +19,8 @@ from trials.services.patient_info.patient_info import PatientInfo
 # View layer: get_serializer_context sets the flag correctly
 # ---------------------------------------------------------------------------
 
-def _make_view(query_params: dict) -> TrailsViewSet:
-    view = TrailsViewSet()
+def _make_view(query_params: dict) -> TrialsViewSet:
+    view = TrialsViewSet()
     view.action = 'list'
     view.format_kwarg = None
     mock_request = MagicMock()
@@ -38,7 +38,7 @@ class TestExplainContext:
         with patch.object(view, '_resolve_patient_info', return_value=None), \
              patch.object(view, '_resolve_study_preferences') as mock_prefs:
             mock_prefs.return_value = MagicMock(distance_units='km', recruitment_status=None)
-            with patch('trials.api.trials_views.TrailsViewSet.get_serializer_context',
+            with patch('trials.api.trials_views.TrialsViewSet.get_serializer_context',
                        wraps=view.get_serializer_context):
                 return view.get_serializer_context()
 
