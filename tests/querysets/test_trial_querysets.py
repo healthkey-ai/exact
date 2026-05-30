@@ -1227,6 +1227,44 @@ class TestTrialQuerySet:
 
         assert Trial.objects.filter_by_patient_info(patient_info)[0].count() == 1
 
+    @pytest.mark.django_db
+    def test_filter_by_patient_info_relapse_count_zero(self):
+        """Regression for #51 / CB #4186: relapse_count=0 must be treated as a
+        real value, not blank, so trials requiring relapse_count_min >= 1 are
+        excluded for never-relapsed patients."""
+        t_no_req = TrialFactory(
+            relapse_count_min=None, relapse_count_max=None, disease='multiple myeloma',
+        )
+        t_min_1 = TrialFactory(
+            relapse_count_min=1, relapse_count_max=None, disease='multiple myeloma',
+        )
+        t_min_0 = TrialFactory(
+            relapse_count_min=0, relapse_count_max=None, disease='multiple myeloma',
+        )
+
+        patient_zero = PatientInfo(
+            disease='multiple myeloma', relapse_count=0, prior_therapy='None',
+        )
+        result_ids = set(
+            Trial.objects.filter_by_patient_info(patient_zero)[0].values_list('id', flat=True)
+        )
+        assert t_no_req.id in result_ids
+        assert t_min_0.id in result_ids
+        assert t_min_1.id not in result_ids, (
+            'Trial requiring relapse_count_min=1 must be excluded when '
+            'patient has relapse_count=0 (never relapsed).'
+        )
+
+        # Patient with relapse_count=None (truly missing) still matches all
+        # three trials — unchanged behavior.
+        patient_blank = PatientInfo(
+            disease='multiple myeloma', relapse_count=None, prior_therapy='None',
+        )
+        blank_ids = set(
+            Trial.objects.filter_by_patient_info(patient_blank)[0].values_list('id', flat=True)
+        )
+        assert {t_no_req.id, t_min_0.id, t_min_1.id}.issubset(blank_ids)
+
     # weights used throughout goodness score tests
     _BENEFIT_W, _BURDEN_W, _RISK_W, _DIST_W = 50, 25, 15, 10
 
