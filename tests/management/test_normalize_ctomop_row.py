@@ -79,13 +79,28 @@ class TestStageNormalization:
 
 
 # ---------------------------------------------------------------------------
-# Tumor grade — int (1-4) → EXACT code ('10', '20', '30', '40')
+# Tumor grade — int (1-3) → EXACT code ('10', '20', '30'). Any other int
+# (4+) collapses to None (#69): WHO FL grading is 1/2/3A/3B only, Grade 4
+# is clinically invalid, and orphan codes leave the UI rendering blank.
 # ---------------------------------------------------------------------------
 
 class TestTumorGrade:
-    @pytest.mark.parametrize('grade, expected', [(1, '10'), (2, '20'), (3, '30'), (4, '40')])
+    @pytest.mark.parametrize('grade, expected', [(1, '10'), (2, '20'), (3, '30')])
     def test_int_to_code(self, grade, expected):
         assert _normalize_ctomop_row(_row(tumor_grade=grade))['tumor_grade'] == expected
+
+    def test_grade_4_normalizes_to_none(self):
+        """Regression for #69 / paired with #56: WHO FL grading is 1/2/3A/3B
+        only — Grade 4 is clinically invalid. The previous mapping produced
+        '40', which had no matching dropdown label after PR #66 removed it
+        from value_options.tumor_grades, leaving the UI rendering blank."""
+        assert _normalize_ctomop_row(_row(tumor_grade=4))['tumor_grade'] is None
+
+    def test_unknown_int_grade_normalizes_to_none(self):
+        # Grade 5 / 6 / etc. — anything outside the WHO 1-3 range — collapses
+        # to None rather than producing an orphan code.
+        assert _normalize_ctomop_row(_row(tumor_grade=5))['tumor_grade'] is None
+        assert _normalize_ctomop_row(_row(tumor_grade=99))['tumor_grade'] is None
 
     def test_string_code_passes_through(self):
         # Already-normalised values must not be double-converted

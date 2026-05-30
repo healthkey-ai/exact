@@ -328,11 +328,14 @@ def _normalize_ctomop_row(row: dict) -> dict:
     if isinstance(sm, str) and ' → ' in sm:
         row['staging_modalities'] = sm.split(' → ')[0].strip()
 
-    # ── Tumor grade: CTOMOP IntegerField (1,2,3,4) → EXACT code ('10','20','30','40') ─
+    # ── Tumor grade: CTOMOP IntegerField (1,2,3) → EXACT code ('10','20','30') ─
     # Sub-grades 3A/3B (codes '31','32') cannot be derived from CTOMOP — map 3 → '30'.
+    # Grade 4 is clinically invalid for FL (WHO grades are 1/2/3A/3B only — see #56
+    # / CB a8fd82c2 and #69) so we drop it to None rather than produce an orphan
+    # '40' code that has no matching dropdown label.
     tg = row.get('tumor_grade')
     if isinstance(tg, int):
-        row['tumor_grade'] = {1: '10', 2: '20', 3: '30', 4: '40'}.get(tg, str(tg))
+        row['tumor_grade'] = {1: '10', 2: '20', 3: '30'}.get(tg)
 
     # ── Biopsy grade: CTOMOP IntegerField (1,2,3) → EXACT code ('1','2','3') ──────────
     bg = row.get('biopsy_grade')

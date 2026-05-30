@@ -59,6 +59,35 @@ class TestPeripheralNeuropathyGradeOptions:
         opts = ValueOptions().peripheral_neuropathy_grades
         assert set(opts.keys()) == {'', '0', '1', '2', '3', '4'}
 
+    def test_grade_5_is_not_offered(self):
+        """Regression for #57 / CB 887be4d9: Grade 5 (CTCAE 'Death') is not
+        a self-reportable patient state. Removed from the dropdown."""
+        opts = ValueOptions().peripheral_neuropathy_grades
+        assert '5' not in opts
+
+
+class TestTumorGradeOptions:
+    """#56 / CB a8fd82c2: WHO FL grading is 1/2/3A/3B only — Grade 4 is
+    clinically invalid and must not appear in the dropdown.
+    """
+
+    def test_full_grade_set(self):
+        opts = ValueOptions().tumor_grades
+        assert set(opts.keys()) == {'', '10', '20', '30', '31', '32'}
+
+    def test_grade_4_is_not_offered(self):
+        """Grade 4 (code '40') was removed in PR #66 per WHO FL grading."""
+        opts = ValueOptions().tumor_grades
+        assert '40' not in opts
+        # And no '4' fallback either — the only valid grade-3 codes are the
+        # 3 / 3A / 3B subgrades (30 / 31 / 32).
+        assert '4' not in opts
+
+    def test_3a_and_3b_subgrades_are_present(self):
+        opts = ValueOptions().tumor_grades
+        assert opts['31'] == 'Grade 3A'
+        assert opts['32'] == 'Grade 3B'
+
 
 class TestPlannedTherapiesNoneOption:
     """#61 / CB 33f7525a: planned-therapies multiselect must let patients
