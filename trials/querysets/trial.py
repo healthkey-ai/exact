@@ -73,6 +73,115 @@ def get_recruitment_status_filter_values(recruitment_status):
         return [status]
 
 
+# ---------------------------------------------------------------------------
+# Dispatch table for filter_by_patient_info's custom_search branch (#29).
+#
+# `filter_by_patient_info` used to be a ~110-line if/elif chain on
+# user_attr — adding any new patient attr meant grepping the whole method,
+# inserting a branch, and praying the dispatch order didn't matter. The
+# table below collapses that into data: per-user_attr handler callables
+# that take `(scope, value, ctx)` and return the new scope. Handlers
+# that need shared state (therapy-line tracking, patient_info access)
+# mutate ctx in place.
+# ---------------------------------------------------------------------------
+
+
+def _csv(value):
+    return value.split(",") if value else []
+
+
+def _csv_stripped(value):
+    return [x.strip() for x in _csv(value)]
+
+
+def _filter_disease(scope, value, _ctx):
+    return scope.filter(disease__iexact=value.lower())
+
+
+def _filter_tumor_grade(scope, value, _ctx):
+    return scope.eligible_for_tumor_grade(str(value).lower())
+
+
+def _filter_prior_therapy(scope, value, ctx):
+    scope = scope.eligible_for_prior_therapy(value)
+    # Apply the therapy-related-things filter ONLY ONCE per
+    # filter_by_patient_info call; ctx tracks the flag.
+    if ctx['has_no_prior_therapy'] and not ctx['is_therapies_filter_applied']:
+        scope = scope.eligible_for_therapy_related_things_from_lines(
+            ctx['user_therapies'], ctx['has_no_prior_therapy']
+        )
+        ctx['is_therapies_filter_applied'] = True
+    return scope
+
+
+def _filter_concomitant_medications(scope, value, ctx):
+    return scope.eligible_for_concomitant_medications_and_washout_period(
+        value, ctx['patient_info'].concomitant_medication_date
+    )
+
+
+def _filter_last_treatment(scope, value, ctx):
+    if not ctx['has_no_prior_therapy']:
+        return scope.eligible_for_washout_period_duration(value)
+    return scope
+
+
+def _filter_therapy_lines_once(scope, _value, ctx):
+    # Used for therapy-line attrs (first_line_therapy, second_line_therapy,
+    # later_therapy, later_therapies, supportive_therapies) — the actual
+    # filter is applied once at most across all of them.
+    if not ctx['is_therapies_filter_applied']:
+        scope = scope.eligible_for_therapy_related_things_from_lines(
+            ctx['user_therapies'], ctx['has_no_prior_therapy']
+        )
+        ctx['is_therapies_filter_applied'] = True
+    return scope
+
+
+_CUSTOM_SEARCH_DISPATCH = {
+    # Stateful / special handlers.
+    'disease': _filter_disease,
+    'tumor_grade': _filter_tumor_grade,
+    'prior_therapy': _filter_prior_therapy,
+    'concomitant_medications': _filter_concomitant_medications,
+    'last_treatment': _filter_last_treatment,
+    # Pass-through.
+    'stage': lambda s, v, _c: s.eligible_for_stage(v),
+    'flipi_score_options': lambda s, v, _c: s.eligible_for_flipi_score_options(v),
+    'genetic_mutations': lambda s, v, _c: s.eligible_for_genetic_mutations(v),
+    'plasma_cell_leukemia': lambda s, v, _c: s.eligible_for_plasma_cell_leukemia(v),
+    'progression': lambda s, v, _c: s.eligible_for_progression(v),
+    'treatment_refractory_status': lambda s, v, _c: s.eligible_for_treatment_refractory_status(v),
+    'pre_existing_condition_categories': lambda s, v, _c: s.eligible_for_pre_existing_condition(v),
+    'stem_cell_transplant_history': lambda s, v, _c: s.eligible_for_stem_cell_transplant_history(v),
+    'bcl2_inhibitor_refractory': lambda s, v, _c: s.eligible_for_bcl2_inhibitor_refractory(v),
+    'btk_inhibitor_refractory': lambda s, v, _c: s.eligible_for_btk_inhibitor_refractory(v),
+    'tp53_disruption': lambda s, v, _c: s.eligible_for_tp53_disruption(v),
+    # Comma-separated.
+    'ethnicity': lambda s, v, _c: s.eligible_for_ethnicity(_csv(v)),
+    'languages_skills': lambda s, v, _c: s.eligible_for_languages_skills(_csv(v)),
+    'planned_therapies': lambda s, v, _c: s.eligible_for_planned_therapies(_csv(v)),
+    'cytogenic_markers': lambda s, v, _c: s.eligible_for_cytogenic_markers(_csv(v)),
+    'molecular_markers': lambda s, v, _c: s.eligible_for_molecular_marker(_csv(v)),
+    'histologic_type': lambda s, v, _c: s.eligible_for_histologic_types(_csv(v)),
+    'estrogen_receptor_status': lambda s, v, _c: s.eligible_for_estrogen_receptor_statuses(_csv(v)),
+    'progesterone_receptor_status': lambda s, v, _c: s.eligible_for_progesterone_receptor_statuses(_csv(v)),
+    'her2_status': lambda s, v, _c: s.eligible_for_her2_statuses(_csv(v)),
+    'hrd_status': lambda s, v, _c: s.eligible_for_hrd_statuses(_csv(v)),
+    'hr_status': lambda s, v, _c: s.eligible_for_hr_statuses(_csv(v)),
+    'tumor_stage': lambda s, v, _c: s.eligible_for_tumor_stages(_csv(v)),
+    'nodes_stage': lambda s, v, _c: s.eligible_for_nodes_stages(_csv(v)),
+    'distant_metastasis_stage': lambda s, v, _c: s.eligible_for_distant_metastasis_stages(_csv(v)),
+    'staging_modalities': lambda s, v, _c: s.eligible_for_staging_modalities(_csv(v)),
+    'protein_expressions': lambda s, v, _c: s.eligible_for_protein_expressions(_csv(v)),
+    # Comma-separated + per-value strip.
+    'richter_transformation': lambda s, v, _c: s.eligible_for_richter_transformations(_csv_stripped(v)),
+    'tumor_burden': lambda s, v, _c: s.eligible_for_tumor_burdens(_csv_stripped(v)),
+    'disease_activity': lambda s, v, _c: s.eligible_for_disease_activities(_csv_stripped(v)),
+    'binet_stage': lambda s, v, _c: s.eligible_for_binet_stages(_csv_stripped(v)),
+}
+
+
 class TrialQuerySet(models.QuerySet):
     def recruiting(self):
         return self.filter(recruitment_status='RECRUITING')
@@ -1211,113 +1320,22 @@ class TrialQuerySet(models.QuerySet):
                 continue
 
             if "custom_search" in trial_attr_meta and trial_attr_meta["custom_search"] is True:
-                if user_attr == "stage":
-                    scope = scope.eligible_for_stage(user_attr_value)
-                elif user_attr == "disease":
-                    scope = scope.filter(disease__iexact=user_attr_value.lower())
-                elif user_attr == "tumor_grade":
-                    scope = scope.eligible_for_tumor_grade(str(user_attr_value).lower())
-                elif user_attr == "flipi_score_options":
-                    scope = scope.eligible_for_flipi_score_options(user_attr_value)
-                elif user_attr == "prior_therapy":
-                    scope = scope.eligible_for_prior_therapy(user_attr_value)
-                    if has_no_prior_therapy and not is_therapies_filter_applied:
-                        scope = scope.eligible_for_therapy_related_things_from_lines(user_therapies, has_no_prior_therapy)
-                        is_therapies_filter_applied = True
-                elif user_attr == "genetic_mutations":
-                    scope = scope.eligible_for_genetic_mutations(user_attr_value)
-                elif user_attr == "plasma_cell_leukemia":
-                    scope = scope.eligible_for_plasma_cell_leukemia(user_attr_value)
-                elif user_attr == "progression":
-                    scope = scope.eligible_for_progression(user_attr_value)
-                elif user_attr == "treatment_refractory_status":
-                    scope = scope.eligible_for_treatment_refractory_status(user_attr_value)
-                elif user_attr == "pre_existing_condition_categories":
-                    scope = scope.eligible_for_pre_existing_condition(user_attr_value)
-                elif user_attr == "ethnicity":
-                    ethnicities = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_ethnicity(ethnicities)
-                elif user_attr == "languages_skills":
-                    languages_skills = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_languages_skills(languages_skills)
-                elif user_attr == "stem_cell_transplant_history":
-                    scope = scope.eligible_for_stem_cell_transplant_history(user_attr_value)
-                elif user_attr == "concomitant_medications":
-                    scope = scope.eligible_for_concomitant_medications_and_washout_period(user_attr_value, patient_info.concomitant_medication_date)
-                elif user_attr == "last_treatment":
-                    if not has_no_prior_therapy:
-                        scope = scope.eligible_for_washout_period_duration(user_attr_value)
-                elif user_attr == "planned_therapies":
-                    planned_therapies = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_planned_therapies(planned_therapies)
-                elif user_attr == "cytogenic_markers":
-                    cytogenic_markers = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_cytogenic_markers(cytogenic_markers)
-                elif user_attr == "molecular_markers":
-                    molecular_markers = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_molecular_marker(molecular_markers)
-                elif user_attr == "histologic_type":
-                    histologic_types = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_histologic_types(histologic_types)
-                elif user_attr == "estrogen_receptor_status":
-                    estrogen_receptor_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_estrogen_receptor_statuses(estrogen_receptor_statuses)
-                elif user_attr == "progesterone_receptor_status":
-                    progesterone_receptor_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_progesterone_receptor_statuses(progesterone_receptor_statuses)
-                elif user_attr == "her2_status":
-                    her2_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_her2_statuses(her2_statuses)
-                elif user_attr == "hrd_status":
-                    hrd_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_hrd_statuses(hrd_statuses)
-                elif user_attr == "hr_status":
-                    hr_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_hr_statuses(hr_statuses)
-                elif user_attr == "tumor_stage":
-                    tumor_stages = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_tumor_stages(tumor_stages)
-                elif user_attr == "nodes_stage":
-                    nodes_stages = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_nodes_stages(nodes_stages)
-                elif user_attr == "distant_metastasis_stage":
-                    distant_metastasis_stages = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_distant_metastasis_stages(distant_metastasis_stages)
-                elif user_attr == "staging_modalities":
-                    staging_modalities = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_staging_modalities(staging_modalities)
-                elif user_attr == "protein_expressions":
-                    protein_expressions = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_protein_expressions(protein_expressions)
-                elif user_attr == "richter_transformation":
-                    richter_transformations = user_attr_value.split(",") if user_attr_value else []
-                    richter_transformations = [x.strip() for x in richter_transformations]
-                    scope = scope.eligible_for_richter_transformations(richter_transformations)
-                elif user_attr == "tumor_burden":
-                    tumor_burdens = user_attr_value.split(",") if user_attr_value else []
-                    tumor_burdens = [x.strip() for x in tumor_burdens]
-                    scope = scope.eligible_for_tumor_burdens(tumor_burdens)
-                elif user_attr == "bcl2_inhibitor_refractory":
-                    scope = scope.eligible_for_bcl2_inhibitor_refractory(user_attr_value)
-                elif user_attr == "btk_inhibitor_refractory":
-                    scope = scope.eligible_for_btk_inhibitor_refractory(user_attr_value)
-                elif user_attr == "disease_activity":
-                    disease_activities = user_attr_value.split(",") if user_attr_value else []
-                    disease_activities = [x.strip() for x in disease_activities]
-                    scope = scope.eligible_for_disease_activities(disease_activities)
-                elif user_attr == "binet_stage":
-                    binet_stages = user_attr_value.split(",") if user_attr_value else []
-                    binet_stages = [x.strip() for x in binet_stages]
-                    scope = scope.eligible_for_binet_stages(binet_stages)
-                elif user_attr == "tp53_disruption":
-                    scope = scope.eligible_for_tp53_disruption(user_attr_value)
+                ctx = {
+                    'patient_info': patient_info,
+                    'has_no_prior_therapy': has_no_prior_therapy,
+                    'user_therapies': user_therapies,
+                    'is_therapies_filter_applied': is_therapies_filter_applied,
+                }
+                handler = _CUSTOM_SEARCH_DISPATCH.get(user_attr)
+                if handler is not None:
+                    scope = handler(scope, user_attr_value, ctx)
                 elif user_attr in [*THERAPY_LINES_ATTRS_UNDERSCORED, 'supportive_therapies']:
-                    if not is_therapies_filter_applied:
-                        # apply filter just once
-                        scope = scope.eligible_for_therapy_related_things_from_lines(user_therapies, has_no_prior_therapy)
-                        is_therapies_filter_applied = True
+                    scope = _filter_therapy_lines_once(scope, user_attr_value, ctx)
                 else:
-                    raise Exception(f'type "{trial_attr_meta["type"]}" is not supported for user_attr "{user_attr}"')
+                    raise Exception(
+                        f'type "{trial_attr_meta["type"]}" is not supported for user_attr "{user_attr}"'
+                    )
+                is_therapies_filter_applied = ctx['is_therapies_filter_applied']
 
             elif trial_attr_meta["type"] == "value":
                 scope = scope.eligible_for_value(trial_attr_name, user_attr_value)
