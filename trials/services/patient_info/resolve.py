@@ -35,13 +35,17 @@ import ast
 import datetime as dt
 import json
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
 
 from trials.services.patient_info.normalize import normalize_patient_info
 
+if TYPE_CHECKING:
+    from trials.services.patient_info.patient_info import PatientInfo
 
-def resolve_patient_info(request):
+
+def resolve_patient_info(request) -> Optional['PatientInfo']:
     """
     Build an in-memory PatientInfo instance from the request.
 
@@ -62,7 +66,7 @@ def resolve_patient_info(request):
     return None
 
 
-def _get_body_field(request, name):
+def _get_body_field(request, name: str) -> Any:
     """Read a field from request.data, tolerating None or non-dict bodies."""
     data = getattr(request, 'data', None)
     if not isinstance(data, dict):
@@ -70,8 +74,14 @@ def _get_body_field(request, name):
     return data.get(name)
 
 
-def _extract_person_id(request):
-    """Return person_id from query params first, then body. None if absent."""
+def _extract_person_id(request) -> Optional[Any]:
+    """Return person_id from query params first, then body. None if absent.
+
+    The return is `Any` (not `str`) because the body path can carry a JSON
+    integer (e.g. `{"person_id": 9003}`) while the query-string path always
+    yields `str`. `CtomopClient.fetch_patient` coerces both to int before
+    constructing the URL.
+    """
     query_params = getattr(request, 'query_params', None)
     if query_params:
         pid = query_params.get('person_id') or query_params.get('personId')
@@ -82,7 +92,7 @@ def _extract_person_id(request):
     return body_pid or None
 
 
-def _resolve_from_ctomop(person_id):
+def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
     """Fetch the CTOMOP row and adapt it to a PatientInfo. None on any error."""
     from trials.services.patient_info.ctomop_adapter import (
         build_patient_info_from_ctomop_row,
@@ -95,7 +105,7 @@ def _resolve_from_ctomop(person_id):
     return build_patient_info_from_ctomop_row(row)
 
 
-def _build_in_memory(data: dict):
+def _build_in_memory(data: dict) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields."""
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
