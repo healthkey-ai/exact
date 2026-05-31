@@ -1,0 +1,39 @@
+/* Tailwind v4: import theme + utilities ONLY. Skipping `preflight.css`
+ * keeps Tailwind's global CSS reset (`* { margin: 0 }`, `html,body`
+ * resets, default font-family stripping, etc.) out of the federated
+ * bundle so the host's existing styles aren't clobbered when this remote
+ * mounts. Same trade-off documented in SoC. */
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@source "./**/*.tsx";
+
+/* Scoped tokens. The host can override any `--exact-*` var on `:root`
+ * or on a `.exact-root` ancestor without colliding with its own design
+ * system. Per hk-labs `docs/module-federation.md` CSS token contract. */
+.exact-root {
+  --exact-color-primary: #0c5fc0;
+  --exact-color-eligible: #16a34a;
+  --exact-color-potential: #f59e0b;
+  --exact-color-not-eligible: #dc2626;
+  --exact-color-muted: #6b7280;
+  --exact-color-surface: #ffffff;
+  --exact-color-border: #e5e7eb;
+  --exact-color-text: #111827;
+  --exact-color-text-muted: #4b5563;
+  --exact-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --exact-border-radius: 0.5rem;
+
+  font-family: var(--exact-font-family);
+  color: var(--exact-color-text);
+  /* Re-introduce only the box-sizing rule preflight would have given us,
+   * scoped to the remote so we don't reach outside `.exact-root`. */
+  box-sizing: border-box;
+}
+.exact-root *,
+.exact-root *::before,
+.exact-root *::after {
+  box-sizing: inherit;
+}
