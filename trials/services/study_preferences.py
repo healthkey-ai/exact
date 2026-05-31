@@ -23,6 +23,7 @@ class StudyPreferences:
 
     # Trial classification filters
     trial_type: Optional[str] = None
+    trial_purpose: Optional[str] = None
     study_type: Optional[str] = None
 
     # Recruitment filter
@@ -76,6 +77,7 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         register=_str('register'),
         study_id=_str('studyId'),
         trial_type=_str('trialType'),
+        trial_purpose=_str('trialPurpose'),
         study_type=_str('studyType'),
         recruitment_status=_str('recruitmentStatus'),
         country=_str('country'),

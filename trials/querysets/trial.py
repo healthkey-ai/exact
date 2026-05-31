@@ -277,6 +277,7 @@ class TrialQuerySet(models.QuerySet):
         query = query.by_study_id(study_info.study_id)
         query = query.by_register(study_info.register)
         query = query.by_trial_type(study_info.trial_type)
+        query = query.by_trial_purpose(study_info.trial_purpose)
         query = query.by_study_type(study_info.study_type)
         query = query.by_validated_only(study_info.validated_only)
         if patient_info and patient_info.disease is not None and patient_info.disease != '':
@@ -336,6 +337,17 @@ class TrialQuerySet(models.QuerySet):
             traces.append({
                 'attr': 'study_info.trial_type',
                 'val': study_info.trial_type,
+                'records': new_count,
+                'dropped': count-new_count
+            })
+            count = new_count
+
+        query = query.by_trial_purpose(study_info.trial_purpose)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.trial_purpose',
+                'val': study_info.trial_purpose,
                 'records': new_count,
                 'dropped': count-new_count
             })
@@ -495,6 +507,15 @@ class TrialQuerySet(models.QuerySet):
 
     def by_trial_type(self, trial_type):
         return self.eligible_for_relation('trial_type__code', trial_type)
+
+    def by_trial_purpose(self, trial_purpose):
+        """Filter by Trial.purpose. Accepts a code string or a TrialPurpose
+        instance (uses its `.code`); blank/None is a no-op.
+        """
+        if trial_purpose is None or trial_purpose == '':
+            return self
+        code = getattr(trial_purpose, 'code', trial_purpose)
+        return self.eligible_for_relation('purpose__code', code)
 
     def by_study_type(self, study_type):
         if not study_type or str(study_type).upper() in ('', 'ALL'):

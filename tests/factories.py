@@ -11,6 +11,7 @@ from trials.models import (
     TherapyComponent,
     Trial,
     TrialPreExistingCondition,
+    TrialPurpose,
     TrialType,
     TrialTypeDiseaseConnection,
 )
@@ -31,6 +32,15 @@ class TrialTypeFactory(factory.django.DjangoModelFactory):
 
     code = factory.Sequence(lambda n: f'trial_type_code_{n}')
     title = factory.Sequence(lambda n: f'Trial Type {n}')
+
+
+class TrialPurposeFactory(factory.django.DjangoModelFactory):
+    class Meta:
+        model = TrialPurpose
+        django_get_or_create = ('code',)
+
+    code = factory.Sequence(lambda n: f'trial_purpose_code_{n}')
+    title = factory.Sequence(lambda n: f'Trial Purpose {n}')
 
 
 class TrialTypeDiseaseConnectionFactory(factory.django.DjangoModelFactory):

@@ -735,6 +735,33 @@ class TestTrialQuerySet:
         assert list(Trial.objects.by_trial_type('nonexistent').order_by('id')) == []
 
     @pytest.mark.django_db
+    def test_by_trial_purpose(self):
+        treatment = TrialPurposeFactory(code='treatment', title='Treatment')
+        prevention = TrialPurposeFactory(code='prevention', title='Prevention')
+
+        t1 = TrialFactory(purpose=treatment)
+        t2 = TrialFactory(purpose=treatment)
+        t3 = TrialFactory(purpose=prevention)
+        t4 = TrialFactory(purpose=None)
+
+        # None / empty is a no-op (returns full set)
+        assert list(Trial.objects.by_trial_purpose(None).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.by_trial_purpose('').order_by('id')) == [t1, t2, t3, t4]
+
+        # Code-string accepted, case-insensitive (mirrors by_trial_type via eligible_for_relation)
+        assert list(Trial.objects.by_trial_purpose('treatment').order_by('id')) == [t1, t2]
+        assert list(Trial.objects.by_trial_purpose('TREATMENT').order_by('id')) == [t1, t2]
+
+        assert list(Trial.objects.by_trial_purpose('prevention').order_by('id')) == [t3]
+
+        # TrialPurpose instance is also accepted (uses .code)
+        assert list(Trial.objects.by_trial_purpose(treatment).order_by('id')) == [t1, t2]
+        assert list(Trial.objects.by_trial_purpose(prevention).order_by('id')) == [t3]
+
+        # Unknown code → empty queryset
+        assert list(Trial.objects.by_trial_purpose('nonexistent').order_by('id')) == []
+
+    @pytest.mark.django_db
     def test_by_study_type(self):
         t1 = TrialFactory(study_type='INTERVENTIONAL')
         t2 = TrialFactory(study_type='INTERVENTIONAL')
