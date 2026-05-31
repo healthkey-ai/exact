@@ -13,6 +13,7 @@ from trials.services.loaders.load_planned_therapy_options import LoadPlannedTher
 from trials.services.loaders.load_supportive_therapies import LoadSupportiveTherapies
 from trials.services.loaders.load_therapies import LoadTherapies
 from trials.services.loaders.load_toxicity_grade_options import LoadToxicityGradeOptions
+from trials.services.loaders.load_trial_taxonomy import LoadTrialTaxonomy
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -29,6 +30,8 @@ def django_db_setup(django_db_setup, django_db_blocker):
         LoadBcOptions().load_all(skip_hrd=False, skip_hr=False, skip_histologic_types=False)
         LoadMclOptions().load_all()
         LoadPlannedTherapyOptions().load_all(skip_diseases=False)
+        # Must run after Disease-seeding loaders so connections resolve.
+        LoadTrialTaxonomy().load_all()
 
 
 @pytest.fixture
