@@ -55,14 +55,28 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
         <span style={{ ...parseStyle(m.badge) }}>{m.label}</span>
       </div>
       <div style={meta}>
-        {trial.studyId} · {trial.recruitingStatus}
-        {trial.phase && trial.phase.length ? ` · ${trial.phase.join(" / ")}` : null}
+        {[
+          trial.studyId,
+          trial.recruitingStatus,
+          trial.phase && trial.phase.length ? trial.phase.join(" / ") : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
       </div>
-      <div style={meta}>
-        {trial.matchScore != null ? `Match score: ${trial.matchScore}` : null}
-        {trial.goodnessScore != null ? ` · Goodness: ${trial.goodnessScore}` : null}
-        {trial.distance != null ? ` · ${trial.distance} ${trial.distanceUnits ?? ""}` : null}
-      </div>
+      {(() => {
+        // Build the score/distance line by filtering out missing pieces
+        // before joining — a naive concatenation puts a stray leading
+        // separator on the line when matchScore is null but
+        // goodnessScore is present (the common case for the `/trials/`
+        // list when patient context is missing).
+        const pieces: string[] = [];
+        if (trial.matchScore != null) pieces.push(`Match score: ${trial.matchScore}`);
+        if (trial.goodnessScore != null) pieces.push(`Goodness: ${trial.goodnessScore}`);
+        if (trial.distance != null) {
+          pieces.push(`${trial.distance} ${trial.distanceUnits ?? ""}`.trim());
+        }
+        return pieces.length ? <div style={meta}>{pieces.join(" · ")}</div> : null;
+      })()}
       {trial.sponsor ? (
         <div style={meta}>Sponsor: {trial.sponsor}</div>
       ) : null}
