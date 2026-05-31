@@ -13,7 +13,13 @@ def ordered_dict(data):
 
 class ValueOptions:
     def cache_key(self):
-        return 'ValueOptions.all_options'
+        # v2: bumped on #63 — `all_options()` gained 40 new per-disease
+        # keys (flipiScore{Mm|Fl|Bc|Cll|Mcl}, cytogenicMarkers{…}, …).
+        # Without the bump, a deploy hitting a populated Redis cache
+        # would serve the pre-#63 shape (missing those 40 keys), letting
+        # the cached blob drift from fresh `all_options()` output until
+        # the 1h TTL expires.
+        return 'ValueOptions.all_options.v2'
 
     @staticmethod
     def to_value_and_label(data):
@@ -424,6 +430,63 @@ class ValueOptions:
             'MCL': recist_outcomes,
         }
         return per_disease.get((disease_code or '').upper(), self.therapy_outcomes)
+
+    # ── Per-disease option-list scoping (#63 / CB #4330) ────────────────
+    # Eight clinically disease-specific lists were historically exposed as
+    # a single union to every patient. Each `*_by_disease_code` helper
+    # returns the disease-applicable subset (the full list when the
+    # patient's disease is in the applicable set, an empty/blank-only
+    # dict otherwise). The "" / "Unknown" sentinel is preserved on the
+    # off-disease path when the source list has one, so the form still
+    # renders a valid blank option.
+    #
+    # Clinical scoping (verified during CB independent review, polish
+    # commit dbcc1a7f): cytogenic and molecular markers apply across all
+    # hematological malignancies — not just MM. Tumor burden applies to
+    # FL via GELF criteria + CLL via iwCLL burden + MCL via bulky-disease.
+    # BC stays correctly excluded (uses ER/PR/HER2 + HRD instead).
+
+    _FLIPI_DISEASES = {'FL'}
+    _CYTOGENIC_DISEASES = {'MM', 'FL', 'CLL', 'MCL'}
+    _MOLECULAR_DISEASES = {'MM', 'FL', 'CLL', 'MCL'}
+    _GELF_DISEASES = {'FL'}
+    _BINET_DISEASES = {'CLL'}
+    _RICHTER_DISEASES = {'CLL'}
+    _TUMOR_BURDEN_DISEASES = {'FL', 'CLL', 'MCL'}
+    _DISEASE_ACTIVITY_DISEASES = {'CLL'}
+
+    @staticmethod
+    def _scoped_options(full_options, disease_code, applicable_diseases):
+        """Return `full_options` when disease matches; an empty/blank-only
+        dict otherwise. Preserves the "" → "Unknown" sentinel if present
+        so the form still renders a valid blank option."""
+        if (disease_code or '').upper() in applicable_diseases:
+            return full_options
+        return {'': full_options['']} if '' in full_options else {}
+
+    def flipi_scores_by_disease_code(self, disease_code):
+        return self._scoped_options(self.flipi_scores, disease_code, self._FLIPI_DISEASES)
+
+    def cytogenic_markers_by_disease_code(self, disease_code):
+        return self._scoped_options(self.cytogenic_markers, disease_code, self._CYTOGENIC_DISEASES)
+
+    def molecular_markers_by_disease_code(self, disease_code):
+        return self._scoped_options(self.molecular_markers, disease_code, self._MOLECULAR_DISEASES)
+
+    def gelf_criteria_statuses_by_disease_code(self, disease_code):
+        return self._scoped_options(self.gelf_criteria_statuses, disease_code, self._GELF_DISEASES)
+
+    def binet_stages_by_disease_code(self, disease_code):
+        return self._scoped_options(self.binet_stages, disease_code, self._BINET_DISEASES)
+
+    def richter_transformations_by_disease_code(self, disease_code):
+        return self._scoped_options(self.richter_transformations, disease_code, self._RICHTER_DISEASES)
+
+    def tumor_burdens_by_disease_code(self, disease_code):
+        return self._scoped_options(self.tumor_burdens, disease_code, self._TUMOR_BURDEN_DISEASES)
+
+    def disease_activities_by_disease_code(self, disease_code):
+        return self._scoped_options(self.disease_activities, disease_code, self._DISEASE_ACTIVITY_DISEASES)
 
     @property
     def ethnicities(self):
@@ -862,6 +925,22 @@ class ValueOptions:
             'flipiScore': {
                 'options': self.to_value_and_label(self.flipi_scores)
             },
+            # Per-disease FLIPI enum (#63). FL-only clinically.
+            'flipiScoreMm': {
+                'options': self.to_value_and_label(self.flipi_scores_by_disease_code('MM'))
+            },
+            'flipiScoreFl': {
+                'options': self.to_value_and_label(self.flipi_scores_by_disease_code('FL'))
+            },
+            'flipiScoreBc': {
+                'options': self.to_value_and_label(self.flipi_scores_by_disease_code('BC'))
+            },
+            'flipiScoreCll': {
+                'options': self.to_value_and_label(self.flipi_scores_by_disease_code('CLL'))
+            },
+            'flipiScoreMcl': {
+                'options': self.to_value_and_label(self.flipi_scores_by_disease_code('MCL'))
+            },
             'priorTherapy': {
                 'options': self.to_value_and_label(self.prior_therapies)
             },
@@ -915,11 +994,59 @@ class ValueOptions:
             'cytogenicMarkers': {
                 'options': self.to_value_and_label(self.cytogenic_markers)
             },
+            # Per-disease cytogenic markers (#63). Hematological-only.
+            'cytogenicMarkersMm': {
+                'options': self.to_value_and_label(self.cytogenic_markers_by_disease_code('MM'))
+            },
+            'cytogenicMarkersFl': {
+                'options': self.to_value_and_label(self.cytogenic_markers_by_disease_code('FL'))
+            },
+            'cytogenicMarkersBc': {
+                'options': self.to_value_and_label(self.cytogenic_markers_by_disease_code('BC'))
+            },
+            'cytogenicMarkersCll': {
+                'options': self.to_value_and_label(self.cytogenic_markers_by_disease_code('CLL'))
+            },
+            'cytogenicMarkersMcl': {
+                'options': self.to_value_and_label(self.cytogenic_markers_by_disease_code('MCL'))
+            },
             'molecularMarkers': {
                 'options': self.to_value_and_label(self.molecular_markers)
             },
+            # Per-disease molecular markers (#63). Hematological-only.
+            'molecularMarkersMm': {
+                'options': self.to_value_and_label(self.molecular_markers_by_disease_code('MM'))
+            },
+            'molecularMarkersFl': {
+                'options': self.to_value_and_label(self.molecular_markers_by_disease_code('FL'))
+            },
+            'molecularMarkersBc': {
+                'options': self.to_value_and_label(self.molecular_markers_by_disease_code('BC'))
+            },
+            'molecularMarkersCll': {
+                'options': self.to_value_and_label(self.molecular_markers_by_disease_code('CLL'))
+            },
+            'molecularMarkersMcl': {
+                'options': self.to_value_and_label(self.molecular_markers_by_disease_code('MCL'))
+            },
             'gelfCriteriaStatus': {
                 'options': self.to_value_and_label(self.gelf_criteria_statuses)
+            },
+            # Per-disease GELF criteria (#63). FL-only clinically.
+            'gelfCriteriaStatusMm': {
+                'options': self.to_value_and_label(self.gelf_criteria_statuses_by_disease_code('MM'))
+            },
+            'gelfCriteriaStatusFl': {
+                'options': self.to_value_and_label(self.gelf_criteria_statuses_by_disease_code('FL'))
+            },
+            'gelfCriteriaStatusBc': {
+                'options': self.to_value_and_label(self.gelf_criteria_statuses_by_disease_code('BC'))
+            },
+            'gelfCriteriaStatusCll': {
+                'options': self.to_value_and_label(self.gelf_criteria_statuses_by_disease_code('CLL'))
+            },
+            'gelfCriteriaStatusMcl': {
+                'options': self.to_value_and_label(self.gelf_criteria_statuses_by_disease_code('MCL'))
             },
             'progression': {
                 'options': self.to_value_and_label(self.progressions)
@@ -1158,17 +1285,81 @@ class ValueOptions:
             'binetStages': {
                 'options': self.to_value_and_label(self.binet_stages)
             },
+            # Per-disease Binet stages (#63). CLL-only clinically.
+            'binetStagesMm': {
+                'options': self.to_value_and_label(self.binet_stages_by_disease_code('MM'))
+            },
+            'binetStagesFl': {
+                'options': self.to_value_and_label(self.binet_stages_by_disease_code('FL'))
+            },
+            'binetStagesBc': {
+                'options': self.to_value_and_label(self.binet_stages_by_disease_code('BC'))
+            },
+            'binetStagesCll': {
+                'options': self.to_value_and_label(self.binet_stages_by_disease_code('CLL'))
+            },
+            'binetStagesMcl': {
+                'options': self.to_value_and_label(self.binet_stages_by_disease_code('MCL'))
+            },
             'proteinExpressions': {
                 'options': self.to_value_and_label(self.protein_expressions)
             },
             'richterTransformations': {
                 'options': self.to_value_and_label(self.richter_transformations)
             },
+            # Per-disease Richter transformations (#63). CLL-only clinically.
+            'richterTransformationsMm': {
+                'options': self.to_value_and_label(self.richter_transformations_by_disease_code('MM'))
+            },
+            'richterTransformationsFl': {
+                'options': self.to_value_and_label(self.richter_transformations_by_disease_code('FL'))
+            },
+            'richterTransformationsBc': {
+                'options': self.to_value_and_label(self.richter_transformations_by_disease_code('BC'))
+            },
+            'richterTransformationsCll': {
+                'options': self.to_value_and_label(self.richter_transformations_by_disease_code('CLL'))
+            },
+            'richterTransformationsMcl': {
+                'options': self.to_value_and_label(self.richter_transformations_by_disease_code('MCL'))
+            },
             'tumorBurdens': {
                 'options': self.to_value_and_label(self.tumor_burdens)
             },
+            # Per-disease tumor burdens (#63). FL/CLL/MCL clinically.
+            'tumorBurdensMm': {
+                'options': self.to_value_and_label(self.tumor_burdens_by_disease_code('MM'))
+            },
+            'tumorBurdensFl': {
+                'options': self.to_value_and_label(self.tumor_burdens_by_disease_code('FL'))
+            },
+            'tumorBurdensBc': {
+                'options': self.to_value_and_label(self.tumor_burdens_by_disease_code('BC'))
+            },
+            'tumorBurdensCll': {
+                'options': self.to_value_and_label(self.tumor_burdens_by_disease_code('CLL'))
+            },
+            'tumorBurdensMcl': {
+                'options': self.to_value_and_label(self.tumor_burdens_by_disease_code('MCL'))
+            },
             'diseaseActivities': {
                 'options': self.to_value_and_label(self.disease_activities)
+            },
+            # Per-disease disease activities (#63). CLL-only clinically.
+            'diseaseActivitiesMm': {
+                'options': self.to_value_and_label(self.disease_activities_by_disease_code('MM'))
+            },
+            'diseaseActivitiesFl': {
+                'options': self.to_value_and_label(self.disease_activities_by_disease_code('FL'))
+            },
+            'diseaseActivitiesBc': {
+                'options': self.to_value_and_label(self.disease_activities_by_disease_code('BC'))
+            },
+            'diseaseActivitiesCll': {
+                'options': self.to_value_and_label(self.disease_activities_by_disease_code('CLL'))
+            },
+            'diseaseActivitiesMcl': {
+                'options': self.to_value_and_label(self.disease_activities_by_disease_code('MCL'))
             },
             'diseaseBehaviorsMcl': {
                 'options': self.to_value_and_label(self.disease_behaviors_mcl)

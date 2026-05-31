@@ -253,15 +253,37 @@ class FormSettingsViewSet(viewsets.ViewSet):
     def list(self, request, *args, **kwargs):
         disease_param = request.query_params.get('disease', '')
         disease_code = self._normalize_disease_code(disease_param)
-        out = ValueOptions().all_options()
+        value_options = ValueOptions()
+        out = value_options.all_options()
         if disease_code:
             trial_types = ValueOptions.trial_types_by_disease_code(disease_code)
             out['trialType'] = {'options': ValueOptions.to_value_and_label(trial_types)}
             # Disease-aware treatment outcomes (#60 / #70 / CB #4137).
             # Without this override callers reading the union `therapyOutcome`
             # would still see IMWG-specific sCR / VGPR / MRD for BC patients.
-            outcomes = ValueOptions().therapy_outcomes_by_disease_code(disease_code)
+            outcomes = value_options.therapy_outcomes_by_disease_code(disease_code)
             out['therapyOutcome'] = {'options': ValueOptions.to_value_and_label(outcomes)}
+            # Per #63 / CB #4330: eight clinically disease-specific lists
+            # were historically exposed as a single union to every patient.
+            # Override each patient-facing union key with its per-disease
+            # subset — key names match what `all_options()` already exposes
+            # to the frontend (4 singular + 4 plural — preserved as-is for
+            # back-compat). Trial-side `*Required` / `*Excluded` aliases
+            # stay at the union (set by `trial_attributes.py` from a fresh
+            # `ValueOptions().all_options()`), so trials can still require
+            # any marker independent of the current patient's disease.
+            disease_aware_overrides = {
+                'flipiScore': value_options.flipi_scores_by_disease_code,
+                'cytogenicMarkers': value_options.cytogenic_markers_by_disease_code,
+                'molecularMarkers': value_options.molecular_markers_by_disease_code,
+                'gelfCriteriaStatus': value_options.gelf_criteria_statuses_by_disease_code,
+                'binetStages': value_options.binet_stages_by_disease_code,
+                'richterTransformations': value_options.richter_transformations_by_disease_code,
+                'tumorBurdens': value_options.tumor_burdens_by_disease_code,
+                'diseaseActivities': value_options.disease_activities_by_disease_code,
+            }
+            for key, getter in disease_aware_overrides.items():
+                out[key] = {'options': ValueOptions.to_value_and_label(getter(disease_code))}
         return Response(out)
 
     def _normalize_disease_code(self, disease_param: str) -> str:
