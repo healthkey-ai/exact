@@ -31,6 +31,7 @@ export function assertExactTokens(): string[] {
     "--exact-color-surface",
     "--exact-color-border",
     "--exact-color-text",
+    "--exact-color-text-muted",
   ];
   const styles = getComputedStyle(document.documentElement);
   return required.filter((name) => !styles.getPropertyValue(name).trim());
