@@ -8,9 +8,10 @@ from django.contrib.postgres.search import SearchVector, SearchQuery
 
 from django.db import models
 from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, QuerySet, Min, Subquery
+from django.db.models.expressions import RawSQL
 from django.db.models.functions import Coalesce, Least
 from django.contrib.gis.geos import Point
-from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField, RawSQL
+from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField
 
 from django.utils import timezone
 
