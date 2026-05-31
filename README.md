@@ -70,3 +70,22 @@ python manage.py runserver
 
 See [docs/setup.md](docs/setup.md) for full instructions including database
 setup, environment variables, and test configuration.
+
+## Configuration & secrets
+
+EXACT is a **public** repository. All runtime configuration is supplied through
+environment variables — never commit secret values to git.
+
+- **Local dev:** copy `.env.example` to `.env` and fill in values. Everything
+  matching `.env*` (except `.env.example`) is git-ignored.
+- **Secrets never enter git.** `.gitignore` blocks `.env*`, Terraform state and
+  vars (`*.tfvars`, `*.tfstate*`, `.terraform/`), service-account JSON
+  (`*serviceAccount*.json`, `*-firebase-adminsdk-*.json`, `*-sa-key.json`,
+  `firebase-sa-key.json`), and private keys (`*.pem`, `*.key`).
+- **Production/staging:** secrets such as `SECRET_KEY`, database credentials,
+  `TRIALS_DATABASE_URL`, and `CTOMOP_SERVICE_TOKEN` come from the host
+  platform's secret store (e.g. GCP Secret Manager) and are injected as
+  environment variables at runtime — never from files in this repo.
+- **When CI deployment is added**, it should authenticate to the cloud
+  *keyless* (GitHub OIDC / Workload Identity Federation). Do not store a
+  long-lived service-account JSON key in the repo or in CI.
