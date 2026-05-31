@@ -7,6 +7,7 @@ from rest_framework import serializers
 from trials.api.pagination import TrialsPagination
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
 from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
+from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
 from trials.services.patient_info.resolve import resolve_patient_info
 from trials.services.study_preferences import study_preferences_from_query_params
 from trials.services.value_options import ValueOptions
@@ -32,28 +33,6 @@ class LocationSerializer(serializers.ModelSerializer):
         response['state'] = instance.state.title if instance.state else None
         response['country'] = instance.country.title if instance.country else None
         return response
-
-
-# ---------------------------------------------------------------------------
-# Blank-attribute counts helper (adapted from source — no user dependency)
-# ---------------------------------------------------------------------------
-
-class _BlankAttributeRecordsCount:
-    def counts(self, scope, patient_info):
-        if patient_info is None:
-            return {}
-
-        from trials.services.user_to_trial_attrs_mapper import UserToTrialAttrsMapper
-        sql_conditions = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info)
-        if not sql_conditions:
-            return {}
-
-        sql_counts = {attr: f'SUM{sql_conditions[attr]}' for attr in sql_conditions}
-        out = scope.extra(select=sql_counts).values(*sql_counts.keys())
-        if not out:
-            return {}
-        out = out[0]
-        return {k: v for k, v in out.items() if v is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +152,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         return queryset
 
     def _trials_counts(self, queryset, patient_info):
-        return _BlankAttributeRecordsCount().counts(queryset, patient_info)
+        return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
     def get_serializer_class(self):
         return self.serializer_classes.get(self.action, self.default_serializer_class)
