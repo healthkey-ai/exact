@@ -179,6 +179,18 @@ _CUSTOM_SEARCH_DISPATCH = {
     'tumor_burden': lambda s, v, _c: s.eligible_for_tumor_burdens(_csv_stripped(v)),
     'disease_activity': lambda s, v, _c: s.eligible_for_disease_activities(_csv_stripped(v)),
     'binet_stage': lambda s, v, _c: s.eligible_for_binet_stages(_csv_stripped(v)),
+    # MCL (#94). Single-string patient attrs are CSV-split for parity with
+    # the matcher's COMPUTED branch at user_to_trial_attr_matcher.py:592-594
+    # — without that, a `'classic,leukemic'` value would matcher-overlap as
+    # two codes but queryset-filter on the literal joined string, silently
+    # dropping every trial. Patient list attrs flow through unchanged.
+    'morphologic_variant': lambda s, v, _c: s.eligible_for_morphologic_variants(_csv_stripped(v)),
+    'disease_behavior': lambda s, v, _c: s.eligible_for_disease_behaviors(_csv_stripped(v)),
+    'disease_subtype': lambda s, v, _c: s.eligible_for_disease_subtypes(_csv_stripped(v)),
+    'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv_stripped(v)),
+    'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv_stripped(v)),
+    'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(v),
+    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(v),
 }
 
 
@@ -1242,6 +1254,56 @@ class TrialQuerySet(models.QuerySet):
         return self.eligible_for_required_lists(
             values=binet_stages,
             required_attr_name='binet_stages_required'
+        )
+
+    # ------------------------------------------------------------------
+    # MCL filters (#94). The patient-side attrs land here as either a
+    # single string (variant / risk / behavior / subtype) or a list of
+    # strings (extranodal_sites / bulky_disease_criteria). All map to
+    # JSON-list trial columns checked via the shared list helpers above.
+    # ------------------------------------------------------------------
+
+    def eligible_for_morphologic_variants(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_and_excluded_lists(
+            values=values,
+            required_attr_name='morphologic_variants_required',
+            excluded_attr_name='morphologic_variants_excluded',
+        )
+
+    def eligible_for_disease_behaviors(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='disease_behaviors_required',
+        )
+
+    def eligible_for_disease_subtypes(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='disease_subtypes_required',
+        )
+
+    def eligible_for_extranodal_sites(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='extranodal_sites_required',
+        )
+
+    def eligible_for_mipi_risks(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='mipi_risks_required',
+        )
+
+    def eligible_for_mipi_c_risks(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='mipi_c_risks_required',
+        )
+
+    def eligible_for_bulky_disease_criteria(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='bulky_disease_criteria_required',
         )
 
     def eligible_for_tp53_disruption(self, tp53_disruption: bool) -> models.QuerySet:

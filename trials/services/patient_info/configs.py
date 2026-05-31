@@ -507,7 +507,9 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     },
     "lesion_size_mcl": {
         "type": "min_max_value",
-        "custom_search": True,
+        # No custom_search — routed through the type-based min_max_value
+        # branch in filter_by_patient_info like every other min_max_value
+        # config (weight, patient_age, etc.). #94 fix.
         "searchable": True,
         "disease": "MCL",
         "attr_min": "lesion_size_mcl_min",

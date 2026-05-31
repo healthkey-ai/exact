@@ -75,6 +75,36 @@ class TestDispatchTableExhaustive:
         therapy_keys = set(THERAPY_LINES_ATTRS_UNDERSCORED) | {'supportive_therapies'}
         assert therapy_keys.isdisjoint(_CUSTOM_SEARCH_DISPATCH.keys())
 
+    def test_every_custom_search_config_is_routable(self):
+        """Regression guard for the bug class behind #94: every config
+        marked `custom_search=True` must have a `_CUSTOM_SEARCH_DISPATCH`
+        entry (or be in the therapy-line fallback set). Without this
+        assertion, adding a new config with `custom_search=True` and no
+        dispatch entry silently crashes `filter_by_patient_info` only
+        when a patient with that attr non-blank flows through — which
+        is exactly how #94 sat latent for weeks.
+        """
+        from trials.services.patient_info.configs import (
+            USER_TO_TRIAL_ATTRS_MAPPING,
+            THERAPY_LINES_ATTRS_UNDERSCORED,
+        )
+        custom_search_keys = {
+            attr for attr, meta in USER_TO_TRIAL_ATTRS_MAPPING.items()
+            if meta.get('custom_search') is True
+        }
+        routable = (
+            set(_CUSTOM_SEARCH_DISPATCH.keys())
+            | set(THERAPY_LINES_ATTRS_UNDERSCORED)
+            | {'supportive_therapies'}
+        )
+        unroutable = custom_search_keys - routable
+        assert not unroutable, (
+            f'custom_search=True attrs with no _CUSTOM_SEARCH_DISPATCH '
+            f'entry and not in the therapy-line fallback: {sorted(unroutable)}. '
+            f'They would raise in filter_by_patient_info on any patient '
+            f'with that attr non-blank.'
+        )
+
 
 class TestCsvHelpers:
     def test_csv_splits_comma(self):
