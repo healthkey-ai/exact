@@ -194,3 +194,11 @@ if _geos := os.environ.get('GEOS_LIBRARY_PATH'):
 # Search traces (debug)
 # ---------------------------------------------------------------------------
 ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') == 'true'
+
+# ---------------------------------------------------------------------------
+# CTOMOP patient-info source (#102 — server-side `?person_id=` resolver)
+# Empty default is intentional — when unset, the resolver's CTOMOP path is
+# disabled and the inline `patient_info` payload path stays the only option.
+# ---------------------------------------------------------------------------
+CTOMOP_BASE = os.environ.get('CTOMOP_BASE', '')
+CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
