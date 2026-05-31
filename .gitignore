@@ -4,7 +4,28 @@ trials/management/commands/load_trials_from_cancerbot.py
 # Local environment variables (never commit)
 .env
 .env.test
+.env.*
+!.env.example
 env/
+
+# Secrets / credentials — NEVER commit (this repo is PUBLIC)
+serviceAccountKeys/
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+*-sa-key.json
+*sa-key.json
+firebase-sa-key.json
+*.pem
+*.key
+
+# Terraform — tfstate/tfvars store secrets in plaintext; never commit
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
 
 # IDE
 .idea/
