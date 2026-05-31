@@ -6,7 +6,7 @@ from django.contrib.gis.db.models.functions import Distance
 from geopy.distance import distance as geopy_distance
 from django.contrib.postgres.indexes import GinIndex, GistIndex, Index
 from django.contrib.postgres.search import SearchVector
-from django.db.models import TextField, JSONField, Case, When, Value, IntegerField, Q
+from django.db.models import TextField, JSONField, Case, When, Value, IntegerField, F, Q
 from django.db.models.functions import Length, Lower
 from django.contrib.postgres.fields import ArrayField
 from django.contrib.gis.geos import Point
@@ -614,6 +614,20 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['bulky_disease_criteria_required'], name='idx_bulky_disease_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['mipi_risks_required'], name='idx_mipi_risks_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['mipi_c_risks_required'], name='idx_mipi_c_risks_gin', opclasses=['jsonb_ops']),
+            # B-tree indexes on hot-path sort/filter columns (#27). Match the
+            # actual ORDER BY direction at trials_views.py:156,158 — a plain
+            # ASC NULLS LAST B-tree (Django default) cannot serve a
+            # `.desc(nulls_last=True)` ORDER BY, so the planner would fall
+            # back to seq scan + sort. trial_type is a ForeignKey so Django
+            # auto-indexes it.
+            Index(
+                F('enrollment_count').desc(nulls_last=True),
+                name='idx_trials_enroll_count',
+            ),
+            Index(
+                F('last_update_date').desc(nulls_last=True),
+                name='idx_trials_last_update',
+            ),
         ]
 
     def attrs_to_fill_in(self, counts):
