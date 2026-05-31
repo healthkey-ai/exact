@@ -55,8 +55,9 @@ class TestDispatchTableExhaustive:
         # handlers exercise their split path too.
         handler(scope, 'a,b', ctx)
 
-        # The handler must have called exactly one method on scope.
-        called = [name for name, _ in scope.method_calls]
+        # The handler must have called exactly one method on scope. Each
+        # entry in mock.method_calls is a 3-tuple (name, args, kwargs).
+        called = [call[0] for call in scope.method_calls]
         assert len(called) == 1, \
             f'{user_attr} handler made {len(called)} queryset calls: {called}'
         method_name = called[0]
