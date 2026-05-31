@@ -1,7 +1,20 @@
 import itertools
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, Optional
+
+if TYPE_CHECKING:
+    from trials.models import Trial
+    from trials.services.patient_info.patient_info import PatientInfo
+
+# Per-attribute match outcomes. `attr_match_status` always returns one of
+# these three literal strings (it raises on unsupported config types
+# rather than returning a fourth tag). `min_max_match` is the exception:
+# it returns `None` when neither bound is set, signalling "no constraint".
+AttrMatchStatus = Literal['matched', 'not_matched', 'unknown']
+
+# Aggregate per-trial outcomes (`trial_match_status` returns one).
+TrialMatchStatus = Literal['eligible', 'potential', 'not_eligible']
 
 from trials.enums import PriorTherapyLines
 from trials.services.patient_info.configs import (
@@ -73,7 +86,18 @@ _TYPE_HANDLERS = {
 }
 
 
-def min_max_match(min_val, max_val, value, value_is_blank):
+def min_max_match(
+    min_val: Optional[Any],
+    max_val: Optional[Any],
+    value: Any,
+    value_is_blank: bool,
+) -> Optional[AttrMatchStatus]:
+    """Return `None` when both bounds are absent (no constraint), otherwise
+    the standard per-attr match outcome. `min_val`/`max_val`/`value` are
+    annotated `Any` because callers pass mixed numeric types (ints, floats,
+    Decimals) plus date/datetime objects depending on the attr — uniform
+    comparison via `<` / `>` is the only contract.
+    """
     if min_val is None and max_val is None:
         return None
     elif value_is_blank:
@@ -87,14 +111,14 @@ def min_max_match(min_val, max_val, value, value_is_blank):
 
 
 class UserToTrialAttrMatcher:
-    def __init__(self, trial, patient_info):
+    def __init__(self, trial: 'Trial', patient_info: 'PatientInfo') -> None:
         self.trial = trial
         self.patient_info = patient_info
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
         self.patient_info_attr = PatientInfoAttributes(patient_info)
-        self.disease_code = self.get_disease_code_from_trial(trial)
+        self.disease_code: Optional[str] = self.get_disease_code_from_trial(trial)
 
-    def get_disease_code_from_trial(self, trial):
+    def get_disease_code_from_trial(self, trial: 'Trial') -> Optional[str]:
         disease = str(trial.disease).lower()
         if disease == 'multiple myeloma':
             return 'MM'
@@ -108,7 +132,7 @@ class UserToTrialAttrMatcher:
             return 'MCL'
         return None
 
-    def trial_match_status(self):
+    def trial_match_status(self) -> TrialMatchStatus:
         out = {}
         for attr, trial_attr_meta in self.mapping.items():
             if "disease" in trial_attr_meta and (
@@ -125,7 +149,7 @@ class UserToTrialAttrMatcher:
         else:
             return 'eligible'
 
-    def trial_match_score(self):
+    def trial_match_score(self) -> int:
         eligible_count = 0
         all_count = 0
 
@@ -146,7 +170,7 @@ class UserToTrialAttrMatcher:
             return 0
         return int(float(eligible_count) * 100 / float(all_count))
 
-    def is_patient_info_attr_blank(self, patient_info_attr):
+    def is_patient_info_attr_blank(self, patient_info_attr: str) -> bool:
         return self.patient_info_attr.is_attr_blank(patient_info_attr)
 
     def therapy_related_things_mismatch_status(self):
@@ -249,7 +273,7 @@ class UserToTrialAttrMatcher:
 
         return out
 
-    def attr_match_status(self, patient_info_attr):
+    def attr_match_status(self, patient_info_attr: str) -> AttrMatchStatus:
         """Match a single patient attribute against the corresponding trial
         attribute(s) and return one of `'matched'`, `'not_matched'`,
         `'unknown'`.

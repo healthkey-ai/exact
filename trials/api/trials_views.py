@@ -1,4 +1,6 @@
-from django.db.models import F, Prefetch
+from typing import TYPE_CHECKING, Optional
+
+from django.db.models import F, Prefetch, QuerySet
 from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -9,8 +11,11 @@ from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerialize
 from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
 from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
 from trials.services.patient_info.resolve import resolve_patient_info
-from trials.services.study_preferences import study_preferences_from_query_params
+from trials.services.study_preferences import StudyPreferences, study_preferences_from_query_params
 from trials.services.value_options import ValueOptions
+
+if TYPE_CHECKING:
+    from trials.services.patient_info.patient_info import PatientInfo
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +56,13 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['brief_title', 'official_title']
     pagination_class = TrialsPagination
 
-    def _resolve_patient_info(self):
+    def _resolve_patient_info(self) -> Optional['PatientInfo']:
         try:
             return resolve_patient_info(self.request)
         except Exception:
             return None
 
-    def _resolve_study_preferences(self):
+    def _resolve_study_preferences(self) -> StudyPreferences:
         return study_preferences_from_query_params(self.request.query_params)
 
     def get_queryset(self, patient_info=None):
@@ -151,7 +156,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
-    def _trials_counts(self, queryset, patient_info):
+    def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
     def get_serializer_class(self):
