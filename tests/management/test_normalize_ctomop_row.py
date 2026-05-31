@@ -401,7 +401,7 @@ _MOCK_LOOKUP = {
 
 
 @patch(
-    'trials.management.commands.search_trials_for_patients._build_code_lookup',
+    'trials.services.patient_info.ctomop_adapter._build_code_lookup',
     return_value=_MOCK_LOOKUP,
 )
 class TestReceptorStatusAliases:

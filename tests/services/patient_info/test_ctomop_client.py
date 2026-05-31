@@ -90,6 +90,41 @@ class TestCtomopClientFetch:
             client.fetch_patient(9001)
         assert 'Authorization' not in mock_get.call_args.kwargs['headers']
 
+    @pytest.mark.parametrize('bad_id', [
+        '../evil-endpoint',     # path traversal — would leak Bearer token
+        'abc',                  # non-numeric
+        '1; DROP TABLE persons',
+        '1/../../admin',
+        '',                     # empty
+        None,                   # null
+        0,                      # non-positive integer
+        -1,
+    ])
+    def test_rejects_non_positive_integer_person_id(self, bad_id):
+        """URL path injection / Bearer token leakage guard (#102 self-review):
+        any person_id that isn't a positive integer is rejected without a
+        network call. Important because we'd otherwise interpolate the raw
+        value into the URL path and the static service token in the
+        Authorization header would leak to whatever path the attacker
+        crafted.
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        with patch('trials.services.patient_info.ctomop_client.requests.get') as mock_get:
+            result = client.fetch_patient(bad_id)
+        assert result is None
+        mock_get.assert_not_called()
+
+    def test_accepts_string_form_of_integer(self):
+        """Query-param ids arrive as strings; the validator must accept them."""
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        with patch(
+            'trials.services.patient_info.ctomop_client.requests.get',
+            return_value=_ok_response({'person_id': 9001}),
+        ) as mock_get:
+            assert client.fetch_patient('9001') == {'person_id': 9001}
+        # URL has the validated integer, not the raw string.
+        assert mock_get.call_args.args[0] == 'https://ctomop.example.com/api/patient-info/9001/'
+
     def test_uses_django_settings_when_no_explicit_args(self, settings):
         """Constructor falls back to CTOMOP_BASE / CTOMOP_SERVICE_TOKEN settings."""
         settings.CTOMOP_BASE = 'https://settings.example.com'

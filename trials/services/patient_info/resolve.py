@@ -11,6 +11,25 @@ PatientInfo resolver — supports two contract shapes.
 The inline path takes precedence — if both `patient_info` and
 `person_id` are present, the inline payload wins (lets callers stage
 the migration without breaking).
+
+## Authorization boundary
+
+The CTOMOP path currently relies on **CTOMOP-side row-level authz**:
+EXACT calls the endpoint with a static service token from
+`CTOMOP_SERVICE_TOKEN` and does not bind `person_id` to the
+authenticated caller. The DRF views above ensure the request is
+authenticated, but EXACT has no model linking users to patients (the
+service is stateless for patient data — see project memory
+`feedback_exact_no_own_db.md`), so there's no in-tree relationship
+to verify against. Production deployments MUST either:
+
+- enforce per-user authz at the CTOMOP layer (preferred), or
+- swap the static service token for caller-identity forwarding once
+  the parent federation track (#101) defines its identity flow.
+
+This is a deliberate design pin, not an oversight — adding fake
+EXACT-side authz would be worse than nothing. Tracked as #108
+alongside #101's identity flow.
 """
 import ast
 import datetime as dt

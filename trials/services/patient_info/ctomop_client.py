@@ -39,7 +39,13 @@ class CtomopClient:
     def fetch_patient(self, person_id) -> dict | None:
         """GET {base}/api/patient-info/{person_id}/ and return the JSON row.
 
-        Returns None when:
+        `person_id` MUST be a positive integer (CTOMOP's primary key shape);
+        anything else returns None without making a network call. This guards
+        against URL path injection — without the check, a caller could send
+        `person_id='../some-other-endpoint'` and the Bearer service token
+        would leak to that path along with the request.
+
+        Also returns None when:
         - `CTOMOP_BASE` is unset (the endpoint isn't configured).
         - The network call fails (connection error, timeout).
         - The HTTP status is non-2xx.
@@ -54,7 +60,20 @@ class CtomopClient:
             )
             return None
 
-        url = f'{self.base_url}/api/patient-info/{person_id}/'
+        try:
+            person_id_int = int(person_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                'CtomopClient.fetch_patient rejected non-integer person_id %r', person_id,
+            )
+            return None
+        if person_id_int <= 0:
+            logger.warning(
+                'CtomopClient.fetch_patient rejected non-positive person_id %r', person_id,
+            )
+            return None
+
+        url = f'{self.base_url}/api/patient-info/{person_id_int}/'
         headers = {'Accept': 'application/json'}
         if self.token:
             headers['Authorization'] = f'Bearer {self.token}'
