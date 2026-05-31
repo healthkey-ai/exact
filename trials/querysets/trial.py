@@ -23,6 +23,7 @@ from trials.services.patient_info.configs import (
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
     sct_value_is_none,
 )
+from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
@@ -1133,33 +1134,19 @@ class TrialQuerySet(models.QuerySet):
             required_attr_name='languages_skills_required'
         )
 
-    # ── Receptor status parent-code expansion ─────────────────────────────────
-    # Trials may store a generic parent code (e.g. "er_plus") while the patient
-    # carries a specific child code (e.g. "er_plus_with_hi_exp") after CTOMOP
-    # normalization.  Including the parent in the filter ensures trials that
-    # accepted the generic code still match.
-    _ER_PARENTS = {'er_plus_with_hi_exp': 'er_plus', 'er_plus_with_low_exp': 'er_plus'}
-    _PR_PARENTS = {'pr_plus_with_hi_exp': 'pr_plus', 'pr_plus_with_low_exp': 'pr_plus'}
-    _HR_PARENTS = {'hr_plus_with_hi_exp': 'hr_plus', 'hr_plus_with_low_exp': 'hr_plus'}
-
-    @staticmethod
-    def _expand_receptor_codes(values: list[str], parent_map: dict) -> list[str]:
-        expanded = list(values)
-        for v in values:
-            parent = parent_map.get(v)
-            if parent and parent not in expanded:
-                expanded.append(parent)
-        return expanded
+    # Receptor parent-code expansion lives in trials.services.receptor_hierarchy
+    # — shared with the matcher's uvalue_function lambdas so SQL filtering and
+    # match-status display stay in sync.
 
     def eligible_for_estrogen_receptor_statuses(self, estrogen_receptor_statuses: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
-            values=self._expand_receptor_codes(estrogen_receptor_statuses, self._ER_PARENTS),
+            values=expand_receptor_values(estrogen_receptor_statuses, 'er'),
             required_attr_name='estrogen_receptor_statuses_required'
         )
 
     def eligible_for_progesterone_receptor_statuses(self, progesterone_receptor_statuses: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
-            values=self._expand_receptor_codes(progesterone_receptor_statuses, self._PR_PARENTS),
+            values=expand_receptor_values(progesterone_receptor_statuses, 'pr'),
             required_attr_name='progesterone_receptor_statuses_required'
         )
 
@@ -1177,7 +1164,7 @@ class TrialQuerySet(models.QuerySet):
 
     def eligible_for_hr_statuses(self, hr_statuses: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
-            values=self._expand_receptor_codes(hr_statuses, self._HR_PARENTS),
+            values=expand_receptor_values(hr_statuses, 'hr'),
             required_attr_name='hr_statuses_required'
         )
 
