@@ -134,6 +134,21 @@ class TestSeededRows:
         )
 
     @pytest.mark.django_db
+    def test_purpose_rows_match_taxonomy_categories(self):
+        """`#44`: TrialPurpose codes are seeded from `TRIAL_TAXONOMY.keys()`.
+        If a new top-level category is added to the taxonomy, the purpose
+        migration must seed a row for it. Reverse also: if a purpose row
+        is added by a future migration, the taxonomy must have a category.
+        """
+        from trials.models import TrialPurpose
+        purpose_codes = set(TrialPurpose.objects.values_list('code', flat=True))
+        taxonomy_categories = set(TRIAL_TAXONOMY.keys())
+        missing = taxonomy_categories - purpose_codes
+        extra = purpose_codes - taxonomy_categories
+        assert not missing, f'TrialPurpose rows missing for taxonomy categories: {sorted(missing)}'
+        assert not extra, f'TrialPurpose rows without a taxonomy category: {sorted(extra)}'
+
+    @pytest.mark.django_db
     def test_mcl_does_not_have_pi3k_inhibitors(self):
         """DB-level regression for issue #42's headline assertion."""
         mcl = Disease.objects.filter(code__iexact='MCL').first()

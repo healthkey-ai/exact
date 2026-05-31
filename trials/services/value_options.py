@@ -141,6 +141,16 @@ class ValueOptions:
             **{x.code: x.title for x in items}
         }
 
+    @cached_property
+    def trial_purposes(self):
+        from trials.models import TrialPurpose
+
+        items = TrialPurpose.objects.order_by('title')
+        return {
+            '': 'ALL',
+            **{x.code: x.title for x in items}
+        }
+
     @staticmethod
     def trial_types_by_disease_code(disease_code: str):
         """Return trial types filtered by disease code."""
@@ -842,6 +852,9 @@ class ValueOptions:
             },
             'trialType': {
                 'options': self.to_value_and_label(self.trial_types)
+            },
+            'trialPurpose': {
+                'options': self.to_value_and_label(self.trial_purposes)
             },
             'tumorGrade': {
                 'options': self.to_value_and_label(self.tumor_grades)

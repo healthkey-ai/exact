@@ -291,6 +291,7 @@ class Trial(TimeStampMixin):
     phases = models.JSONField(blank=True, default=list)
     phase_code_min = models.IntegerField(blank=True, null=True)
     trial_type = models.ForeignKey("TrialType", models.PROTECT, blank=True, null=True)
+    purpose = models.ForeignKey("TrialPurpose", models.PROTECT, blank=True, null=True, related_name='trials')
 
     # PATIENT REQUIREMENTS
     brief_summary = models.TextField(blank=True, null=True)
@@ -933,6 +934,16 @@ class TrialType(OptionsListMixin):
         related_name='disease_trial_types'
     )
 
+    def __str__(self):
+        return self.title
+
+
+class TrialPurpose(OptionsListMixin):
+    """High-level purpose of a trial (treatment / prevention / diagnostic /
+    screening / supportive_care / health_services_research / basic_science /
+    device_feasibility / other). Codes mirror the top-level keys of
+    `trials.trial_taxonomy.TRIAL_TAXONOMY`.
+    """
     def __str__(self):
         return self.title
 
