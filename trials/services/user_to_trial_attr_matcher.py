@@ -11,7 +11,7 @@ from trials.services.patient_info.configs import (
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
-from trials.services.utils import get_overlap
+from trials.services.utils import disease_attr_applies, get_overlap
 
 
 def min_max_match(min_val, max_val, value, value_is_blank):
@@ -52,7 +52,10 @@ class UserToTrialAttrMatcher:
     def trial_match_status(self):
         out = {}
         for attr, trial_attr_meta in self.mapping.items():
-            if "disease" in trial_attr_meta and (self.disease_code is None or self.disease_code not in trial_attr_meta["disease"]):
+            if "disease" in trial_attr_meta and (
+                self.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self.disease_code)
+            ):
                 continue
             out[attr] = self.attr_match_status(attr)
 
@@ -68,7 +71,10 @@ class UserToTrialAttrMatcher:
         all_count = 0
 
         for attr, trial_attr_meta in self.mapping.items():
-            if "disease" in trial_attr_meta and (self.disease_code is None or self.disease_code not in trial_attr_meta["disease"]):
+            if "disease" in trial_attr_meta and (
+                self.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self.disease_code)
+            ):
                 continue
             status = self.attr_match_status(attr)
             all_count = all_count + 1

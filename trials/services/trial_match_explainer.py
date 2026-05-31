@@ -1,6 +1,7 @@
 from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+from trials.services.utils import disease_attr_applies
 
 _STATUS_ORDER = {'not_matched': 0, 'unknown': 1, 'matched': 2}
 
@@ -63,17 +64,13 @@ class TrialMatchExplainer:
         results = []
 
         for attr, meta in USER_TO_TRIAL_ATTRS_MAPPING.items():
-            # Skip attrs not relevant to this trial's disease
+            # Skip attrs not relevant to this trial's disease.
             disease_restriction = meta.get('disease')
             if disease_restriction is not None:
                 if self._matcher.disease_code is None:
                     continue
-                if isinstance(disease_restriction, list):
-                    if self._matcher.disease_code not in disease_restriction:
-                        continue
-                else:
-                    if self._matcher.disease_code != disease_restriction:
-                        continue
+                if not disease_attr_applies(disease_restriction, self._matcher.disease_code):
+                    continue
 
             status = self._matcher.attr_match_status(attr)
             patient_value = self._pi_attrs.get_value(attr)

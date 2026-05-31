@@ -27,6 +27,7 @@ from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
 from trials.services.user_to_trial_attrs_mapper import UserToTrialAttrsMapper
+from trials.services.utils import disease_attr_applies
 
 
 if TYPE_CHECKING:
@@ -1203,7 +1204,10 @@ class TrialQuerySet(models.QuerySet):
 
             # do the search now
             trial_attr_name = trial_attr_meta["attr"]
-            if "disease" in trial_attr_meta and (patient_info_attr.disease_code is None or patient_info_attr.disease_code not in trial_attr_meta["disease"]):
+            if "disease" in trial_attr_meta and (
+                patient_info_attr.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], patient_info_attr.disease_code)
+            ):
                 continue
 
             if "custom_search" in trial_attr_meta and trial_attr_meta["custom_search"] is True:

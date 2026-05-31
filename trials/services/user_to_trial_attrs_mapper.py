@@ -5,6 +5,7 @@ from django.db.models import Q
 from trials.services.attribute_names import AttributeNames
 from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING, TRIAL_ATTRS_JSON_AS_A_LIST
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+from trials.services.utils import disease_attr_applies
 
 
 class UserToTrialAttrsMapper:
@@ -135,7 +136,10 @@ class UserToTrialAttrsMapper:
             is_under_user_control = 'under_user_control' in trial_attr_meta and trial_attr_meta['under_user_control'] is True
 
             if patient_info:
-                if "disease" in trial_attr_meta and (service.disease_code is None or service.disease_code not in trial_attr_meta["disease"]):
+                if "disease" in trial_attr_meta and (
+                    service.disease_code is None
+                    or not disease_attr_applies(trial_attr_meta["disease"], service.disease_code)
+                ):
                     continue
 
                 is_blank = service.is_attr_blank(user_attr)

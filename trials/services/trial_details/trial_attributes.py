@@ -11,6 +11,7 @@ from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
+from trials.services.utils import disease_attr_applies
 from trials.services.value_options import ValueOptions
 
 
@@ -780,7 +781,10 @@ class TrialAttributes:
             subform_details = subform_attrs[user_attr] if user_attr in subform_attrs else None
             ureadonly = ('is_computed_value' in trial_attr_meta and trial_attr_meta['is_computed_value'] is True) or subform_details is not None
 
-            if "disease" in trial_attr_meta and (self._patient_info_attr.disease_code is None or self._patient_info_attr.disease_code not in trial_attr_meta["disease"]):
+            if "disease" in trial_attr_meta and (
+                self._patient_info_attr.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self._patient_info_attr.disease_code)
+            ):
                 continue
 
             if trial_attr_meta["type"] == "min_value":
