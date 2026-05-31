@@ -10,7 +10,7 @@ from django.db import models
 from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, QuerySet, Min, Subquery
 from django.db.models.functions import Coalesce, Least
 from django.contrib.gis.geos import Point
-from django.db.models import F, FloatField, ExpressionWrapper, IntegerField
+from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField, RawSQL
 
 from django.utils import timezone
 
@@ -205,6 +205,18 @@ class TrialQuerySet(models.QuerySet):
     # UserTrial removed — no favorites/participation tracking in standalone app
 
     def add_potential_attrs_count(self, attributes, search_type=None, counts=None, filled_attributes=None):
+        """Annotate trials with potential_attrs_count, match_score, and
+        potential_profit_avg from `num_nonnulls()` of the candidate CASE
+        expressions.
+
+        The fragments in `attributes` / `filled_attributes` come from
+        `UserToTrialAttrsMapper.potential_attrs_to_check` — values are
+        SQL CASE-WHEN strings built from the static
+        `USER_TO_TRIAL_ATTRS_MAPPING` (no user-supplied SQL). Migrating
+        from the deprecated `.extra(select=…)/extra(where=…)` to
+        `annotate(RawSQL(…))` + filter-on-annotation (#97) — same SQL
+        emitted, same return shape.
+        """
         if filled_attributes is None:
             filled_attributes = []
 
@@ -212,20 +224,39 @@ class TrialQuerySet(models.QuerySet):
         filled_attrs = ','.join(filled_attributes + ['NULL'])
         all_attrs = ','.join(attributes + filled_attributes + ['NULL'])
 
-        query = self.extra(select={'potential_attrs_count': f'num_nonnulls({attrs})'})
-
-        # (filled / filled + potential) * 100
-        match_score_sql = f'num_nonnulls({filled_attrs}) * 100 / num_nonnulls({all_attrs})'
-        query = query.extra(select={'match_score': match_score_sql})
+        # (filled / filled + potential) * 100 — integer division, capped at 100.
+        # NULLIF guards against div-by-zero on the `patient_info=None` path
+        # where `all_attrs` collapses to just `'NULL'` and num_nonnulls = 0
+        # (latent crash in the pre-port `.extra()` form too — closed here
+        # since the new test surface exercises that path).
+        match_score_sql = (
+            f'num_nonnulls({filled_attrs}) * 100 / '
+            f'NULLIF(num_nonnulls({all_attrs}), 0)'
+        )
 
         sql_conditions = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info=None, counts=counts)
-        sql_conditions = ' + '.join([*sql_conditions.values(), '0'])
-        query = query.extra(select={'potential_profit_avg': f'({sql_conditions}) / NULLIF(num_nonnulls({attrs}), 0)'})
+        sql_conditions_sum = ' + '.join([*sql_conditions.values(), '0'])
+
+        # BigIntegerField on potential_profit_avg: the numerator sums
+        # arbitrary counts across the catalog and can exceed 2^31 in the
+        # large-counts case (same rationale as #25 / PR #98).
+        query = self.annotate(
+            potential_attrs_count=RawSQL(
+                f'num_nonnulls({attrs})', [], output_field=IntegerField()
+            ),
+            match_score=RawSQL(
+                match_score_sql, [], output_field=IntegerField()
+            ),
+            potential_profit_avg=RawSQL(
+                f'({sql_conditions_sum}) / NULLIF(num_nonnulls({attrs}), 0)',
+                [], output_field=BigIntegerField(),
+            ),
+        )
 
         if search_type == 'eligible':
-            query = query.extra(where=[f'num_nonnulls({attrs}) = 0'])
+            query = query.filter(potential_attrs_count=0)
         elif search_type == 'potential':
-            query = query.extra(where=[f'num_nonnulls({attrs}) > 0'])
+            query = query.filter(potential_attrs_count__gt=0)
         return query
 
     def filtered_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None):
