@@ -1,8 +1,16 @@
 """
-PatientInfo resolver — stateless (inline JSON) only.
+PatientInfo resolver — supports two contract shapes.
 
-The caller sends patient data as {"patient_info": {...}} in the request body.
-No DB lookup is performed; PatientInfo is never persisted by this path.
+1. Inline payload: `{"patient_info": {...}}` in the request body. No DB
+   lookup; PatientInfo is never persisted by this path. CancerBot
+   depends on this contract — do not change.
+2. CTOMOP fetch: `?person_id=` query param or `person_id` in the body.
+   Looks up the patient from CTOMOP via `CtomopClient` and feeds the
+   row through `build_patient_info_from_ctomop_row` (#102).
+
+The inline path takes precedence — if both `patient_info` and
+`person_id` are present, the inline payload wins (lets callers stage
+the migration without breaking).
 """
 import ast
 import datetime as dt
@@ -16,15 +24,56 @@ from trials.services.patient_info.normalize import normalize_patient_info
 
 def resolve_patient_info(request):
     """
-    Build an in-memory PatientInfo instance from the request body.
+    Build an in-memory PatientInfo instance from the request.
 
-    Returns None if no patient_info payload is present (caller may proceed
-    without patient context, e.g. for public trial browsing).
+    Resolution order:
+      1. Inline `patient_info` payload (existing contract — unchanged).
+      2. `person_id` query param or body field — fetch from CTOMOP.
+      3. Return None — caller may proceed without patient context
+         (e.g. public trial browsing).
     """
-    patient_info_data = request.data.get('patient_info')
-    if not patient_info_data:
+    patient_info_data = _get_body_field(request, 'patient_info')
+    if patient_info_data:
+        return _build_in_memory(patient_info_data)
+
+    person_id = _extract_person_id(request)
+    if person_id:
+        return _resolve_from_ctomop(person_id)
+
+    return None
+
+
+def _get_body_field(request, name):
+    """Read a field from request.data, tolerating None or non-dict bodies."""
+    data = getattr(request, 'data', None)
+    if not isinstance(data, dict):
         return None
-    return _build_in_memory(patient_info_data)
+    return data.get(name)
+
+
+def _extract_person_id(request):
+    """Return person_id from query params first, then body. None if absent."""
+    query_params = getattr(request, 'query_params', None)
+    if query_params:
+        pid = query_params.get('person_id') or query_params.get('personId')
+        if pid:
+            return pid
+
+    body_pid = _get_body_field(request, 'person_id') or _get_body_field(request, 'personId')
+    return body_pid or None
+
+
+def _resolve_from_ctomop(person_id):
+    """Fetch the CTOMOP row and adapt it to a PatientInfo. None on any error."""
+    from trials.services.patient_info.ctomop_adapter import (
+        build_patient_info_from_ctomop_row,
+    )
+    from trials.services.patient_info.ctomop_client import CtomopClient
+
+    row = CtomopClient().fetch_patient(person_id)
+    if not row:
+        return None
+    return build_patient_info_from_ctomop_row(row)
 
 
 def _build_in_memory(data: dict):
