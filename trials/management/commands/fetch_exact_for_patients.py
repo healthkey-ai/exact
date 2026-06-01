@@ -72,10 +72,18 @@ def _psql_query_rows(db_url, sql):
     if result.returncode != 0:
         raise RuntimeError(f'psql error: {result.stderr.strip()}')
     rows = []
+    skipped = 0
     for line in result.stdout.splitlines():
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            skipped += 1
+            logger.warning('Skipping non-JSON line from psql: %.80s — %s', line, exc)
+    if skipped:
+        logger.warning('Skipped %d non-JSON line(s) from psql output.', skipped)
     return rows
 
 
