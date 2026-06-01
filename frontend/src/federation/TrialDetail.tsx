@@ -1,14 +1,9 @@
 import type { CSSProperties } from "react";
-import type { AxiosInstance } from "axios";
 
-import { useTrialDetail } from "./hooks";
-import type { PatientInfo, TrialMatch } from "./types";
+import type { TrialMatch } from "./types";
 
 interface Props {
-  apiClient: AxiosInstance;
   trial: TrialMatch;
-  patientInfo?: PatientInfo | null;
-  personId?: string | number;
   onClose: () => void;
 }
 
@@ -32,13 +27,18 @@ const SECTION_HEADER: CSSProperties = {
   color: "var(--exact-color-text)",
 };
 
-export function TrialDetail({ apiClient, trial, patientInfo, personId, onClose }: Props) {
-  // Re-fetch with the full detail serializer — the list endpoint already
-  // returns most fields but the detail view adds explanation data when
-  // `?explain=true` (out of scope here, but the hook supports it
-  // implicitly by fetching `/trials/{id}/` which serves the detail shape).
-  const detail = useTrialDetail({ apiClient, trialId: trial.trialId, patientInfo, personId });
-  const data = detail.data ?? trial;
+export function TrialDetail({ trial, onClose }: Props) {
+  // The list response already carries every field we render here
+  // (briefTitle / officialTitle / phase / sponsor / matchScore /
+  // goodnessScore / distance / location / attributesToFillIn / link).
+  // The previous version re-fetched `/trials/{trialId}/` for "richer
+  // detail data", but that detail re-fetch had to drop `patient_info`
+  // from the request body (Fetch-spec / axios XHR don't allow
+  // GET-with-body), so the matcher annotations on the response came
+  // back patient-less and OVERWROTE the list's good values. Dropping
+  // the re-fetch entirely keeps the patient-scoped values from the
+  // list visible.
+  const data = trial;
 
   return (
     <div style={PANEL}>

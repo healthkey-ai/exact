@@ -78,19 +78,6 @@ export interface TrialsResponse {
   results: TrialMatch[];
 }
 
-export interface Country {
-  id: number;
-  code: string;
-  title: string;
-}
-
-export interface CountriesResponse {
-  count: number;
-  next: string | null;
-  previous: string | null;
-  results: Country[];
-}
-
 /** Filter prefs the UI surfaces. Keys mirror what
  *  `study_preferences_from_query_params` consumes (camelCase). */
 export interface FilterState {

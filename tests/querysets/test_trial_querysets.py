@@ -703,9 +703,14 @@ class TestTrialQuerySet:
         assert list(Trial.objects.by_recruitment_status('recruiting_and_not_yet_recruiting').order_by('id')) == [t1, t2]
         assert list(Trial.objects.by_recruitment_status('Recruiting_And_Not_Yet_Recruiting').order_by('id')) == [t1, t2]
 
-        # Other specific statuses
-        assert list(Trial.objects.by_recruitment_status('COMPLETED').order_by('id')) == [t3, t5]
-        assert list(Trial.objects.by_recruitment_status('TERMINATED').order_by('id')) == [t4, t5]
+        # Other specific statuses — blank `recruitment_status` rows are NOT
+        # matched by COMPLETED / TERMINATED filters. Trial metadata is a
+        # data-quality signal, not an eligibility-unknown one — the
+        # opposite of how patient-attribute filters treat blanks. (Pre-fix,
+        # `eligible_for_str_value`'s `allow_blank=True` default widened
+        # these filters to also include incompletely-ingested trials.)
+        assert list(Trial.objects.by_recruitment_status('COMPLETED').order_by('id')) == [t3]
+        assert list(Trial.objects.by_recruitment_status('TERMINATED').order_by('id')) == [t4]
 
     @pytest.mark.django_db
     def test_by_trial_type(self):

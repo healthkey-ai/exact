@@ -6,10 +6,18 @@ The adapter itself has exhaustive coverage in
 `tests/management/test_normalize_ctomop_row.py`; the tests here exist
 to lock the HTTP surface — auth, payload shape, response shape — so
 the federation harness (added in #117) can rely on it.
+
+The first class drives the view via direct `.post(MagicMock(...))` for
+fast per-branch behaviour. `TestNormalizeCtomopRowHttp` at the bottom
+uses DRF's `APIClient` to verify the full pipeline (URL routing, token
+auth, JSON parsing).
 """
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.contrib.auth.models import User
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 from trials.api.trials_views import NormalizeCtomopRowView
 
@@ -105,3 +113,44 @@ class TestNormalizeCtomopRowView:
         snapshot = dict(original)
         _post(original)
         assert original == snapshot
+
+
+@pytest.mark.django_db
+class TestNormalizeCtomopRowHttp:
+    """HTTP-pipeline coverage via DRF `APIClient` — locks routing, token
+    auth, and JSON parsing. The class above already covers branching;
+    here we only need a smoke test and the 401 path."""
+
+    @pytest.fixture
+    def authed_client(self):
+        user, _ = User.objects.get_or_create(username='normalize-tester')
+        user.set_password('pw')
+        user.save()
+        token, _ = Token.objects.get_or_create(user=user)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        return client
+
+    def test_unauthenticated_returns_401(self):
+        client = APIClient()
+        response = client.post('/normalize-ctomop-row/', {}, format='json')
+        assert response.status_code == 401
+
+    def test_authed_post_normalizes_and_returns_200(self, authed_client):
+        response = authed_client.post(
+            '/normalize-ctomop-row/',
+            {'stage': 'IIIB', 'tumor_grade': 2},
+            format='json',
+        )
+        assert response.status_code == 200
+        # Pure-Python transforms — exercised through real routing this time.
+        assert response.data['stage'] == 'III'
+        assert response.data['tumor_grade'] == '20'
+
+    def test_non_dict_body_returns_400(self, authed_client):
+        response = authed_client.post(
+            '/normalize-ctomop-row/',
+            [1, 2, 3],
+            format='json',
+        )
+        assert response.status_code == 400

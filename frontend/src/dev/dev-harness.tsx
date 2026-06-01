@@ -125,7 +125,18 @@ function Harness() {
         setPatientInfo(normalized);
       } catch (e) {
         if (cancelled) return;
-        setResolveError((e as Error).message);
+        // Coerce non-Error throws so the UI never renders "undefined".
+        // axios sometimes rejects with `{message, response, …}` objects
+        // that aren't `Error` instances depending on the adapter, and a
+        // direct `(e as Error).message` would silently render an empty
+        // string in those cases.
+        const msg =
+          e instanceof Error
+            ? e.message
+            : typeof e === "string"
+              ? e
+              : "Unknown error";
+        setResolveError(msg);
       } finally {
         if (!cancelled) setResolving(false);
       }

@@ -15,10 +15,8 @@
 import type { AxiosInstance } from "axios";
 
 import type {
-  CountriesResponse,
   FilterState,
   PatientInfo,
-  TrialMatch,
   TrialsResponse,
 } from "./types";
 
@@ -69,41 +67,6 @@ export async function fetchTrials({
     params.person_id = String(personId);
   }
   const response = await apiClient.get<TrialsResponse>("/trials/", { params });
-  return response.data;
-}
-
-/** GET `/trials/{id}/` — detail view. Patient context is intentionally
- *  NOT sent on the detail call: the detail endpoint is GET-only
- *  upstream and shaping a POST alias just to pass patient_info on
- *  detail would add backend surface for marginal benefit (the
- *  "attributesToFillIn" explanation already arrived on the list
- *  response). When only `personId` is supplied, we forward it as a
- *  query param so the server-side CTOMOP resolver (#102) can populate
- *  patient context if credentialed. */
-export async function fetchTrialDetail({
-  apiClient,
-  trialId,
-  patientInfo,
-  personId,
-}: {
-  apiClient: AxiosInstance;
-  trialId: number;
-  patientInfo?: PatientInfo | null;
-  personId?: string | number;
-}): Promise<TrialMatch> {
-  const params: Record<string, string> = {};
-  if (personId != null && (patientInfo == null || Object.keys(patientInfo).length === 0)) {
-    params.person_id = String(personId);
-  }
-  const response = await apiClient.get<TrialMatch>(`/trials/${trialId}/`, { params });
-  return response.data;
-}
-
-/** GET `/countries/` — list endpoint for the country filter. */
-export async function fetchCountries(
-  apiClient: AxiosInstance,
-): Promise<CountriesResponse> {
-  const response = await apiClient.get<CountriesResponse>("/countries/");
   return response.data;
 }
 

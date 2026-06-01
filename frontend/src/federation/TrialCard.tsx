@@ -8,26 +8,42 @@ interface Props {
   isSelected?: boolean;
 }
 
-function matchingStyles(t: TrialMatch): { badge: string; label: string } {
+const BADGE_BASE: CSSProperties = {
+  padding: "0.125rem 0.5rem",
+  borderRadius: "0.25rem",
+  fontSize: "0.75rem",
+  border: "1px solid transparent",
+};
+
+const ELIGIBLE_BADGE: CSSProperties = {
+  ...BADGE_BASE,
+  background: "#dcfce7",
+  color: "#166534",
+  borderColor: "#86efac",
+};
+
+const POTENTIAL_BADGE: CSSProperties = {
+  ...BADGE_BASE,
+  background: "#fef3c7",
+  color: "#92400e",
+  borderColor: "#fcd34d",
+};
+
+const NOT_ELIGIBLE_BADGE: CSSProperties = {
+  ...BADGE_BASE,
+  background: "#fee2e2",
+  color: "#991b1b",
+  borderColor: "#fca5a5",
+};
+
+function matchingStyles(t: TrialMatch): { style: CSSProperties; label: string } {
   if (t.matchingType === "eligible") {
-    return {
-      badge:
-        "background:#dcfce7;color:#166534;border:1px solid #86efac;padding:0.125rem 0.5rem;border-radius:0.25rem;font-size:0.75rem;",
-      label: "Eligible",
-    };
+    return { style: ELIGIBLE_BADGE, label: "Eligible" };
   }
   if (t.matchingType === "not_eligible") {
-    return {
-      badge:
-        "background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;padding:0.125rem 0.5rem;border-radius:0.25rem;font-size:0.75rem;",
-      label: "Not Eligible",
-    };
+    return { style: NOT_ELIGIBLE_BADGE, label: "Not Eligible" };
   }
-  return {
-    badge:
-      "background:#fef3c7;color:#92400e;border:1px solid #fcd34d;padding:0.125rem 0.5rem;border-radius:0.25rem;font-size:0.75rem;",
-    label: "Potential",
-  };
+  return { style: POTENTIAL_BADGE, label: "Potential" };
 }
 
 export function TrialCard({ trial, onSelect, isSelected }: Props) {
@@ -52,7 +68,7 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
     <>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
         <strong style={{ color: "var(--exact-color-text)" }}>{trial.briefTitle}</strong>
-        <span style={{ ...parseStyle(m.badge) }}>{m.label}</span>
+        <span style={m.style}>{m.label}</span>
       </div>
       <div style={meta}>
         {[
@@ -91,17 +107,4 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
     );
   }
   return <div style={card}>{body}</div>;
-}
-
-// Parse the inline CSS string into a CSSProperties object. Avoids
-// a Tailwind dependency for these tiny pill styles while keeping the
-// per-status colours in one place at the top of the file.
-function parseStyle(css: string): CSSProperties {
-  const out: Record<string, string> = {};
-  for (const rule of css.split(";")) {
-    const [k, v] = rule.split(":").map((s) => s.trim());
-    if (!k || v == null) continue;
-    out[k.replace(/-([a-z])/g, (_m: string, c: string) => c.toUpperCase())] = v;
-  }
-  return out as CSSProperties;
 }
