@@ -6,18 +6,37 @@
 //   CTOMOP patient picker (session-authed against /ctomop-local or
 //   /ctomop-staging via the Vite proxy with Set-Cookie rewriting)
 //     ↓
-//   TrialMatches mounted with the EXACT axios instance + person_id
+//   Browser fetches the full patient profile from CTOMOP
+//   (session cookie is in the browser already — same axios instance
+//   as the picker uses)
+//     ↓
+//   TrialMatches mounted with the EXACT axios instance + inline
+//   `patientInfo` payload (NOT `personId` — see "Why inline" below)
 //
 // The two backends use mutually-exclusive auth schemes (DRF Token for
 // EXACT, Django session cookie for CTOMOP), so the harness keeps two
 // separate axios instances — never share, never mix. The TrialMatches
 // component only ever sees the token instance.
+//
+// Why inline patientInfo (not `personId`):
+// EXACT's server-side `?person_id=` resolver (added in #102) fetches
+// the patient from CTOMOP using a static `CTOMOP_SERVICE_TOKEN`
+// (`CtomopClient.fetch_patient` in EXACT). That path is fine for
+// deployments where EXACT has a credentialed identity at CTOMOP, but
+// in the dev harness the browser already holds the user's CTOMOP
+// session cookie — so it's faster, more correct (matches the picker's
+// authz scope), and free of the IDOR concern tracked in #108 to do
+// the fetch client-side here and forward the resolved payload inline.
+// EXACT's `resolve_patient_info` already prefers the inline `patient_info`
+// payload over `?person_id=` when both are present, so this just
+// activates the existing fallback path with no backend changes.
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
 import { TrialMatches } from "../federation/TrialMatches";
+import type { PatientInfo } from "../federation/types";
 import { CtomopClient } from "./ctomopClient";
 import { CtomopPicker } from "./CtomopPicker";
 import { ExactLoginForm } from "./ExactLoginForm";
@@ -44,6 +63,9 @@ function Harness() {
     return t ? makeExactClient(t) : null;
   });
   const [personId, setPersonId] = useState<number | null>(null);
+  const [patientInfo, setPatientInfo] = useState<PatientInfo | null>(null);
+  const [resolving, setResolving] = useState(false);
+  const [resolveError, setResolveError] = useState<string | null>(null);
 
   const handleTokenObtained = useCallback((next: string) => {
     setToken(next);
@@ -56,11 +78,61 @@ function Harness() {
     writeStoredToken(null);
     setApiClient(null);
     setPersonId(null);
+    setPatientInfo(null);
+    setResolveError(null);
     // Best-effort CTOMOP session cleanup so the user isn't left logged
     // into the wrong account on the staging host after switching dev
     // identities. `logout()` tolerates 401/403 internally.
     void new CtomopClient(currentCtomopBase()).logout();
   }, []);
+
+  // When a patient is picked, fetch the full patient profile from
+  // CTOMOP using the user's session cookie (the same one the picker
+  // listed against) and stash it as `patientInfo`. The previous
+  // resolved payload is cleared first so a stale profile can't leak
+  // into the new patient's TrialMatches mount.
+  //
+  // NOTE on normalization: the server-side `?person_id=` resolver
+  // calls `normalize_ctomop_row` on its way to the matcher (receptor
+  // statuses → codes, TNM stripping, therapy-outcome label → ID, etc.).
+  // The inline-fetch path here skips that step — `resolve_patient_info`
+  // just hands the raw payload to `_build_in_memory`. For most
+  // diseases the matcher still returns a useful matchScore because
+  // the common fields (disease, gender, age, lab values) are already
+  // CTOMOP-shaped. Receptor-status / therapy-line / refractory fields
+  // will read as "unknown" until either (a) #108's identity flow
+  // lets EXACT credential the server-side resolver, or (b) EXACT
+  // exposes a `POST /api/normalize-ctomop-row/` helper the harness
+  // can call between fetch and matcher.
+  useEffect(() => {
+    if (personId == null) {
+      setPatientInfo(null);
+      setResolveError(null);
+      setResolving(false);
+      return;
+    }
+    let cancelled = false;
+    setResolving(true);
+    setResolveError(null);
+    setPatientInfo(null);
+    new CtomopClient(currentCtomopBase())
+      .getPatient(personId)
+      .then((detail) => {
+        if (cancelled) return;
+        const info = (detail.patient_info ?? null) as PatientInfo | null;
+        setPatientInfo(info);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setResolveError((e as Error).message);
+      })
+      .finally(() => {
+        if (!cancelled) setResolving(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [personId]);
 
   // Token from `VITE_EXACT_TOKEN` env wins on first mount only — a
   // `.env.local` skips the form for a faster dev loop. We deliberately
@@ -105,8 +177,9 @@ function Harness() {
         <div>
           <h1 style={{ margin: 0, fontSize: "1.25rem" }}>EXACT Federation Dev Harness</h1>
           <p style={{ color: "#6b7280", marginTop: "0.25rem", marginBottom: 0 }}>
-            Pick a CTOMOP patient → mount TrialMatches with the resolved
-            <code style={{ marginLeft: "0.25rem" }}>person_id</code>.
+            Pick a CTOMOP patient → harness fetches the profile (browser-side
+            session cookie) → TrialMatches mounts with inline
+            <code style={{ marginLeft: "0.25rem" }}>patientInfo</code>.
           </p>
         </div>
         <button
@@ -139,12 +212,33 @@ function Harness() {
             <p style={{ color: "#6b7280" }}>
               Pick a CTOMOP patient to load their trial matches.
             </p>
-          ) : (
+          ) : resolving ? (
+            <p style={{ color: "#6b7280" }}>
+              Fetching patient profile from CTOMOP…
+            </p>
+          ) : resolveError ? (
+            <div
+              style={{
+                padding: "0.75rem",
+                border: "1px solid #fca5a5",
+                background: "#fef2f2",
+                color: "#991b1b",
+                borderRadius: "0.25rem",
+                fontSize: "0.875rem",
+              }}
+            >
+              Failed to fetch CTOMOP patient profile: {resolveError}
+            </div>
+          ) : patientInfo != null ? (
             <TrialMatches
               apiClient={apiClient}
               queryClient={queryClient}
-              personId={personId}
+              patientInfo={patientInfo}
             />
+          ) : (
+            <p style={{ color: "#6b7280" }}>
+              CTOMOP returned an empty patient profile.
+            </p>
           )}
         </div>
       </div>
