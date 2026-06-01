@@ -33,7 +33,7 @@ import os
 import shutil
 import subprocess
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from trials.services.patient_info.ctomop_adapter import (
     JSON_FIELDS,
     OUTCOME_MAP as _OUTCOME_MAP,
@@ -257,7 +257,9 @@ class Command(BaseCommand):
         rows = self._fetch_via_db(options, person_ids)
 
         if rows is None:
-            return  # error already reported
+            # Exit non-zero so a wrapping shell pipeline (trials4patients.sh)
+            # halts instead of proceeding to a missing-output FileNotFoundError.
+            raise CommandError('Patient DB fetch failed — see error above.')
 
         all_results = []
         processed = 0
@@ -319,6 +321,14 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f'\nDone. Patients processed: {processed}, Errors: {errors}'
         ))
+
+        # A run where every patient errored produced no usable results. Fail
+        # non-zero rather than writing an empty output file and exiting 0,
+        # which would let a wrapping pipeline mistake total failure for success.
+        if processed == 0 and errors > 0:
+            raise CommandError(
+                f'All {errors} patient(s) failed — no results produced.'
+            )
 
         if options['output']:
             self._write_output(all_results, options['output'], options['output_format'])
@@ -384,10 +394,20 @@ class Command(BaseCommand):
             return None
 
         rows = []
+        skipped = 0
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line:
+            if not line:
+                continue
+            try:
                 rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                skipped += 1
+                logger.warning('Skipping non-JSON line from psql: %.80s — %s', line, exc)
+        if skipped:
+            self.stderr.write(self.style.WARNING(
+                f'  Skipped {skipped} non-JSON line(s) from psql output.'
+            ))
 
         return rows
 
