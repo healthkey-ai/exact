@@ -5,6 +5,7 @@ from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import serializers
+from rest_framework.views import APIView
 
 from trials.api.pagination import TrialsPagination
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
@@ -318,3 +319,45 @@ class FormSettingsViewSet(viewsets.ViewSet):
         if lower.upper() in ('MM', 'BC', 'FL', 'CLL', 'MCL'):
             return lower.upper()
         return self.DISEASE_NAME_TO_CODE.get(lower, '')
+
+
+class NormalizeCtomopRowView(APIView):
+    """POST endpoint that exposes `normalize_ctomop_row` to authenticated
+    callers. Takes a raw CTOMOP `patient_info` row in the body and
+    returns the same row with EXACT-shaped values for the fields that
+    differ between systems (receptor statuses → codes, TNM strings →
+    short codes, therapy-line outcomes → IDs, refractory status labels,
+    lab-value fallbacks, etc.).
+
+    Exists so the federation dev harness (and any other client that
+    fetches CTOMOP rows browser-side) can run the same normalization
+    the server-side `?person_id=` resolver applies. Without this, an
+    inline-fetch caller's `patient_info` reaches the matcher with raw
+    CTOMOP labels and a meaningful subset of fields silently reads as
+    "unknown" — closes the limitation documented in PR #117.
+
+    Same auth + token model as `/trials/`: `IsAuthenticated`, DRF
+    Token. The function is pure / side-effect-free; the caller already
+    holds the patient row from their own session-authenticated CTOMOP
+    fetch so this endpoint doesn't widen the IDOR surface tracked in
+    #108.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        from trials.services.patient_info.ctomop_adapter import normalize_ctomop_row
+
+        raw = request.data
+        if not isinstance(raw, dict):
+            return Response(
+                {'detail': 'Body must be a JSON object representing one CTOMOP patient_info row.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # `normalize_ctomop_row` mutates its argument in place; copy
+        # first so we never alter caller-owned state. (`dict(raw)` is
+        # a shallow copy — fine because the function only rewrites
+        # top-level keys plus the `genetic_mutations` items, which the
+        # function itself defensively copies via `m = dict(m)`.)
+        normalized = normalize_ctomop_row(dict(raw))
+        return Response(normalized)
