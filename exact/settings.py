@@ -8,7 +8,6 @@ from dotenv import load_dotenv
 _logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-ENVIRONMENT = os.environ.get('ENVIRONMENT', 'local')
 
 # GDAL / GEOS — required by django.contrib.gis (PostGIS backend).
 # On macOS with Homebrew the libraries are not on the default search path,
@@ -36,6 +35,11 @@ if platform.system() == 'Darwin':
 
 _dotenv_file = os.environ.get('DOTENV_PATH', '.env')
 load_dotenv(os.path.join(BASE_DIR, _dotenv_file))
+
+# Resolved after load_dotenv so a deploy that sets these only in the dotenv
+# file is read correctly (not left at the pre-dotenv default). The SECRET_KEY
+# guard below depends on ENVIRONMENT reflecting the real deploy target.
+ENVIRONMENT = os.environ.get('ENVIRONMENT', 'local')
 
 DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
 
