@@ -198,6 +198,26 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = self.get_queryset()
         return Response({'count': queryset.count()})
 
+    @action(methods=['post'], detail=False, url_path='match')
+    def match(self, request, *args, **kwargs):
+        """POST alias for the list endpoint, identical response shape.
+
+        Exists so the browser-side harness can carry `patient_info`
+        in the request body. The Fetch spec forbids GET-with-body
+        (`new Request('/trials/', { method: 'GET', body: '…' })`
+        throws), and axios v1's XHR adapter silently drops the body
+        on GET — both paths leave `resolve_patient_info` reading from
+        an empty body and the matcher running with no patient context.
+        Routing to `list` keeps the response shape stable; frontends
+        that already speak `GET /trials/` keep working.
+        """
+        # Bind the action to 'list' so all the `self.action == 'list'`
+        # branches in `get_queryset` fire — without this the queryset
+        # would skip `with_potential_attrs_count` and `-match_score`
+        # ordering.
+        self.action = 'list'
+        return self.list(request, *args, **kwargs)
+
     @action(methods=['get'], detail=False)
     def search(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
