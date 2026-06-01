@@ -75,8 +75,14 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'corsheaders',
     'drf_yasg',
+    'accounts',
     'trials',
 ]
+
+# House OIDC shared-Identity model (issuer, sub). Must be set before the first
+# migrate — cannot be swapped on a DB that already migrated django.contrib.auth
+# .User, so EXACT only adopts this on a fresh database (see accounts app).
+AUTH_USER_MODEL = 'accounts.Identity'
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -204,14 +210,45 @@ USE_TZ = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# ---------------------------------------------------------------------------
+# House API auth standard (OIDC shared-Identity model)
+# PartnerAuthentication verifies a Firebase ID token (the only
+# browser-appropriate credential); ServiceTokenAuthentication compares a shared
+# bearer against SERVICE_AUTH_TOKEN for server-to-server calls. TokenAuth +
+# Session remain as a transitional credential for the local dev harness
+# (`/api-token-auth/`) and existing tests; production callers use Firebase or
+# the service token. Default-deny stays (IsAuthenticated).
+# ---------------------------------------------------------------------------
+PARTNER_AUTH_PROVIDERS = [
+    'accounts.providers.firebase.FirebaseTokenProvider',
+]
+FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID', 'exact-test' if DEBUG else '')
+FIREBASE_SKIP_REVOCATION_CHECK = os.environ.get(
+    'FIREBASE_SKIP_REVOCATION_CHECK', 'true' if DEBUG else 'false'
+).lower() in ('1', 'true')
+AUTH_TOKEN_CACHE_TTL = int(os.environ.get('AUTH_TOKEN_CACHE_TTL', '60'))
+SERVICE_AUTH_TOKEN = os.environ.get('SERVICE_AUTH_TOKEN', '')
+
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
+        'accounts.authentication.ServiceTokenAuthentication',
+        'accounts.authentication.PartnerAuthentication',
         'rest_framework.authentication.TokenAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '60/minute',
+        'user': '300/minute',
+        'sync': '10/minute',
+    },
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 200,
     'DEFAULT_SCHEMA_CLASS': 'rest_framework.schemas.coreapi.AutoSchema',
@@ -261,3 +298,53 @@ ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') =
 # ---------------------------------------------------------------------------
 CTOMOP_BASE = os.environ.get('CTOMOP_BASE', '')
 CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
+
+
+# ---------------------------------------------------------------------------
+# Firebase Admin SDK — backs FirebaseTokenProvider (verify_id_token).
+# Credential resolution order: an auth emulator (local dev) → the
+# FIREBASE_CREDENTIALS_JSON secret injected by infra (Secret Manager) →
+# Application Default Credentials (workload identity). A missing credential is
+# a soft failure: the provider simply can't verify tokens until configured.
+# ---------------------------------------------------------------------------
+def _init_firebase_admin():
+    try:
+        import firebase_admin
+        from firebase_admin import credentials as fb_credentials
+    except ImportError:
+        return
+
+    if firebase_admin._apps:
+        return
+
+    options = {"projectId": FIREBASE_PROJECT_ID} if FIREBASE_PROJECT_ID else {}
+
+    if os.environ.get("FIREBASE_AUTH_EMULATOR_HOST"):
+        class _EmulatorCredential(fb_credentials.Base):
+            def get_credential(self):
+                return None
+        cred = _EmulatorCredential()
+    else:
+        creds_json = os.environ.get("FIREBASE_CREDENTIALS_JSON", "").strip()
+        if creds_json:
+            import json
+            try:
+                cred = fb_credentials.Certificate(json.loads(creds_json))
+            except Exception:
+                _logger.warning("FIREBASE_CREDENTIALS_JSON is not valid; skipping Firebase init")
+                return
+        else:
+            try:
+                cred = fb_credentials.ApplicationDefault()
+            except Exception:
+                return
+
+    try:
+        firebase_admin.initialize_app(cred, options)
+    except ValueError:
+        pass  # Already initialized
+    except Exception:
+        _logger.warning("Firebase Admin SDK initialization failed", exc_info=True)
+
+
+_init_firebase_admin()

@@ -29,6 +29,9 @@ django-pint==1.0.4
 # API schema
 coreapi==2.3.3
 
+# Auth — house OIDC Identity model (Firebase ID-token verification)
+firebase-admin==7.4.0
+
 # Utilities
 django-countries==8.2.0
 glom==24.11.0
