@@ -5,6 +5,9 @@ Locks the auth contract on the protected `POST /trials/match/` surface:
 - a verified partner (Firebase) token authenticates and provisions an Identity,
 - an anonymous request is rejected (default-deny).
 """
+import base64
+import json
+
 import pytest
 from django.test import override_settings
 from rest_framework.test import APIClient
@@ -98,3 +101,15 @@ class TestPartnerAuth:
 class TestDefaultDeny:
     def test_anonymous_request_rejected(self, trial):
         assert _match(APIClient()).status_code == 401
+
+    def test_jwt_shaped_token_with_non_object_payload_is_rejected(self, trial):
+        # A JWT-shaped token whose middle segment decodes to a JSON list (not
+        # an object) must read as unauthenticated (401), never crash provider
+        # routing with a 500. Regression guard for decode_jwt_unverified.
+        def seg(obj):
+            return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+        token = f"{seg({'alg': 'RS256'})}.{seg(['not', 'an', 'object'])}.sig"
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        assert _match(client).status_code == 401

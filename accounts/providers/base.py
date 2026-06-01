@@ -24,7 +24,11 @@ def decode_jwt_unverified(token: str) -> dict[str, Any] | None:
         padding = 4 - len(payload) % 4
         if padding != 4:
             payload += "=" * padding
-        return json.loads(base64.urlsafe_b64decode(payload))
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+        # Only object payloads are routable claims. A JWT-shaped token whose
+        # payload decodes to a non-object (list/str/number) must not reach a
+        # provider's can_handle(), which calls .get() on this value.
+        return decoded if isinstance(decoded, dict) else None
     except Exception:
         return None
 
