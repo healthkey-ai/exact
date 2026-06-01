@@ -66,11 +66,17 @@ def _build_code_lookup():
         PreExistingConditionCategory, StemCellTransplant,
     ]
 
+    # Don't hardcode `.using('trials')` — the `TrialsDatabaseRouter`
+    # already routes trials-app reads to the 'trials' alias when split-DB
+    # is configured, and to 'default' otherwise. The previous explicit
+    # `.using('trials')` broke single-DB deployments (and the local dev
+    # harness) with `ConnectionDoesNotExist` because the alias doesn't
+    # exist there.
     lookup = {}
     for model in all_models:
         lookup[model.__name__] = {
             row['title'].lower().strip(): row['code']
-            for row in model.objects.using('trials').values('title', 'code')
+            for row in model.objects.values('title', 'code')
         }
 
     # Therapy overrides TherapyComponent when both share the same title so

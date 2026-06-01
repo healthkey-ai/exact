@@ -119,6 +119,27 @@ export async function fetchFormSettings(
   return response.data;
 }
 
+/** POST `/normalize-ctomop-row/` — pipes a raw CTOMOP `patient_info`
+ *  row through EXACT's `normalize_ctomop_row` (receptor statuses → codes,
+ *  TNM stripping, therapy-outcome label → ID, refractory status,
+ *  lab-value fallbacks, etc.) and returns the normalized row.
+ *
+ *  Used by the dev harness so that browser-side CTOMOP fetches (which
+ *  skip the server-side resolver's normalization step) hand the
+ *  matcher EXACT-shaped values instead of raw CTOMOP labels.
+ *  Without this chain step, receptor / therapy / refractory fields
+ *  silently read as "unknown". */
+export async function normalizeCtomopRow(
+  apiClient: AxiosInstance,
+  row: PatientInfo,
+): Promise<PatientInfo> {
+  const response = await apiClient.post<PatientInfo>(
+    "/normalize-ctomop-row/",
+    row,
+  );
+  return response.data;
+}
+
 /** Convert the camelCase filter state to the query-string shape EXACT's
  *  view expects. The mapping is 1:1 with `study_preferences_from_query_params`
  *  in `trials/services/study_preferences.py`. */

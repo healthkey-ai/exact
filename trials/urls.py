@@ -5,7 +5,13 @@ from rest_framework import permissions
 from rest_framework.routers import DefaultRouter
 
 from trials.api.graph_view import TrialsGraphViewSet
-from trials.api.trials_views import TrialsViewSet, CountriesViewSet, LocationsViewSet, FormSettingsViewSet
+from trials.api.trials_views import (
+    CountriesViewSet,
+    FormSettingsViewSet,
+    LocationsViewSet,
+    NormalizeCtomopRowView,
+    TrialsViewSet,
+)
 
 schema_view = get_schema_view(
     openapi.Info(
@@ -29,5 +35,14 @@ router.register(r'form-settings', FormSettingsViewSet, basename='form-settings-v
 urlpatterns = [
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+    # POST /normalize-ctomop-row/ — pipes a raw CTOMOP patient_info row
+    # through `normalize_ctomop_row`. Used by the federation dev harness
+    # to ensure inline-fetched patients are normalized before the matcher
+    # sees them (closes the "unknown" fallthrough documented in #117).
+    path(
+        'normalize-ctomop-row/',
+        NormalizeCtomopRowView.as_view(),
+        name='normalize-ctomop-row',
+    ),
     path('', include(router.urls)),
 ]

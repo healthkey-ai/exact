@@ -35,6 +35,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
+import { normalizeCtomopRow } from "../federation/api";
 import { TrialMatches } from "../federation/TrialMatches";
 import type { PatientInfo } from "../federation/types";
 import { CtomopClient } from "./ctomopClient";
@@ -87,25 +88,20 @@ function Harness() {
   }, []);
 
   // When a patient is picked, fetch the full patient profile from
-  // CTOMOP using the user's session cookie (the same one the picker
-  // listed against) and stash it as `patientInfo`. The previous
-  // resolved payload is cleared first so a stale profile can't leak
-  // into the new patient's TrialMatches mount.
+  // CTOMOP using the user's session cookie, then pipe it through
+  // EXACT's `POST /normalize-ctomop-row/` so the matcher sees
+  // EXACT-shaped values (receptor statuses → codes, TNM stripping,
+  // therapy-outcome label → ID, etc.) — mirroring what the server-side
+  // `?person_id=` resolver does. Without this chain step a meaningful
+  // subset of fields silently reads as "unknown" for CTOMOP-resolved
+  // patients.
   //
-  // NOTE on normalization: the server-side `?person_id=` resolver
-  // calls `normalize_ctomop_row` on its way to the matcher (receptor
-  // statuses → codes, TNM stripping, therapy-outcome label → ID, etc.).
-  // The inline-fetch path here skips that step — `resolve_patient_info`
-  // just hands the raw payload to `_build_in_memory`. For most
-  // diseases the matcher still returns a useful matchScore because
-  // the common fields (disease, gender, age, lab values) are already
-  // CTOMOP-shaped. Receptor-status / therapy-line / refractory fields
-  // will read as "unknown" until either (a) #108's identity flow
-  // lets EXACT credential the server-side resolver, or (b) EXACT
-  // exposes a `POST /api/normalize-ctomop-row/` helper the harness
-  // can call between fetch and matcher.
+  // The previous resolved payload is cleared first so a stale profile
+  // can't leak into the new patient's TrialMatches mount, and the
+  // cancellation token aborts state updates if the user picks another
+  // patient mid-flight.
   useEffect(() => {
-    if (personId == null) {
+    if (personId == null || apiClient == null) {
       setPatientInfo(null);
       setResolveError(null);
       setResolving(false);
@@ -115,24 +111,29 @@ function Harness() {
     setResolving(true);
     setResolveError(null);
     setPatientInfo(null);
-    new CtomopClient(currentCtomopBase())
-      .getPatient(personId)
-      .then((detail) => {
+    (async () => {
+      try {
+        const detail = await new CtomopClient(currentCtomopBase()).getPatient(personId);
         if (cancelled) return;
-        const info = (detail.patient_info ?? null) as PatientInfo | null;
-        setPatientInfo(info);
-      })
-      .catch((e) => {
+        const raw = (detail.patient_info ?? null) as PatientInfo | null;
+        if (!raw) {
+          setPatientInfo(null);
+          return;
+        }
+        const normalized = await normalizeCtomopRow(apiClient, raw);
+        if (cancelled) return;
+        setPatientInfo(normalized);
+      } catch (e) {
         if (cancelled) return;
         setResolveError((e as Error).message);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setResolving(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [personId]);
+  }, [personId, apiClient]);
 
   // Token from `VITE_EXACT_TOKEN` env wins on first mount only — a
   // `.env.local` skips the form for a faster dev loop. We deliberately
