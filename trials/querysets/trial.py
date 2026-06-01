@@ -720,7 +720,15 @@ class TrialQuerySet(models.QuerySet):
         elif status == "RECRUITING_AND_NOT_YET_RECRUITING":
             return self.filter(recruitment_status__in=["RECRUITING", "NOT_YET_RECRUITING"])
 
-        return self.eligible_for_str_value('recruitment_status', recruitment_status.upper())
+        # `allow_blank=False`: recruitment status is trial metadata, not
+        # patient eligibility — a blank or NULL `recruitment_status` on a
+        # trial is missing data, not "unknown can-match". Defaulting to
+        # `allow_blank=True` (as the helper does) silently widened
+        # filters like "COMPLETED" / "TERMINATED" to also match
+        # incompletely-ingested trials.
+        return self.eligible_for_str_value(
+            'recruitment_status', recruitment_status.upper(), allow_blank=False,
+        )
 
     def by_validated_only(self, validated_only):
         if validated_only is not True:

@@ -54,6 +54,24 @@ function TrialMatchesInner({
     setSelectedTrial(null);
   }, [personId, patientInfoKey]);
 
+  // Auto-derive `country` from the patient profile. The country filter
+  // was previously a dropdown but in practice was redundant — patients
+  // are matched to trials in their home country. We sync on every
+  // patient change (not just first mount) so swapping `patientInfo`
+  // — e.g. picking another row in the dev harness — re-scopes the
+  // trial list correctly. The equality guard prevents a `setFilters`
+  // re-render storm when the patient's country is already the active
+  // filter. `undefined` clears the param so a patient without a country
+  // gets the disease-agnostic union, not a stale previous country.
+  const patientCountry = useMemo(() => {
+    const c = (patientInfo as Record<string, unknown> | null | undefined)?.["country"];
+    return typeof c === "string" && c.trim() ? c.trim() : undefined;
+  }, [patientInfo]);
+  useEffect(() => {
+    if (filters.country === patientCountry) return;
+    setFilters((prev) => ({ ...prev, country: patientCountry }));
+  }, [patientCountry, filters.country]);
+
   const query = useTrials({ apiClient, patientInfo, personId, filters });
 
   const grouped = useMemo(() => {
@@ -155,10 +173,7 @@ function TrialMatchesInner({
 
         {selectedTrial ? (
           <TrialDetail
-            apiClient={apiClient}
             trial={selectedTrial}
-            patientInfo={patientInfo}
-            personId={personId}
             onClose={() => setSelectedTrial(null)}
           />
         ) : null}

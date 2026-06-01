@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import type { AxiosInstance } from "axios";
 
-import { useCountries, useFormSettings } from "./hooks";
+import { useFormSettings } from "./hooks";
 import type { FilterState } from "./types";
 
 interface Props {
@@ -37,7 +37,6 @@ const INPUT: CSSProperties = {
 };
 
 export function FilterBar({ apiClient, filters, onChange, diseaseCode }: Props) {
-  const countries = useCountries(apiClient);
   const formSettings = useFormSettings(apiClient, diseaseCode);
 
   // Recruitment status isn't actually exposed by `/form-settings/` —
@@ -95,25 +94,11 @@ export function FilterBar({ apiClient, filters, onChange, diseaseCode }: Props) 
           ))}
         </select>
       </label>
-      <label style={LABEL}>
-        Country
-        <select
-          style={INPUT}
-          value={filters.country ?? ""}
-          onChange={(e) => onChange({ ...filters, country: e.target.value || undefined })}
-        >
-          <option value="">All</option>
-          {countries.data?.results.map((c) => (
-            // The backend's `by_location` does
-            // `Country.objects.filter(title__iexact=country)` — so we
-            // send the country title (e.g. "United States"), not the
-            // ISO code. Send-code would silently match nothing.
-            <option key={c.id} value={c.title}>
-              {c.title}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* Country is intentionally NOT user-controlled — `TrialMatches`
+       *  derives `filters.country` from `patientInfo.country` so the
+       *  trial list scopes to the patient's geography without an extra
+       *  click. Hosts that need a cross-border search experience can
+       *  add their own override above this component. */}
       <label style={LABEL}>
         Trial type
         <select
