@@ -40,10 +40,30 @@ export function FilterBar({ apiClient, filters, onChange, diseaseCode }: Props) 
   const countries = useCountries(apiClient);
   const formSettings = useFormSettings(apiClient, diseaseCode);
 
-  // `/form-settings/` exposes the recruitment-status enum under the key
-  // `statuses` (see `value_options.py:907`), not `recruitmentStatus`.
-  // Same dict also surfaces `trialType` for the trial-type dropdown.
-  const recruitmentOptions = formSettings.data?.statuses?.options ?? [];
+  // Recruitment status isn't actually exposed by `/form-settings/` —
+  // the `statuses` key there is the patient-invitation enum
+  // ("Looking for trial", "Waiting for patient acceptance", etc.),
+  // not the trial recruitment state. The PR that originally wired
+  // `recruitmentStatus` to `statuses` (#114) made the dropdown surface
+  // semantically wrong values.
+  //
+  // The backend filter `by_recruitment_status` (`querysets/trial.py`)
+  // treats `RECRUITING` and `RECRUITING_AND_NOT_YET_RECRUITING` as
+  // special cases and falls through to a case-insensitive exact match
+  // on the raw `Trial.recruitment_status` field for anything else.
+  // The canonical CT.gov values are below; `RECRUITING_AND_NOT_YET_…`
+  // is the combined convenience value the queryset documents.
+  const recruitmentOptions = [
+    { value: "RECRUITING", label: "Recruiting" },
+    { value: "RECRUITING_AND_NOT_YET_RECRUITING", label: "Recruiting + not yet recruiting" },
+    { value: "NOT_YET_RECRUITING", label: "Not yet recruiting" },
+    { value: "ENROLLING_BY_INVITATION", label: "Enrolling by invitation" },
+    { value: "ACTIVE_NOT_RECRUITING", label: "Active, not recruiting" },
+    { value: "COMPLETED", label: "Completed" },
+    { value: "SUSPENDED", label: "Suspended" },
+    { value: "TERMINATED", label: "Terminated" },
+    { value: "WITHDRAWN", label: "Withdrawn" },
+  ];
   const trialTypeOptions = formSettings.data?.trialType?.options ?? [];
 
   return (
