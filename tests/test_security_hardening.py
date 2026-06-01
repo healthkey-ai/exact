@@ -84,10 +84,11 @@ class TestSecurityHeaders:
 
     def test_hsts_preload_is_production_only(self):
         source = _settings_source()
+        # Canonical deploy value is 'prod' (docs/setup.md); accept 'production' too.
         assert re.search(
-            r"SECURE_HSTS_PRELOAD\s*=\s*ENVIRONMENT\s*==\s*['\"]production['\"]",
+            r"SECURE_HSTS_PRELOAD\s*=\s*ENVIRONMENT\s+in\s*\(\s*['\"]prod['\"]",
             source,
-        ), "HSTS preload must be enabled only for ENVIRONMENT == 'production' (#127)."
+        ), "HSTS preload must be enabled for the 'prod' environment (#127)."
 
 
 class TestSwaggerGated:
