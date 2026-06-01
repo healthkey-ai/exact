@@ -333,9 +333,11 @@ python manage.py seed_test_trials
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | `django-insecure-…` | Django secret key — **change in production** |
-| `DEBUG` | `true` | Debug mode; set to `false` in production |
+| `DEBUG` | `false` | Debug mode; set to `true` only for local development. Pre-#24 it defaulted to `true`. |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated allowed host names |
 | `CSRF_TRUSTED_ORIGINS` | _(empty)_ | Comma-separated CSRF-trusted origins |
+| `CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated allowlist of browser origins — preferred for staging/prod. |
+| `CORS_ALLOW_ALL_ORIGINS` | `false` | Set to `true` for local-dev "let anything in" mode. Pre-#24 this was hardcoded `True` in settings. |
 | `DATABASE_NAME` | `exact` | PostgreSQL database name |
 | `DATABASE_USER` | `exact` | PostgreSQL user |
 | `DATABASE_PASSWORD` | _(empty)_ | PostgreSQL password |

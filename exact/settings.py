@@ -39,7 +39,7 @@ load_dotenv(os.path.join(BASE_DIR, _dotenv_file))
 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-change-me-in-production')
 
-DEBUG = os.environ.get('DEBUG', 'true').lower() == 'true'
+DEBUG = os.environ.get('DEBUG', 'false').lower() == 'true'
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
 
@@ -71,7 +71,15 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS allowlist must be set explicitly per environment. Defaults to empty so
+# a misconfigured deploy doesn't accept browser requests from arbitrary
+# origins; local dev can opt in with `CORS_ALLOW_ALL_ORIGINS=true`.
+CORS_ALLOWED_ORIGINS = [
+    x.strip() for x in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',') if x.strip()
+]
+CORS_ALLOW_ALL_ORIGINS = (
+    os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'false').lower() == 'true'
+)
 
 ROOT_URLCONF = 'exact.urls'
 
