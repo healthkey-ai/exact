@@ -77,15 +77,5 @@ export function makeExactClient(
     baseURL,
     timeout: DEFAULT_TIMEOUT_MS,
     headers: { Authorization: `Token ${token}` },
-    // EXACT's `/trials/` reads patient context from the request body
-    // even on GET (matches the existing CB inline contract). axios v1's
-    // default XHR adapter silently drops the body on GET — the request
-    // reaches Django with no `patient_info`, the matcher runs with no
-    // patient context, and the response is the disease-agnostic union.
-    // The fetch adapter honours GET-with-body, so EXACT actually
-    // receives the payload. (Verified end-to-end against EXACT's
-    // runserver: the XHR path logged 0-byte bodies, the fetch path
-    // logs full payloads.)
-    adapter: "fetch",
   });
 }

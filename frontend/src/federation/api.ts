@@ -3,12 +3,14 @@
 // `AxiosInstance` (token + baseURL); these functions just shape the
 // request and parse the response.
 //
-// **GET-with-body**: EXACT's `/trials/` reads `patientInfo` from the
-// request body even on GET. Axios supports `data:` on GET requests, but
-// some proxies / CDNs strip the body. The harness in #104 validates
-// this works end-to-end through the Vite dev proxy; if it ever doesn't,
-// the workaround is to switch to POST (the same view supports it via
-// the underlying DRF mixin).
+// **POST for inline patient context**: EXACT's `/trials/` historically
+// accepted `patient_info` in a GET body (legacy CB contract), but the
+// browser's Fetch API and axios v1's XHR adapter both prohibit
+// GET-with-body. When the caller has an inline patient payload we
+// instead POST to `/trials/match/` — a thin alias for the list endpoint
+// added on the EXACT side (PR #121 / `TrialsViewSet.match`). When the
+// caller has only a `personId`, we keep the GET path so the server-side
+// CTOMOP resolver (#102) handles patient fetching.
 
 import type { AxiosInstance } from "axios";
 
@@ -31,7 +33,20 @@ interface FetchTrialsArgs {
   filters?: FilterState;
 }
 
-/** GET `/trials/` — list endpoint with matching. */
+/** Fetch the trial-match list. Two paths depending on inputs:
+ *
+ *  - **Inline patient profile** (`patientInfo` non-empty): POSTs to
+ *    `/trials/match/` with `{ patient_info: … }` in the body. POST
+ *    because both the Fetch spec and axios's XHR adapter forbid
+ *    GET-with-body, and the patient payload is too large for a query
+ *    string. The endpoint is a thin alias for the list action
+ *    (`@action(methods=['post'], url_path='match')` on TrialsViewSet,
+ *    PR #121) so the response shape is unchanged.
+ *  - **Server-side resolver path** (`personId` only): GETs
+ *    `/trials/?person_id=…`. EXACT's `resolve_patient_info` will
+ *    fetch the patient from CTOMOP server-side. No body, no
+ *    Fetch-spec issue.
+ */
 export async function fetchTrials({
   apiClient,
   patientInfo,
@@ -39,18 +54,32 @@ export async function fetchTrials({
   filters,
 }: FetchTrialsArgs): Promise<TrialsResponse> {
   const params = filterStateToParams(filters);
-  if (personId != null && (patientInfo == null || Object.keys(patientInfo).length === 0)) {
+  const hasInlinePayload = patientInfo != null && Object.keys(patientInfo).length > 0;
+
+  if (hasInlinePayload) {
+    const response = await apiClient.post<TrialsResponse>(
+      "/trials/match/",
+      { patient_info: patientInfo },
+      { params },
+    );
+    return response.data;
+  }
+
+  if (personId != null) {
     params.person_id = String(personId);
   }
-  const body = patientInfo ? { patient_info: patientInfo } : undefined;
-  const response = await apiClient.get<TrialsResponse>("/trials/", {
-    params,
-    data: body,
-  });
+  const response = await apiClient.get<TrialsResponse>("/trials/", { params });
   return response.data;
 }
 
-/** GET `/trials/{id}/` — detail view. */
+/** GET `/trials/{id}/` — detail view. Patient context is intentionally
+ *  NOT sent on the detail call: the detail endpoint is GET-only
+ *  upstream and shaping a POST alias just to pass patient_info on
+ *  detail would add backend surface for marginal benefit (the
+ *  "attributesToFillIn" explanation already arrived on the list
+ *  response). When only `personId` is supplied, we forward it as a
+ *  query param so the server-side CTOMOP resolver (#102) can populate
+ *  patient context if credentialed. */
 export async function fetchTrialDetail({
   apiClient,
   trialId,
@@ -66,11 +95,7 @@ export async function fetchTrialDetail({
   if (personId != null && (patientInfo == null || Object.keys(patientInfo).length === 0)) {
     params.person_id = String(personId);
   }
-  const body = patientInfo ? { patient_info: patientInfo } : undefined;
-  const response = await apiClient.get<TrialMatch>(`/trials/${trialId}/`, {
-    params,
-    data: body,
-  });
+  const response = await apiClient.get<TrialMatch>(`/trials/${trialId}/`, { params });
   return response.data;
 }
 
