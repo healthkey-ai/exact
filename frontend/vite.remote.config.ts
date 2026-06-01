@@ -81,7 +81,24 @@ export default defineConfig(({ mode }) => {
           "react/jsx-runtime": { singleton: true, strictVersion: false },
           "react/jsx-dev-runtime": { singleton: true, strictVersion: false },
           "@tanstack/react-query": { singleton: true, strictVersion: false },
-          axios: { singleton: true, strictVersion: false },
+          // axios deliberately NOT shared. The @module-federation/vite
+          // 1.15.5 dev-mode shim wraps the axios default export through
+          // a `__mfNormalizeShareModule` peeling pass that mishandles
+          // axios's identity (its `default` self-reference combined with
+          // its `function`-typed value). The net effect at runtime: the
+          // host imports axios, calls `axios.create(...)`, and gets an
+          // instance whose method properties (`get`, `post`, …) are
+          // stripped — `apiClient.get is not a function`. Symptom-only
+          // when running `dev:remote` from a remote whose deps include
+          // axios; SoC isn't affected because it never calls `axios.create`
+          // on imported axios in code paths that the shim reaches.
+          //
+          // Loading axios normally (no federation shim) fixes the issue.
+          // Hosts that mount this remote will end up with two axios
+          // copies — fine because axios has no module-level state worth
+          // sharing (interceptors and defaults are per-instance, not
+          // per-module). Re-add when @module-federation/vite ships a
+          // fix for function-typed shared defaults.
         },
         dts: false,
       }),
