@@ -13,14 +13,18 @@ from trials.api.trials_views import (
     TrialsViewSet,
 )
 
+# The API contract (Swagger / ReDoc) is gated behind authentication so a
+# deployed instance doesn't serve its full endpoint catalogue to anonymous
+# callers. `public=False` further restricts the generated schema to endpoints
+# the requesting user can actually reach.
 schema_view = get_schema_view(
     openapi.Info(
         title="Exact — Trial Search API",
         default_version='v1',
         description="Patient-facing clinical trial search and matching engine.",
     ),
-    public=True,
-    permission_classes=[permissions.AllowAny],
+    public=False,
+    permission_classes=[permissions.IsAuthenticated],
 )
 
 app_name = 'trials'
