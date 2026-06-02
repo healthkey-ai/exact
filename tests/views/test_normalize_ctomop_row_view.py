@@ -15,10 +15,10 @@ auth, JSON parsing).
 from unittest.mock import MagicMock, patch
 
 import pytest
-from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
+from accounts.models import Identity
 from trials.api.trials_views import NormalizeCtomopRowView
 
 
@@ -123,9 +123,7 @@ class TestNormalizeCtomopRowHttp:
 
     @pytest.fixture
     def authed_client(self):
-        user, _ = User.objects.get_or_create(username='normalize-tester')
-        user.set_password('pw')
-        user.save()
+        user, _ = Identity.objects.get_or_create(issuer='urn:local', sub='normalize-tester')
         token, _ = Token.objects.get_or_create(user=user)
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')

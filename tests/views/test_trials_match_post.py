@@ -8,18 +8,16 @@ response shape, disease-scoping — so a regression that breaks the
 `self.action = 'list'` rebind or the routing wiring would fail CI.
 """
 import pytest
-from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
+from accounts.models import Identity
 from tests.factories import TrialFactory
 
 
 @pytest.fixture
 def authed_client(db):
-    user, _ = User.objects.get_or_create(username='match-tester')
-    user.set_password('pw')
-    user.save()
+    user, _ = Identity.objects.get_or_create(issuer='urn:local', sub='match-tester')
     token, _ = Token.objects.get_or_create(user=user)
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
