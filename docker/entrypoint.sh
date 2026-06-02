@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -e
 
-echo "Running migrations..."
-python manage.py migrate --run-syncdb
+case "${RUN_MIGRATIONS:-true}" in
+    0|false|no|off|FALSE|False)
+        echo "Skipping migrations (RUN_MIGRATIONS=${RUN_MIGRATIONS}); expecting a separate migrate job."
+        ;;
+    *)
+        echo "Running migrations..."
+        python manage.py migrate --run-syncdb
+        ;;
+esac
 
 bash /app/docker/init_trials_db.sh
 bash /app/docker/init_patients_db.sh
