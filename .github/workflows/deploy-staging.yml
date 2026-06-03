@@ -5,13 +5,14 @@ name: deploy-staging
 # Artifact Registry, roll out a no-traffic revision, run migrations in the
 # dedicated Cloud Run job, then switch traffic.
 #
-# Env/secret wiring for both the service and the migrate job lives in
-# Terraform (HealthTree/ht-phr infra/envs/staging/exact.tf); this workflow only
-# swaps the container image and orchestrates the rollout.
+# Env/secret wiring for both the service and the migrate job lives in the
+# staging infra Terraform; this workflow only swaps the container image and
+# orchestrates the rollout.
 #
 # Required GitHub Actions repository variables:
 #   GCP_PROJECT_ID               shared project id
 #   GCP_REGION                   e.g. us-central1
+#   GCP_AR_REPO                  Artifact Registry repository id holding the exact image
 #   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/.../providers/...
 #   GCP_SERVICE_ACCOUNT          exact-staging-gh@<project>.iam.gserviceaccount.com
 
@@ -36,7 +37,7 @@ jobs:
       MIGRATE_JOB: exact-staging-migrate
       REGION: ${{ vars.GCP_REGION }}
       REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev
-      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/ht-phr/exact
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/exact
     steps:
       - uses: actions/checkout@v4
 
