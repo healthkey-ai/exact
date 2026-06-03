@@ -19,4 +19,4 @@ cat <<'EOF'
 EOF
 
 echo "Starting gunicorn..."
-exec gunicorn exact.wsgi --workers 4 --timeout 300 --log-file - --bind 0.0.0.0:8000
+exec gunicorn exact.wsgi --workers 4 --timeout 300 --log-file - --bind "0.0.0.0:${PORT:-8080}"
