@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
-ENV PYTHONUNBUFFERED=1 PYTHONHASHSEED=random PYTHONDONTWRITEBYTECODE=1 PORT=8000
+# Cloud Run injects $PORT and routes to the container's configured port
+# (8080 in the house cloud_run module). gunicorn binds $PORT below.
+ENV PYTHONUNBUFFERED=1 PYTHONHASHSEED=random PYTHONDONTWRITEBYTECODE=1 PORT=8080
 
 RUN apt-get update \
     && apt-get -y --no-install-recommends install \
@@ -28,6 +30,11 @@ COPY . /app
 
 RUN python manage.py collectstatic --no-input
 
-EXPOSE 8000
+EXPOSE 8080
 
-CMD ["/app/docker/entrypoint.sh"]
+# Cloud Run serving command: gunicorn only. Migrations run in the dedicated
+# `exact-staging-migrate` Cloud Run job (command overridden by the house
+# cloud_run module to `manage.py migrate`), NOT in the serving container.
+# Local dev uses docker/entrypoint.sh instead, pinned via docker-compose's
+# own `entrypoint:` override — so that path (migrate + seed) is unaffected.
+CMD ["sh", "-c", "exec gunicorn exact.wsgi --workers ${GUNICORN_WORKERS:-4} --timeout ${GUNICORN_TIMEOUT:-300} --log-file - --bind 0.0.0.0:${PORT}"]
