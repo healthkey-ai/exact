@@ -4,3 +4,5 @@ trials/management/commands/load_trials_from_cancerbot.py
 # Local environment variables (never commit)
 .env
 env/
+.venv/
+data/

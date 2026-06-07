@@ -96,16 +96,26 @@ WSGI_APPLICATION = 'exact.wsgi.application'
 # Databases
 # ---------------------------------------------------------------------------
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': os.environ.get('DATABASE_NAME', 'exact'),
-        'USER': os.environ.get('DATABASE_USER', 'exact'),
-        'PASSWORD': os.environ.get('DATABASE_PASSWORD', ''),
-        'HOST': os.environ.get('DATABASE_HOST', 'localhost'),
-        'PORT': os.environ.get('DATABASE_PORT', '5432'),
+_database_url = os.environ.get('DATABASE_URL')
+if _database_url:
+    import dj_database_url
+    DATABASES = {
+        'default': dj_database_url.parse(
+            _database_url,
+            engine='django.contrib.gis.db.backends.postgis',
+        )
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.contrib.gis.db.backends.postgis',
+            'NAME': os.environ.get('DATABASE_NAME', 'exact'),
+            'USER': os.environ.get('DATABASE_USER', 'exact'),
+            'PASSWORD': os.environ.get('DATABASE_PASSWORD', ''),
+            'HOST': os.environ.get('DATABASE_HOST', 'localhost'),
+            'PORT': os.environ.get('DATABASE_PORT', '5432'),
+        }
+    }
 
 # Optional separate database for trials data.
 # Set TRIALS_DATABASE_URL to enable (e.g. postgresql://user:pass@host:5432/dbname).
