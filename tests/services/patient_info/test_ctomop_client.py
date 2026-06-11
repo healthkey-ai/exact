@@ -151,17 +151,20 @@ class TestCtomopClientFetch:
             result = client.fetch_patient(9005)
         assert result == flat
 
-    def test_envelope_with_sibling_keys_not_unwrapped(self):
-        """Only a sole `patient_info` key is the envelope. A flat row that
-        happens to carry a nested `patient_info` alongside other columns is
-        ambiguous — pass it through rather than guess (#144).
+    def test_envelope_with_sibling_keys_is_unwrapped(self):
+        """An envelope that carries metadata alongside the row (status,
+        pagination, request id) must STILL unwrap to the inner row — matching
+        the inline contract, which reads `patient_info` and ignores siblings.
+        Requiring a sole key would silently revert to the all-defaults bug if
+        CTOMOP ever adds envelope metadata (#144).
         """
         client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
-        body = {'patient_info': {'disease': 'breast cancer'}, 'person_id': 9005}
+        body = {'patient_info': {'person_id': 9005, 'disease': 'breast cancer'},
+                'status': 'ok'}
         with patch('trials.services.patient_info.ctomop_client.requests.get',
                    return_value=_ok_response(body)):
             result = client.fetch_patient(9005)
-        assert result == body
+        assert result == {'person_id': 9005, 'disease': 'breast cancer'}
 
     def test_uses_django_settings_when_no_explicit_args(self, settings):
         """Constructor falls back to CTOMOP_BASE / CTOMOP_SERVICE_TOKEN settings."""

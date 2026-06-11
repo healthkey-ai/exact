@@ -114,13 +114,17 @@ class CtomopClient:
             return None
 
         # Unwrap the `{"patient_info": {...}}` envelope the HTTP endpoint emits
-        # so the adapter receives a flat row. Only unwrap when `patient_info` is
-        # the sole key and maps to a dict — that is the envelope shape. A flat
-        # row from the psql path has many top-level columns and never a nested
-        # `patient_info`, so it passes straight through. Logged at debug so any
-        # future envelope drift is observable rather than silent (#144).
+        # so the adapter receives a flat row. Unwrap whenever a dict-valued
+        # `patient_info` key is present — NOT only when it is the sole key. This
+        # mirrors the inline request-body contract (`resolve_patient_info` reads
+        # `data['patient_info']` and ignores siblings like `person_id`), so any
+        # envelope metadata CTOMOP adds alongside the row (status, pagination,
+        # request id) still unwraps correctly instead of silently reverting to
+        # the all-defaults bug. A flat psql-path row has no `patient_info`
+        # column, so it passes straight through. Logged at debug so future
+        # envelope drift stays observable (#144).
         inner = data.get('patient_info')
-        if isinstance(inner, dict) and len(data) == 1:
+        if isinstance(inner, dict):
             logger.debug(
                 'CtomopClient unwrapped patient_info envelope for person_id=%s', person_id,
             )
