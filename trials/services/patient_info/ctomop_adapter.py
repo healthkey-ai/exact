@@ -444,6 +444,28 @@ def normalize_ctomop_row(row: dict) -> dict:
         if isinstance(dob, date):
             row['patient_age'] = (date.today() - dob).days // 365
 
+    # ── Gender — OMOP concept name / id → EXACT code ───────────────────
+    # The CTOMOP HTTP path sends the OMOP-standard gender as the concept
+    # name ('Female'=8532, 'Male'=8507); EXACT expects 'F'/'M'. Translate
+    # unconditionally — the value is already populated, so the empty-gender
+    # fallback below never sees it. Also accept a bare concept id arriving in
+    # the `gender` field itself (the endpoint may surface either shape, #145);
+    # the separate `gender_concept_id` field is still handled by the fallback.
+    # Idempotent: an already-coded 'F'/'M' row maps to itself. Other OMOP
+    # values ('Unknown'/'Ambiguous'/'Other') are left as-is and treated as
+    # non-matching by the matcher (#145).
+    g = row.get('gender')
+    if isinstance(g, str):
+        gl = g.strip().lower()
+        if gl in ('f', 'female'):
+            row['gender'] = 'F'
+        elif gl in ('m', 'male'):
+            row['gender'] = 'M'
+    elif g == 8507:
+        row['gender'] = 'M'
+    elif g == 8532:
+        row['gender'] = 'F'
+
     # ── Gender from person.gender_source_value (added by _fetch_via_db) ─
     # gender_source_value is typically 'M' / 'F' in OMOP; fallback to concept IDs.
     if not row.get('gender'):
