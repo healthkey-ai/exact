@@ -125,6 +125,47 @@ class TestCtomopClientFetch:
         # URL has the validated integer, not the raw string.
         assert mock_get.call_args.args[0] == 'https://ctomop.example.com/api/patient-info/9001/'
 
+    def test_unwraps_patient_info_envelope(self):
+        """The HTTP endpoint wraps the row in `{"patient_info": {...}}`; the
+        adapter expects a flat row. `fetch_patient` must unwrap so real fields
+        aren't nested one level too deep and silently dropped (#144).
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        envelope = {'patient_info': {'person_id': 9005, 'disease': 'breast cancer',
+                                     'patient_age': 51, 'gender': 'F'}}
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=_ok_response(envelope)):
+            result = client.fetch_patient(9005)
+        assert result == {'person_id': 9005, 'disease': 'breast cancer',
+                          'patient_age': 51, 'gender': 'F'}
+
+    def test_flat_row_passes_through_unchanged(self):
+        """Invariant: an already-flat row (the psql management-command shape)
+        must pass through untouched — no double-unwrap, no mangling (#144).
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        flat = {'person_id': 9005, 'disease': 'breast cancer',
+                'patient_age': 51, 'gender': 'F'}
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=_ok_response(flat)):
+            result = client.fetch_patient(9005)
+        assert result == flat
+
+    def test_envelope_with_sibling_keys_is_unwrapped(self):
+        """An envelope that carries metadata alongside the row (status,
+        pagination, request id) must STILL unwrap to the inner row — matching
+        the inline contract, which reads `patient_info` and ignores siblings.
+        Requiring a sole key would silently revert to the all-defaults bug if
+        CTOMOP ever adds envelope metadata (#144).
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        body = {'patient_info': {'person_id': 9005, 'disease': 'breast cancer'},
+                'status': 'ok'}
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=_ok_response(body)):
+            result = client.fetch_patient(9005)
+        assert result == {'person_id': 9005, 'disease': 'breast cancer'}
+
     def test_uses_django_settings_when_no_explicit_args(self, settings):
         """Constructor falls back to CTOMOP_BASE / CTOMOP_SERVICE_TOKEN settings."""
         settings.CTOMOP_BASE = 'https://settings.example.com'
