@@ -37,7 +37,16 @@ class CtomopClient:
         self.timeout = timeout
 
     def fetch_patient(self, person_id) -> dict | None:
-        """GET {base}/api/patient-info/{person_id}/ and return the JSON row.
+        """GET {base}/api/patient-info/{person_id}/ and return the flat JSON row.
+
+        The endpoint wraps the row in a `{"patient_info": {...}}` envelope (the
+        same shape the inline-payload request body uses). This method unwraps
+        that envelope so callers always receive a flat row — matching the shape
+        `normalize_ctomop_row`/`build_patient_info_from_ctomop_row` expect and
+        the psql management-command path already yields. Without unwrapping,
+        every real field would be nested one level too deep, silently dropped
+        by the model-field filter in `_build_in_memory`, and the PatientInfo
+        would be built entirely from defaults (#144).
 
         `person_id` MUST be a positive integer (CTOMOP's primary key shape);
         anything else returns None without making a network call. This guards
@@ -103,5 +112,18 @@ class CtomopClient:
                 person_id, type(data).__name__,
             )
             return None
+
+        # Unwrap the `{"patient_info": {...}}` envelope the HTTP endpoint emits
+        # so the adapter receives a flat row. Only unwrap when `patient_info` is
+        # the sole key and maps to a dict — that is the envelope shape. A flat
+        # row from the psql path has many top-level columns and never a nested
+        # `patient_info`, so it passes straight through. Logged at debug so any
+        # future envelope drift is observable rather than silent (#144).
+        inner = data.get('patient_info')
+        if isinstance(inner, dict) and len(data) == 1:
+            logger.debug(
+                'CtomopClient unwrapped patient_info envelope for person_id=%s', person_id,
+            )
+            return inner
 
         return data

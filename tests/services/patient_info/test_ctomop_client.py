@@ -125,6 +125,44 @@ class TestCtomopClientFetch:
         # URL has the validated integer, not the raw string.
         assert mock_get.call_args.args[0] == 'https://ctomop.example.com/api/patient-info/9001/'
 
+    def test_unwraps_patient_info_envelope(self):
+        """The HTTP endpoint wraps the row in `{"patient_info": {...}}`; the
+        adapter expects a flat row. `fetch_patient` must unwrap so real fields
+        aren't nested one level too deep and silently dropped (#144).
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        envelope = {'patient_info': {'person_id': 9005, 'disease': 'breast cancer',
+                                     'patient_age': 51, 'gender': 'F'}}
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=_ok_response(envelope)):
+            result = client.fetch_patient(9005)
+        assert result == {'person_id': 9005, 'disease': 'breast cancer',
+                          'patient_age': 51, 'gender': 'F'}
+
+    def test_flat_row_passes_through_unchanged(self):
+        """Invariant: an already-flat row (the psql management-command shape)
+        must pass through untouched — no double-unwrap, no mangling (#144).
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        flat = {'person_id': 9005, 'disease': 'breast cancer',
+                'patient_age': 51, 'gender': 'F'}
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=_ok_response(flat)):
+            result = client.fetch_patient(9005)
+        assert result == flat
+
+    def test_envelope_with_sibling_keys_not_unwrapped(self):
+        """Only a sole `patient_info` key is the envelope. A flat row that
+        happens to carry a nested `patient_info` alongside other columns is
+        ambiguous — pass it through rather than guess (#144).
+        """
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        body = {'patient_info': {'disease': 'breast cancer'}, 'person_id': 9005}
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=_ok_response(body)):
+            result = client.fetch_patient(9005)
+        assert result == body
+
     def test_uses_django_settings_when_no_explicit_args(self, settings):
         """Constructor falls back to CTOMOP_BASE / CTOMOP_SERVICE_TOKEN settings."""
         settings.CTOMOP_BASE = 'https://settings.example.com'
