@@ -716,14 +716,26 @@ class Trial(TimeStampMixin):
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
         distance_penalty = self.get_distance_penalty(patient_info)
         max_val = 20.0
-        return int(
-            (
-                float(benefit_weight) * (self.benefit_score if self.benefit_score is not None else 0.0) / max_val +
-                float(patient_burden_weight) * (1 - (self.patient_burden_score if self.patient_burden_score is not None else max_val) / max_val) +
-                float(risk_weight) * (1 - (self.risk_score if self.risk_score is not None else max_val) / max_val) +
-                float(distance_penalty_weight) * (1 - distance_penalty / max_val)
-            ) * 100 / float(weights_sum) + 0.5
-        )
+
+        # Component scores live on a 0–20 scale. Clamp before normalizing so
+        # out-of-range inputs (e.g. mis-scaled data) can't drive a component
+        # term past its weight and push the composite outside [0, 100].
+        def _clamp(value, default):
+            if value is None:
+                return default
+            return min(max_val, max(0.0, float(value)))
+
+        benefit = _clamp(self.benefit_score, 0.0)
+        burden = _clamp(self.patient_burden_score, max_val)
+        risk = _clamp(self.risk_score, max_val)
+
+        raw = (
+            float(benefit_weight) * benefit / max_val +
+            float(patient_burden_weight) * (1 - burden / max_val) +
+            float(risk_weight) * (1 - risk / max_val) +
+            float(distance_penalty_weight) * (1 - distance_penalty / max_val)
+        ) * 100 / float(weights_sum)
+        return max(0, min(100, int(raw + 0.5)))
 
     def sorted_locations_by_distance(self, user_geo_point, recruitment_status=None):
         """Return LocationTrial rows ordered by distance from user_geo_point.

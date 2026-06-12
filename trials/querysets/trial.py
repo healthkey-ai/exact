@@ -763,7 +763,7 @@ class TrialQuerySet(models.QuerySet):
                                         geo_point=None,
                                         recruitment_status=None) -> QuerySet["Trial"]:
         from django.db.models import F, ExpressionWrapper, Value, FloatField, Subquery, OuterRef, Min
-        from django.db.models.functions import Cast, Least, Coalesce
+        from django.db.models.functions import Cast, Least, Greatest, Coalesce
 
         meters_per_200_miles = 200 * 1609.34
 
@@ -798,21 +798,32 @@ class TrialQuerySet(models.QuerySet):
 
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
 
+        zero = Value(0.0, output_field=FloatField())
         max_benefit = Value(20.0, output_field=FloatField())
         max_burden = Value(20.0, output_field=FloatField())
         max_risk = Value(20.0, output_field=FloatField())
 
+        # Component scores live on a 0–20 scale; clamp each to [0, 20] (mirrors
+        # the defensive clamp in Trial.get_goodness_score) so out-of-range data
+        # can't drive a term past its weight. distance_expr is already bounded
+        # to [0, 1] by the Least(..., 1.0) above.
+        benefit_clamped = Least(Greatest(Coalesce(F('benefit_score'), zero), zero), max_benefit)
+        burden_clamped = Least(Greatest(Coalesce(F('patient_burden_score'), max_burden), zero), max_burden)
+        risk_clamped = Least(Greatest(Coalesce(F('risk_score'), max_risk), zero), max_risk)
+
         # score = (Wb×Benefit/20 + Wpb×(1−PB/20) + Wr×(1−Risk/20) + Wd×(1−DistancePenalty)) × 100 / ΣW + 0.5
         # Wb / Wpb / Wr / Wd are the caller-supplied benefit / patient-burden /
         # risk / distance weights (default 25/25/25/25 — equal). +0.5 is a
-        # rounding nudge before the IntegerField cast.
+        # rounding nudge before the IntegerField cast. The composite is clamped
+        # to [0, 100] as a final guard.
+        raw_score = (
+                benefit_weight * benefit_clamped / max_benefit +
+                patient_burden_weight * (1 - burden_clamped / max_burden) +
+                risk_weight * (1 - risk_clamped / max_risk) +
+                distance_penalty_weight * (1 - distance_expr)
+        ) * 100 / weights_sum + 0.5
         score_expr = ExpressionWrapper(
-            (
-                    benefit_weight * Coalesce(F('benefit_score'), Value(0.0)) / max_benefit +
-                    patient_burden_weight * (1 - Coalesce(F('patient_burden_score'), max_burden) / max_burden) +
-                    risk_weight * (1 - Coalesce(F('risk_score'), max_risk) / max_risk) +
-                    distance_penalty_weight * (1 - distance_expr)
-            ) * 100 / weights_sum + 0.5,
+            Least(Greatest(raw_score, zero), Value(100.0, output_field=FloatField())),
             output_field=IntegerField()
         )
 

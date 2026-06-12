@@ -37,10 +37,10 @@ TRIALS = [
         no_hiv_required=True,
         no_hepatitis_b_required=True,
         no_hepatitis_c_required=True,
-        # Scoring
-        benefit_score=80,
-        patient_burden_score=30,
-        risk_score=20,
+        # Scoring (0–20 scale; see Trial.get_goodness_score)
+        benefit_score=16,
+        patient_burden_score=6,
+        risk_score=4,
     ),
     dict(
         code='TEST-MM-002',
@@ -56,9 +56,9 @@ TRIALS = [
         prior_therapy_lines='none',
         therapy_lines_count_min=0,
         therapy_lines_count_max=0,
-        benefit_score=90,
-        patient_burden_score=60,
-        risk_score=40,
+        benefit_score=18,
+        patient_burden_score=12,
+        risk_score=8,
     ),
 
     # ── Follicular Lymphoma ───────────────────────────────────────────
@@ -76,9 +76,9 @@ TRIALS = [
         prior_therapy_lines='none',
         therapy_lines_count_min=0,
         therapy_lines_count_max=0,
-        benefit_score=75,
-        patient_burden_score=40,
-        risk_score=25,
+        benefit_score=15,
+        patient_burden_score=8,
+        risk_score=5,
     ),
     dict(
         code='TEST-FL-002',
@@ -93,9 +93,9 @@ TRIALS = [
         age_high_limit=85,
         prior_therapy_lines='moreThanOne',
         therapy_lines_count_min=2,
-        benefit_score=70,
-        patient_burden_score=25,
-        risk_score=20,
+        benefit_score=14,
+        patient_burden_score=5,
+        risk_score=4,
     ),
 
     # ── Breast Cancer ─────────────────────────────────────────────────
@@ -111,9 +111,9 @@ TRIALS = [
         age_low_limit=18,
         age_high_limit=80,
         tnbc_status=True,
-        benefit_score=85,
-        patient_burden_score=50,
-        risk_score=35,
+        benefit_score=17,
+        patient_burden_score=10,
+        risk_score=7,
     ),
     dict(
         code='TEST-BC-002',
@@ -126,9 +126,9 @@ TRIALS = [
         phases=['Phase 3'],
         age_low_limit=18,
         age_high_limit=80,
-        benefit_score=78,
-        patient_burden_score=30,
-        risk_score=20,
+        benefit_score=16,
+        patient_burden_score=6,
+        risk_score=4,
     ),
 
     # ── CLL ───────────────────────────────────────────────────────────
@@ -145,9 +145,9 @@ TRIALS = [
         age_high_limit=85,
         prior_therapy_lines='moreThanOne',
         therapy_lines_count_min=1,
-        benefit_score=82,
-        patient_burden_score=25,
-        risk_score=18,
+        benefit_score=16,
+        patient_burden_score=5,
+        risk_score=4,
     ),
     dict(
         code='TEST-CLL-002',
@@ -163,9 +163,9 @@ TRIALS = [
         prior_therapy_lines='none',
         therapy_lines_count_min=0,
         therapy_lines_count_max=0,
-        benefit_score=88,
-        patient_burden_score=35,
-        risk_score=22,
+        benefit_score=18,
+        patient_burden_score=7,
+        risk_score=4,
     ),
 ]
 
