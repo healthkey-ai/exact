@@ -17,6 +17,7 @@ from django.utils import timezone
 
 import datetime as dt
 
+from trials.constants import TRIAL_SCORE_MAX
 from trials.enums import PriorTherapyLines
 from trials.services.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
@@ -799,9 +800,10 @@ class TrialQuerySet(models.QuerySet):
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
 
         zero = Value(0.0, output_field=FloatField())
-        max_benefit = Value(20.0, output_field=FloatField())
-        max_burden = Value(20.0, output_field=FloatField())
-        max_risk = Value(20.0, output_field=FloatField())
+        score_max = float(TRIAL_SCORE_MAX)
+        max_benefit = Value(score_max, output_field=FloatField())
+        max_burden = Value(score_max, output_field=FloatField())
+        max_risk = Value(score_max, output_field=FloatField())
 
         # Component scores live on a 0–20 scale; clamp each to [0, 20] (mirrors
         # the defensive clamp in Trial.get_goodness_score) so out-of-range data

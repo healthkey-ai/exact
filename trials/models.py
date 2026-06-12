@@ -1,5 +1,6 @@
 import inflection
 
+from django.core.validators import MaxValueValidator
 from django.db import models
 from django.contrib.gis.db.models import PointField
 from django.contrib.gis.db.models.functions import Distance
@@ -14,6 +15,7 @@ from django.contrib.gis.geos import Point
 from django.utils.functional import cached_property
 
 from trials.querysets.trial import TrialQuerySet
+from trials.constants import TRIAL_SCORE_MAX
 from trials.enums import PriorTherapyLines
 from trials.services.patient_info.convertors.base_convertor import BaseConvertor
 from trials.services.patient_info.convertors.egfr_calculator import EgfrCalculator
@@ -273,9 +275,21 @@ class Trial(TimeStampMixin):
     contact_email = models.TextField(default='')
     link = models.TextField(default='')
     enrollment_count = models.PositiveIntegerField(blank=True, null=True)
-    patient_burden_score = models.PositiveIntegerField(blank=True, null=True)
-    risk_score = models.PositiveIntegerField(blank=True, null=True)
-    benefit_score = models.PositiveIntegerField(blank=True, null=True)
+    patient_burden_score = models.PositiveIntegerField(
+        blank=True, null=True,
+        validators=[MaxValueValidator(TRIAL_SCORE_MAX)],
+        help_text=f'Patient burden on a 0–{TRIAL_SCORE_MAX} scale (higher = more burden).',
+    )
+    risk_score = models.PositiveIntegerField(
+        blank=True, null=True,
+        validators=[MaxValueValidator(TRIAL_SCORE_MAX)],
+        help_text=f'Risk on a 0–{TRIAL_SCORE_MAX} scale (higher = more risk).',
+    )
+    benefit_score = models.PositiveIntegerField(
+        blank=True, null=True,
+        validators=[MaxValueValidator(TRIAL_SCORE_MAX)],
+        help_text=f'Benefit on a 0–{TRIAL_SCORE_MAX} scale (higher = more benefit).',
+    )
 
     # Study Dates
     submitted_date = models.DateField(blank=True, null=True, default=None)
@@ -630,6 +644,28 @@ class Trial(TimeStampMixin):
                 name='idx_trials_last_update',
             ),
         ]
+        constraints = [
+            # Component scores must stay on the documented 0–TRIAL_SCORE_MAX
+            # scale (see trials.constants). NULL is allowed (scores are
+            # optional). Enforced at the DB so bulk_create / update_or_create /
+            # raw save() — which bypass field validators — can't drift the
+            # scale and produce an out-of-range goodness score.
+            models.CheckConstraint(
+                condition=Q(benefit_score__isnull=True)
+                | Q(benefit_score__gte=0, benefit_score__lte=TRIAL_SCORE_MAX),
+                name='trials_benefit_score_0_20',
+            ),
+            models.CheckConstraint(
+                condition=Q(patient_burden_score__isnull=True)
+                | Q(patient_burden_score__gte=0, patient_burden_score__lte=TRIAL_SCORE_MAX),
+                name='trials_patient_burden_score_0_20',
+            ),
+            models.CheckConstraint(
+                condition=Q(risk_score__isnull=True)
+                | Q(risk_score__gte=0, risk_score__lte=TRIAL_SCORE_MAX),
+                name='trials_risk_score_0_20',
+            ),
+        ]
 
     def attrs_to_fill_in(self, counts):
         return UserToTrialAttrsMapper().potential_attrs_for_trial(self, counts)
@@ -715,7 +751,9 @@ class Trial(TimeStampMixin):
                            risk_weight=25, distance_penalty_weight=25):
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
         distance_penalty = self.get_distance_penalty(patient_info)
-        max_val = 20.0
+        # Component scores and the distance penalty are all on a 0–20 scale,
+        # so a single normalizer maps every term to [0, 1].
+        max_val = float(TRIAL_SCORE_MAX)
 
         # Component scores live on a 0–20 scale. Clamp before normalizing so
         # out-of-range inputs (e.g. mis-scaled data) can't drive a component
