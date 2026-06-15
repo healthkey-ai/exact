@@ -69,3 +69,25 @@ class TestCorsAllowAllDefault:
             r"CORS_ALLOWED_ORIGINS\s*=\s*\[?\s*[\s\S]*?os\.environ\.get\(\s*['\"]CORS_ALLOWED_ORIGINS['\"]",
             source,
         ), 'CORS_ALLOWED_ORIGINS must resolve from the env var.'
+
+
+class TestRedisTlsCertVerification:
+    """rediss:// Celery SSL must not disable cert verification unconditionally.
+
+    Pre-#157 both broker and backend pinned ssl.CERT_NONE, permitting MITM on
+    Redis traffic that can carry patient-derived task results. CERT_NONE is now
+    gated to local/DEBUG only; deployed envs use CERT_REQUIRED."""
+
+    def test_cert_none_not_used_unconditionally(self):
+        source = _settings_source()
+        # The only CERT_NONE occurrence must be the local/DEBUG-gated ternary,
+        # never a bare `ssl_cert_reqs': ssl.CERT_NONE` assignment as the value.
+        assert not re.search(
+            r"ssl_cert_reqs['\"]\s*:\s*ssl\.CERT_NONE\s*[,}]",
+            source,
+        ), 'rediss SSL must not hard-code CERT_NONE (#157).'
+
+    def test_cert_required_is_present(self):
+        source = _settings_source()
+        assert 'ssl.CERT_REQUIRED' in source, \
+            'Deployed rediss SSL must verify certs with CERT_REQUIRED (#157).'

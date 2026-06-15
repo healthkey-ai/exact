@@ -271,8 +271,19 @@ redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379')
 CELERY_BROKER_URL = redis_url
 CELERY_RESULT_BACKEND = redis_url
 if CELERY_BROKER_URL.startswith('rediss://'):
-    CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': ssl.CERT_NONE}
-    CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': ssl.CERT_NONE}
+    # Verify the broker's TLS certificate in any deployed environment. Only
+    # local/DEBUG may fall back to CERT_NONE (self-signed dev Redis); using it
+    # in prod/staging would permit MITM on Redis traffic that can carry
+    # patient-derived task results (#157). REDIS_SSL_CA_CERTS lets a deploy
+    # point at a private CA bundle.
+    _redis_ssl_local = DEBUG or ENVIRONMENT == 'local'
+    _redis_ssl = {
+        'ssl_cert_reqs': ssl.CERT_NONE if _redis_ssl_local else ssl.CERT_REQUIRED,
+    }
+    if _redis_ca := os.environ.get('REDIS_SSL_CA_CERTS'):
+        _redis_ssl['ssl_ca_certs'] = _redis_ca
+    CELERY_BROKER_USE_SSL = _redis_ssl
+    CELERY_REDIS_BACKEND_USE_SSL = dict(_redis_ssl)
 CELERY_TASK_ACKS_LATE = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
