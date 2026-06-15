@@ -342,6 +342,9 @@ class Command(BaseCommand):
                 fd = os.open(cache_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(fd, 'w') as f:
                     json.dump(cache_data, f, indent=2, default=str)
+                # O_CREAT's mode is ignored when the file already exists (e.g. a
+                # 0644 file from a prior run on --refresh), so enforce 0600 here.
+                os.chmod(cache_file, 0o600)
 
                 self.stdout.write(self.style.SUCCESS(
                     f' OK ({trial_count} trials)'
