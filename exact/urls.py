@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.authtoken.serializers import AuthTokenSerializer
@@ -21,6 +22,15 @@ class ObtainAuthToken(APIView):
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api-token-auth/', ObtainAuthToken.as_view(), name='api-token-auth'),
+]
+
+# Persistent DRF tokens are a dev/test-only credential; don't expose the
+# username/password -> token endpoint in production (#153).
+if getattr(settings, 'ENABLE_DRF_TOKEN_AUTH', False):
+    urlpatterns.append(
+        path('api-token-auth/', ObtainAuthToken.as_view(), name='api-token-auth')
+    )
+
+urlpatterns += [
     path('', include('trials.urls', namespace='trials')),
 ]
