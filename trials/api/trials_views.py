@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import F, Prefetch, QuerySet
@@ -14,6 +15,8 @@ from trials.services.blank_attribute_records_count import BlankAttributeRecordsC
 from trials.services.patient_info.resolve import resolve_patient_info
 from trials.services.study_preferences import StudyPreferences, study_preferences_from_query_params
 from trials.services.value_options import ValueOptions
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -58,10 +61,38 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     pagination_class = TrialsPagination
 
     def _resolve_patient_info(self) -> Optional['PatientInfo']:
+        # Resolve at most once per request: get_queryset and
+        # get_serializer_context both call this, and `search` can hit it
+        # several times. Re-resolving re-runs the CTOMOP round-trip, so a
+        # slow upstream multiplies per request (#159, #160). The holder is a
+        # 1-tuple so a legitimately-resolved None is still cached.
+        holder = getattr(self.request, '_exact_patient_info', None)
+        if holder is not None:
+            return holder[0]
+
+        data = getattr(self.request, 'data', None)
+        has_inline = isinstance(data, dict) and bool(data.get('patient_info'))
+
         try:
-            return resolve_patient_info(self.request)
+            patient_info = resolve_patient_info(self.request)
         except Exception:
-            return None
+            # Don't swallow into a silent None: that would run the matcher with
+            # no patient context and return an unfiltered/unscored trial list
+            # that looks valid — dangerous in a clinical matcher (#156).
+            logger.exception('Failed to build patient_info from request payload')
+            # Only a supplied inline payload that fails to build is client error
+            # (400). The CTOMOP fetch returns None on network failure (handled in
+            # CtomopClient), so an exception on the person_id path is a real
+            # server/upstream bug — let it propagate as a 500 rather than masking
+            # it as a misleading 400.
+            if has_inline:
+                raise serializers.ValidationError(
+                    {'patient_info': 'Could not build patient context from the supplied payload.'}
+                )
+            raise
+
+        self.request._exact_patient_info = (patient_info,)
+        return patient_info
 
     def _resolve_study_preferences(self) -> StudyPreferences:
         return study_preferences_from_query_params(self.request.query_params)

@@ -647,6 +647,20 @@ class TestTrialQuerySet:
         assert list(Trial.objects.by_intervention_treatment("Rituximab or Obinutuzumab or Dexamethasone").order_by('id')) == [t1, t2, t3, t4]
 
     @pytest.mark.django_db
+    def test_by_intervention_treatment_malformed_input_does_not_500(self):
+        """Adversarial / malformed input must not raise a DB syntax error (#155).
+
+        The old raw-tsquery builder produced invalid queries for multi-word
+        terms and stray operators, surfacing as unhandled 500s. websearch
+        tolerates arbitrary text.
+        """
+        TrialFactory(intervention_treatments_text='Velcade, Rituximab')
+        for bad in ['breast cancer', '& | !', 'and or not', '   ', '"unterminated',
+                    'Velcade &', '!! ((', 'a:b:c']:
+            # The query must evaluate without raising — result content is unimportant.
+            list(Trial.objects.by_intervention_treatment(bad))
+
+    @pytest.mark.django_db
     def test_by_register(self):
         t1 = TrialFactory(register='REGister2')
         t2 = TrialFactory(register='regISter1')
