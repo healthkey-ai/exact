@@ -33,6 +33,16 @@ if [ -f "$ROOT_DIR/.env" ]; then
   set +o allexport
 fi
 
+# Redact credentials from a DSN before logging: keep scheme/host/db, mask user:pass.
+mask_dsn() {
+  local dsn="$1"
+  if [[ "$dsn" =~ ^([^:]+://)[^@]*@(.*)$ ]]; then
+    printf '%s***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '%s' "$dsn"
+  fi
+}
+
 PATIENT_DB="${PATIENT_DATABASE_URL:-}"
 PERSON_IDS="${PERSON_IDS:-}"
 PATIENT_LIMIT="${PATIENT_LIMIT:-}"
@@ -55,8 +65,8 @@ fi
 echo "=============================================="
 echo "Step 1: Verify connectivity"
 echo "=============================================="
-echo "  Trials DB: $TRIALS_DATABASE_URL"
-echo "  Patient DB: $PATIENT_DATABASE_URL"
+echo "  Trials DB: $(mask_dsn "$TRIALS_DATABASE_URL")"
+echo "  Patient DB: $(mask_dsn "$PATIENT_DATABASE_URL")"
 
 TRIAL_COUNT=$(python manage.py shell -c "
 from trials.models import Trial
