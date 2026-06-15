@@ -337,6 +337,54 @@ class TestGenderNormalization:
         result = _normalize_ctomop_row(_row(gender='F', gender_source_value='M'))
         assert result['gender'] == 'F'
 
+    def test_omop_concept_name_female(self):
+        # HTTP path sends the OMOP concept name 'Female' (concept_id 8532).
+        assert _normalize_ctomop_row(_row(gender='Female'))['gender'] == 'F'
+
+    def test_omop_concept_name_male(self):
+        assert _normalize_ctomop_row(_row(gender='Male'))['gender'] == 'M'
+
+    def test_omop_concept_name_case_insensitive(self):
+        assert _normalize_ctomop_row(_row(gender='FEMALE'))['gender'] == 'F'
+        assert _normalize_ctomop_row(_row(gender=' male '))['gender'] == 'M'
+
+    def test_coded_gender_is_idempotent(self):
+        assert _normalize_ctomop_row(_row(gender='F'))['gender'] == 'F'
+        assert _normalize_ctomop_row(_row(gender='M'))['gender'] == 'M'
+
+    def test_full_word_gender_wins_over_source_value(self):
+        # A populated full-word gender is translated unconditionally; the
+        # empty-gender source-value fallback never overrides it.
+        result = _normalize_ctomop_row(_row(gender='Female', gender_source_value='M'))
+        assert result['gender'] == 'F'
+
+    def test_unknown_gender_mapped_to_blank(self):
+        # Non-binary OMOP concepts have no EXACT code; blank (None) so the
+        # matcher treats gender as unknown instead of excluding the patient.
+        assert _normalize_ctomop_row(_row(gender='Unknown'))['gender'] is None
+        assert _normalize_ctomop_row(_row(gender='Ambiguous'))['gender'] is None
+        assert _normalize_ctomop_row(_row(gender='Other'))['gender'] is None
+
+    def test_unmapped_concept_id_mapped_to_blank(self):
+        # An unrecognized concept id in `gender` is also blanked, not left as int.
+        assert _normalize_ctomop_row(_row(gender=99999))['gender'] is None
+
+    def test_empty_string_gender_falls_back_to_concept_id(self):
+        # An empty-string gender is blanked, then recovered from the concept id.
+        result = _normalize_ctomop_row(_row(gender='', gender_concept_id=8532))
+        assert result['gender'] == 'F'
+
+    def test_unknown_gender_falls_back_to_source_value(self):
+        # Blanking an unrecognized name lets the empty-gender fallback recover
+        # a value from gender_source_value when one is present.
+        result = _normalize_ctomop_row(_row(gender='Unknown', gender_source_value='M'))
+        assert result['gender'] == 'M'
+
+    def test_bare_concept_id_in_gender_field(self):
+        # The endpoint may put the OMOP concept id directly in `gender`.
+        assert _normalize_ctomop_row(_row(gender=8507))['gender'] == 'M'
+        assert _normalize_ctomop_row(_row(gender=8532))['gender'] == 'F'
+
 
 # ---------------------------------------------------------------------------
 # Receptor-status alias resolution — requires _build_code_lookup()

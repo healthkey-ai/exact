@@ -75,6 +75,7 @@ services:
         condition: service_healthy
     environment:
       SECRET_KEY: change-me
+      PORT: "8000"
       DATABASE_HOST: main_db
       DATABASE_NAME: exact
       DATABASE_USER: exact

@@ -94,6 +94,43 @@ class TestResolvePatientInfoDispatch:
         MockClient.return_value.fetch_patient.assert_not_called()
         assert result == 'inline_pi'
 
+    @pytest.mark.django_db
+    def test_enveloped_fetch_survives_into_patient_info(self):
+        """End-to-end regression for #144: an enveloped HTTP body
+        (`{"patient_info": {...}}`) fetched via CtomopClient and run through the
+        adapter must yield a PatientInfo carrying the patient's real disease /
+        age / gender — NOT the silent myeloma defaults that result when the
+        envelope is left un-unwrapped and every field is filtered away.
+        """
+        from unittest.mock import MagicMock
+        from trials.services.patient_info.ctomop_client import CtomopClient
+        from trials.services.patient_info.ctomop_adapter import (
+            build_patient_info_from_ctomop_row,
+        )
+
+        resp = MagicMock()
+        resp.ok = True
+        resp.status_code = 200
+        resp.reason = 'OK'
+        resp.json.return_value = {
+            'patient_info': {
+                'person_id': 9005,
+                'disease': 'breast cancer',
+                'patient_age': 51,
+                'gender': 'F',
+            },
+        }
+        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
+        with patch('trials.services.patient_info.ctomop_client.requests.get',
+                   return_value=resp):
+            row = client.fetch_patient(9005)
+
+        pi = build_patient_info_from_ctomop_row(row)
+
+        assert pi.disease == 'breast cancer'   # not the 'multiple myeloma' default
+        assert pi.patient_age == 51            # not None
+        assert pi.gender == 'F'                # not None
+
     def test_ctomop_client_returns_none_propagates(self):
         """Client failure (network, 4xx/5xx, malformed JSON) → resolver returns None."""
         req = _mock_request(query_params={'person_id': '9001'})
