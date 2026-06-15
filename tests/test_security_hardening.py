@@ -125,12 +125,26 @@ class TestDrfTokenAuthGated:
 
     def test_token_auth_flag_defaults_off_outside_local(self):
         source = _settings_source()
-        # The default expression must be local/DEBUG-gated, not a bare 'true'.
+        # The default must fail closed: gated on DEBUG or an EXPLICIT
+        # os.environ ENVIRONMENT=='local' (NOT the module-level ENVIRONMENT,
+        # which defaults to 'local' when unset and would fail open in prod).
         assert re.search(
-            r"ENABLE_DRF_TOKEN_AUTH\s*=\s*os\.environ\.get\(\s*['\"]ENABLE_DRF_TOKEN_AUTH['\"]\s*,\s*"
-            r"'true'\s+if\s*\(?\s*DEBUG\s+or\s+ENVIRONMENT\s*==\s*['\"]local['\"]",
+            r"_token_auth_default\s*=\s*\(?\s*\n?\s*'true'\s+if\s+\(?\s*DEBUG\s+or\s+"
+            r"os\.environ\.get\(\s*['\"]ENVIRONMENT['\"]\s*\)\s*==\s*['\"]local['\"]",
             source,
-        ), "ENABLE_DRF_TOKEN_AUTH must default off outside local/DEBUG (#153)."
+        ), "ENABLE_DRF_TOKEN_AUTH default must fail closed on an unset ENVIRONMENT (#153)."
+
+    def test_token_auth_default_rule_fails_closed(self):
+        # Lock the truth table of the default-enable rule, including the
+        # security-critical fail-closed case: ENVIRONMENT unset -> tokens OFF.
+        def enabled(debug, environ):
+            return debug or environ.get('ENVIRONMENT') == 'local'
+
+        assert enabled(True, {}) is True                      # DEBUG
+        assert enabled(False, {'ENVIRONMENT': 'local'}) is True   # explicit local
+        assert enabled(False, {'ENVIRONMENT': 'prod'}) is False   # prod
+        assert enabled(False, {'ENVIRONMENT': 'staging'}) is False
+        assert enabled(False, {}) is False                    # unset -> fail closed
 
     def test_token_authentication_not_unconditional(self):
         source = _settings_source()
@@ -150,8 +164,8 @@ class TestDrfTokenAuthGated:
         ), "/api-token-auth/ must be registered only when ENABLE_DRF_TOKEN_AUTH (#153)."
 
     def test_token_auth_enabled_in_test_env(self):
-        # In the test env (ENVIRONMENT unset -> 'local') the dev harness keeps
-        # working: flag on, TokenAuthentication active, endpoint routed.
+        # The test env sets ENVIRONMENT=local (exact/test_settings.py shim), so
+        # the dev harness keeps working: flag on, TokenAuthentication active.
         from django.conf import settings
         from django.urls import reverse
 

@@ -235,8 +235,16 @@ SERVICE_AUTH_TOKEN = os.environ.get('SERVICE_AUTH_TOKEN', '')
 # harness and tests; deployed environments must use Firebase / the service
 # token. The `/api-token-auth/` endpoint is registered only when this is on
 # (see exact/urls.py) (#153).
+#
+# Fail closed: the default enables tokens only for DEBUG or an EXPLICIT
+# `ENVIRONMENT=local`. A deployed env that forgets to set ENVIRONMENT (the
+# module-level default would otherwise read as 'local') gets tokens OFF, not
+# ON — so a misconfigured prod can't silently expose persistent tokens.
+_token_auth_default = (
+    'true' if (DEBUG or os.environ.get('ENVIRONMENT') == 'local') else 'false'
+)
 ENABLE_DRF_TOKEN_AUTH = os.environ.get(
-    'ENABLE_DRF_TOKEN_AUTH', 'true' if (DEBUG or ENVIRONMENT == 'local') else 'false'
+    'ENABLE_DRF_TOKEN_AUTH', _token_auth_default
 ).lower() in ('1', 'true')
 
 _AUTH_CLASSES = [
