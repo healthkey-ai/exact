@@ -1,0 +1,56 @@
+# EXACT Cloud Run image — adds a Node build stage to the backend image so
+# the Module Federation remote (remoteEntry.js + chunks) is built and served
+# by WhiteNoise alongside the API. Mirrors ctomop/soc Dockerfile.gcp.
+#
+# The plain Dockerfile is backend-only (no frontend) for local dev/compose.
+#
+# Build:
+#   docker build --platform linux/amd64 -f Dockerfile.gcp -t exact:gcp .
+
+# syntax=docker/dockerfile:1
+
+# ── Stage 1: Frontend federation remote ──────────────────────────────
+FROM node:20-slim AS frontend
+
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci --legacy-peer-deps
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Runtime (Python backend + remote bundle) ────────────────
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 PYTHONHASHSEED=random PYTHONDONTWRITEBYTECODE=1 PORT=8080 \
+    WHITENOISE_ROOT=/app/frontend/dist/remote
+
+RUN apt-get update \
+    && apt-get -y --no-install-recommends install \
+    g++ \
+    libpq-dev \
+    gdal-bin \
+    libgdal-dev \
+    libgeos-dev \
+    libgeos-c1v5 \
+    postgresql-client \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+COPY requirements.txt /tmp/requirements.txt
+
+RUN useradd -m -d /app -u 1000 app
+USER app
+WORKDIR /app
+ENV PATH="$PATH:/app/.local/bin"
+
+RUN python3 -m pip install --upgrade pip \
+    && pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY --chown=app:app . /app
+COPY --from=frontend --chown=app:app /app/frontend/dist/remote /app/frontend/dist/remote
+
+RUN python manage.py collectstatic --no-input
+
+EXPOSE 8080
+
+CMD ["/app/docker/entrypoint.sh"]
