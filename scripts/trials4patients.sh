@@ -34,10 +34,14 @@ if [ -f "$ROOT_DIR/.env" ]; then
 fi
 
 # Redact credentials from a DSN before logging: keep scheme/host/db, mask user:pass.
+# Greedy match to the LAST '@' so a password containing '@' is fully masked, and
+# handle schemeless DSNs (user:pass@host/db) that still carry credentials.
 mask_dsn() {
   local dsn="$1"
-  if [[ "$dsn" =~ ^([^:]+://)[^@]*@(.*)$ ]]; then
+  if [[ "$dsn" =~ ^([^:]+://).*@(.*)$ ]]; then
     printf '%s***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  elif [[ "$dsn" =~ ^.*@(.*)$ ]]; then
+    printf '***@%s' "${BASH_REMATCH[1]}"
   else
     printf '%s' "$dsn"
   fi

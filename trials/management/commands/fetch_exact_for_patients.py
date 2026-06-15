@@ -339,7 +339,10 @@ class Command(BaseCommand):
                     'details': details,
                 }
                 trial_count = len(trial_ids)
-                fd = os.open(cache_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                # O_NOFOLLOW: refuse to follow a planted symlink at the cache
+                # path (would otherwise write PHI / chmod the link target).
+                fd = os.open(cache_file,
+                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, 'w') as f:
                     json.dump(cache_data, f, indent=2, default=str)
                 # O_CREAT's mode is ignored when the file already exists (e.g. a
