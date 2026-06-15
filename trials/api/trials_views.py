@@ -70,19 +70,26 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         if holder is not None:
             return holder[0]
 
+        data = getattr(self.request, 'data', None)
+        has_inline = isinstance(data, dict) and bool(data.get('patient_info'))
+
         try:
             patient_info = resolve_patient_info(self.request)
-        except Exception as exc:
-            # Don't swallow into a silent None: that would run the matcher
-            # with no patient context and return an unfiltered/unscored trial
-            # list that looks valid — dangerous in a clinical matcher (#156).
-            # The CTOMOP path returns None on failure (handled in CtomopClient),
-            # so an exception here means the supplied inline payload couldn't
-            # be built — i.e. bad client input.
+        except Exception:
+            # Don't swallow into a silent None: that would run the matcher with
+            # no patient context and return an unfiltered/unscored trial list
+            # that looks valid — dangerous in a clinical matcher (#156).
             logger.exception('Failed to build patient_info from request payload')
-            raise serializers.ValidationError(
-                {'patient_info': f'Could not build patient context from the request: {exc}'}
-            )
+            # Only a supplied inline payload that fails to build is client error
+            # (400). The CTOMOP fetch returns None on network failure (handled in
+            # CtomopClient), so an exception on the person_id path is a real
+            # server/upstream bug — let it propagate as a 500 rather than masking
+            # it as a misleading 400.
+            if has_inline:
+                raise serializers.ValidationError(
+                    {'patient_info': 'Could not build patient context from the supplied payload.'}
+                )
+            raise
 
         self.request._exact_patient_info = (patient_info,)
         return patient_info
