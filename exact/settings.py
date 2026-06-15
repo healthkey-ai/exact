@@ -214,10 +214,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # House API auth standard (OIDC shared-Identity model)
 # PartnerAuthentication verifies a Firebase ID token (the only
 # browser-appropriate credential); ServiceTokenAuthentication compares a shared
-# bearer against SERVICE_AUTH_TOKEN for server-to-server calls. TokenAuth +
-# Session remain as a transitional credential for the local dev harness
-# (`/api-token-auth/`) and existing tests; production callers use Firebase or
-# the service token. Default-deny stays (IsAuthenticated).
+# bearer against SERVICE_AUTH_TOKEN for server-to-server calls. DRF TokenAuth is
+# gated behind ENABLE_DRF_TOKEN_AUTH (on for local/dev/tests, off in prod — see
+# below); SessionAuthentication stays for the browsable API/admin. Production
+# callers use Firebase or the service token. Default-deny stays (IsAuthenticated).
 # ---------------------------------------------------------------------------
 PARTNER_AUTH_PROVIDERS = [
     'accounts.providers.firebase.FirebaseTokenProvider',
@@ -229,13 +229,26 @@ FIREBASE_SKIP_REVOCATION_CHECK = os.environ.get(
 AUTH_TOKEN_CACHE_TTL = int(os.environ.get('AUTH_TOKEN_CACHE_TTL', '60'))
 SERVICE_AUTH_TOKEN = os.environ.get('SERVICE_AUTH_TOKEN', '')
 
+# Persistent DRF tokens (username/password -> never-expiring bearer, no scope,
+# audience, tenant binding, or rotation) are unacceptable for a PHI service in
+# production. Keep them only as a transitional credential for the local dev
+# harness and tests; deployed environments must use Firebase / the service
+# token. The `/api-token-auth/` endpoint is registered only when this is on
+# (see exact/urls.py) (#153).
+ENABLE_DRF_TOKEN_AUTH = os.environ.get(
+    'ENABLE_DRF_TOKEN_AUTH', 'true' if (DEBUG or ENVIRONMENT == 'local') else 'false'
+).lower() in ('1', 'true')
+
+_AUTH_CLASSES = [
+    'accounts.authentication.ServiceTokenAuthentication',
+    'accounts.authentication.PartnerAuthentication',
+]
+if ENABLE_DRF_TOKEN_AUTH:
+    _AUTH_CLASSES.append('rest_framework.authentication.TokenAuthentication')
+_AUTH_CLASSES.append('rest_framework.authentication.SessionAuthentication')
+
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'accounts.authentication.ServiceTokenAuthentication',
-        'accounts.authentication.PartnerAuthentication',
-        'rest_framework.authentication.TokenAuthentication',
-        'rest_framework.authentication.SessionAuthentication',
-    ],
+    'DEFAULT_AUTHENTICATION_CLASSES': _AUTH_CLASSES,
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],

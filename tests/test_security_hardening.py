@@ -14,6 +14,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_PATH = _ROOT / 'exact' / 'settings.py'
 URLS_PATH = _ROOT / 'trials' / 'urls.py'
+EXACT_URLS_PATH = _ROOT / 'exact' / 'urls.py'
 
 
 def _settings_source():
@@ -22,6 +23,10 @@ def _settings_source():
 
 def _urls_source():
     return URLS_PATH.read_text()
+
+
+def _exact_urls_source():
+    return EXACT_URLS_PATH.read_text()
 
 
 class TestSecretKey:
@@ -109,3 +114,48 @@ class TestSwaggerGated:
         source = _urls_source()
         assert re.search(r"public\s*=\s*False", source), \
             "schema_view should be public=False so the schema is access-scoped (#127)."
+
+
+class TestDrfTokenAuthGated:
+    """Persistent DRF tokens (never-expiring, unscoped bearers minted from
+    username/password) must not be enabled in production for a PHI service.
+    They're gated behind ENABLE_DRF_TOKEN_AUTH, defaulting off outside
+    local/DEBUG, and the `/api-token-auth/` endpoint is only registered when
+    the flag is on (#153)."""
+
+    def test_token_auth_flag_defaults_off_outside_local(self):
+        source = _settings_source()
+        # The default expression must be local/DEBUG-gated, not a bare 'true'.
+        assert re.search(
+            r"ENABLE_DRF_TOKEN_AUTH\s*=\s*os\.environ\.get\(\s*['\"]ENABLE_DRF_TOKEN_AUTH['\"]\s*,\s*"
+            r"'true'\s+if\s*\(?\s*DEBUG\s+or\s+ENVIRONMENT\s*==\s*['\"]local['\"]",
+            source,
+        ), "ENABLE_DRF_TOKEN_AUTH must default off outside local/DEBUG (#153)."
+
+    def test_token_authentication_not_unconditional(self):
+        source = _settings_source()
+        # TokenAuthentication must be appended conditionally, never hard-listed
+        # in DEFAULT_AUTHENTICATION_CLASSES.
+        assert re.search(
+            r"if\s+ENABLE_DRF_TOKEN_AUTH\s*:\s*\n\s*_AUTH_CLASSES\.append\(\s*"
+            r"['\"]rest_framework\.authentication\.TokenAuthentication['\"]",
+            source,
+        ), "TokenAuthentication must be appended only when ENABLE_DRF_TOKEN_AUTH (#153)."
+
+    def test_token_endpoint_is_flag_guarded(self):
+        source = _exact_urls_source()
+        assert re.search(
+            r"if\s+getattr\(\s*settings,\s*['\"]ENABLE_DRF_TOKEN_AUTH['\"]",
+            source,
+        ), "/api-token-auth/ must be registered only when ENABLE_DRF_TOKEN_AUTH (#153)."
+
+    def test_token_auth_enabled_in_test_env(self):
+        # In the test env (ENVIRONMENT unset -> 'local') the dev harness keeps
+        # working: flag on, TokenAuthentication active, endpoint routed.
+        from django.conf import settings
+        from django.urls import reverse
+
+        assert settings.ENABLE_DRF_TOKEN_AUTH is True
+        assert 'rest_framework.authentication.TokenAuthentication' in \
+            settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES']
+        assert reverse('api-token-auth')  # resolves without raising
