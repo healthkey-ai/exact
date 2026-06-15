@@ -605,38 +605,6 @@ class TrialQuerySet(models.QuerySet):
 
         return self
 
-    def with_distance_optimized_old(self, geo_point, max_distance=None):
-        if not geo_point:
-            return self
-
-        from trials.models import LocationTrial
-        from django.db.models import Subquery, OuterRef, Value, Case, When, IntegerField
-        from django.contrib.gis.db.models.functions import Distance
-
-        location_qs = LocationTrial.objects.filter(
-            trial=OuterRef('pk')
-        )
-
-        if max_distance is not None:
-            location_qs = location_qs.filter(
-                location__geo_point__dwithin=(geo_point, max_distance)
-            )
-
-        location_qs = location_qs.annotate(
-            dist=Distance('location__geo_point', geo_point)
-        ).order_by('dist')
-
-        qs = self.annotate(
-            distance=Subquery(location_qs.values('dist')[:1]),
-            is_null_distance=Case(
-                When(distance__isnull=True, then=Value(1)),
-                default=Value(0),
-                output_field=IntegerField()
-            )
-        ).distinct()
-
-        return qs
-
     def with_distance_optimized(self, geo_point, max_distance=None, recruitment_status=None):
         if not geo_point:
             return self

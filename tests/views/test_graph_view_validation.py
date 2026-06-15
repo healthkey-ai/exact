@@ -34,7 +34,9 @@ class TestGraphViewValidation:
 
     def test_non_numeric_n_returns_400(self, authed_client):
         # Patient context present so we exercise the n-validation branch.
-        with patch('trials.api.graph_view.resolve_patient_info', return_value=MagicMock()):
+        # graph resolves via the shared TrialsViewSet._resolve_patient_info,
+        # which calls resolve_patient_info imported into trials_views.
+        with patch('trials.api.trials_views.resolve_patient_info', return_value=MagicMock()):
             resp = authed_client.get('/trials-graph/graph/?n=not-a-number')
         assert resp.status_code == 400
         assert "'n'" in str(resp.data)
