@@ -25,6 +25,22 @@ def test_all_negative_falls_back_to_equal_weights():
     assert normalize_goodness_weights(-1, -2, -3, -4) == (25.0, 25.0, 25.0, 25.0)
 
 
-def test_sum_never_zero():
-    for weights in [(0, 0, 0, 0), (-1, -1, -1, -1), (0.0, 0.0, 0.0, 0.0)]:
-        assert sum(normalize_goodness_weights(*weights)) > 0
+def test_non_finite_weights_are_dropped():
+    # inf/-inf/nan would otherwise propagate to a NaN score -> 500 on cast.
+    assert normalize_goodness_weights(float('inf'), 10, 0, 0) == (0.0, 10.0, 0.0, 0.0)
+    assert normalize_goodness_weights(float('nan'), 10, 0, 0) == (0.0, 10.0, 0.0, 0.0)
+    assert normalize_goodness_weights(float('-inf'), 10, 0, 0) == (0.0, 10.0, 0.0, 0.0)
+
+
+def test_all_non_finite_falls_back_to_equal_weights():
+    inf, nan = float('inf'), float('nan')
+    assert normalize_goodness_weights(inf, -inf, nan, inf) == (25.0, 25.0, 25.0, 25.0)
+
+
+def test_result_always_finite_and_sum_positive():
+    import math
+    for weights in [(0, 0, 0, 0), (-1, -1, -1, -1), (0.0, 0.0, 0.0, 0.0),
+                    (float('inf'), float('nan'), float('-inf'), 0)]:
+        result = normalize_goodness_weights(*weights)
+        assert all(math.isfinite(w) for w in result)
+        assert sum(result) > 0
