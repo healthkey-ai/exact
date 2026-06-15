@@ -19,7 +19,7 @@ import logging
 
 from django.conf import settings
 from django.core.cache import cache as django_cache
-from rest_framework.authentication import BaseAuthentication, SessionAuthentication
+from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
 from .models import Identity
@@ -151,10 +151,3 @@ class ServiceTokenAuthentication(BaseAuthentication):
 
     def authenticate_header(self, request):
         return "Bearer"
-
-
-class CsrfExemptSessionAuthentication(SessionAuthentication):
-    """SessionAuthentication without the built-in CSRF enforcement."""
-
-    def enforce_csrf(self, request):
-        return

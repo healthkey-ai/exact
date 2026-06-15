@@ -11,7 +11,6 @@ from trials.api.graph_serializers import GraphTrialNodeSerializer
 from trials.api.patient_info_serializers import PatientInfoSerializer
 from trials.api.trials_views import TrialsViewSet
 from trials.services.attribute_names import AttributeNames
-from trials.services.patient_info.resolve import resolve_patient_info
 from trials.services.trial_details.trial_templates import TrialTemplates
 
 
@@ -66,7 +65,7 @@ class TrialsGraphViewSet(TrialsViewSet):
 
     @action(methods=["get"], detail=False, url_path="graph", url_name="graph")
     def graph(self, request, *args, **kwargs):
-        patient_info = resolve_patient_info(request)
+        patient_info = self._resolve_patient_info()
         if patient_info is None:
             return Response(
                 {"detail": "Graph view requires patient context "
