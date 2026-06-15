@@ -38,6 +38,7 @@ scripts/cb/
 scripts/harvard/
 scripts/harvard*/
 scripts/*.zip
+scripts/cache/
 *.csv
 !scripts/evaluator/ground_truth.csv
 
