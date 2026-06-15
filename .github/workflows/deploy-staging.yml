@@ -57,7 +57,8 @@ jobs:
 
       - name: Build and push image
         run: |
-          docker build -f Dockerfile.gcp -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker build --platform linux/amd64 --provenance=false -f Dockerfile.gcp \
+            -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
 
