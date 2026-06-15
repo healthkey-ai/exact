@@ -713,6 +713,12 @@ class Trial(TimeStampMixin):
 
     def get_goodness_score(self, patient_info, benefit_weight=25, patient_burden_weight=25,
                            risk_weight=25, distance_penalty_weight=25):
+        from trials.services.utils import normalize_goodness_weights
+        benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight = (
+            normalize_goodness_weights(
+                benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight
+            )
+        )
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
         distance_penalty = self.get_distance_penalty(patient_info)
         max_val = 20.0

@@ -36,6 +36,21 @@ def to_date(value):
         return value
 
 
+def normalize_goodness_weights(benefit, patient_burden, risk, distance_penalty):
+    """Clamp goodness-score weights to a safe, non-degenerate set.
+
+    Weights come from query params, so negative values and an all-zero set are
+    attacker-reachable. A zero sum divides the score by zero (Postgres raises,
+    or Python ZeroDivisionError), so guard here: clamp negatives to 0 and, if
+    nothing positive remains, fall back to equal weights (25/25/25/25).
+    Returns the four weights as floats.
+    """
+    weights = [max(0.0, float(w)) for w in (benefit, patient_burden, risk, distance_penalty)]
+    if sum(weights) <= 0:
+        weights = [25.0, 25.0, 25.0, 25.0]
+    return tuple(weights)
+
+
 def get_overlap(a, b):
     def list_of_str(values):
         return [str(x) for x in values]

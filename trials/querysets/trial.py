@@ -518,20 +518,23 @@ class TrialQuerySet(models.QuerySet):
         if not search_treatment or search_treatment == '':
             return self
 
+        # Translate the legacy word-operator grammar into websearch syntax.
+        # websearch_to_tsquery tolerates arbitrary text (it never raises on
+        # malformed input), unlike the raw tsquery this used to hand-build —
+        # which 500'd on unbalanced operators and on any multi-word term.
         query = search_treatment.lower()
-        query = f"'{query}'"
-        query = query.replace(' and not ', "' & !'")
-        query = query.replace(' not ', "' & !'")
-        if query.startswith("'not "):
-            query = query.replace("'not ", "!'")
-        query = query.replace(' and ', "' & '")
-        query = query.replace(' or ', "' | '")
+        query = query.replace(' and not ', ' -')
+        query = query.replace(' not ', ' -')
+        if query.startswith('not '):
+            query = '-' + query[len('not '):]
+        query = query.replace(' and ', ' ')
+        # 'or' is already the OR operator in websearch syntax — left as-is.
 
         # https://docs.djangoproject.com/en/5.1/ref/contrib/postgres/search/#full-text-search
         return self.annotate(
             search=SearchVector("intervention_treatments_text"),
         ).filter(
-            search=SearchQuery(query, search_type="raw")
+            search=SearchQuery(query, search_type="websearch")
         )
 
     def by_register(self, register):
@@ -764,6 +767,13 @@ class TrialQuerySet(models.QuerySet):
                                         recruitment_status=None) -> QuerySet["Trial"]:
         from django.db.models import F, ExpressionWrapper, Value, FloatField, Subquery, OuterRef, Min
         from django.db.models.functions import Cast, Least, Coalesce
+        from trials.services.utils import normalize_goodness_weights
+
+        benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight = (
+            normalize_goodness_weights(
+                benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight
+            )
+        )
 
         meters_per_200_miles = 200 * 1609.34
 

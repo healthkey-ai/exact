@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from django.conf import settings
+from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -66,8 +67,21 @@ class TrialsGraphViewSet(TrialsViewSet):
     @action(methods=["get"], detail=False, url_path="graph", url_name="graph")
     def graph(self, request, *args, **kwargs):
         patient_info = resolve_patient_info(request)
+        if patient_info is None:
+            return Response(
+                {"detail": "Graph view requires patient context "
+                           "(provide person_id or inline patient_info)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        n = max(1, min(int(request.query_params.get("n", 50)), 200))
+        try:
+            n = int(request.query_params.get("n", 50))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Query param 'n' must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        n = max(1, min(n, 200))
 
         prev_action = getattr(self, "action", None)
         self.action = "search"
