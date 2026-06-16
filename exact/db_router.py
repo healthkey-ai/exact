@@ -62,7 +62,13 @@ class TrialsDatabaseRouter:
             return None
 
         if app_label == _TRIALS_APP:
-            # External trials DB — schema is managed externally, never migrate.
+            # The trials DB is treated as an externally-managed, read-only
+            # catalog by default, so its schema is never migrated. On a copy we
+            # actually own and want to keep current (e.g. staging), set
+            # TRIALS_DB_MIGRATE=true to apply trials migrations to the 'trials'
+            # alias via `migrate --database=trials`.
+            if getattr(settings, 'TRIALS_DB_MIGRATE', False):
+                return db == _TRIALS_DB
             return False
         else:
             # Everything else only on default.
