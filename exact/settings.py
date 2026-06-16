@@ -87,6 +87,10 @@ AUTH_USER_MODEL = 'accounts.Identity'
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    # Serves the Module Federation remote bundle (remoteEntry.js + chunks)
+    # from WHITENOISE_ROOT with cross-origin headers so the ht-phr host can
+    # load it. Active only when WHITENOISE_ROOT resolves (Dockerfile.gcp).
+    'exact.middleware.CorsWhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -276,6 +280,18 @@ REST_FRAMEWORK = {
 
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+
+# Module Federation remote: WhiteNoise serves the built remote bundle
+# (frontend/dist/remote) at the service root so the ht-phr host can fetch
+# /remoteEntry.js cross-origin. Set explicitly in the cloud image
+# (Dockerfile.gcp); falls back to the on-disk build dir if present.
+_whitenoise_root = os.environ.get('WHITENOISE_ROOT', '')
+if _whitenoise_root:
+    WHITENOISE_ROOT = Path(_whitenoise_root)
+else:
+    _candidate = BASE_DIR / 'frontend' / 'dist' / 'remote'
+    if _candidate.exists():
+        WHITENOISE_ROOT = _candidate
 
 LOGGING = {
     "version": 1,
