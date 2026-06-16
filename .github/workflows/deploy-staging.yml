@@ -77,6 +77,18 @@ jobs:
           gcloud run jobs execute "$MIGRATE_JOB" \
             --region "$REGION" \
             --wait
+          # Second pass migrates the split trials DB. The migrate_trials_db
+          # command self-gates on settings.TRIALS_DB_MIGRATE inside the
+          # container: a no-op (returns before opening the 'trials' connection)
+          # unless the flag is on, so an externally-managed/read-only trials DB
+          # is never touched and its django_migrations recorder is never
+          # created. When on (a copy we own, e.g. staging) it runs
+          # `migrate --database=trials --fake-initial`, which idempotently fakes
+          # 0001 against the seeded copy and applies the rest for real.
+          gcloud run jobs execute "$MIGRATE_JOB" \
+            --region "$REGION" \
+            --wait \
+            --args=manage.py,migrate_trials_db
 
       - name: Route traffic to new revision
         run: |

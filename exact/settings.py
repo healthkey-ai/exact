@@ -191,6 +191,12 @@ if _trials_db_url:
         engine='django.contrib.gis.db.backends.postgis',
     )
 
+# When the trials DB is a copy we own (not the external read-only catalog),
+# enable this so `migrate --database=trials` applies trials migrations to it.
+# Default false keeps the external/prod trials DB untouched. See
+# exact.db_router.TrialsDatabaseRouter.allow_migrate.
+TRIALS_DB_MIGRATE = os.environ.get('TRIALS_DB_MIGRATE', 'false').lower() == 'true'
+
 DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 
 CACHES = {
