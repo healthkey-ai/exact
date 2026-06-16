@@ -181,16 +181,15 @@ else:
 # Set TRIALS_DATABASE_URL to enable (e.g. postgresql://user:pass@host:5432/dbname).
 _trials_db_url = os.environ.get('TRIALS_DATABASE_URL')
 if _trials_db_url:
-    from urllib.parse import urlparse
-    _parsed = urlparse(_trials_db_url)
-    DATABASES['trials'] = {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': _parsed.path.lstrip('/'),
-        'USER': _parsed.username or 'exact',
-        'PASSWORD': _parsed.password or '',
-        'HOST': _parsed.hostname or 'localhost',
-        'PORT': str(_parsed.port or 5432),
-    }
+    # Parse with dj_database_url (like 'default' above), not a hand-rolled
+    # urlparse: the Cloud SQL socket form (postgis://user:pw@/db?host=/cloudsql/
+    # INSTANCE) has an empty netloc host, so urlparse().hostname is None and the
+    # ?host= socket param is dropped — the trials alias then fell back to
+    # localhost:5432 and every trials-app read 500'd with "connection refused".
+    DATABASES['trials'] = dj_database_url.parse(
+        _trials_db_url,
+        engine='django.contrib.gis.db.backends.postgis',
+    )
 
 DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 
