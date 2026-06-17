@@ -6,6 +6,7 @@ from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from rest_framework.views import APIView
 
 from trials.api.pagination import TrialsPagination
@@ -75,6 +76,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         try:
             patient_info = resolve_patient_info(self.request)
+        except APIException:
+            # Already an HTTP-meaningful response (e.g. PermissionDenied from
+            # the person_id IDOR gate, #150) — let DRF render it as-is.
+            raise
         except Exception:
             # Don't swallow into a silent None: that would run the matcher with
             # no patient context and return an unfiltered/unscored trial list

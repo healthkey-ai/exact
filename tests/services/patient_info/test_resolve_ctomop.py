@@ -9,6 +9,8 @@ Resolution order under test:
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.test import override_settings
+from rest_framework.exceptions import PermissionDenied
 
 from trials.services.patient_info.resolve import resolve_patient_info
 
@@ -143,3 +145,49 @@ class TestResolvePatientInfoDispatch:
             assert resolve_patient_info(req) is None
             # Adapter not invoked on missing row.
             mock_build.assert_not_called()
+
+
+class TestPersonIdLookupGate:
+    """The `?person_id=` path is an IDOR (CTOMOP service token isn't bound to
+    the caller). It's gated behind EXACT_ALLOW_PERSON_ID_LOOKUP — off in prod.
+    When off, a person_id request is rejected (403) rather than silently
+    ignored; the inline path is unaffected. (#150/#108)"""
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    def test_query_param_person_id_rejected_when_gate_off(self):
+        req = _mock_request(query_params={'person_id': '9001'})
+        with patch(
+            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+        ) as MockClient:
+            with pytest.raises(PermissionDenied):
+                resolve_patient_info(req)
+            MockClient.return_value.fetch_patient.assert_not_called()
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    def test_body_person_id_rejected_when_gate_off(self):
+        req = _mock_request(data={'person_id': 9003})
+        with pytest.raises(PermissionDenied):
+            resolve_patient_info(req)
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    def test_inline_payload_unaffected_when_gate_off(self):
+        req = _mock_request(data={'patient_info': {'disease': 'multiple myeloma'}})
+        with patch('trials.services.patient_info.resolve._build_in_memory') as mock_inline:
+            mock_inline.return_value = 'inline_pi'
+            assert resolve_patient_info(req) == 'inline_pi'
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    def test_no_patient_context_still_returns_none_when_gate_off(self):
+        assert resolve_patient_info(_mock_request()) is None
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    def test_person_id_allowed_when_gate_on(self):
+        req = _mock_request(query_params={'person_id': '9001'})
+        with patch(
+            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+        ) as MockClient, patch(
+            'trials.services.patient_info.ctomop_adapter.build_patient_info_from_ctomop_row',
+        ) as mock_build:
+            MockClient.return_value.fetch_patient.return_value = {'person_id': 9001}
+            mock_build.return_value = 'pi'
+            assert resolve_patient_info(req) == 'pi'
