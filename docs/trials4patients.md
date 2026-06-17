@@ -57,6 +57,30 @@ CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
 
 This CSV can be passed directly to the evaluator — see [evaluator.md](evaluator.md).
 
+### Output structure
+
+For each patient, the JSON output contains a summary object with `eligible_trials` and `potential_trials` lists. Each trial entry contains:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `studyId` | string | NCT number or trial identifier |
+| `briefTitle` | string | Short trial title |
+| `officialTitle` | string | Full official title |
+| `matchingType` | string | `eligible`, `potential`, or `not_eligible` |
+| `matchScore` | int | 0–100; % of eligibility attributes met (0 if any attribute is not matched) |
+| `goodnessScore` | int | 0–100 composite score weighted by benefit, patient burden, risk, and distance |
+| `recruitmentStatus` | string | e.g. `RECRUITING` |
+| `phase` | list | Trial phases, e.g. `["Phase 2"]` |
+| `studyType` | string | e.g. `Interventional` |
+| `sponsor` | string | Sponsoring organization |
+| `link` | string | URL to trial details |
+| `disease` | string | Disease/condition under study |
+| `register` | string | Source registry, e.g. `ClinicalTrials.gov` |
+
+**`matchingType`** is derived from per-attribute eligibility checks: `eligible` means all required attributes match; `potential` means some attributes are unknown (patient could still qualify); `not_eligible` means at least one required attribute is unmet (excluded from results by default).
+
+**`goodnessScore`** is a weighted composite of four components (each defaulting to weight 25): trial benefit, patient burden (inversed), trial risk (inversed), and distance from patient to nearest site (inversed).
+
 ---
 
 ## Examples
