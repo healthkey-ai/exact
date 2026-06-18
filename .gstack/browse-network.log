@@ -1,6 +1,0 @@
-[2026-06-18T15:23:17.664Z] GET file:///tmp/exact-card-preview.html → 200 (6ms, 11295B)
-[2026-06-18T15:23:17.679Z] GET https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap → 200 (456ms, 1220B)
-[2026-06-18T15:23:18.158Z] GET https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSvfedN4.woff2 → 200 (400ms, 25119B)
-[2026-06-18T15:23:39.538Z] GET file:///tmp/exact-card-preview.html → 200 (?ms, 11295B)
-[2026-06-18T15:23:39.541Z] GET https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap → 200 (1ms, -698B)
-[2026-06-18T15:23:39.543Z] GET https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSvfedN4.woff2 → 200 (?ms, -814B)
