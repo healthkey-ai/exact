@@ -78,6 +78,62 @@ export interface TrialsResponse {
   results: TrialMatch[];
 }
 
+/** One row in a trial-detail `details` group. Mirrors EXACT's
+ *  `TrialTemplates` field shape (built server-side, camelCased on the wire).
+ *  `value` is the trial's required value; `uvalue` is the patient's value;
+ *  `matchingType` is the per-attribute verdict. Permissive — the server adds
+ *  fields as the templates evolve. Source: `trials/services/trial_details/`. */
+export interface TrialDetailField {
+  name: string;
+  label: string;
+  type: string;
+  value: unknown;
+  options?: { value: unknown; label: string }[] | null;
+  matchingType?: "matched" | "not_matched" | "unknown" | string;
+  ufield?: string | null;
+  uvalue?: unknown;
+  utype?: string;
+  uoptions?: { value: unknown; label: string }[] | null;
+  ureadonly?: boolean;
+  /** Unit for the trial's required `value` (e.g. "mg/dL"). */
+  units?: string;
+  /** Unit for the patient's `uvalue` — may differ from `units`. */
+  uunits?: string;
+  [key: string]: unknown;
+}
+
+export interface GroupName {
+  value: string;
+  label: string;
+}
+
+/** Response of `GET /trials/{id}/` (and `POST /trials/{id}/match/`) —
+ *  `TrialDetailsSerializer`. Keys are camelCased server-side. The grouped
+ *  `details` (e.g. `general`, `trialEligibilityAttributes`) drive the
+ *  Required / Your-Value table. */
+export interface TrialDetailResponse {
+  trialId: number;
+  studyId: string;
+  register?: string | null;
+  briefTitle: string;
+  officialTitle: string;
+  locationsName?: string[] | null;
+  interventionTreatments?: unknown;
+  sponsorName?: string | null;
+  link?: string | null;
+  recruitmentStatus?: string | null;
+  phases?: string[] | null;
+  trialType?: string | null;
+  briefSummary?: string | null;
+  laySummary?: string | null;
+  participationCriteria?: string | null;
+  matchScore: number | null;
+  goodnessScore: number | null;
+  details: Record<string, TrialDetailField[]>;
+  groupNames: GroupName[];
+  [key: string]: unknown;
+}
+
 /** Filter prefs the UI surfaces. Keys mirror what
  *  `study_preferences_from_query_params` consumes (camelCase). */
 export interface FilterState {
