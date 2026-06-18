@@ -3,6 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-06-18
 - **Deciders:** EXACT team (pending review by CancerBot + CTOMOP terminology owners)
+- **Reviews:** Codex (consult) on architecture options + the ETL re-keying idea; gstack `/plan-eng-review` (eng-manager pass) — substrate decision (OMOP `concept_relationship` upstream + compiled EXACT table), governance-as-Phase-0, per-domain kill switch, resolver test matrix, and outbound-annotation caching folded in.
 - **Related:** #172 (HemOnc therapy concept_ids — first domain instance), CTOMOP PR #168 / issue #165
 
 ## Context
@@ -27,13 +28,35 @@ Problems with the current approach:
 
 CTOMOP has now started providing stable standard `concept_id`s (HemOnc Regimen ids for therapy lines, CTOMOP PR #168), which is the first stable cross-vocabulary anchor and the trigger for this ADR.
 
+## Options considered (the three ways)
+
+Where should the therapy (and every other domain's) crosswalk live? Three shapes, with good/bad for each.
+
+### Option 1 — Expand the trials database
+Denormalize CTOMOP-vocab columns (e.g. HemOnc `concept_id`s) onto EXACT's persisted trials and match on them.
+- **Good:** single-vocab, fast SQL filtering; no runtime mapping; self-contained inside EXACT.
+- **Bad:** two representations of the same requirement → drift; stale concept_ids persisted on every trial row; a destructive overwrite loses the CB criterion and is not re-derivable after a vocab update; the overlap logic gets duplicated across the SQL prefilter, the Python matcher, and the per-attr metadata builder; ambiguous source identity (`vrd` vs `vrd_lite` share a drug set); helps no other consumer (e.g. SoC). **Rejected** as the worst option (see Rejected options).
+
+### Option 2 — EXACT does all the mapping of therapies → HemOnc concept IDs (in EXACT)
+EXACT owns the crosswalk internally: today's `normalize_ctomop_row`, or a new EXACT-only mapping table.
+- **Good:** no upstream dependency; ships today; EXACT fully controls its vocabulary; incremental.
+- **Bad:** every consumer re-implements the same clinical mapping and they **diverge** — EXACT targets internal codes, SoC targets RxNorm, both hand-bridging the same CTOMOP fields; clinical policy (`Equivocal → HER2 low`, regimen→component) is duplicated and can silently disagree app-to-app; no shared provenance / versioning / review; maintenance × N consumers. `#174` is this option's bug surface. **Rejected as the primary mechanism** — it is the brittle status quo.
+
+### Option 3 — CTOMOP exposes a crosswalk (chosen, with one refinement)
+The source side, where the patient vocabulary and OMOP `concept_relationship` already live, owns and publishes the mapping; consumers read a version-pinned artifact.
+- **Good:** one source of truth; OMOP `concept_relationship` is native to CTOMOP; one mapping serves EXACT and SoC; provenance / versioning / clinical review in one place.
+- **Bad:** cross-team governance dependency (Conway — the Phase-0 risk); CTOMOP must **not** encode consumer-specific policy (EXACT's category buckets, SoC's RxNorm targets); a **live network service** would add availability / reproducibility coupling.
+- **Refinements that make it the decision:** ship a **versioned compiled artifact, not a live service**; CTOMOP exposes only **source → standard anchor**, and **per-consumer target resolution stays consumer-side**.
+
 ## Decision
 
-Adopt a **hybrid** architecture:
+Adopt option 3 (refined) as the **hybrid** architecture:
 
 1. **Mechanism — a single generic, versioned, reviewed crosswalk (was "option B").** One first-class mapping store keyed by `(source_system, source_vocabulary, source_concept_id | normalized_source_value)` to `(target_vocabulary = CB, target_code)`, covering all domains through one resolver, rather than 15 per-domain tables or 15 inline special-cases.
 
-2. **Governance / source of truth — an externally owned, git-versioned artifact (was "option F").** The mapping is owned jointly by CB and CTOMOP terminology governance, not by any single application's internal loader. Ship a versioned artifact (e.g. JSON) compiled into an EXACT table; **do not** stand up a live network terminology service until multiple consumers actually require live resolution (it adds availability and reproducibility failure modes).
+   **Substrate (eng review):** author and govern the mappings using **OMOP `concept_relationship` semantics on the CTOMOP/OMOP side** (`Maps to` / `Maps to value` / `Is a` — the standard vocabulary-relationship model; CTOMOP already added the vocabulary-relationship tables in `0065_add_vocabulary_relationship_tables`), then **compile a denormalized lookup table into EXACT** for runtime. This reuses a domain standard instead of re-inventing relationship semantics, and keeps governance where the OMOP vocabulary already lives. EXACT does not query OMOP vocab tables at match time — it consumes the compiled, version-pinned artifact (see Governance).
+
+2. **Governance / source of truth — an externally owned, git-versioned artifact (was "option F").** The mapping is owned jointly by CB and CTOMOP terminology governance, not by any single application's internal loader. Ship a versioned artifact (e.g. JSON) compiled into an EXACT table; **do not** stand up a live network terminology service until multiple consumers actually require live resolution (it adds availability and reproducibility failure modes). **This is the critical path, not a side question (eng review / Conway):** the crosswalk spans three teams (CB owns trial vocab, CTOMOP owns patient vocab, a clinical reviewer owns equivalence). Naming the artifact owner and release process is **Phase 0** — every other phase depends on it, and an unowned crosswalk is the most likely way this stalls.
 
 3. **Upstream emission — optional optimization only (was "option E").** CTOMOP may consume the same released artifact to emit pre-mapped values for stable production interfaces, but CTOMOP is **not** the source of truth (it must not silently encode CB semantics and EXACT-specific policy).
 
@@ -44,6 +67,7 @@ Adopt a **hybrid** architecture:
 - **Native standard vocabularies in EXACT (re-key taxonomies + trial criteria onto OMOP).** Rejected: many trial criteria have no lossless single OMOP concept; re-curation would cause semantic collapse, not eliminate mapping.
 - **Denormalize CTOMOP values onto trials + dual-vocabulary matching.** Rejected as worst option: duplicated state, synchronization failures, ambiguous precedence, and stale concept_ids persisted on every trial. (See #172 for why drug-set identity is also unsafe: `vrd` and `vrd_lite` share an identical drug set but are distinct.)
 - **Pure per-domain mapping tables (the literal "option A").** Rejected as primary: 15 schemas and workflows with inconsistent semantics. The generic crosswalk should carry domain as metadata instead.
+- **ETL batch-rekeying of EXACT's persisted trials into CTOMOP vocabulary.** Rejected: it does not remove the crosswalk, it relocates it to ingest-time and makes it a **destructive** overwrite (loses the CB source criterion; not re-derivable after a vocab update without re-running from CB). It is also the harder direction (trial -> patient vocab) and loses EXACT's richer trial semantics — the therapy -> component -> category hierarchy the matcher depends on (`user_to_trial_attr_matcher.py:339`), "A or B" composites (e.g. `cyclophosphamide_or_melphalan`, `therapies_mapper.py:293`), and no-map criteria with no single CTOMOP concept. With concept_ids only for MM therapy today, it would force a mixed-vocab trials DB for years (the dual-vocab anti-pattern). Batch resolution is fine, but only as the compiled cache / upstream emission above, not as destructive re-keying. (Reviewed with Codex + eng review.)
 
 ## Required shape of the crosswalk
 
@@ -59,7 +83,7 @@ target_vocabulary           # CB
 target_vocabulary_version
 target_domain
 target_code
-relationship                # exact | narrower | broader | derived | lossy | no-map
+relationship                # align to OMOP relationship vocabulary: Maps to (exact) | Maps to value | Is a (narrower) | Subsumes (broader) | derived | lossy | no-map
 mapping_status              # candidate | reviewed | unmapped
 valid_from / valid_to
 provenance
@@ -89,6 +113,8 @@ The crosswalk is **bidirectional** and serves three call sites, not one. The fir
    ```
    Options whose relationship to CTOMOP is `no-map` / `broader` / `lossy` must be flagged so a consumer does not present a selectable option that can never (or wrongly) light up from CTOMOP patient data. Conversely, CTOMOP patient values with **no** EXACT option need an explicit `unmapped` / `other` representation so the patient's real value is not silently invisible in the detail view.
 
+   **Performance (eng review):** `ValueOptions.all_options()` is already cached (`cache_key` v2). Fold the crosswalk annotation **into that cached blob**, not a per-request join — otherwise every trial-detail / form-settings response does an N-options crosswalk lookup. Bust the cache on crosswalk-artifact version change.
+
 3. **Per-attribute match metadata.** `therapy_related_things_match_status()` already returns `{ status: matched | not_matched | unknown, values: [...] }` per attribute, computed live in the detail path (`trial_details/trial_templates.py`). This stays in EXACT code-space; the only addition is an optional `matchSource` (`concept_id` | `source_value` | `name`) provenance field, which doubles as the observability signal for the shadow-mode rollout below.
 
 ## Rollout safety
@@ -96,6 +122,15 @@ The crosswalk is **bidirectional** and serves three call sites, not one. The fir
 - **Shadow mode first.** When both a concept_id and a name are present for a patient fact, resolve both, record disagreements as metrics, and **do not** change eligibility until the disagreement rate is validated near zero. On disagreement, treat as unknown / quarantine; never silently prefer one source.
 - **Distinguish "absent" from "terminology layer failed."** These must be different states end to end.
 - **Migration metrics to expose:** concept-id coverage, source-value coverage, name-only coverage, disagreement count, ambiguous-mapping count, eligibility-result diffs.
+- **Per-domain kill switch (eng review):** the concept-id path must be enableable/disableable **per domain**, so a bad mapping release for one domain rolls back to the name path for that domain alone, not the whole crosswalk. Blast radius of a bad release = one domain.
+
+### Resolver test matrix (eng review)
+
+The resolver is the highest-risk new code (the current bridge's silent-failure bugs are tracked in #174). The invariant is only a guarantee if it is tested. Required matrix, as its own module (not inline in `normalize_ctomop_row`), with the crosswalk as data:
+- each relationship type (`Maps to` / `Maps to value` / narrower / broader / lossy / no-map) resolves to the correct status, and lossy/no-map never clears an exclusion;
+- ambiguous mapping (e.g. `vrd` vs `vrd_lite`) fails closed, not by dict/import order;
+- `unmapped` (terminology-layer failure) is distinct from `absent` (no patient value) end to end;
+- id-vs-name disagreement in shadow mode is recorded, never silently resolved.
 
 ## Invariant
 
