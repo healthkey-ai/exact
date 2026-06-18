@@ -22,7 +22,10 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Vite 8 requires Node ^20.19 || >=22.12; pin 22 so the floor is
+          # explicit (a bare "20" could resolve to a <20.19 cache and fail
+          # with a cryptic `styleText` error).
+          node-version: "22"
       - name: Install
         # Scaffold ships without a lockfile — fall back to `npm install`
         # on first run; subsequent PRs that touch package.json should

@@ -10,10 +10,11 @@ describe("filterStateToParams", () => {
     expect(filterStateToParams({})).toEqual({});
   });
 
-  // Locks the camelCase -> query-param mapping against backend drift. The keys
-  // here MUST stay 1:1 with `study_preferences_from_query_params`
-  // (trials/services/study_preferences.py); if the backend renames a param,
-  // this test should be updated in the same change.
+  // Locks the camelCase -> query-param mapping against backend drift. Most
+  // keys are consumed by `study_preferences_from_query_params`
+  // (trials/services/study_preferences.py); `type` and `sort` are read by the
+  // trials view itself. If the backend renames a param, update this test in
+  // the same change.
   it("maps every filter key to the param name the backend expects", () => {
     const filters: FilterState = {
       recruitmentStatus: "recruiting",
