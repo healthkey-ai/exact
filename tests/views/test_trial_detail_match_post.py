@@ -62,3 +62,9 @@ class TestTrialDetailMatchPost:
         assert 'groupNames' in response.data
         for required in ('matchScore', 'goodnessScore'):
             assert required in response.data, f'missing field {required}'
+        # `match_score` is annotated only on the list/retrieve queryset path;
+        # a regression that drops it from `retrieve` makes the detail page show
+        # "N/A" for every trial's Matching Score.
+        assert response.data['matchScore'] is not None, (
+            'matchScore must be annotated on the detail path, not null'
+        )

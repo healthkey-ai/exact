@@ -143,8 +143,14 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 recruitment_status=study_prefs.recruitment_status,
             )
 
-        if self.action == 'list':
+        if self.action in ('list', 'retrieve'):
+            # Annotates `match_score` (and potential_attrs_count). The detail
+            # page shows the Matching Score too, so `retrieve` needs this —
+            # without it `TrialDetailsSerializer` reads `match_score` as None
+            # and the detail page shows "N/A" for every trial.
             queryset = queryset.with_potential_attrs_count(patient_info)
+
+        if self.action == 'list':
             queryset = queryset.order_by('-match_score', '-posted_date')
 
         if self.action == 'search':
