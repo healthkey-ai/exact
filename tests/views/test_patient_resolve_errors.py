@@ -10,6 +10,7 @@ though both get_queryset and get_serializer_context need it.
 import pytest
 from unittest.mock import patch
 
+from django.test import override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
@@ -57,3 +58,20 @@ class TestPatientResolveErrors:
         ):
             resp = authed_client.get('/trials/')
         assert resp.status_code == 500
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    def test_person_id_lookup_returns_403_when_gate_off(self, authed_client):
+        # IDOR gate (#150): with the person_id path disabled, a ?person_id=
+        # request is rejected (403), not silently served as a no-patient list.
+        TrialFactory(disease='Multiple Myeloma')
+        resp = authed_client.get('/trials/?person_id=123')
+        assert resp.status_code == 403
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    def test_inline_match_still_works_when_person_id_gate_off(self, authed_client):
+        # The gate must not affect the inline path the real host uses.
+        TrialFactory(disease='Multiple Myeloma')
+        resp = authed_client.post(
+            '/trials/match/', {'patient_info': {'disease': 'multiple myeloma'}}, format='json'
+        )
+        assert resp.status_code == 200

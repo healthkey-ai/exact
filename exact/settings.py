@@ -256,6 +256,23 @@ ENABLE_DRF_TOKEN_AUTH = os.environ.get(
     'ENABLE_DRF_TOKEN_AUTH', _token_auth_default
 ).lower() in ('1', 'true')
 
+# The server-side `?person_id=` resolver fetches a patient from CTOMOP using a
+# STATIC service token with no binding to the authenticated caller, and CTOMOP
+# does not enforce row-level authz for that token — so any authenticated caller
+# can enumerate person_ids and read other patients' PHI (IDOR, #150/#108).
+# No production caller uses this path (the federation host fetches the patient
+# via CTOMOP `/patient-info/me/` under the end-user's own token and forwards it
+# inline), so gate it off by default outside local/DEBUG. Re-enable only once
+# caller-identity is forwarded to CTOMOP and CTOMOP enforces per-user authz.
+# Same fail-closed shape as ENABLE_DRF_TOKEN_AUTH: an unset ENVIRONMENT in a
+# deploy yields OFF, not ON.
+_person_id_lookup_default = (
+    'true' if (DEBUG or os.environ.get('ENVIRONMENT') == 'local') else 'false'
+)
+EXACT_ALLOW_PERSON_ID_LOOKUP = os.environ.get(
+    'EXACT_ALLOW_PERSON_ID_LOOKUP', _person_id_lookup_default
+).lower() in ('1', 'true')
+
 _AUTH_CLASSES = [
     'accounts.authentication.ServiceTokenAuthentication',
     'accounts.authentication.PartnerAuthentication',

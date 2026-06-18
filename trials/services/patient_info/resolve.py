@@ -6,7 +6,9 @@ PatientInfo resolver — supports two contract shapes.
    depends on this contract — do not change.
 2. CTOMOP fetch: `?person_id=` query param or `person_id` in the body.
    Looks up the patient from CTOMOP via `CtomopClient` and feeds the
-   row through `build_patient_info_from_ctomop_row` (#102).
+   row through `build_patient_info_from_ctomop_row` (#102). Gated behind
+   `EXACT_ALLOW_PERSON_ID_LOOKUP` (off by default outside local/DEBUG) —
+   see the authorization boundary below.
 
 The inline path takes precedence — if both `patient_info` and
 `person_id` are present, the inline payload wins (lets callers stage
@@ -14,22 +16,28 @@ the migration without breaking).
 
 ## Authorization boundary
 
-The CTOMOP path currently relies on **CTOMOP-side row-level authz**:
-EXACT calls the endpoint with a static service token from
-`CTOMOP_SERVICE_TOKEN` and does not bind `person_id` to the
-authenticated caller. The DRF views above ensure the request is
-authenticated, but EXACT has no model linking users to patients (the
-service is stateless for patient data — see project memory
-`feedback_exact_no_own_db.md`), so there's no in-tree relationship
-to verify against. Production deployments MUST either:
+The CTOMOP `person_id` path calls CTOMOP with a static service token
+(`CTOMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
+and CTOMOP does not enforce row-level authz for that token — so honoring
+an arbitrary `person_id` lets any authenticated caller enumerate other
+patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
+patients (it's stateless for patient data — see project memory
+`feedback_exact_no_own_db.md`), so there's nothing in-tree to verify
+against.
 
-- enforce per-user authz at the CTOMOP layer (preferred), or
-- swap the static service token for caller-identity forwarding once
-  the parent federation track (#101) defines its identity flow.
+Because no production caller uses this path (the federation host fetches
+the patient from CTOMOP `/patient-info/me/` under the end-user's own token
+and forwards it inline), the path is gated OFF by default outside
+local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
+`person_id` while the gate is off gets a 403.
 
-This is a deliberate design pin, not an oversight — adding fake
-EXACT-side authz would be worse than nothing. Tracked as #108
-alongside #101's identity flow.
+Re-enabling it in production requires BOTH:
+- forwarding the caller's identity to CTOMOP (token exchange / pass-through
+  bearer or actor_iss/actor_sub — see hk-labs `ctomop_client.py`), AND
+- CTOMOP enforcing per-user authz (its `PatientUser`/consent models), or
+  using the self-scoped `/patient-info/me/` route.
+
+Tracked as #150/#108.
 """
 import ast
 import datetime as dt
@@ -61,6 +69,18 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     person_id = _extract_person_id(request)
     if person_id:
+        # IDOR gate (#150/#108): the CTOMOP fetch uses a static service token
+        # not bound to the caller, and CTOMOP doesn't enforce row-level authz
+        # for it — so honoring an arbitrary person_id leaks other patients'
+        # PHI. Off by default outside local/DEBUG; reject rather than silently
+        # ignore so the disabled path can't masquerade as a no-patient search.
+        from django.conf import settings
+        if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                'person_id lookup is disabled. Provide an inline patient_info '
+                'payload instead.'
+            )
         return _resolve_from_ctomop(person_id)
 
     return None

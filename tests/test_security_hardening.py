@@ -173,3 +173,28 @@ class TestDrfTokenAuthGated:
         assert 'rest_framework.authentication.TokenAuthentication' in \
             settings.REST_FRAMEWORK['DEFAULT_AUTHENTICATION_CLASSES']
         assert reverse('api-token-auth')  # resolves without raising
+
+
+class TestPersonIdLookupGated:
+    """The server-side `?person_id=` resolver is a PHI IDOR (CTOMOP service
+    token unbound to the caller, no row-level authz). It's gated behind
+    EXACT_ALLOW_PERSON_ID_LOOKUP, defaulting OFF outside local/DEBUG and
+    failing closed on an unset ENVIRONMENT (#150/#108)."""
+
+    def test_person_id_flag_defaults_off_outside_local(self):
+        source = _settings_source()
+        assert re.search(
+            r"_person_id_lookup_default\s*=\s*\(?\s*\n?\s*'true'\s+if\s+\(?\s*DEBUG\s+or\s+"
+            r"os\.environ\.get\(\s*['\"]ENVIRONMENT['\"]\s*\)\s*==\s*['\"]local['\"]",
+            source,
+        ), "EXACT_ALLOW_PERSON_ID_LOOKUP default must fail closed on an unset ENVIRONMENT (#150)."
+
+    def test_person_id_default_rule_fails_closed(self):
+        def enabled(debug, environ):
+            return debug or environ.get('ENVIRONMENT') == 'local'
+
+        assert enabled(True, {}) is True                          # DEBUG
+        assert enabled(False, {'ENVIRONMENT': 'local'}) is True   # explicit local
+        assert enabled(False, {'ENVIRONMENT': 'prod'}) is False   # prod
+        assert enabled(False, {'ENVIRONMENT': 'staging'}) is False
+        assert enabled(False, {}) is False                        # unset -> fail closed
