@@ -7,8 +7,11 @@
 // `useTrialDetail`. v1 is read-only: editing a patient value (CB's pencil
 // controls) and the host action buttons (I'm Interested / bookmark / share /
 // SoC) are deliberately out of scope.
+import { useEffect } from "react";
+
 import { Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
 import { useTrialDetail } from "./hooks";
+import { injectStyles } from "./injectStyles";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 
 interface Props {
@@ -118,6 +121,12 @@ export function TrialDetailPage({
   filters,
   onBack,
 }: Props) {
+  // Idempotent: ensures the scoped stylesheet is present even if this page is
+  // mounted without `TrialMatches` having run (it already injects on mount).
+  useEffect(() => {
+    injectStyles();
+  }, []);
+
   const query = useTrialDetail({ apiClient, trialId, patientInfo, personId, filters });
   const data = query.data;
 
