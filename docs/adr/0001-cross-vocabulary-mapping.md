@@ -28,9 +28,29 @@ Problems with the current approach:
 
 CTOMOP has now started providing stable standard `concept_id`s (HemOnc Regimen ids for therapy lines, CTOMOP PR #168), which is the first stable cross-vocabulary anchor and the trigger for this ADR.
 
+## Options considered (the three ways)
+
+Where should the therapy (and every other domain's) crosswalk live? Three shapes, with good/bad for each.
+
+### Option 1 — Expand the trials database
+Denormalize CTOMOP-vocab columns (e.g. HemOnc `concept_id`s) onto EXACT's persisted trials and match on them.
+- **Good:** single-vocab, fast SQL filtering; no runtime mapping; self-contained inside EXACT.
+- **Bad:** two representations of the same requirement → drift; stale concept_ids persisted on every trial row; a destructive overwrite loses the CB criterion and is not re-derivable after a vocab update; the overlap logic gets duplicated across the SQL prefilter, the Python matcher, and the per-attr metadata builder; ambiguous source identity (`vrd` vs `vrd_lite` share a drug set); helps no other consumer (e.g. SoC). **Rejected** as the worst option (see Rejected options).
+
+### Option 2 — EXACT does all the mapping of therapies → HemOnc concept IDs (in EXACT)
+EXACT owns the crosswalk internally: today's `normalize_ctomop_row`, or a new EXACT-only mapping table.
+- **Good:** no upstream dependency; ships today; EXACT fully controls its vocabulary; incremental.
+- **Bad:** every consumer re-implements the same clinical mapping and they **diverge** — EXACT targets internal codes, SoC targets RxNorm, both hand-bridging the same CTOMOP fields; clinical policy (`Equivocal → HER2 low`, regimen→component) is duplicated and can silently disagree app-to-app; no shared provenance / versioning / review; maintenance × N consumers. `#174` is this option's bug surface. **Rejected as the primary mechanism** — it is the brittle status quo.
+
+### Option 3 — CTOMOP exposes a crosswalk (chosen, with one refinement)
+The source side, where the patient vocabulary and OMOP `concept_relationship` already live, owns and publishes the mapping; consumers read a version-pinned artifact.
+- **Good:** one source of truth; OMOP `concept_relationship` is native to CTOMOP; one mapping serves EXACT and SoC; provenance / versioning / clinical review in one place.
+- **Bad:** cross-team governance dependency (Conway — the Phase-0 risk); CTOMOP must **not** encode consumer-specific policy (EXACT's category buckets, SoC's RxNorm targets); a **live network service** would add availability / reproducibility coupling.
+- **Refinements that make it the decision:** ship a **versioned compiled artifact, not a live service**; CTOMOP exposes only **source → standard anchor**, and **per-consumer target resolution stays consumer-side**.
+
 ## Decision
 
-Adopt a **hybrid** architecture:
+Adopt option 3 (refined) as the **hybrid** architecture:
 
 1. **Mechanism — a single generic, versioned, reviewed crosswalk (was "option B").** One first-class mapping store keyed by `(source_system, source_vocabulary, source_concept_id | normalized_source_value)` to `(target_vocabulary = CB, target_code)`, covering all domains through one resolver, rather than 15 per-domain tables or 15 inline special-cases.
 
