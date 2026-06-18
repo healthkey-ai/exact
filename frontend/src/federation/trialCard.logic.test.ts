@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { asText, scoreTier } from "./TrialCard";
+import { asText, scoreTier } from "./bits";
 
 describe("scoreTier", () => {
   // Thresholds mirror CB `getScoreColor`: >=80 green, >=60 yellow, else red.

@@ -255,6 +255,24 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         self.action = 'list'
         return self.list(request, *args, **kwargs)
 
+    @action(methods=['post'], detail=True, url_path='match')
+    def match_detail(self, request, *args, **kwargs):
+        """POST alias for `retrieve`, carrying `patient_info` in the body.
+
+        The detail endpoint needs patient context to render the eligibility
+        table (`details.trialEligibilityAttributes` with the patient's
+        `uvalue` / `matchingType`). `retrieve` is GET-only and GET-with-body
+        is forbidden by the Fetch spec / silently dropped by axios's XHR
+        adapter, so a host carrying an inline `patient_info` payload (the CB
+        contract) can't reach it over GET. Mirror the list-level `match`
+        action: bind to `retrieve` so `get_queryset` runs the retrieve
+        annotations and `get_serializer_context` resolves the body's
+        `patient_info`, then delegate. Hosts on the `?person_id=` path keep
+        using plain `GET /trials/{pk}/`.
+        """
+        self.action = 'retrieve'
+        return self.retrieve(request, *args, **kwargs)
+
     @action(methods=['get'], detail=False)
     def search(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())

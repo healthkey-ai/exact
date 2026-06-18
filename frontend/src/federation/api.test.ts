@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AxiosInstance } from "axios";
 
-import { fetchTrials, filterStateToParams } from "./api";
+import { fetchTrialDetail, fetchTrials, filterStateToParams } from "./api";
 import type { FilterState } from "./types";
 
 describe("filterStateToParams", () => {
@@ -106,5 +106,32 @@ describe("fetchTrials routing", () => {
     const apiClient = fakeClient();
     await fetchTrials({ apiClient });
     expect(apiClient.get).toHaveBeenCalledWith("/trials/", { params: {} });
+  });
+});
+
+describe("fetchTrialDetail routing", () => {
+  it("POSTs to /trials/{id}/match/ with patient_info for the inline path", async () => {
+    const apiClient = fakeClient();
+    await fetchTrialDetail({ apiClient, trialId: 42, patientInfo: { disease: "MM" } });
+    expect(apiClient.post).toHaveBeenCalledWith("/trials/42/match/", {
+      patient_info: { disease: "MM" },
+    });
+    expect(apiClient.get).not.toHaveBeenCalled();
+  });
+
+  it("GETs /trials/{id}/?person_id= for the server-side resolver path", async () => {
+    const apiClient = fakeClient();
+    await fetchTrialDetail({ apiClient, trialId: 42, personId: 7 });
+    expect(apiClient.post).not.toHaveBeenCalled();
+    expect(apiClient.get).toHaveBeenCalledWith("/trials/42/", {
+      params: { person_id: "7" },
+    });
+  });
+
+  it("treats an empty patientInfo object as no inline payload", async () => {
+    const apiClient = fakeClient();
+    await fetchTrialDetail({ apiClient, trialId: 9, patientInfo: {} });
+    expect(apiClient.post).not.toHaveBeenCalled();
+    expect(apiClient.get).toHaveBeenCalledWith("/trials/9/", { params: {} });
   });
 });

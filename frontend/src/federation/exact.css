@@ -232,3 +232,161 @@
     width: auto;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Trial detail page — mirrors CancerBot's `/t/:id` (CB
+ * `client/pages/TrialDetails.tsx`): back link, header + score pills, meta,
+ * summary card, and the read-only Required/Your-Value eligibility table.
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-detail__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 1rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+.exact-root .exact-detail__back:hover {
+  text-decoration: underline;
+}
+.exact-root .exact-detail__title {
+  margin: 0 0 1rem;
+  font-size: 1.5rem;
+  line-height: 2rem;
+  font-weight: 700;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-detail__scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.exact-root .exact-detail__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--exact-color-border);
+}
+.exact-root .exact-detail__nct {
+  color: var(--exact-color-primary);
+  text-decoration: none;
+}
+.exact-root .exact-detail__nct:hover {
+  text-decoration: underline;
+}
+.exact-root .exact-detail__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+.exact-root .exact-panel {
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  padding: 1.25rem;
+}
+.exact-root .exact-panel__title {
+  margin: 0 0 1rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-detail__summary-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.4rem;
+  color: var(--exact-color-text-muted);
+  white-space: pre-wrap;
+}
+.exact-root .exact-elig {
+  display: flex;
+  flex-direction: column;
+}
+.exact-root .exact-elig__row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--exact-color-border);
+}
+.exact-root .exact-elig__row:first-child {
+  border-top: 0;
+}
+.exact-root .exact-elig__label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-elig__cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.5rem;
+  background: var(--exact-color-surface);
+  font-size: 0.875rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-elig__cell.is-matched {
+  border-color: var(--exact-color-success-200);
+  background: var(--exact-color-success-50);
+  color: var(--exact-color-success-700);
+}
+.exact-root .exact-elig__cell.is-mismatch {
+  border-color: var(--exact-color-error-200);
+  background: var(--exact-color-error-50);
+  color: var(--exact-color-error-700);
+}
+.exact-root .exact-elig__colhdr {
+  min-width: 5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--exact-color-text-tertiary);
+}
+.exact-root .exact-elig__val {
+  flex: 1;
+}
+.exact-root .exact-elig__check {
+  display: inline-flex;
+  color: var(--exact-color-success-700);
+}
+.exact-root .exact-elig__units {
+  font-size: 0.75rem;
+  color: var(--exact-color-text-tertiary);
+}
+
+@media (min-width: 679px) {
+  .exact-root .exact-elig__row {
+    grid-template-columns: minmax(8rem, 16rem) 1fr 1fr;
+    align-items: center;
+    gap: 1rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .exact-root .exact-detail__grid {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  .exact-root .exact-detail__summary {
+    width: 440px;
+    flex: none;
+  }
+  .exact-root .exact-detail__elig {
+    flex: 1;
+    min-width: 0;
+  }
+}

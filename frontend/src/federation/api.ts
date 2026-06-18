@@ -17,6 +17,7 @@ import type { AxiosInstance } from "axios";
 import type {
   FilterState,
   PatientInfo,
+  TrialDetailResponse,
   TrialsResponse,
 } from "./types";
 
@@ -67,6 +68,47 @@ export async function fetchTrials({
     params.person_id = String(personId);
   }
   const response = await apiClient.get<TrialsResponse>("/trials/", { params });
+  return response.data;
+}
+
+interface FetchTrialDetailArgs {
+  apiClient: AxiosInstance;
+  trialId: number | string;
+  patientInfo?: PatientInfo | null;
+  personId?: string | number;
+}
+
+/** Fetch a single trial's detail (header meta, summary, and the per-patient
+ *  eligibility table in `details.trialEligibilityAttributes`). Mirrors
+ *  `fetchTrials`'s two patient-context paths:
+ *
+ *  - **Inline patient profile**: POSTs to `/trials/{id}/match/` with
+ *    `{ patient_info: … }` — the detail-level alias for `retrieve` (the
+ *    GET retrieve can't carry a body; see `TrialsViewSet.match_detail`).
+ *  - **Server-side resolver path** (`personId` only, or no context): GETs
+ *    `/trials/{id}/?person_id=…`.
+ */
+export async function fetchTrialDetail({
+  apiClient,
+  trialId,
+  patientInfo,
+  personId,
+}: FetchTrialDetailArgs): Promise<TrialDetailResponse> {
+  const hasInlinePayload = patientInfo != null && Object.keys(patientInfo).length > 0;
+
+  if (hasInlinePayload) {
+    const response = await apiClient.post<TrialDetailResponse>(
+      `/trials/${trialId}/match/`,
+      { patient_info: patientInfo },
+    );
+    return response.data;
+  }
+
+  const params: Record<string, string> = {};
+  if (personId != null) params.person_id = String(personId);
+  const response = await apiClient.get<TrialDetailResponse>(`/trials/${trialId}/`, {
+    params,
+  });
   return response.data;
 }
 

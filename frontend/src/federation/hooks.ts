@@ -5,10 +5,11 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
-import { fetchFormSettings, fetchTrials } from "./api";
+import { fetchFormSettings, fetchTrialDetail, fetchTrials } from "./api";
 import type {
   FilterState,
   PatientInfo,
+  TrialDetailResponse,
   TrialsResponse,
 } from "./types";
 
@@ -34,6 +35,29 @@ export function useTrials({
     queryKey: ["exact-trials", personId ?? null, patientInfo ?? null, filters ?? null],
     queryFn: () => fetchTrials({ apiClient, patientInfo, personId, filters }),
     enabled: enabled && (patientInfo != null || personId != null),
+    staleTime: 30_000,
+  });
+}
+
+interface UseTrialDetailArgs {
+  apiClient: AxiosInstance;
+  trialId: number | string;
+  patientInfo?: PatientInfo | null;
+  personId?: string | number;
+  enabled?: boolean;
+}
+
+export function useTrialDetail({
+  apiClient,
+  trialId,
+  patientInfo,
+  personId,
+  enabled = true,
+}: UseTrialDetailArgs): UseQueryResult<TrialDetailResponse> {
+  return useQuery({
+    queryKey: ["exact-trial-detail", trialId, personId ?? null, patientInfo ?? null],
+    queryFn: () => fetchTrialDetail({ apiClient, trialId, patientInfo, personId }),
+    enabled: enabled && trialId != null,
     staleTime: 30_000,
   });
 }
