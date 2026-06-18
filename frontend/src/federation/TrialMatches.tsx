@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { FilterBar } from "./FilterBar";
 import { TrialCard } from "./TrialCard";
 import { TrialDetail } from "./TrialDetail";
+import { groupByMatchingType } from "./grouping";
 import { useTrials } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import type { FilterState, MatchingType, TrialMatch, TrialMatchesProps } from "./types";
@@ -74,18 +75,10 @@ function TrialMatchesInner({
 
   const query = useTrials({ apiClient, patientInfo, personId, filters });
 
-  const grouped = useMemo(() => {
-    const trials = query.data?.results ?? [];
-    const buckets: Record<MatchingType, TrialMatch[]> = {
-      eligible: [],
-      potential: [],
-      not_eligible: [],
-    };
-    for (const t of trials) {
-      buckets[t.matchingType]?.push(t);
-    }
-    return buckets;
-  }, [query.data]);
+  const grouped = useMemo(
+    () => groupByMatchingType(query.data?.results ?? []),
+    [query.data],
+  );
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -139,7 +132,7 @@ function TrialMatchesInner({
                 >
                   {GROUP_LABELS[group]} ({trials.length})
                 </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
                   {trials.map((t) => (
                     <TrialCard
                       key={t.trialId}

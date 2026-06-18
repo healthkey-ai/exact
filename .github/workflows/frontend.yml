@@ -37,5 +37,7 @@ jobs:
           fi
       - name: Typecheck
         run: npm run typecheck
+      - name: Test
+        run: npm test
       - name: Build remote
         run: npm run build

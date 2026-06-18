@@ -105,8 +105,9 @@ export async function normalizeCtomopRow(
 
 /** Convert the camelCase filter state to the query-string shape EXACT's
  *  view expects. The mapping is 1:1 with `study_preferences_from_query_params`
- *  in `trials/services/study_preferences.py`. */
-function filterStateToParams(filters?: FilterState): Record<string, string> {
+ *  in `trials/services/study_preferences.py`. Exported so the unit tests can
+ *  lock the mapping against backend param drift. */
+export function filterStateToParams(filters?: FilterState): Record<string, string> {
   const out: Record<string, string> = {};
   if (!filters) return out;
   if (filters.recruitmentStatus) out.recruitmentStatus = filters.recruitmentStatus;
