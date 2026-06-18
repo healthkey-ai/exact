@@ -95,7 +95,10 @@ export interface TrialDetailField {
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;
   ureadonly?: boolean;
+  /** Unit for the trial's required `value` (e.g. "mg/dL"). */
   units?: string;
+  /** Unit for the patient's `uvalue` — may differ from `units`. */
+  uunits?: string;
   [key: string]: unknown;
 }
 

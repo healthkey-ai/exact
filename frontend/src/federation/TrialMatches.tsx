@@ -100,6 +100,7 @@ function TrialMatchesInner({
         trialId={selectedTrial.trialId}
         patientInfo={patientInfo}
         personId={personId}
+        filters={filters}
         onBack={() => setSelectedTrial(null)}
       />
     );

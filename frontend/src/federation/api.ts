@@ -76,6 +76,10 @@ interface FetchTrialDetailArgs {
   trialId: number | string;
   patientInfo?: PatientInfo | null;
   personId?: string | number;
+  /** Same study preferences the list uses (recruitmentStatus, distanceUnits,
+   *  scoring weights, …). Sent so the detail's scores/distance/units agree
+   *  with the card the user selected. */
+  filters?: FilterState;
 }
 
 /** Fetch a single trial's detail (header meta, summary, and the per-patient
@@ -93,18 +97,20 @@ export async function fetchTrialDetail({
   trialId,
   patientInfo,
   personId,
+  filters,
 }: FetchTrialDetailArgs): Promise<TrialDetailResponse> {
+  const params = filterStateToParams(filters);
   const hasInlinePayload = patientInfo != null && Object.keys(patientInfo).length > 0;
 
   if (hasInlinePayload) {
     const response = await apiClient.post<TrialDetailResponse>(
       `/trials/${trialId}/match/`,
       { patient_info: patientInfo },
+      { params },
     );
     return response.data;
   }
 
-  const params: Record<string, string> = {};
   if (personId != null) params.person_id = String(personId);
   const response = await apiClient.get<TrialDetailResponse>(`/trials/${trialId}/`, {
     params,

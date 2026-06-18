@@ -113,10 +113,27 @@ describe("fetchTrialDetail routing", () => {
   it("POSTs to /trials/{id}/match/ with patient_info for the inline path", async () => {
     const apiClient = fakeClient();
     await fetchTrialDetail({ apiClient, trialId: 42, patientInfo: { disease: "MM" } });
-    expect(apiClient.post).toHaveBeenCalledWith("/trials/42/match/", {
-      patient_info: { disease: "MM" },
-    });
+    expect(apiClient.post).toHaveBeenCalledWith(
+      "/trials/42/match/",
+      { patient_info: { disease: "MM" } },
+      { params: {} },
+    );
     expect(apiClient.get).not.toHaveBeenCalled();
+  });
+
+  it("forwards study-preference filters as params (so detail agrees with the list)", async () => {
+    const apiClient = fakeClient();
+    await fetchTrialDetail({
+      apiClient,
+      trialId: 42,
+      patientInfo: { disease: "MM" },
+      filters: { recruitmentStatus: "RECRUITING", distanceUnits: "miles" },
+    });
+    expect(apiClient.post).toHaveBeenCalledWith(
+      "/trials/42/match/",
+      { patient_info: { disease: "MM" } },
+      { params: { recruitmentStatus: "RECRUITING", distanceUnits: "miles" } },
+    );
   });
 
   it("GETs /trials/{id}/?person_id= for the server-side resolver path", async () => {

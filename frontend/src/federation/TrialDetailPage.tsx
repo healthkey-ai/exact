@@ -9,13 +9,15 @@
 // SoC) are deliberately out of scope.
 import { Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
 import { useTrialDetail } from "./hooks";
-import type { PatientInfo, TrialDetailField } from "./types";
+import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 
 interface Props {
   apiClient: import("axios").AxiosInstance;
   trialId: number | string;
   patientInfo?: PatientInfo | null;
   personId?: string | number;
+  /** Same study preferences the list used, so detail scores/units agree. */
+  filters?: FilterState;
   onBack: () => void;
 }
 
@@ -53,10 +55,12 @@ const CheckIcon = () => (
   </svg>
 );
 
-/** Resolve a field value to its display label, honouring select options. */
+/** Resolve a field value to its display label, honouring select options.
+ *  Option values may be numbers while the field value arrives as a string
+ *  (or vice-versa) over the wire, so compare stringified. */
 function labelOf(value: unknown, options?: TrialDetailField["options"]): string {
   if (value == null || value === "") return "—";
-  const match = options?.find((o) => o.value === value);
+  const match = options?.find((o) => String(o.value) === String(value));
   return match ? match.label : String(value);
 }
 
@@ -85,6 +89,7 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
       >
         <span className="exact-elig__colhdr">Required</span>
         <span className="exact-elig__val">{required}</span>
+        {field.units ? <span className="exact-elig__units">{field.units}</span> : null}
         {matched ? (
           <span className="exact-elig__check" aria-label="matches">
             <CheckIcon />
@@ -97,7 +102,9 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
       >
         <span className="exact-elig__colhdr">Your Value</span>
         <span className="exact-elig__val">{yours}</span>
-        {field.units ? <span className="exact-elig__units">{field.units}</span> : null}
+        {field.uunits ?? field.units ? (
+          <span className="exact-elig__units">{field.uunits ?? field.units}</span>
+        ) : null}
       </div>
     </div>
   );
@@ -108,9 +115,10 @@ export function TrialDetailPage({
   trialId,
   patientInfo,
   personId,
+  filters,
   onBack,
 }: Props) {
-  const query = useTrialDetail({ apiClient, trialId, patientInfo, personId });
+  const query = useTrialDetail({ apiClient, trialId, patientInfo, personId, filters });
   const data = query.data;
 
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];

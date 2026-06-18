@@ -44,6 +44,7 @@ interface UseTrialDetailArgs {
   trialId: number | string;
   patientInfo?: PatientInfo | null;
   personId?: string | number;
+  filters?: FilterState;
   enabled?: boolean;
 }
 
@@ -52,11 +53,18 @@ export function useTrialDetail({
   trialId,
   patientInfo,
   personId,
+  filters,
   enabled = true,
 }: UseTrialDetailArgs): UseQueryResult<TrialDetailResponse> {
   return useQuery({
-    queryKey: ["exact-trial-detail", trialId, personId ?? null, patientInfo ?? null],
-    queryFn: () => fetchTrialDetail({ apiClient, trialId, patientInfo, personId }),
+    queryKey: [
+      "exact-trial-detail",
+      trialId,
+      personId ?? null,
+      patientInfo ?? null,
+      filters ?? null,
+    ],
+    queryFn: () => fetchTrialDetail({ apiClient, trialId, patientInfo, personId, filters }),
     enabled: enabled && trialId != null,
     staleTime: 30_000,
   });
