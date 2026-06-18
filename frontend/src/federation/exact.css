@@ -1,13 +1,13 @@
-/* Tailwind v4: import theme + utilities ONLY. Skipping `preflight.css`
- * keeps Tailwind's global CSS reset (`* { margin: 0 }`, `html,body`
- * resets, default font-family stripping, etc.) out of the federated
- * bundle so the host's existing styles aren't clobbered when this remote
- * mounts. Same trade-off documented in SoC. */
-@layer theme, utilities;
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
-
-@source "./**/*.tsx";
+/* Hand-written, fully scoped under `.exact-root` — this stylesheet ships NO
+ * Tailwind layers. The federated components use only `.exact-*` class names
+ * (never Tailwind utilities), so importing `tailwindcss/utilities.css` + a
+ * `@source` scan only emitted UNSCOPED globals that leaked into the host: a
+ * `*,::before,::after { --tw-* }` custom-property block, bare `.flex` /
+ * `.border` / `.hidden` utilities (matched from those words appearing in inline
+ * style strings and `.filter(Boolean)`), and `@property` registrations. None of
+ * it was used by the remote. Dropping the Tailwind import removes that leak and
+ * keeps the "no global CSS / host-agnostic" contract honest. Preflight was
+ * already excluded for the same reason. */
 
 /* Scoped tokens. The host can override any `--exact-*` var on `:root`
  * or on a `.exact-root` ancestor without colliding with its own design
