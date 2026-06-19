@@ -120,6 +120,41 @@ class TestUserToTrialAttrMatcher:
         }
 
     @pytest.mark.django_db
+    def test_therapy_related_things_match_status_does_not_n_plus_1(self):
+        """The component/category load must not scale with the patient's
+        therapy count. `therapy.components.order_by('id')` (no prefetch) once
+        fired a query per therapy + per component — an N+1 in this per-request,
+        per-trial matcher hot path. The fix prefetches `components__categories`
+        and sorts in Python, so the query count is constant regardless of how
+        many therapies the patient carries.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from trials.models import Therapy
+
+        codes_with_components = [
+            t.code for t in Therapy.objects.prefetch_related('components').all()
+            if t.components.all()
+        ]
+        assert len(codes_with_components) >= 4, 'seed data needs therapies with components'
+
+        trial = TrialFactory(therapies_required=['vrd'])
+
+        def queries_for(n):
+            pi = PatientInfo(disease='multiple myeloma')
+            pi.later_therapies = [{'therapy': c} for c in codes_with_components[:n]]
+            service = UserToTrialAttrMatcher(trial, pi)
+            with CaptureQueriesContext(connection) as ctx:
+                service.therapy_related_things_match_status()
+            return len(ctx.captured_queries)
+
+        few = queries_for(2)
+        many = queries_for(len(codes_with_components))
+        # Constant query count proves no per-therapy N+1.
+        assert few == many, f'query count scales with therapy count ({few} -> {many}); N+1 regressed'
+        assert many <= 5, f'expected a small constant query count, got {many}'
+
+    @pytest.mark.django_db
     def test_receptor_status_hierarchy(self):
         """
         er_plus_with_hi_exp / er_plus_with_low_exp are subtypes of er_plus.
