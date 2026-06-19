@@ -28,9 +28,9 @@ Problems with the current approach:
 
 CTOMOP has now started providing stable standard `concept_id`s (HemOnc Regimen ids for therapy lines, CTOMOP PR #168), which is the first stable cross-vocabulary anchor and the trigger for this ADR.
 
-## Options considered (the three ways)
+## Options considered (the four ways)
 
-Where should the therapy (and every other domain's) crosswalk live? Three shapes, with good/bad for each.
+Where should the therapy (and every other domain's) crosswalk live? Four shapes, with good/bad for each.
 
 ### Option 1 — Expand the trials database
 Denormalize CTOMOP-vocab columns (e.g. HemOnc `concept_id`s) onto EXACT's persisted trials and match on them.
@@ -47,6 +47,11 @@ The source side, where the patient vocabulary and OMOP `concept_relationship` al
 - **Good:** one source of truth; OMOP `concept_relationship` is native to CTOMOP; one mapping serves EXACT and SoC; provenance / versioning / clinical review in one place.
 - **Bad:** cross-team governance dependency (Conway — the Phase-0 risk); CTOMOP must **not** encode consumer-specific policy (EXACT's category buckets, SoC's RxNorm targets); a **live network service** would add availability / reproducibility coupling.
 - **Refinements that make it the decision:** ship a **versioned compiled artifact, not a live service**; CTOMOP exposes only **source → standard anchor**, and **per-consumer target resolution stays consumer-side**.
+
+### Option 4 — Dedicated ETL service that rewrites the whole trial corpus into CTOMOP vocabulary
+A standalone ETL reads every CB trial and rewrites **all** its fields into CTOMOP vocab, so EXACT's persisted trials end up fully CTOMOP-vocab. Claim: then EXACT needs no crosswalk at all — both patient and trial sides speak CTOMOP-vocab, and all mapping lives at the ETL-service level. (Distinct from Option 1: Option 1 *adds* concept_id columns beside the CB fields; Option 4 *replaces* the trial corpus.)
+- **Good:** centralizes the mapping in one service — but that half is already Option 3; EXACT runtime does no live mapping.
+- **Bad:** the ETL **is** the crosswalk, relocated and run destructively — "no crosswalk needed" is false (the full CB-code → CTOMOP-concept mapping with relationship/lossy/no-map semantics is still required). **Blast radius** jumps from one stateless patient record per request to the **entire persistent trial corpus** — a bad mapping release silently shifts eligibility across all trials. Destructive overwrite **loses the CB source criterion** and is not re-derivable after a mapping fix or vocab update without re-running from CB. Coverage asymmetry (concept_ids only for MM therapy today) forces a **mixed-vocab corpus for years** → the matcher must run in two vocab spaces (the dual-vocab anti-pattern). Re-keying **breaks the therapy → component → category expansion** (`user_to_trial_attr_matcher.py`) and cannot express no-map / "A or B" composites (`cyclophosphamide_or_melphalan`) unless the entire EXACT taxonomy is ported into OMOP-space — which is the rejected native-OMOP option, done destructively. It maps the **expensive** persistent side to save runtime on the **cheap** stateless side. **Rejected** (Codex + eng review). It only wins as a **platform migration** (CB stops being the trial-authoring vocabulary AND CTOMOP has lossless reviewed coverage of every domain AND trials are curated natively in OMOP) — none true today. A *safe* ETL that preserves raw CB beside the projection is no longer "fully CTOMOP, no crosswalk"; it collapses back into Option 3.
 
 ## Decision
 
