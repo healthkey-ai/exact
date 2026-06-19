@@ -199,11 +199,20 @@ TRIALS_DB_MIGRATE = os.environ.get('TRIALS_DB_MIGRATE', 'false').lower() == 'tru
 
 DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-    }
-}
+# Shared Redis cache when REDIS_URL is configured (deploys), else per-process
+# LocMemCache (local dev / CI / tests). Keyed off the *raw* env var, not the
+# Celery-defaulted `redis_url` below, so an unset REDIS_URL never points the
+# cache at a non-existent localhost Redis. A per-process cache here would make
+# `ValueOptions.all_options()` (~490 queries) rebuild on every cold gunicorn
+# worker — see exact/cache_config.py.
+from exact.cache_config import build_caches  # noqa: E402
+
+CACHES = build_caches(
+    redis_url=os.environ.get('REDIS_URL'),
+    debug=DEBUG,
+    environment=ENVIRONMENT,
+    redis_ca_certs=os.environ.get('REDIS_SSL_CA_CERTS'),
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

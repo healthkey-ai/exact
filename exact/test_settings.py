@@ -12,3 +12,11 @@ import os
 os.environ.setdefault("ENVIRONMENT", "local")
 
 from exact.settings import *  # noqa: E402,F401,F403
+
+# Force a per-process in-memory cache for the test run regardless of any
+# ambient REDIS_URL in the developer's shell — tests must not read/write a
+# real (possibly shared) Redis. The all_options() caching behavior is
+# backend-agnostic, so LocMemCache exercises the same code path.
+CACHES = {
+    "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+}
