@@ -165,7 +165,13 @@ class Therapy(TimeStampMixin):
     description = models.TextField(blank=True, null=True)
 
     def full_title(self):
-        components = ", ".join([x.title for x in self.components.order_by('id').all()])
+        # Sort in Python so a `prefetch_related('components')` cache is reused.
+        # `.order_by('id')` would issue a fresh query per therapy (an N+1 that
+        # dominated ValueOptions.all_options() — ~288 queries), since ordering
+        # builds a new queryset that ignores the prefetched cache.
+        components = ", ".join(
+            c.title for c in sorted(self.components.all(), key=lambda c: c.id)
+        )
         return f"{self.title} ({components})" if components else self.title
 
     def __str__(self):

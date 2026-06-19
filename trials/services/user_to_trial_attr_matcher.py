@@ -210,9 +210,14 @@ class UserToTrialAttrMatcher:
         if len(therapy_codes) > 0:
             from trials.models import Therapy
 
-            therapies = Therapy.objects.filter(code__in=therapy_codes)
+            therapies = Therapy.objects.filter(
+                code__in=therapy_codes
+            ).prefetch_related('components__categories')
             for therapy in therapies:
-                for component in therapy.components.order_by('id').all():
+                # Sort in Python so the prefetch cache is reused — `.order_by()`
+                # would issue a fresh components query per therapy (an N+1 in
+                # this per-request, per-trial matcher hot path).
+                for component in sorted(therapy.components.all(), key=lambda c: c.id):
                     if component not in therapy_components:
                         therapy_components.append(component)
                         therapy_components_to_therapy[component.code] = component.title
