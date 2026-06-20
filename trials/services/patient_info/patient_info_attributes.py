@@ -14,6 +14,22 @@ from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
 
 
+# Default hepatic adequacy thresholds (ratio to ULN). Used when the trial does
+# not specify its own thresholds for the related laboratory attributes.
+HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX = 1.5
+HEPATIC_ADEQUACY_AST_ULN_MAX = 2.5
+HEPATIC_ADEQUACY_ALT_ULN_MAX = 2.5
+
+# Haematological adequacy thresholds, expressed in each field's stored scale so
+# they line up with how trials state their own limits (e.g. platelet_count_min).
+# ANC is stored per-uL (1500 = 1500/uL); platelet_count is stored in 10^9/L i.e.
+# thousands/uL (100 = 100,000/uL); hemoglobin in g/dL. Fixed clinical defaults,
+# mirroring the patient-side renal_adequacy_status pattern.
+HAEMATOLOGICAL_ADEQUACY_ANC_MIN = 1500
+HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN = 100
+HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN = 9
+
+
 # Per-criterion source fields for derived high-risk MCL criteria. A criterion's
 # absence is only confirmable once every source field it can be derived from is
 # answered (drives the unknown-vs-none distinction, #4399/#4416). Codes absent
@@ -507,6 +523,36 @@ class PatientInfoAttributes:
             return False
 
         return True
+
+    @cached_property
+    def hepatic_adequacy_status(self):
+        bilirubin_total_uln = self.get_uln_value('serum_bilirubin_level_total')
+        ast_uln = self.get_uln_value('liver_enzyme_levels_ast')
+        alt_uln = self.get_uln_value('liver_enzyme_levels_alt')
+
+        if bilirubin_total_uln is None or ast_uln is None or alt_uln is None:
+            return False
+
+        return (
+            bilirubin_total_uln <= HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX
+            and ast_uln <= HEPATIC_ADEQUACY_AST_ULN_MAX
+            and alt_uln <= HEPATIC_ADEQUACY_ALT_ULN_MAX
+        )
+
+    @cached_property
+    def haematological_adequacy_status(self):
+        anc = self.get_value('absolute_neutrophile_count')
+        platelet_count = self.get_value('platelet_count')
+        hemoglobin = self.get_value('hemoglobin_level')
+
+        if anc is None or platelet_count is None or hemoglobin is None:
+            return False
+
+        return (
+            float(anc) >= HAEMATOLOGICAL_ADEQUACY_ANC_MIN
+            and float(platelet_count) >= HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN
+            and float(hemoglobin) >= HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN
+        )
 
     @cached_property
     def refractory_status_from_therapy_lines(self):
