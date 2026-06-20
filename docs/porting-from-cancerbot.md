@@ -29,6 +29,12 @@
 5. **EXACT is stateless and read-only.** Never add patient persistence; never replicate OMOP vocab
    tables or hierarchy expansion in EXACT (patient OMOP concepts are supplied by the API consumer;
    trial OMOP columns are owned and filled by CB).
+6. **Two-part self-review before EVERY PR / push — mandatory, no exceptions.** Before pushing a
+   branch or opening a PR, run BOTH: (a) a **Claude fresh-context review in a separate subagent**
+   (not inline — so the reviewer isn't anchored on the choices that produced the code), and
+   (b) **`codex review`** (e.g. `codex review --base 2omop`). Reconcile findings and push only after
+   addressing them (or consciously deferring with a tracked issue). This mirrors the global
+   `~/.claude/CLAUDE.md` rule; see the dedicated section at the bottom.
 
 ## The seam: `TherapyMatchProfile`
 All therapy differences (legacy vs OMOP) are expressed by selecting a profile, not by editing logic.
@@ -107,7 +113,22 @@ Maintain an up-to-date inventory of these so agents can tell *intended* divergen
    tested separately.
 
 ## Verification before declaring a port done
+- **Two-part self-review run and reconciled (see below) — required before push/PR.**
 - `python manage.py makemigrations --check` → "No changes detected" (if models touched).
 - Therapy matcher/queryset/config tests pass.
 - Drift detector + hardcoded-field scanner pass.
 - Legacy parity unchanged; OMOP flag still OFF by default.
+
+## Mandatory: two-part self-review before every PR / push
+This is not optional and applies to **every** branch push / PR (not just therapy ports). It mirrors
+the global `~/.claude/CLAUDE.md` rule and is the project's standard.
+
+1. **Claude fresh-context review** — spawn a **separate subagent** (Agent tool), not an inline
+   review, and have it review the diff cold (e.g. `git diff <base>`), checking correctness, CB
+   parity, and the rules above. A fresh context avoids anchoring on the authoring choices.
+2. **codex review** — run `codex review` against the PR base (e.g. `codex review --base 2omop`,
+   or `--uncommitted` for a pre-commit pass).
+
+Reconcile both: fix what they surface, or defer consciously with a tracked GitHub issue (note it in
+the PR/commit). Only then push / open the PR. A `git push` PreToolUse hook prints this checklist as a
+reminder, but the review itself is the author's responsibility — the hook cannot run it for you.
