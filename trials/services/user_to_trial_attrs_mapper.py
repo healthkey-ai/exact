@@ -1,3 +1,5 @@
+import re
+
 import inflection
 from django.db import models
 from django.db.models import Q
@@ -106,6 +108,75 @@ class UserToTrialAttrsMapper:
         out = sorted(out, key=lambda d: -d['count'])
         return out
 
+    @staticmethod
+    def _jsonb_intersect_count(column, codes):
+        """SQL counting how many elements of a jsonb-array column are in `codes`.
+
+        `codes` is a fixed (patient-derived) set of controlled-vocabulary codes,
+        so it is inlined safely after stripping anything outside [a-zA-Z0-9_].
+        """
+        safe = [c for c in codes if re.fullmatch(r'[a-zA-Z0-9_]+', c or '')]
+        if not safe:
+            return '0'
+        in_list = ', '.join(f"'{c}'" for c in sorted(set(safe)))
+        return (
+            f"(SELECT COUNT(*) FROM jsonb_array_elements_text(COALESCE({column}, '[]'::jsonb)) "
+            f"AS _e(code) WHERE _e.code IN ({in_list}))"
+        )
+
+    def _criteria_count_match_expressions(self, trial_attr_meta, service):
+        """SQL booleans ``(gating, matched)`` for a per-criterion attribute.
+
+        ``gating`` is true when the trial actually constrains this attribute
+        (any of required / sufficient_any / excluded is non-empty); ``matched``
+        is true when the per-criterion matcher verdict equals `matched`.
+
+        Replicates `UserToTrialAttrMatcher._match_criteria_count` (#4399/#4401) at
+        the per-criterion granularity the aggregate `is_attr_blank` + `'[]'`
+        checks lacked (#4416). The patient is fixed, so its derived (known) codes
+        D and blank-source (undeterminable) codes U are constants; only the
+        trial's required / excluded / sufficient_any / min_count vary per row.
+
+        Verdict is `matched` (eligible) iff inclusion is satisfied AND no excluded
+        criterion is present-or-undeterminable. Inclusion only needs the matched
+        (D-intersection) counts; the unknown counts only distinguish unknown from
+        not_matched, and not_matched trials are filtered out before counting.
+        """
+        derived_csv = trial_attr_meta['criteria_derived'](service.patient_info)
+        derived = {c.strip() for c in (derived_csv or '').split(',') if c.strip()}
+        unknown = set(trial_attr_meta['criteria_all_unknown_codes'](service))
+
+        required_attr = trial_attr_meta.get('criteria_required_attr')
+        sufficient_attr = trial_attr_meta.get('criteria_sufficient_any_attr')
+        excluded_attr = trial_attr_meta.get('criteria_excluded_attr')
+        min_count_attr = trial_attr_meta.get('criteria_min_count_attr')
+
+        def length(attr):
+            return f"jsonb_array_length(COALESCE({attr}, '[]'::jsonb))" if attr else '0'
+
+        required_len = length(required_attr)
+        sufficient_len = length(sufficient_attr)
+        excluded_len = length(excluded_attr)
+        required_matched = self._jsonb_intersect_count(required_attr, derived) if required_attr else '0'
+        sufficient_matched = self._jsonb_intersect_count(sufficient_attr, derived) if sufficient_attr else '0'
+        excluded_matched = self._jsonb_intersect_count(excluded_attr, derived) if excluded_attr else '0'
+        excluded_unknown = self._jsonb_intersect_count(excluded_attr, unknown) if excluded_attr else '0'
+
+        if min_count_attr:
+            min_count = f"(CASE WHEN {min_count_attr} IS NULL OR {min_count_attr} < 1 THEN 1 ELSE {min_count_attr} END)"
+        else:
+            min_count = '1'
+
+        inclusion = (
+            f"(({required_len} = 0 AND {sufficient_len} = 0)"
+            f" OR ({required_len} > 0 AND {required_matched} >= {min_count})"
+            f" OR ({sufficient_len} > 0 AND {sufficient_matched} >= 1))"
+        )
+        exclusion_clear = f"({excluded_len} = 0 OR ({excluded_matched} = 0 AND {excluded_unknown} = 0))"
+        gating = f"({required_len} > 0 OR {sufficient_len} > 0 OR {excluded_len} > 0)"
+        matched = f"({inclusion} AND {exclusion_clear})"
+        return gating, matched
+
     def potential_attrs_to_check(self, patient_info, counts=None, with_eligible=False):
         attrs2check = {}
         eligible_attrs2check = {}
@@ -147,6 +218,30 @@ class UserToTrialAttrsMapper:
                 if not is_blank:
                     is_filled_by_user = True
                     # continue
+
+                # Per-criterion "named OR" attrs (high-risk MCL): replicate the
+                # three-valued matcher per trial instead of the aggregate
+                # is_attr_blank + '[]' checks (#4416). Patient-side only; the
+                # counts-only profit path (patient_info=None) keeps the aggregate
+                # SQL below.
+                if trial_attr_meta.get("criteria_count_match"):
+                    gating, matched_cond = self._criteria_count_match_expressions(trial_attr_meta, service)
+                    # matched (incl. a non-gating trial) -> NULL (eligible / not
+                    # potential); a gating trial that isn't matched -> 1 (potential).
+                    # This collapses matcher `unknown` and `not_matched` to potential.
+                    # Excluding `not_matched` rows from the list entirely is the job
+                    # of the coarse eligible_for_high_risk_mcl_criteria filter
+                    # (has_any_keys), which today keeps a min_count>=2 trial a patient
+                    # overlaps but can't satisfy, and can drop unknown-only-required
+                    # trials; making that filter per-criterion is follow-up work
+                    # (issue #186; CB #4419). Net vs the old aggregate path: these
+                    # now read potential instead of eligible.
+                    attrs2check[user_attr] = f'(CASE WHEN {matched_cond} THEN NULL ELSE 1 END)'
+                    # Match-score numerator: count only a gate the trial actually has
+                    # and the patient definitively satisfies. A non-gating trial is
+                    # neutral (NULL), matching the old aggregate SQL.
+                    eligible_attrs2check[user_attr] = f'(CASE WHEN {gating} AND {matched_cond} THEN 1 ELSE NULL END)'
+                    continue
 
             then_value = 'NULL ELSE 1'
             count_value = 0
