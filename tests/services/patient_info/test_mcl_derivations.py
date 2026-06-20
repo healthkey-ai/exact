@@ -17,11 +17,11 @@ def _mcl_patient(**kwargs):
     only the field under test."""
     defaults = dict(
         disease='mantle cell lymphoma',
-        patient_age=70,
+        patient_age=50,
         ecog_performance_status=0,
-        white_blood_cell_count=8e9,
-        white_blood_cell_count_units='CELLS/L',
-        lactate_dehydrogenase_level=250,
+        white_blood_cell_count=5000,
+        white_blood_cell_count_units='CELLS/UL',
+        lactate_dehydrogenase_level=200,
         ki67_proliferation_index=15,
     )
     defaults.update(kwargs)
@@ -32,22 +32,34 @@ class TestMipiRiskBuckets:
     """Hoster 2008 MIPI cutoffs: low < 5.7, intermediate < 6.5, high >= 6.5."""
 
     def test_low_for_healthy_inputs(self):
-        # score ≈ 3.32 — well below 5.7
-        pi = _mcl_patient(patient_age=70, ecog_performance_status=0,
-                          white_blood_cell_count=8e9, lactate_dehydrogenase_level=250)
+        # WBC as cells/µL (Hoster 2008). score ≈ 4.41 — below 5.7
+        pi = _mcl_patient(patient_age=35, ecog_performance_status=0,
+                          white_blood_cell_count=5000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=150)
         assert PatientInfoAttributes(pi).mipi_risk == 'low'
 
     def test_intermediate_for_moderate_disease(self):
         # score ≈ 5.91 — in [5.7, 6.5)
-        pi = _mcl_patient(patient_age=85, ecog_performance_status=2,
-                          white_blood_cell_count=50e9, lactate_dehydrogenase_level=700)
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
         assert PatientInfoAttributes(pi).mipi_risk == 'intermediate'
 
     def test_high_for_aggressive_disease(self):
-        # score ≈ 7.10 — well above 6.5
-        pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500)
+        # score well above 6.5
+        pi = _mcl_patient(patient_age=75, ecog_performance_status=3,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=3000)
         assert PatientInfoAttributes(pi).mipi_risk == 'high'
+
+    def test_wbc_uses_per_microliter_magnitude_4421(self):
+        # Regression guard for CB #4421: WBC must be read as cells/µL. A median
+        # 7000/µL patient is 'intermediate'; the old ×10⁹/L reading (log10(7))
+        # scored ~2.82 lower and wrongly returned 'low'.
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
+        assert PatientInfoAttributes(pi).mipi_risk == 'intermediate'
 
     def test_ecog_zero_does_not_add_penalty(self):
         # ECOG 0 and 1 both contribute 0 (predicate is ecog >= 2)
@@ -101,26 +113,26 @@ class TestMipiCRiskMatrix:
         assert PatientInfoAttributes(pi).mipi_c_risk == 'low_intermediate'
 
     def test_intermediate_mipi_plus_low_ki67_is_low_intermediate(self):
-        pi = _mcl_patient(patient_age=85, ecog_performance_status=2,
-                          white_blood_cell_count=50e9, lactate_dehydrogenase_level=700,
-                          ki67_proliferation_index=20)
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250, ki67_proliferation_index=20)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'low_intermediate'
 
     def test_intermediate_mipi_plus_high_ki67_is_high_intermediate(self):
-        pi = _mcl_patient(patient_age=85, ecog_performance_status=2,
-                          white_blood_cell_count=50e9, lactate_dehydrogenase_level=700,
-                          ki67_proliferation_index=50)
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250, ki67_proliferation_index=35)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'high_intermediate'
 
     def test_high_mipi_plus_low_ki67_is_high_intermediate(self):
         pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500,
                           ki67_proliferation_index=20)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'high_intermediate'
 
     def test_high_mipi_plus_high_ki67_is_high(self):
         pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500,
                           ki67_proliferation_index=60)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'high'
 
@@ -281,13 +293,13 @@ class TestHighRiskMclCriteriaDerivation:
     def test_high_mipi_code(self):
         # Aggressive inputs -> mipi high.
         pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500)
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500)
         assert 'high_mipi' in _high_risk_codes(pi)
 
     def test_mipi_c_high(self):
         # mipi high + ki67 >= 30 -> mipi_c high.
         pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500,
                           ki67_proliferation_index=40)
         assert 'mipi_c_high' in _high_risk_codes(pi)
 
