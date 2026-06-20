@@ -640,16 +640,20 @@ class PatientInfoAttributes:
         if float(wbc) <= 0 or float(ldh) <= 0:
             return None
 
-        wbc_in_cells_per_l = float(BaseConvertor.call(
-            wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/L'
-        ))
-        # MIPI = 0.03535*age + 0.6978*[ECOG>=2] + 1.367*log10(LDH/ULN) + 0.9393*log10(WBC[10^9/L])
+        # The MIPI formula takes WBC as the absolute count per microliter (e.g.
+        # 7000 -> log10(7000)), per Hoster et al. 2008. The previous code
+        # converted to cells/L and divided by 1e9, i.e. used the x10^9/L value
+        # (7 -> log10(7)), under-scoring this term by log10(1000) = 3 (~2.82
+        # points) and systematically under-classifying MCL risk (CB #4421).
         # ULN proxy 250 mirrors CB; revisit if a per-lab ULN becomes available.
+        wbc_per_ul = float(BaseConvertor.call(
+            wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/UL'
+        ))
         score = (
             0.03535 * age
             + 0.6978 * (1 if ecog >= 2 else 0)
             + 1.367 * log10(float(ldh) / 250)
-            + 0.9393 * log10(wbc_in_cells_per_l / 1e9)
+            + 0.9393 * log10(wbc_per_ul)
         )
 
         if score < 5.7:
