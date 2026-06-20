@@ -40,6 +40,8 @@ def normalize_patient_info(pi) -> None:
     if sct:
         pi.stem_cell_transplant_history = [sct]
     pi.renal_adequacy_status = attr.renal_adequacy_status
+    pi.hepatic_adequacy_status = attr.hepatic_adequacy_status
+    pi.haematological_adequacy_status = attr.haematological_adequacy_status
     egfr = EgfrCalculator.call(pi)
     if egfr:
         pi.estimated_glomerular_filtration_rate = egfr

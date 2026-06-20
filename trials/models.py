@@ -413,6 +413,8 @@ class Trial(TimeStampMixin):
     estimated_glomerular_filtration_rate_min = models.IntegerField(blank=True, null=True)
     estimated_glomerular_filtration_rate_max = models.IntegerField(blank=True, null=True)
     renal_adequacy_required = models.BooleanField(blank=True, null=True)
+    hepatic_adequacy_required = models.BooleanField(blank=True, null=True, help_text="Is a hepatic adequacy required?")
+    haematological_adequacy_required = models.BooleanField(blank=True, null=True, help_text="Is a haematological adequacy required?")
     liver_enzyme_level_ast_abs_min = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     liver_enzyme_level_ast_abs_max = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     liver_enzyme_level_ast_uln_min = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
