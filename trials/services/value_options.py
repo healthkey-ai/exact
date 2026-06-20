@@ -881,6 +881,12 @@ class ValueOptions:
         }
 
     @property
+    def high_risk_mcl_criteria(self):
+        from trials.models import HighRiskMclCriteria
+        items = HighRiskMclCriteria.objects.order_by('id')
+        return {x.code: x.title for x in items}
+
+    @property
     def er_statuses(self):
         from trials.models import EstrogenReceptorStatus
         items = EstrogenReceptorStatus.objects.order_by('id')
@@ -1381,5 +1387,8 @@ class ValueOptions:
             },
             'bulkyDiseaseCriteria': {
                 'options': self.to_value_and_label(self.bulky_disease_criteria)
+            },
+            'highRiskMclCriteria': {
+                'options': self.to_value_and_label(self.high_risk_mcl_criteria)
             },
         }

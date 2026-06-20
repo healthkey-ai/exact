@@ -575,8 +575,10 @@ class Trial(TimeStampMixin):
     bone_marrow_involvement_required = models.BooleanField(blank=True, null=True, db_index=True)
 
     # MCL
-    lesion_size_mcl_min = models.FloatField(blank=True, null=True)
-    lesion_size_mcl_max = models.FloatField(blank=True, null=True)
+    largest_lesion_size_min = models.FloatField(blank=True, null=True)
+    largest_lesion_size_max = models.FloatField(blank=True, null=True)
+    p53_ihc_min = models.IntegerField(blank=True, null=True)
+    p53_ihc_max = models.IntegerField(blank=True, null=True)
     morphologic_variants_required = models.JSONField(blank=True, null=False, default=list)
     morphologic_variants_excluded = models.JSONField(blank=True, null=False, default=list)
     disease_behaviors_required = models.JSONField(blank=True, null=False, default=list)
@@ -585,6 +587,10 @@ class Trial(TimeStampMixin):
     bulky_disease_criteria_required = models.JSONField(blank=True, null=False, default=list)
     mipi_risks_required = models.JSONField(blank=True, null=False, default=list)
     mipi_c_risks_required = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_required = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_excluded = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_sufficient_any = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_min_count = models.PositiveSmallIntegerField(blank=True, null=True, default=None)
 
     locations = models.ManyToManyField(
         'Location',
@@ -639,6 +645,9 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['bulky_disease_criteria_required'], name='idx_bulky_disease_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['mipi_risks_required'], name='idx_mipi_risks_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['mipi_c_risks_required'], name='idx_mipi_c_risks_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_required'], name='idx_hr_mcl_required_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_excluded'], name='idx_hr_mcl_excluded_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_sufficient_any'], name='idx_hr_mcl_sufficient_gin', opclasses=['jsonb_ops']),
             # B-tree indexes on hot-path sort/filter columns (#27). Match the
             # actual ORDER BY direction at trials_views.py:156,158 — a plain
             # ASC NULLS LAST B-tree (Django default) cannot serve a
@@ -1107,6 +1116,10 @@ class ProteinExpression(OptionsListMixin):
 
 
 class MorphologicVariant(OptionsListMixin):
+    pass
+
+
+class HighRiskMclCriteria(OptionsListMixin):
     pass
 
 

@@ -139,7 +139,7 @@ class TestMclFieldRoundTrip:
         data = {
             'disease': 'mantle cell lymphoma',
             'morphologic_variant': 'blastoid',
-            'lesion_size_mcl': 7.5,
+            'largest_lesion_size': 7.5,
             'disease_behavior': 'classic',
             'disease_subtype': 'nodal',
             'extranodal_sites': ['bone_marrow', 'gi_tract'],
@@ -153,12 +153,12 @@ class TestMclFieldRoundTrip:
         # Non-derived fields preserved.
         assert pi.disease == 'mantle cell lymphoma'
         assert pi.morphologic_variant == 'blastoid'
-        assert pi.lesion_size_mcl == 7.5
+        assert pi.largest_lesion_size == 7.5
         assert pi.disease_behavior == 'classic'
         assert pi.disease_subtype == 'nodal'
         assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
         # Derived fields overwritten: no age/ECOG/WBC/LDH/Ki67 in payload, so
-        # MIPI inputs are missing and the score is None. lesion_size_mcl=7.5
+        # MIPI inputs are missing and the score is None. largest_lesion_size=7.5
         # fires the 5cm and 7.5cm bulky-lesion thresholds.
         assert pi.mipi_risk is None
         assert pi.mipi_c_risk is None
@@ -172,12 +172,12 @@ class TestMclFieldRoundTrip:
         data = {
             'disease': 'mantle cell lymphoma',
             'morphologicVariant': 'pleomorphic',
-            'lesionSizeMcl': 5.0,
+            'largestLesionSize': 5.0,
             'mipiRisk': 'low',  # overwritten by derivation
         }
         pi = _build_in_memory(data)
         assert pi.morphologic_variant == 'pleomorphic'
-        assert pi.lesion_size_mcl == 5.0
+        assert pi.largest_lesion_size == 5.0
         # Caller-supplied mipi_risk overwritten; with no scoring inputs the
         # derived value is None.
         assert pi.mipi_risk is None

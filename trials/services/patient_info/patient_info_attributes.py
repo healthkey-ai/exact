@@ -14,6 +14,68 @@ from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
 
 
+# Per-criterion source fields for derived high-risk MCL criteria. A criterion's
+# absence is only confirmable once every source field it can be derived from is
+# answered (drives the unknown-vs-none distinction, #4399/#4416). Codes absent
+# from this map are treated as determinable. Ported verbatim from CB.
+HIGH_RISK_MCL_CRITERIA_SOURCES = {
+    'tp53_mutation': ['molecular_markers'],
+    'kmt2d_mutation': ['molecular_markers'],
+    'nsd2_mutation': ['molecular_markers'],
+    # Gene-specific NOTCH codes are only confirmable-absent when molecular markers
+    # are answered AND the ambiguous combined notch1or2Mutations option is NOT
+    # selected (it can't disambiguate NOTCH1 from NOTCH2). The '_notch_specific'
+    # token encodes that second condition (#4406).
+    'notch1_mutation': ['molecular_markers', '_notch_specific'],
+    'notch2_mutation': ['molecular_markers', '_notch_specific'],
+    'notch1_or_2': ['molecular_markers'],
+    'cdkn2a_alteration': ['molecular_markers'],
+    'smarca4_mutation': ['molecular_markers'],
+    'ccnd1_alteration': ['molecular_markers'],
+    'bcl2_amplification': ['molecular_markers'],
+    'del17p': ['molecular_markers', 'cytogenic_markers'],
+    'complex_karyotype': ['molecular_markers', 'cytogenic_markers'],
+    'complex_karyotype_strict': ['molecular_markers', 'cytogenic_markers'],
+    'myc_rearrangement': ['molecular_markers', 'cytogenic_markers'],
+    'p53_ihc_gte_50': ['p53_ihc'],
+    'blastoid': ['morphologic_variant'],
+    'pleomorphic': ['morphologic_variant'],
+    'ki67_gt_30': ['ki67_proliferation_index'],
+    'ki67_gte_30': ['ki67_proliferation_index'],
+    'ki67_gt_50': ['ki67_proliferation_index'],
+    'ki67_gte_50': ['ki67_proliferation_index'],
+    'high_mipi': ['_mipi_risk'],
+    'mipi_c_high': ['_mipi_c_risk'],
+    'mipi_c_high_int_high_mipi': ['_mipi_c_risk'],
+    'mipi_c_high_int_int_mipi': ['_mipi_c_risk'],
+    'lesion_gte_5cm': ['largest_lesion_size'],
+    'lesion_gte_7_5cm': ['largest_lesion_size'],
+    'lesion_gt_10cm': ['largest_lesion_size'],
+    'node_gte_5cm': ['largest_lymph_node_size'],
+    'node_gte_7_5cm': ['largest_lymph_node_size'],
+    'node_gte_10cm': ['largest_lymph_node_size'],
+    'spleen_gte_13cm': ['spleen_size'],
+    'spleen_gte_15cm': ['spleen_size'],
+    'spleen_gte_20cm': ['spleen_size'],
+    'lymphocytosis_gte_50k': ['absolute_lymphocyte_count'],
+}
+
+# Per-criterion applicability for bulky disease criteria (see #4400). Same
+# semantics as HIGH_RISK_MCL_CRITERIA_SOURCES.
+BULKY_DISEASE_CRITERIA_SOURCES = {
+    'bulky_lesion_5cm': ['largest_lesion_size'],
+    'bulky_lesion_7_5cm': ['largest_lesion_size'],
+    'bulky_lesion_10cm': ['largest_lesion_size'],
+    'bulky_node_5cm': ['largest_lymph_node_size'],
+    'bulky_node_7_5cm': ['largest_lymph_node_size'],
+    'bulky_node_10cm': ['largest_lymph_node_size'],
+    'bulky_spleen_13cm': ['spleen_size'],
+    'bulky_spleen_15cm': ['spleen_size'],
+    'bulky_spleen_20cm_gt': ['spleen_size'],
+    'bulky_spleen_20cm_gte': ['spleen_size'],
+}
+
+
 class PatientInfoAttributes:
     def __init__(self, patient_info):
         self.patient_info = patient_info
@@ -556,11 +618,10 @@ class PatientInfoAttributes:
 
     # ---------------------------------------------------------------------
     # MCL derivations (#41).
-    # Ported from CB patient_info_attributes.py:488-567 with two adaptations:
-    # 1. bulky_disease_criteria returns a list (matches EXACT's JSONField),
-    #    not a comma-joined string.
-    # 2. Bulky lesion thresholds key off lesion_size_mcl (EXACT's MCL field),
-    #    not CB's largest_lesion_size.
+    # Ported from CB patient_info_attributes.py. One remaining EXACT-local
+    # adaptation: bulky_disease_criteria returns a list (matches EXACT's
+    # JSONField); the comma-string realign lands with the high-risk matcher
+    # wiring (#185). Field names (largest_lesion_size) and codes match CB.
     # MIPI: Hoster et al. 2008 (Blood 111:558-565).
     # MIPI-C: categorical MIPI x Ki-67 table (Hoster et al. 2014, ASH 2014
     # abstract — full JCO 2016 publication uses a continuous variant).
@@ -625,7 +686,7 @@ class PatientInfoAttributes:
         pi = self.patient_info
         criteria = []
 
-        lesion = pi.lesion_size_mcl
+        lesion = pi.largest_lesion_size
         if lesion is not None:
             if lesion >= 5:
                 criteria.append('bulky_lesion_5cm')
@@ -655,3 +716,167 @@ class PatientInfoAttributes:
                 criteria.append('bulky_spleen_20cm_gte')
 
         return criteria
+
+    @cached_property
+    def high_risk_mcl_criteria(self):
+        """Compute which high-risk MCL criteria the patient meets."""
+        pi = self.patient_info
+        criteria = []
+
+        molecular = pi.molecular_markers or ''
+        molecular_list = [m.strip() for m in molecular.split(',') if m.strip()]
+
+        if 'tp53Mutation' in molecular_list:
+            criteria.append('tp53_mutation')
+        if 'kmt2dMutation' in molecular_list:
+            criteria.append('kmt2d_mutation')
+        if 'nsd2Mutation' in molecular_list:
+            criteria.append('nsd2_mutation')
+        if 'notch1or2Mutations' in molecular_list:
+            # The patient option is a combined NOTCH1/NOTCH2 selection; we cannot
+            # tell which gene is mutated, so emit a single combined code rather
+            # than both specific codes (#4406). A trial requiring NOTCH1 or NOTCH2
+            # specifically must not match this ambiguous input.
+            criteria.append('notch1_or_2')
+        if 'cdkn2aAlteration' in molecular_list:
+            criteria.append('cdkn2a_alteration')
+        if 'smarca4Mutation' in molecular_list:
+            criteria.append('smarca4_mutation')
+        if 'ccnd1Alteration' in molecular_list:
+            criteria.append('ccnd1_alteration')
+        if 'bcl2Amplification' in molecular_list:
+            criteria.append('bcl2_amplification')
+
+        cytogenic = pi.cytogenic_markers or ''
+        cytogenic_list = [m.strip() for m in cytogenic.split(',') if m.strip()]
+        all_markers = set(cytogenic_list + molecular_list)
+
+        if 'del17p13' in all_markers:
+            criteria.append('del17p')
+        # complexKaryotypeExcludingT1114 is the strict form (>=3 abnormalities in
+        # addition to t(11;14), per NCT06357676); it also satisfies the plain
+        # complex_karyotype criterion (#4406).
+        if 'complexKaryotype' in all_markers or 'complexKaryotypeExcludingT1114' in all_markers:
+            criteria.append('complex_karyotype')
+        if 'complexKaryotypeExcludingT1114' in all_markers:
+            criteria.append('complex_karyotype_strict')
+        if 'mycRearrangements' in all_markers:
+            criteria.append('myc_rearrangement')
+
+        p53 = pi.p53_ihc
+        if p53 is not None and p53 >= 50:
+            criteria.append('p53_ihc_gte_50')
+
+        morphology = pi.morphologic_variant
+        if morphology == 'blastoid':
+            criteria.append('blastoid')
+        elif morphology == 'pleomorphic':
+            criteria.append('pleomorphic')
+
+        ki67 = pi.ki67_proliferation_index
+        if ki67 is not None:
+            if ki67 > 30:
+                criteria.append('ki67_gt_30')
+            if ki67 >= 30:
+                criteria.append('ki67_gte_30')
+            if ki67 > 50:
+                criteria.append('ki67_gt_50')
+            if ki67 >= 50:
+                criteria.append('ki67_gte_50')
+
+        mipi = self.mipi_risk
+        mipi_c = self.mipi_c_risk
+
+        if mipi == 'high':
+            criteria.append('high_mipi')
+
+        if mipi_c == 'high':
+            criteria.append('mipi_c_high')
+        elif mipi_c == 'high_intermediate':
+            if mipi == 'high':
+                criteria.append('mipi_c_high_int_high_mipi')
+            elif mipi == 'intermediate':
+                criteria.append('mipi_c_high_int_int_mipi')
+
+        lesion = pi.largest_lesion_size
+        if lesion is not None:
+            if lesion >= 5:
+                criteria.append('lesion_gte_5cm')
+            if lesion >= 7.5:
+                criteria.append('lesion_gte_7_5cm')
+            if lesion > 10:
+                criteria.append('lesion_gt_10cm')
+
+        node = pi.largest_lymph_node_size
+        if node is not None:
+            if node >= 5:
+                criteria.append('node_gte_5cm')
+            if node >= 7.5:
+                criteria.append('node_gte_7_5cm')
+            if node >= 10:
+                criteria.append('node_gte_10cm')
+
+        spleen = pi.spleen_size
+        if spleen is not None:
+            if spleen >= 13:
+                criteria.append('spleen_gte_13cm')
+            if spleen >= 15:
+                criteria.append('spleen_gte_15cm')
+            if spleen >= 20:
+                criteria.append('spleen_gte_20cm')
+
+        alc = pi.absolute_lymphocyte_count
+        if alc is not None and alc >= 50000:
+            criteria.append('lymphocytosis_gte_50k')
+
+        return ','.join(criteria) if criteria else None
+
+    def _criteria_source_blank(self, source):
+        """Whether a single source token backing a derived criterion is blank."""
+        if source == '_mipi_risk':
+            return self.mipi_risk is None
+        if source == '_mipi_c_risk':
+            return self.mipi_c_risk is None
+        if source == '_notch_specific':
+            # NOTCH1/NOTCH2 cannot be disambiguated while the combined option is
+            # selected, so a gene-specific code stays undeterminable then.
+            molecular = self.patient_info.molecular_markers or ''
+            return 'notch1or2Mutations' in [m.strip() for m in molecular.split(',')]
+        value = getattr(self.patient_info, source, None)
+        return value is None or value == ''
+
+    def _criteria_unknown_codes(self, required_codes, sources_map):
+        """Subset of required_codes that cannot be determined from patient data.
+
+        A code is unknown when ANY source field it can be derived from is blank:
+        its absence is only confirmed once every potential source is answered.
+        Codes absent from sources_map are treated as determinable (never unknown)
+        so an unrecognised required code does not silently inflate the unknown
+        count.
+        """
+        unknown = set()
+        for code in required_codes:
+            sources = sources_map.get(code)
+            if not sources:
+                continue
+            if any(self._criteria_source_blank(s) for s in sources):
+                unknown.add(code)
+        return unknown
+
+    def high_risk_mcl_criteria_unknown_codes(self, required_codes):
+        return self._criteria_unknown_codes(required_codes, HIGH_RISK_MCL_CRITERIA_SOURCES)
+
+    def bulky_disease_criteria_unknown_codes(self, required_codes):
+        return self._criteria_unknown_codes(required_codes, BULKY_DISEASE_CRITERIA_SOURCES)
+
+    def high_risk_mcl_criteria_all_unknown_codes(self):
+        """Every high-risk code whose source data is blank for this patient.
+
+        The whole-vocabulary unknown set (#4416): the trials-list SQL counter
+        intersects it per trial to reproduce the matcher's per-criterion verdict
+        instead of the aggregate is_attr_blank check.
+        """
+        return self._criteria_unknown_codes(HIGH_RISK_MCL_CRITERIA_SOURCES.keys(), HIGH_RISK_MCL_CRITERIA_SOURCES)
+
+    def bulky_disease_criteria_all_unknown_codes(self):
+        return self._criteria_unknown_codes(BULKY_DISEASE_CRITERIA_SOURCES.keys(), BULKY_DISEASE_CRITERIA_SOURCES)

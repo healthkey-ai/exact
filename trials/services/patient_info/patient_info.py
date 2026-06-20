@@ -212,18 +212,20 @@ _FIELDS = [
     _f(IntegerField, 'clonal_b_lymphocyte_count'),
     _f(BooleanField, 'bone_marrow_involvement'),
     # MCL-specific
-    # mipi_risk / mipi_c_risk / bulky_disease_criteria are derived in
-    # normalize._normalize_mcl_derivations from age / ECOG / WBC / LDH /
-    # Ki67 / sizes (#41). Caller-supplied values are overwritten when the
-    # patient's disease is MCL.
+    # mipi_risk / mipi_c_risk / bulky_disease_criteria / high_risk_mcl_criteria
+    # are derived in normalize._normalize_mcl_derivations from age / ECOG / WBC /
+    # LDH / Ki67 / markers / sizes (#41). Caller-supplied values are overwritten
+    # when the patient's disease is MCL.
     _f(TextField, 'morphologic_variant'),
-    _f(FloatField, 'lesion_size_mcl'),
+    _f(FloatField, 'largest_lesion_size'),
+    _f(IntegerField, 'p53_ihc'),  # p53 IHC expression %, range 0-100
     _f(TextField, 'disease_behavior'),
     _f(TextField, 'disease_subtype'),
     _f(JSONField, 'extranodal_sites', default=list),
     _f(TextField, 'mipi_risk'),
     _f(TextField, 'mipi_c_risk'),
     _f(JSONField, 'bulky_disease_criteria', default=list),
+    _f(TextField, 'high_risk_mcl_criteria'),
 ]
 
 _FIELD_MAP = {f.name: f for f in _FIELDS}
