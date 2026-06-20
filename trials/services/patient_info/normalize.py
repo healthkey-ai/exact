@@ -246,3 +246,5 @@ def _normalize_mcl_derivations(pi) -> None:
     # copying, downstream mutation of pi.bulky_disease_criteria would also
     # mutate the cached property's stored list.
     pi.bulky_disease_criteria = list(attr.bulky_disease_criteria)
+    # high_risk_mcl_criteria is a comma-joined string (or None), per CB.
+    pi.high_risk_mcl_criteria = attr.high_risk_mcl_criteria

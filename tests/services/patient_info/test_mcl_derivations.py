@@ -150,17 +150,17 @@ class TestBulkyDiseaseCriteria:
         assert PatientInfoAttributes(pi).bulky_disease_criteria == []
 
     def test_lesion_5cm_alone(self):
-        pi = _mcl_patient(lesion_size_mcl=5)
+        pi = _mcl_patient(largest_lesion_size=5)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == ['bulky_lesion_5cm']
 
     def test_lesion_10cm_fires_all_three_lesion_thresholds(self):
-        pi = _mcl_patient(lesion_size_mcl=12)
+        pi = _mcl_patient(largest_lesion_size=12)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == [
             'bulky_lesion_5cm', 'bulky_lesion_7_5cm', 'bulky_lesion_10cm',
         ]
 
     def test_lesion_under_5cm_does_not_fire(self):
-        pi = _mcl_patient(lesion_size_mcl=4.9)
+        pi = _mcl_patient(largest_lesion_size=4.9)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == []
 
     def test_node_5cm_alone(self):
@@ -194,7 +194,7 @@ class TestBulkyDiseaseCriteria:
         ]
 
     def test_multiple_anatomic_sites_combine(self):
-        pi = _mcl_patient(lesion_size_mcl=5, largest_lymph_node_size=5, spleen_size=14)
+        pi = _mcl_patient(largest_lesion_size=5, largest_lymph_node_size=5, spleen_size=14)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == [
             'bulky_lesion_5cm', 'bulky_node_5cm', 'bulky_spleen_13cm',
         ]
@@ -210,7 +210,7 @@ class TestNormalizerWiring:
             mipi_risk='high',  # caller-supplied; should be overwritten to 'low'
             mipi_c_risk='high',
             bulky_disease_criteria=['caller_supplied_garbage'],
-            lesion_size_mcl=12,
+            largest_lesion_size=12,
         )
         normalize_patient_info(pi)
         assert pi.mipi_risk == 'low'  # actual derivation for the default inputs
@@ -236,6 +236,100 @@ class TestNormalizerWiring:
     def test_disease_gate_is_case_insensitive(self, disease):
         # str(pi.disease).lower() == 'mantle cell lymphoma' must accept any
         # casing the API caller sends.
-        pi = _mcl_patient(disease=disease, lesion_size_mcl=6)
+        pi = _mcl_patient(disease=disease, largest_lesion_size=6)
         normalize_patient_info(pi)
         assert pi.bulky_disease_criteria == ['bulky_lesion_5cm']
+
+
+def _high_risk_codes(pi):
+    """Set of derived high-risk MCL criterion codes (comma-string -> set)."""
+    derived = PatientInfoAttributes(pi).high_risk_mcl_criteria
+    return set(derived.split(',')) if derived else set()
+
+
+class TestHighRiskMclCriteriaDerivation:
+    """Ported from CB: patient high-risk MCL criteria derivation (#4399-#4437)."""
+
+    def test_no_inputs_returns_none(self):
+        # Defaults give mipi 'low' / ki67 15 / no markers or sizes -> nothing.
+        assert PatientInfoAttributes(_mcl_patient()).high_risk_mcl_criteria is None
+
+    def test_molecular_marker_codes(self):
+        pi = _mcl_patient(molecular_markers='tp53Mutation,bcl2Amplification')
+        codes = _high_risk_codes(pi)
+        assert 'tp53_mutation' in codes
+        assert 'bcl2_amplification' in codes
+
+    def test_notch_combined_emits_single_code(self):
+        # Ambiguous combined option must NOT emit gene-specific codes (#4406).
+        codes = _high_risk_codes(_mcl_patient(molecular_markers='notch1or2Mutations'))
+        assert 'notch1_or_2' in codes
+        assert 'notch1_mutation' not in codes
+        assert 'notch2_mutation' not in codes
+
+    def test_complex_karyotype_strict_also_satisfies_plain(self):
+        codes = _high_risk_codes(_mcl_patient(cytogenic_markers='complexKaryotypeExcludingT1114'))
+        assert 'complex_karyotype' in codes
+        assert 'complex_karyotype_strict' in codes
+
+    def test_complex_karyotype_plain_only(self):
+        codes = _high_risk_codes(_mcl_patient(cytogenic_markers='complexKaryotype'))
+        assert 'complex_karyotype' in codes
+        assert 'complex_karyotype_strict' not in codes
+
+    def test_p53_ihc_threshold(self):
+        assert 'p53_ihc_gte_50' in _high_risk_codes(_mcl_patient(p53_ihc=50))
+        assert 'p53_ihc_gte_50' not in _high_risk_codes(_mcl_patient(p53_ihc=49))
+
+    def test_ki67_tiers(self):
+        codes = _high_risk_codes(_mcl_patient(ki67_proliferation_index=55))
+        assert codes >= {'ki67_gt_30', 'ki67_gte_30', 'ki67_gt_50', 'ki67_gte_50'}
+
+    def test_high_mipi_code(self):
+        # Aggressive inputs -> mipi high.
+        pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
+                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500)
+        assert 'high_mipi' in _high_risk_codes(pi)
+
+    def test_mipi_c_high(self):
+        # mipi high + ki67 >= 30 -> mipi_c high.
+        pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
+                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500,
+                          ki67_proliferation_index=40)
+        assert 'mipi_c_high' in _high_risk_codes(pi)
+
+    def test_size_and_lymphocytosis_codes(self):
+        pi = _mcl_patient(largest_lesion_size=8, largest_lymph_node_size=5,
+                          spleen_size=20, absolute_lymphocyte_count=60000)
+        codes = _high_risk_codes(pi)
+        assert {'lesion_gte_5cm', 'lesion_gte_7_5cm'} <= codes
+        assert 'lesion_gt_10cm' not in codes
+        assert 'node_gte_5cm' in codes
+        assert {'spleen_gte_13cm', 'spleen_gte_15cm', 'spleen_gte_20cm'} <= codes
+        assert 'lymphocytosis_gte_50k' in codes
+
+
+class TestHighRiskMclUnknownCodes:
+    """unknown-vs-none distinction (#4399/#4416)."""
+
+    def test_unknown_when_source_blank(self):
+        # molecular_markers unanswered -> tp53_mutation cannot be ruled absent.
+        attrs = PatientInfoAttributes(_mcl_patient())
+        assert 'tp53_mutation' in attrs.high_risk_mcl_criteria_unknown_codes(['tp53_mutation'])
+
+    def test_known_when_source_answered(self):
+        attrs = PatientInfoAttributes(_mcl_patient(molecular_markers='ccnd1Alteration'))
+        assert attrs.high_risk_mcl_criteria_unknown_codes(['tp53_mutation']) == set()
+
+    def test_notch_specific_unknown_while_combined_selected(self):
+        # Combined NOTCH option leaves gene-specific codes undeterminable.
+        attrs = PatientInfoAttributes(_mcl_patient(molecular_markers='notch1or2Mutations'))
+        unknown = attrs.high_risk_mcl_criteria_unknown_codes(['notch1_mutation'])
+        assert 'notch1_mutation' in unknown
+
+    def test_all_unknown_codes_covers_vocabulary(self):
+        # With no inputs, every code with a backing source is unknown.
+        attrs = PatientInfoAttributes(_mcl_patient())
+        all_unknown = attrs.high_risk_mcl_criteria_all_unknown_codes()
+        assert 'tp53_mutation' in all_unknown
+        assert 'del17p' in all_unknown
