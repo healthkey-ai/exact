@@ -161,3 +161,51 @@ class TestHighRiskMclBreakdown:
         # excluded criterion present -> not_matched (inverse logic)
         assert excl['blastoid'] == 'not_matched'
         assert bd['aggregate'] == 'not_matched'
+
+
+class TestHighRiskMclPotentialCounting:
+    """#4416: per-criterion potential-counting. A gating trial that the patient
+    cannot definitively satisfy (unknown required criterion) must count as
+    potential, not be silently treated as eligible by the aggregate check."""
+
+    @pytest.mark.django_db
+    def test_unknown_required_adds_one_potential_vs_matched(self):
+        # Patient: tp53 known-present, cytogenic blank -> del17p undeterminable.
+        pi = _mcl_patient(molecular_markers='tp53Mutation')
+        # Two trials identical except for high-risk fields.
+        t_matched = TrialFactory(
+            disease='mantle cell lymphoma',
+            high_risk_mcl_criteria_required=['tp53_mutation'],
+        )
+        t_unknown = TrialFactory(
+            disease='mantle cell lymphoma',
+            high_risk_mcl_criteria_required=['tp53_mutation', 'del17p'],
+            high_risk_mcl_criteria_min_count=2,
+        )
+        qs = (
+            Trial.objects.filter(id__in=[t_matched.id, t_unknown.id])
+            .with_potential_attrs_count(pi)
+        )
+        counts = {t.id: t.potential_attrs_count for t in qs}
+        # Only the high-risk fields differ, so the delta is exactly the high-risk
+        # contribution: matched -> 0, unknown (1 of 2 required, min_count 2) -> 1.
+        assert counts[t_unknown.id] == counts[t_matched.id] + 1
+
+    @pytest.mark.django_db
+    def test_sufficient_any_met_is_not_potential(self):
+        pi = _mcl_patient(morphologic_variant='blastoid')  # blastoid known-present
+        t_suff = TrialFactory(
+            disease='mantle cell lymphoma',
+            high_risk_mcl_criteria_required=['tp53_mutation', 'del17p'],
+            high_risk_mcl_criteria_min_count=2,
+            high_risk_mcl_criteria_sufficient_any=['blastoid'],
+        )
+        t_plain = TrialFactory(disease='mantle cell lymphoma')
+        qs = (
+            Trial.objects.filter(id__in=[t_suff.id, t_plain.id])
+            .with_potential_attrs_count(pi)
+        )
+        counts = {t.id: t.potential_attrs_count for t in qs}
+        # sufficient_any satisfied -> high-risk contributes 0 potential, same as
+        # a trial with no high-risk gate.
+        assert counts[t_suff.id] == counts[t_plain.id]
