@@ -1229,6 +1229,18 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         # "under_user_control": True,
         "attr": "renal_adequacy_required",
     },
+    "hepatic_adequacy_status": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "attr": "hepatic_adequacy_required",
+    },
+    "haematological_adequacy_status": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "attr": "haematological_adequacy_required",
+    },
 }
 
 # -------

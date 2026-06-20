@@ -118,6 +118,8 @@ _FIELDS = [
     _f(BooleanField, 'meets_crab'),
     _f(IntegerField, 'estimated_glomerular_filtration_rate'),
     _f(BooleanField, 'renal_adequacy_status', default=False),
+    _f(BooleanField, 'hepatic_adequacy_status', default=False),
+    _f(BooleanField, 'haematological_adequacy_status', default=False),
     _f(IntegerField, 'liver_enzyme_levels_ast'),
     _f(IntegerField, 'liver_enzyme_levels_alt'),
     _f(IntegerField, 'liver_enzyme_levels_alp'),
