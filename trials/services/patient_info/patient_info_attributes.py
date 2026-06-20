@@ -618,10 +618,9 @@ class PatientInfoAttributes:
 
     # ---------------------------------------------------------------------
     # MCL derivations (#41).
-    # Ported from CB patient_info_attributes.py. One remaining EXACT-local
-    # adaptation: bulky_disease_criteria returns a list (matches EXACT's
-    # JSONField); the comma-string realign lands with the high-risk matcher
-    # wiring (#185). Field names (largest_lesion_size) and codes match CB.
+    # Ported from CB patient_info_attributes.py; bulky_disease_criteria and
+    # high_risk_mcl_criteria both return a comma-joined string (or None), and
+    # field names / codes match CB exactly.
     # MIPI: Hoster et al. 2008 (Blood 111:558-565).
     # MIPI-C: categorical MIPI x Ki-67 table (Hoster et al. 2014, ASH 2014
     # abstract — full JCO 2016 publication uses a continuous variant).
@@ -677,11 +676,11 @@ class PatientInfoAttributes:
 
     @cached_property
     def bulky_disease_criteria(self):
-        """Codes for each bulky-disease criterion the patient meets.
+        """Comma-joined codes for each bulky-disease criterion the patient meets.
 
         Multiple thresholds can fire at once (e.g. a 12cm lesion produces
         bulky_lesion_5cm, _7_5cm, and _10cm) so trials requiring any one of
-        them all match. Returns [] when no inputs or no thresholds met.
+        them all match. Returns None when no inputs or no thresholds met.
         """
         pi = self.patient_info
         criteria = []
@@ -715,7 +714,7 @@ class PatientInfoAttributes:
             if spleen >= 20:
                 criteria.append('bulky_spleen_20cm_gte')
 
-        return criteria
+        return ','.join(criteria) if criteria else None
 
     @cached_property
     def high_risk_mcl_criteria(self):

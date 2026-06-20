@@ -130,6 +130,9 @@ TRIAL_ATTRS_JSON_AS_A_LIST = (
     "bulky_disease_criteria_required",
     "mipi_risks_required",
     "mipi_c_risks_required",
+    "high_risk_mcl_criteria_required",
+    "high_risk_mcl_criteria_excluded",
+    "high_risk_mcl_criteria_sufficient_any",
 )
 
 USER_TO_TRIAL_ATTRS_MAPPING = {
@@ -569,6 +572,31 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "uvalue_function": {
             "bulky_disease_criteria_required":
                 lambda patient_info: patient_info.bulky_disease_criteria,
+        }
+    },
+    "high_risk_mcl_criteria": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "is_computed_value": True,
+        "computed_value_type": "str",
+        "disease": "MCL",
+        "attr": [
+            "high_risk_mcl_criteria_required",
+            "high_risk_mcl_criteria_excluded",
+            "high_risk_mcl_criteria_sufficient_any",
+        ],
+        "criteria_count_match": True,
+        "criteria_required_attr": "high_risk_mcl_criteria_required",
+        "criteria_excluded_attr": "high_risk_mcl_criteria_excluded",
+        "criteria_sufficient_any_attr": "high_risk_mcl_criteria_sufficient_any",
+        "criteria_min_count_attr": "high_risk_mcl_criteria_min_count",
+        "criteria_derived": lambda patient_info: patient_info.high_risk_mcl_criteria,
+        "criteria_unknown_codes": lambda pia, required: pia.high_risk_mcl_criteria_unknown_codes(required),
+        "criteria_all_unknown_codes": lambda pia: pia.high_risk_mcl_criteria_all_unknown_codes(),
+        "uvalue_function": {
+            "high_risk_mcl_criteria_required": lambda patient_info: patient_info.high_risk_mcl_criteria,
+            "high_risk_mcl_criteria_excluded": lambda patient_info: patient_info.high_risk_mcl_criteria,
+            "high_risk_mcl_criteria_sufficient_any": lambda patient_info: patient_info.high_risk_mcl_criteria,
         }
     },
     # MCL-specific END

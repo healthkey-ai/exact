@@ -145,59 +145,53 @@ class TestBulkyDiseaseCriteria:
     plus a >= 20 variant — mirrors CB so trials matching either spleen
     predicate work."""
 
-    def test_no_size_inputs_returns_empty_list(self):
+    def test_no_size_inputs_returns_none(self):
         pi = _mcl_patient()
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == []
+        assert PatientInfoAttributes(pi).bulky_disease_criteria is None
 
     def test_lesion_5cm_alone(self):
         pi = _mcl_patient(largest_lesion_size=5)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == ['bulky_lesion_5cm']
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == 'bulky_lesion_5cm'
 
     def test_lesion_10cm_fires_all_three_lesion_thresholds(self):
         pi = _mcl_patient(largest_lesion_size=12)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_lesion_7_5cm', 'bulky_lesion_10cm',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_lesion_5cm,bulky_lesion_7_5cm,bulky_lesion_10cm'
 
     def test_lesion_under_5cm_does_not_fire(self):
         pi = _mcl_patient(largest_lesion_size=4.9)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == []
+        assert PatientInfoAttributes(pi).bulky_disease_criteria is None
 
     def test_node_5cm_alone(self):
         pi = _mcl_patient(largest_lymph_node_size=5)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == ['bulky_node_5cm']
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == 'bulky_node_5cm'
 
     def test_node_10cm_fires_all_three_node_thresholds(self):
         pi = _mcl_patient(largest_lymph_node_size=10)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_node_5cm', 'bulky_node_7_5cm', 'bulky_node_10cm',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_node_5cm,bulky_node_7_5cm,bulky_node_10cm'
 
     def test_spleen_uses_strict_gt_thresholds(self):
         # Spleen 13 itself does NOT fire bulky_spleen_13cm (predicate is > 13)
         pi_13 = _mcl_patient(spleen_size=13)
-        assert PatientInfoAttributes(pi_13).bulky_disease_criteria == []
+        assert PatientInfoAttributes(pi_13).bulky_disease_criteria is None
         pi_13_1 = _mcl_patient(spleen_size=13.1)
-        assert PatientInfoAttributes(pi_13_1).bulky_disease_criteria == ['bulky_spleen_13cm']
+        assert PatientInfoAttributes(pi_13_1).bulky_disease_criteria == 'bulky_spleen_13cm'
 
     def test_spleen_20_exactly_fires_gte_only(self):
         pi = _mcl_patient(spleen_size=20)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_spleen_13cm', 'bulky_spleen_15cm', 'bulky_spleen_20cm_gte',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_spleen_13cm,bulky_spleen_15cm,bulky_spleen_20cm_gte'
 
     def test_spleen_above_20_fires_both_gt_and_gte(self):
         pi = _mcl_patient(spleen_size=21)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_spleen_13cm', 'bulky_spleen_15cm',
-            'bulky_spleen_20cm_gt', 'bulky_spleen_20cm_gte',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_spleen_13cm,bulky_spleen_15cm,bulky_spleen_20cm_gt,bulky_spleen_20cm_gte'
 
     def test_multiple_anatomic_sites_combine(self):
         pi = _mcl_patient(largest_lesion_size=5, largest_lymph_node_size=5, spleen_size=14)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_node_5cm', 'bulky_spleen_13cm',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_lesion_5cm,bulky_node_5cm,bulky_spleen_13cm'
 
 
 class TestNormalizerWiring:
@@ -209,15 +203,14 @@ class TestNormalizerWiring:
         pi = _mcl_patient(
             mipi_risk='high',  # caller-supplied; should be overwritten to 'low'
             mipi_c_risk='high',
-            bulky_disease_criteria=['caller_supplied_garbage'],
+            bulky_disease_criteria='caller_supplied_garbage',
             largest_lesion_size=12,
         )
         normalize_patient_info(pi)
         assert pi.mipi_risk == 'low'  # actual derivation for the default inputs
         assert pi.mipi_c_risk == 'low'
-        assert pi.bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_lesion_7_5cm', 'bulky_lesion_10cm',
-        ]
+        assert pi.bulky_disease_criteria == \
+            'bulky_lesion_5cm,bulky_lesion_7_5cm,bulky_lesion_10cm'
 
     @pytest.mark.django_db
     def test_non_mcl_patient_mcl_fields_left_alone(self):
@@ -238,7 +231,7 @@ class TestNormalizerWiring:
         # casing the API caller sends.
         pi = _mcl_patient(disease=disease, largest_lesion_size=6)
         normalize_patient_info(pi)
-        assert pi.bulky_disease_criteria == ['bulky_lesion_5cm']
+        assert pi.bulky_disease_criteria == 'bulky_lesion_5cm'
 
 
 def _high_risk_codes(pi):
