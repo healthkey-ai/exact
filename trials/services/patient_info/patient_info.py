@@ -224,7 +224,7 @@ _FIELDS = [
     _f(JSONField, 'extranodal_sites', default=list),
     _f(TextField, 'mipi_risk'),
     _f(TextField, 'mipi_c_risk'),
-    _f(JSONField, 'bulky_disease_criteria', default=list),
+    _f(TextField, 'bulky_disease_criteria'),
     _f(TextField, 'high_risk_mcl_criteria'),
 ]
 

@@ -38,7 +38,8 @@ class TestMclFilterByPatientInfoSmoke:
             extranodal_sites=['bone_marrow', 'gi_tract'],
             mipi_risk='low',
             mipi_c_risk='low',
-            bulky_disease_criteria=['bulky_lesion_5cm'],
+            bulky_disease_criteria='bulky_lesion_5cm',
+            high_risk_mcl_criteria='tp53_mutation',
         )
         # Pre-fix this would have raised
         #   Exception('type ... is not supported for user_attr "morphologic_variant"')

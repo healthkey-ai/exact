@@ -147,7 +147,7 @@ class TestMclFieldRoundTrip:
             # normalizer (see assertions below).
             'mipi_risk': 'intermediate',
             'mipi_c_risk': 'high_intermediate',
-            'bulky_disease_criteria': ['caller_supplied_ignored'],
+            'bulky_disease_criteria': 'caller_supplied_ignored',
         }
         pi = _build_in_memory(data)
         # Non-derived fields preserved.
@@ -162,9 +162,7 @@ class TestMclFieldRoundTrip:
         # fires the 5cm and 7.5cm bulky-lesion thresholds.
         assert pi.mipi_risk is None
         assert pi.mipi_c_risk is None
-        assert pi.bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_lesion_7_5cm',
-        ]
+        assert pi.bulky_disease_criteria == 'bulky_lesion_5cm,bulky_lesion_7_5cm'
 
     @pytest.mark.django_db
     def test_mcl_fields_camel_case_round_trip(self):
@@ -183,16 +181,17 @@ class TestMclFieldRoundTrip:
         assert pi.mipi_risk is None
 
     @pytest.mark.django_db
-    def test_mcl_list_fields_default_to_empty_list(self):
+    def test_mcl_extranodal_defaults_to_empty_list_bulky_to_none(self):
         data = {'disease': 'mantle cell lymphoma'}
         pi = _build_in_memory(data)
         assert pi.extranodal_sites == []
-        assert pi.bulky_disease_criteria == []
+        # bulky_disease_criteria is a derived comma-string (None when no inputs).
+        assert pi.bulky_disease_criteria is None
 
     @pytest.mark.django_db
-    def test_mcl_list_fields_none_coerced_to_empty_list(self):
-        # Caller sends explicit null — default=list contract must hold so
-        # downstream iteration (matcher overlap checks) doesn't crash.
+    def test_mcl_extranodal_none_coerced_to_empty_list(self):
+        # Caller sends explicit null — default=list contract must hold for
+        # extranodal_sites so downstream iteration doesn't crash.
         data = {
             'disease': 'mantle cell lymphoma',
             'extranodal_sites': None,
@@ -200,18 +199,17 @@ class TestMclFieldRoundTrip:
         }
         pi = _build_in_memory(data)
         assert pi.extranodal_sites == []
-        assert pi.bulky_disease_criteria == []
+        assert pi.bulky_disease_criteria is None
 
     @pytest.mark.django_db
-    def test_mcl_list_fields_drop_non_string_items(self):
+    def test_mcl_extranodal_drops_non_string_items(self):
         data = {
             'disease': 'mantle cell lymphoma',
             'extranodal_sites': ['bone_marrow', 42, None, '  gi_tract  ', ''],
-            # bulky_disease_criteria is overwritten by the normalizer (#41);
-            # exercise the resolver hardening on extranodal_sites only.
-            'bulky_disease_criteria': [{'nested': 'dict'}, 'caller_supplied_ignored'],
+            # bulky_disease_criteria is overwritten by the normalizer (#41).
+            'bulky_disease_criteria': 'caller_supplied_ignored',
         }
         pi = _build_in_memory(data)
         assert pi.extranodal_sites == ['bone_marrow', 'gi_tract']
-        # No size fields in payload, so derived bulky list is empty.
-        assert pi.bulky_disease_criteria == []
+        # No size fields in payload, so derived bulky is None.
+        assert pi.bulky_disease_criteria is None
