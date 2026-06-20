@@ -193,7 +193,8 @@ _CUSTOM_SEARCH_DISPATCH = {
     'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv_stripped(v)),
     'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv_stripped(v)),
     'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(v),
-    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(v),
+    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv_stripped(v)),
+    'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv_stripped(v)),
 }
 
 
@@ -1314,10 +1315,11 @@ class TrialQuerySet(models.QuerySet):
         )
 
     # ------------------------------------------------------------------
-    # MCL filters (#94). The patient-side attrs land here as either a
-    # single string (variant / risk / behavior / subtype) or a list of
-    # strings (extranodal_sites / bulky_disease_criteria). All map to
-    # JSON-list trial columns checked via the shared list helpers above.
+    # MCL filters (#94). The patient-side attrs land here as a single
+    # string (variant / risk / behavior / subtype), a comma-string of
+    # derived codes (bulky_disease_criteria / high_risk_mcl_criteria,
+    # split via _csv_stripped in dispatch), or a list (extranodal_sites).
+    # All map to JSON-list trial columns checked via the shared helpers.
     # ------------------------------------------------------------------
 
     def eligible_for_morphologic_variants(self, values: list[str]) -> models.QuerySet:
@@ -1361,6 +1363,24 @@ class TrialQuerySet(models.QuerySet):
         return self.eligible_for_required_lists(
             values=values,
             required_attr_name='bulky_disease_criteria_required',
+        )
+
+    def eligible_for_high_risk_mcl_criteria(self, criteria: list[str]) -> models.QuerySet:
+        if criteria is None or criteria == []:
+            return self
+
+        values = [str(x).strip() for x in criteria]
+
+        # Inclusion is satisfied when the patient overlaps the required list, OR
+        # overlaps any "sufficient alone" criterion (#4402), OR the trial sets no
+        # inclusion gate at all (both lists empty). Then drop excluded matches.
+        no_inclusion_gate = Q(high_risk_mcl_criteria_required__exact=[]) & Q(high_risk_mcl_criteria_sufficient_any__exact=[])
+        return self.filter(
+            Q(high_risk_mcl_criteria_required__has_any_keys=values)
+            | Q(high_risk_mcl_criteria_sufficient_any__has_any_keys=values)
+            | no_inclusion_gate
+        ).exclude(
+            Q(high_risk_mcl_criteria_excluded__has_any_keys=values)
         )
 
     def eligible_for_tp53_disruption(self, tp53_disruption: bool) -> models.QuerySet:

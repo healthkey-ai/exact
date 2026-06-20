@@ -242,9 +242,7 @@ def _normalize_mcl_derivations(pi) -> None:
     attr = PatientInfoAttributes(pi)
     pi.mipi_risk = attr.mipi_risk
     pi.mipi_c_risk = attr.mipi_c_risk
-    # Defensive copy: bulky_disease_criteria is a cached_property; without
-    # copying, downstream mutation of pi.bulky_disease_criteria would also
-    # mutate the cached property's stored list.
-    pi.bulky_disease_criteria = list(attr.bulky_disease_criteria)
-    # high_risk_mcl_criteria is a comma-joined string (or None), per CB.
+    # bulky_disease_criteria and high_risk_mcl_criteria are comma-joined
+    # strings (or None), per CB.
+    pi.bulky_disease_criteria = attr.bulky_disease_criteria
     pi.high_risk_mcl_criteria = attr.high_risk_mcl_criteria
