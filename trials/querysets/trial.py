@@ -26,6 +26,7 @@ from trials.services.patient_info.configs import (
     sct_value_is_none,
 )
 from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
@@ -1054,7 +1055,11 @@ class TrialQuerySet(models.QuerySet):
 
     def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False) -> models.QuerySet:
         if has_no_prior_therapy:
-            return self.filter(therapies_required__exact=[], therapy_components_required__exact=[], therapy_types_required__exact=[])
+            return self.filter(**{
+                f'{THERAPY_MATCH_PROFILE.therapies_required}__exact': [],
+                f'{THERAPY_MATCH_PROFILE.therapy_components_required}__exact': [],
+                f'{THERAPY_MATCH_PROFILE.therapy_types_required}__exact': [],
+            })
 
         if therapy_codes is None or therapy_codes == []:
             return self
@@ -1080,22 +1085,22 @@ class TrialQuerySet(models.QuerySet):
     def eligible_for_therapy_from_lines(self, therapy_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_codes,
-            required_attr_name='therapies_required',
-            excluded_attr_name='therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapies_excluded
         )
 
     def eligible_for_therapy_components(self, therapy_component_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_component_codes,
-            required_attr_name='therapy_components_required',
-            excluded_attr_name='therapy_components_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapy_components_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_components_excluded
         )
 
     def eligible_for_therapy_types(self, therapy_type_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_type_codes,
-            required_attr_name='therapy_types_required',
-            excluded_attr_name='therapy_types_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapy_types_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_types_excluded
         )
 
     def eligible_for_pre_existing_condition(self, pre_existing_conditions: list[str]) -> models.QuerySet:
@@ -1162,15 +1167,15 @@ class TrialQuerySet(models.QuerySet):
     def eligible_for_planned_therapies(self, planned_therapies: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=planned_therapies,
-            required_attr_name='planned_therapies_required',
-            excluded_attr_name='planned_therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.planned_therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.planned_therapies_excluded
         )
 
     def eligible_for_supportive_therapies(self, supportive_therapies: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=supportive_therapies,
-            required_attr_name='supportive_therapies_required',
-            excluded_attr_name='supportive_therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_excluded
         )
 
     def eligible_for_cytogenic_markers(self, cytogenic_markers: list[str]) -> models.QuerySet:
