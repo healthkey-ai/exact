@@ -27,6 +27,7 @@ from trials.services.patient_info.configs import (
 )
 from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.omop.patient_therapy_codes import to_match_codes
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
@@ -1083,22 +1084,25 @@ class TrialQuerySet(models.QuerySet):
         return scope
 
     def eligible_for_therapy_from_lines(self, therapy_codes: list[str]) -> models.QuerySet:
+        from trials.models import Therapy
         return self.eligible_for_required_and_excluded_lists(
-            values=therapy_codes,
+            values=to_match_codes(Therapy, therapy_codes),
             required_attr_name=THERAPY_MATCH_PROFILE.therapies_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapies_excluded
         )
 
     def eligible_for_therapy_components(self, therapy_component_codes: list[str]) -> models.QuerySet:
+        from trials.models import TherapyComponent
         return self.eligible_for_required_and_excluded_lists(
-            values=therapy_component_codes,
+            values=to_match_codes(TherapyComponent, therapy_component_codes),
             required_attr_name=THERAPY_MATCH_PROFILE.therapy_components_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_components_excluded
         )
 
     def eligible_for_therapy_types(self, therapy_type_codes: list[str]) -> models.QuerySet:
+        from trials.models import TherapyComponentCategory
         return self.eligible_for_required_and_excluded_lists(
-            values=therapy_type_codes,
+            values=to_match_codes(TherapyComponentCategory, therapy_type_codes),
             required_attr_name=THERAPY_MATCH_PROFILE.therapy_types_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_types_excluded
         )

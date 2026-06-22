@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.omop.patient_therapy_codes import to_match_codes, to_match_value_map
 
 if TYPE_CHECKING:
     from trials.models import Trial
@@ -269,6 +270,15 @@ class UserToTrialAttrMatcher:
                 "values": sorted(list(set(values)))
             }
 
+        # Under the OMOP profile the trial columns hold concept_ids, so the patient
+        # display maps ({code: title}) are re-keyed to {concept_id: title} for the
+        # overlap test. Pass-through when the flag is off. Models imported lazily
+        # above (Therapy) / here to avoid an import cycle at module load.
+        from trials.models import Therapy, TherapyComponent, TherapyComponentCategory
+        therapies = to_match_value_map(Therapy, therapies)
+        therapy_types_to_therapy = to_match_value_map(TherapyComponentCategory, therapy_types_to_therapy)
+        therapy_components_to_therapy = to_match_value_map(TherapyComponent, therapy_components_to_therapy)
+
         out = {
             "therapiesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), therapies, mismatch_status),
             "therapiesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), therapies),
@@ -344,21 +354,24 @@ class UserToTrialAttrMatcher:
         return 'matched'
 
     def _match_therapy_related_things(self, values, has_no_prior_therapy):
+        from trials.models import Therapy, TherapyComponent, TherapyComponentCategory
+
+        # Patient codes (`values` and the derived component/type codes) are
+        # internal vocab codes; the trial columns hold internal codes (legacy) or
+        # OMOP concept_ids (cutover). to_match_codes() translates the patient codes
+        # to whatever the active profile compares against — a pass-through when the
+        # OMOP flag is off. Derivation below stays on the original internal codes.
         results = []
-        res = self._match_therapy_things(values, getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), has_no_prior_therapy)
+        res = self._match_therapy_things(to_match_codes(Therapy, values), getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
 
         therapies = None
         if values:
-            from trials.models import Therapy
             therapies = Therapy.objects.filter(code__in=values).all()
 
         if therapies and therapies.count() > 0:
-            from trials.models import TherapyComponent
-            from trials.models import TherapyComponentCategory
-
             components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__in=therapies).order_by('id').all()
             component_codes = [x.code for x in components]
 
@@ -368,12 +381,12 @@ class UserToTrialAttrMatcher:
             component_codes = None
             therapy_types = None
 
-        res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
+        res = self._match_therapy_things(to_match_codes(TherapyComponent, component_codes), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
 
-        res = self._match_therapy_things(therapy_types, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), has_no_prior_therapy)
+        res = self._match_therapy_things(to_match_codes(TherapyComponentCategory, therapy_types), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
