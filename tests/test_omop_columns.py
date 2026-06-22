@@ -29,6 +29,15 @@ def test_trial_omop_columns_round_trip_string_concept_ids():
     assert t.omop_planned_therapies_excluded == ['444']
 
 
+def test_trial_omop_columns_support_has_any_keys_overlap():
+    # The load-bearing reason concept_ids are stored as strings: matching uses
+    # JSONB has_any_keys (?|), which keys on string array elements. This is the
+    # exact filter the matcher will run once flipped to the omop columns.
+    t = TrialFactory(omop_therapies_required=['12345', '67890'])
+    assert Trial.objects.filter(omop_therapies_required__has_any_keys=['12345']).filter(pk=t.pk).exists()
+    assert not Trial.objects.filter(omop_therapies_required__has_any_keys=['99999']).filter(pk=t.pk).exists()
+
+
 def test_trial_omop_columns_default_empty_list():
     t = TrialFactory()
     for f in (
