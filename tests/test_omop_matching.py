@@ -11,6 +11,8 @@ from django.test import override_settings
 
 from trials.models import Trial, Therapy, TherapyComponent, TherapyComponentCategory
 from trials.services.omop.patient_therapy_codes import to_match_codes, to_match_value_map
+from trials.services.patient_info.patient_info import PatientInfo
+from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from tests.factories import TrialFactory
 
 pytestmark = pytest.mark.django_db
@@ -92,3 +94,31 @@ def test_queryset_excludes_via_omop_excluded_column():
         excluded_attr_name='omop_therapies_excluded',
     )
     assert excl.id not in set(qs.values_list('id', flat=True))
+
+
+# ── matcher decision parity (the riskiest path: derive-then-translate) ─
+
+def _matcher_trials():
+    Therapy.objects.create(code='zz_vrd', title='zz VRd', omop_concept_id=111)
+    # legacy + omop columns populated consistently, as a correct backfill leaves them
+    match = TrialFactory(therapies_required=['zz_vrd'], omop_therapies_required=['111'])
+    other = TrialFactory(therapies_required=['zz_other'], omop_therapies_required=['999'])
+    return match, other
+
+
+def test_matcher_decision_on_legacy_codes_when_flag_off():
+    match, other = _matcher_trials()
+    pi = PatientInfo(disease='multiple myeloma')
+    assert UserToTrialAttrMatcher(match, pi)._match_therapy_related_things(['zz_vrd'], False) == 'matched'
+    assert UserToTrialAttrMatcher(other, pi)._match_therapy_related_things(['zz_vrd'], False) == 'not_matched'
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_matcher_decision_on_omop_concept_ids_when_flag_on():
+    # Same patient internal code, same matched/not_matched outcome as legacy —
+    # the matcher translates ['zz_vrd'] -> ['111'] and compares against the
+    # trial's omop_therapies_required. Proves derive-then-translate parity.
+    match, other = _matcher_trials()
+    pi = PatientInfo(disease='multiple myeloma')
+    assert UserToTrialAttrMatcher(match, pi)._match_therapy_related_things(['zz_vrd'], False) == 'matched'
+    assert UserToTrialAttrMatcher(other, pi)._match_therapy_related_things(['zz_vrd'], False) == 'not_matched'

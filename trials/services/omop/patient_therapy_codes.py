@@ -25,6 +25,12 @@ def to_match_codes(model, codes):
     codes dropped). Off: returns ``codes`` unchanged. ``None``/empty pass through
     untouched so the matcher's "unknown" (None) vs "no match" ([]) logic is
     preserved.
+
+    KNOWN DIVERGENCE (#194): if a non-empty input maps to ``[]`` (all codes
+    unmapped), the queryset's required/excluded filter short-circuits on ``[]``
+    and loosens, while the matcher treats it as a non-match. The correct product
+    behavior is a cutover-gate decision (mapping coverage / SME review); the flag
+    ships OFF, and omop_shadow_compare quantifies the unmapped rate before any flip.
     """
     if not omop_therapy_enabled() or not codes:
         return codes
@@ -42,11 +48,16 @@ def to_match_value_map(model, code_to_title):
     """
     if not omop_therapy_enabled() or not code_to_title:
         return code_to_title
-    code_to_cid = dict(
-        model.objects.filter(code__in=list(code_to_title)).values_list('code', 'omop_concept_id')
+    # order_by('code') so that when two codes collapse to the same concept_id the
+    # surviving title is deterministic (display-only; the matching path in
+    # to_match_codes is already deterministic via set+sort).
+    code_to_cid = (
+        model.objects.filter(code__in=list(code_to_title))
+        .order_by('code')
+        .values_list('code', 'omop_concept_id')
     )
     return {
         str(cid): code_to_title[code]
-        for code, cid in code_to_cid.items()
+        for code, cid in code_to_cid
         if cid is not None
     }
