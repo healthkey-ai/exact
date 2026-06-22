@@ -12,10 +12,13 @@ Ported from CancerBot (CB epic #4447) to keep CB→EXACT ports cheap; CB owns th
 upstream seam. EXACT is the downstream that flips to the OMOP profile at cutover.
 
 Scope: this profile owns ONLY the trial-side column *names* read by matching. The
-PATIENT-side codes are translated to concept_ids separately (see
-``trials/services/omop/patient_therapy_codes.py``); both flip on the same flag.
-This profile deliberately does NOT change dispatch order / matching semantics
-(kept behavior-identical).
+PATIENT side is NOT translated by EXACT — EXACT is stateless and owns no patient
+crosswalk: when the flag is on, the consumer (CTOMOP) supplies the patient's
+therapies already as OMOP concept_ids (pre-expanded), and matching is a direct
+concept_id overlap against these columns. The flag therefore only swaps which
+trial columns are read; both sides must speak the same vocabulary, which is the
+consumer's responsibility. This profile deliberately does NOT change dispatch
+order / matching semantics (kept behavior-identical).
 
 Only the three mapped levels (regimen / drug component / drug class) flip to
 OMOP. ``planned_*`` / ``supportive_*`` stay on the legacy columns: their vocabs
@@ -64,8 +67,9 @@ OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
 def omop_therapy_enabled() -> bool:
     """Whether trial therapy matching reads the OMOP concept_id columns.
 
-    Off by default; capability-gated by the ``EXACT_OMOP_THERAPY`` setting. The
-    patient-side code translation keys off the same flag.
+    Off by default; capability-gated by the ``EXACT_OMOP_THERAPY`` setting.
+    Matching is a direct concept_id overlap — patient therapies arrive as
+    concept_ids from the consumer; EXACT does not translate them.
     """
     return bool(getattr(settings, 'EXACT_OMOP_THERAPY', False))
 
