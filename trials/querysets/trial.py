@@ -27,7 +27,6 @@ from trials.services.patient_info.configs import (
 )
 from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
-from trials.services.omop.patient_therapy_codes import to_match_codes
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
@@ -1069,6 +1068,11 @@ class TrialQuerySet(models.QuerySet):
 
         scope = self.eligible_for_therapy_from_lines(therapy_codes)
 
+        # Component/class codes are derived from the regimen via the INTERNAL vocab
+        # graph (by `code`). Under EXACT_OMOP_THERAPY the patient sends concept_ids,
+        # so this finds nothing → component/class filters are skipped and matching
+        # is regimen-level only. EXACT can't expand concept_ids (stateless, no
+        # vocab); the consumer must supply pre-expanded concepts at cutover (#197).
         components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__code__in=therapy_codes).all()
         component_codes = [x.code for x in components]
 
@@ -1084,25 +1088,22 @@ class TrialQuerySet(models.QuerySet):
         return scope
 
     def eligible_for_therapy_from_lines(self, therapy_codes: list[str]) -> models.QuerySet:
-        from trials.models import Therapy
         return self.eligible_for_required_and_excluded_lists(
-            values=to_match_codes(Therapy, therapy_codes),
+            values=therapy_codes,
             required_attr_name=THERAPY_MATCH_PROFILE.therapies_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapies_excluded
         )
 
     def eligible_for_therapy_components(self, therapy_component_codes: list[str]) -> models.QuerySet:
-        from trials.models import TherapyComponent
         return self.eligible_for_required_and_excluded_lists(
-            values=to_match_codes(TherapyComponent, therapy_component_codes),
+            values=therapy_component_codes,
             required_attr_name=THERAPY_MATCH_PROFILE.therapy_components_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_components_excluded
         )
 
     def eligible_for_therapy_types(self, therapy_type_codes: list[str]) -> models.QuerySet:
-        from trials.models import TherapyComponentCategory
         return self.eligible_for_required_and_excluded_lists(
-            values=to_match_codes(TherapyComponentCategory, therapy_type_codes),
+            values=therapy_type_codes,
             required_attr_name=THERAPY_MATCH_PROFILE.therapy_types_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_types_excluded
         )

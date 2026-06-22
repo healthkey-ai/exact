@@ -381,8 +381,9 @@ CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
 # ---------------------------------------------------------------------------
 # OMOP therapy matching (epic #4447 cutover).
 # When True, trial therapy matching reads the omop_* concept_id columns instead
-# of the legacy internal-code columns, and patient therapy codes are translated
-# to OMOP concept_ids before comparison. OFF by default — capability-gated: only
+# of the legacy internal-code columns. Matching is a direct concept_id overlap:
+# patient therapies are supplied as concept_ids by the consumer (CTOMOP), with no
+# EXACT-side translation. OFF by default — capability-gated: only
 # flip once the vocab omop_concept_id mappings are loaded and the trial omop_*
 # columns are backfilled (see trials/services/omop/ + the shadow-compare report).
 # Only the three mapped levels (regimen/component/class) flip; planned/supportive
