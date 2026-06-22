@@ -3,6 +3,8 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+
 if TYPE_CHECKING:
     from trials.models import Trial
     from trials.services.patient_info.patient_info import PatientInfo
@@ -263,12 +265,12 @@ class UserToTrialAttrMatcher:
             }
 
         out = {
-            "therapiesRequired": match_required(self.trial.therapies_required, therapies, mismatch_status),
-            "therapiesExcluded": match_excluded(self.trial.therapies_excluded, therapies),
-            "therapyTypesRequired": match_required(self.trial.therapy_types_required, therapy_types_to_therapy, mismatch_status),
-            "therapyTypesExcluded": match_excluded(self.trial.therapy_types_excluded, therapy_types_to_therapy),
-            "therapyComponentsRequired": match_required(self.trial.therapy_components_required, therapy_components_to_therapy, mismatch_status),
-            "therapyComponentsExcluded": match_excluded(self.trial.therapy_components_excluded, therapy_components_to_therapy),
+            "therapiesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), therapies, mismatch_status),
+            "therapiesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), therapies),
+            "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), therapy_types_to_therapy, mismatch_status),
+            "therapyTypesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), therapy_types_to_therapy),
+            "therapyComponentsRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), therapy_components_to_therapy, mismatch_status),
+            "therapyComponentsExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), therapy_components_to_therapy),
         }
 
         return out
@@ -338,7 +340,7 @@ class UserToTrialAttrMatcher:
 
     def _match_therapy_related_things(self, values, has_no_prior_therapy):
         results = []
-        res = self._match_therapy_things(values, self.trial.therapies_required, self.trial.therapies_excluded, has_no_prior_therapy)
+        res = self._match_therapy_things(values, getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
@@ -361,12 +363,12 @@ class UserToTrialAttrMatcher:
             component_codes = None
             therapy_types = None
 
-        res = self._match_therapy_things(component_codes, self.trial.therapy_components_required, self.trial.therapy_components_excluded, has_no_prior_therapy)
+        res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
 
-        res = self._match_therapy_things(therapy_types, self.trial.therapy_types_required, self.trial.therapy_types_excluded, has_no_prior_therapy)
+        res = self._match_therapy_things(therapy_types, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
