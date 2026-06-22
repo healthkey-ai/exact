@@ -353,6 +353,19 @@ CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
 
 
 # ---------------------------------------------------------------------------
+# OMOP therapy matching (epic #4447 cutover).
+# When True, trial therapy matching reads the omop_* concept_id columns instead
+# of the legacy internal-code columns, and patient therapy codes are translated
+# to OMOP concept_ids before comparison. OFF by default — capability-gated: only
+# flip once the vocab omop_concept_id mappings are loaded and the trial omop_*
+# columns are backfilled (see trials/services/omop/ + the shadow-compare report).
+# Only the three mapped levels (regimen/component/class) flip; planned/supportive
+# stay on the legacy columns until their vocabs gain concept_ids.
+# ---------------------------------------------------------------------------
+EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', 'true', 'yes', 'on')
+
+
+# ---------------------------------------------------------------------------
 # Firebase Admin SDK — backs FirebaseTokenProvider (verify_id_token).
 # Credential resolution order: an auth emulator (local dev) → the
 # FIREBASE_CREDENTIALS_JSON secret injected by infra (Secret Manager) →
