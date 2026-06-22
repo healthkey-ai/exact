@@ -191,11 +191,12 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         if patient_info is not None:
             from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
             matcher = UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
-            response['matchScore'] = matcher.trial_match_score()
-            response['matchingType'] = matcher.trial_match_status()
+            # one pass for both (instead of trial_match_score() + trial_match_status()) — #201
+            response['matchScore'], response['matchingType'] = matcher.match_score_and_status()
             if self.context.get('explain'):
                 from trials.services.trial_match_explainer import TrialMatchExplainer
-                response['matchReasons'] = TrialMatchExplainer(instance, patient_info).explain()
+                # reuse the matcher instance rather than building a second one — #201
+                response['matchReasons'] = TrialMatchExplainer(instance, patient_info, matcher=matcher).explain()
             else:
                 response['matchReasons'] = None
         else:
