@@ -42,18 +42,17 @@ def test_active_profile_defaults_to_legacy_columns():
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_active_profile_flips_mapped_levels_when_flag_on():
     assert omop_therapy_enabled() is True
-    # the three mapped levels flip to the omop_* columns...
+    # regimen + component flip to the omop_* concept_id columns...
     assert THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
     assert THERAPY_MATCH_PROFILE.therapies_excluded == 'omop_therapies_excluded'
     assert THERAPY_MATCH_PROFILE.therapy_components_required == 'omop_therapy_components_required'
     assert THERAPY_MATCH_PROFILE.therapy_components_excluded == 'omop_therapy_components_excluded'
-    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'omop_therapy_types_required'
-    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'omop_therapy_types_excluded'
-    # ...but planned/supportive stay legacy (their vocabs have no concept_ids yet).
+    # ...but types stay LEGACY (not OMOP-mapped — matched via the CB category graph),
+    # as do planned/supportive (their vocabs have no concept_ids yet).
+    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'therapy_types_required'
+    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'therapy_types_excluded'
     assert THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
-    assert THERAPY_MATCH_PROFILE.planned_therapies_excluded == 'planned_therapies_excluded'
     assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'supportive_therapies_required'
-    assert THERAPY_MATCH_PROFILE.supportive_therapies_excluded == 'supportive_therapies_excluded'
 
 
 def test_get_therapy_match_profile_switches_on_flag():

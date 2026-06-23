@@ -384,28 +384,13 @@ class UserToTrialAttrMatcher:
             return res
         results.append(res)
 
-        # Component/class codes are derived from the regimen via the INTERNAL vocab
-        # graph (by `code`). Under EXACT_OMOP_THERAPY the patient sends concept_ids,
-        # so this finds nothing → component/class levels report 'unknown' (never a
-        # false match). EXACT can't expand concept_ids (stateless); the consumer
-        # must supply pre-expanded concepts at cutover (#197).
-        therapies = None
-        if values:
-            from trials.models import Therapy
-            therapies = Therapy.objects.filter(code__in=values).all()
-
-        if therapies and therapies.count() > 0:
-            from trials.models import TherapyComponent
-            from trials.models import TherapyComponentCategory
-
-            components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__in=therapies).order_by('id').all()
-            component_codes = [x.code for x in components]
-
-            categories = TherapyComponentCategory.objects.filter(therapycomponentcategoryconnection__component__in=components).order_by('id').all()
-            therapy_types = [x.code for x in categories]
-        else:
-            component_codes = None
-            therapy_types = None
+        # Component + type (class) values are derived from the regimen via the CB
+        # graph. Under OMOP the regimen concept_ids are reverse-mapped to internal
+        # Therapies, components → their OMOP concept_ids (vs omop_therapy_components_*),
+        # types → CB category codes (vs the LEGACY therapy_types_* columns, which the
+        # OMOP profile keeps — types are not OMOP-mapped). See #197 / therapy_graph.
+        from trials.services.omop.therapy_graph import derive_component_and_type_values
+        component_codes, therapy_types = derive_component_and_type_values(values)
 
         res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':
