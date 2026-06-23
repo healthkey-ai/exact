@@ -172,6 +172,40 @@ class UserToTrialAttrMatcher:
             return 0
         return int(float(eligible_count) * 100 / float(all_count))
 
+    def match_score_and_status(self) -> tuple[int, 'TrialMatchStatus']:
+        """Single-pass equivalent of (trial_match_score(), trial_match_status()).
+
+        Walks the attr mapping once instead of twice — callers that need both
+        (the detail serializer) avoid the duplicate pass. Results are identical to
+        calling the two methods separately; no caching, so it still reflects the
+        current patient state on every call.
+        """
+        eligible_count = 0
+        all_count = 0
+        has_not_matched = False
+        has_unknown = False
+        for attr, trial_attr_meta in self.mapping.items():
+            if "disease" in trial_attr_meta and (
+                self.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self.disease_code)
+            ):
+                continue
+            status = self.attr_match_status(attr)
+            all_count += 1
+            if status == 'not_matched':
+                has_not_matched = True
+            elif status == 'matched':
+                eligible_count += 1
+            elif status == 'unknown':
+                has_unknown = True
+
+        if has_not_matched:
+            return 0, 'not_eligible'
+        if all_count == 0:
+            return 0, 'eligible'
+        score = int(float(eligible_count) * 100 / float(all_count))
+        return score, ('potential' if has_unknown else 'eligible')
+
     def is_patient_info_attr_blank(self, patient_info_attr: str) -> bool:
         return self.patient_info_attr.is_attr_blank(patient_info_attr)
 
