@@ -1046,26 +1046,18 @@ class TrialQuerySet(models.QuerySet):
         if therapy_codes is None or therapy_codes == []:
             return self
 
-        from trials.models import TherapyComponent, TherapyComponentCategory
-
         scope = self.eligible_for_therapy_from_lines(therapy_codes)
 
-        # Component/class codes are derived from the regimen via the INTERNAL vocab
-        # graph (by `code`). Under EXACT_OMOP_THERAPY the patient sends concept_ids,
-        # so this finds nothing → component/class filters are skipped and matching
-        # is regimen-level only. EXACT can't expand concept_ids (stateless, no
-        # vocab); the consumer must supply pre-expanded concepts at cutover (#197).
-        components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__code__in=therapy_codes).all()
-        component_codes = [x.code for x in components]
+        # Component + type values from the regimen via the CB graph (shared with the
+        # matcher). Under OMOP: components → their OMOP concept_ids (vs the omop
+        # component column), types → CB category codes (vs the LEGACY therapy_types
+        # column the OMOP profile keeps). See trials/services/omop/therapy_graph.
+        from trials.services.omop.therapy_graph import derive_component_and_type_values
+        component_codes, therapy_types = derive_component_and_type_values(therapy_codes)
 
-        if len(component_codes) > 0:
+        if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
-
-        categories = TherapyComponentCategory.objects.filter(
-            therapycomponentcategoryconnection__component__in=components).all()
-        therapy_types = [x.code for x in categories]
-
-        if len(therapy_types) > 0:
+        if therapy_types:
             scope = scope.eligible_for_therapy_types(therapy_types)
         return scope
 
