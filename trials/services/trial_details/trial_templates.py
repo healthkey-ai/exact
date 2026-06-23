@@ -74,9 +74,17 @@ class TrialTemplates:
                     pass
                 elif field_name in THERAPIES_ATTRS:
                     if field['value'] == []:
+                        # field['value'] is the LEGACY column; under OMOP the backfill
+                        # fills omop_* FROM legacy, so omop non-empty ⟹ legacy non-empty
+                        # (this skip never drops an omop criterion today). Full omop-only
+                        # rendering tracked in #207.
                         continue  # skip
                     field['matchingType'] = therapy_match_statuses[field_name]["status"]
                     field['uvalue'] = therapy_match_statuses[field_name]["values"]
+                    # OMOP code + title for the OMOP-mapped levels (regimen/component);
+                    # absent for legacy/type criteria. See therapy_related_things_match_status.
+                    if 'omopConcepts' in therapy_match_statuses[field_name]:
+                        field['omopConcepts'] = therapy_match_statuses[field_name]['omopConcepts']
                     out['trialEligibilityAttributes'].append(field)
                 elif not self._trial_attributes.is_blank(field_name, field['value'], field.get('search_type')):
                     if field['ufield']:
