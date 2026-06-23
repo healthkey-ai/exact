@@ -21,7 +21,7 @@ has no resolvable regimens (preserves the matcher's "unknown" semantics).
 from trials.services.therapy_match_profile import omop_therapy_enabled
 
 
-def _resolve_regimens(therapy_identifiers):
+def resolve_regimens(therapy_identifiers):
     """Patient regimen identifiers → internal Therapy queryset.
 
     Under OMOP the identifiers are concept_ids → match Therapy.omop_concept_id;
@@ -40,7 +40,7 @@ def derive_component_and_type_values(therapy_identifiers):
         return None, None
     from trials.models import TherapyComponent, TherapyComponentCategory
 
-    therapies = _resolve_regimens(therapy_identifiers)
+    therapies = resolve_regimens(therapy_identifiers)
     if not therapies.exists():
         return None, None
 
