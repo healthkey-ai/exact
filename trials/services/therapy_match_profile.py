@@ -20,11 +20,17 @@ trial columns are read; both sides must speak the same vocabulary, which is the
 consumer's responsibility. This profile deliberately does NOT change dispatch
 order / matching semantics (kept behavior-identical).
 
-Only the three mapped levels (regimen / drug component / drug class) flip to
-OMOP. ``planned_*`` / ``supportive_*`` stay on the legacy columns: their vocabs
-have no ``omop_concept_id`` yet, so the backfill leaves the omop_* planned/
-supportive columns empty — flipping them would silently drop the constraint.
-Flip those two levels here once their vocabs gain concept_ids.
+Only regimen + drug-component flip to OMOP concept_ids. The columns that stay on
+the legacy (internal-code) columns under OMOP:
+- ``therapy_types_*`` (drug class / component-category): types are deliberately
+  NOT OMOP-mapped (HemOnc's class structure is poor) — EXACT keeps CB's own
+  category vocabulary and matches types through the CB graph
+  ``categories ↔ components ↔ therapies`` (the matcher reverse-maps the patient's
+  component concept_ids back to internal components, then to CB categories, and
+  overlaps those against the legacy ``therapy_types_*`` columns). See #197.
+- ``planned_*`` / ``supportive_*``: their vocabs have no ``omop_concept_id`` yet,
+  so the backfill leaves the omop_* columns empty — flipping them would silently
+  drop the constraint.
 """
 from dataclasses import dataclass
 
@@ -52,15 +58,14 @@ class TherapyMatchProfile:
 # Legacy (internal-code) columns — the default.
 LEGACY_THERAPY_MATCH_PROFILE = TherapyMatchProfile()
 
-# OMOP cutover profile: the three mapped levels read the omop_* concept_id
-# columns; planned_*/supportive_* intentionally stay legacy (see module docstring).
+# OMOP cutover profile: regimen + component read the omop_* concept_id columns.
+# therapy_types_* / planned_* / supportive_* intentionally stay legacy (see module
+# docstring): types are matched via the CB category graph, not OMOP concept_ids.
 OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
     therapies_required='omop_therapies_required',
     therapies_excluded='omop_therapies_excluded',
     therapy_components_required='omop_therapy_components_required',
     therapy_components_excluded='omop_therapy_components_excluded',
-    therapy_types_required='omop_therapy_types_required',
-    therapy_types_excluded='omop_therapy_types_excluded',
 )
 
 
