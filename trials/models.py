@@ -254,6 +254,24 @@ class TherapyComponentCategoryConnection(TimeStampMixin):
         unique_together = ['category', 'component']
 
 
+class OmopConcept(TimeStampMixin):
+    """OMOP concept_id → display title + vocabulary.
+
+    Resolves the concept_ids stored in the trial ``omop_*`` therapy columns (and
+    patient ``*_therapy_id``) to human-readable names for the API, independent of
+    which vocab model a concept came from (regimen / component / class / future
+    expanded concepts). Populated from the curated ``therapy_omop_mapping.csv``
+    (omop_concept_id, omop_name, omop_vocab) by ``load_therapy_omop_concept_ids``.
+    Ported from CancerBot (CB owns the upstream); EXACT reads/populates it locally.
+    """
+    concept_id = models.BigIntegerField(primary_key=True)
+    concept_name = models.TextField(blank=False, null=False)
+    vocabulary_id = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.concept_id}: {self.concept_name}"
+
+
 class TherapyDisease(TimeStampMixin):
     therapy = models.ForeignKey(Therapy, models.CASCADE, blank=True, null=True)
     disease = models.ForeignKey(Disease, models.CASCADE, blank=True, null=True)

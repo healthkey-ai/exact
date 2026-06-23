@@ -11,7 +11,7 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 
-from trials.models import Therapy, TherapyComponent, TherapyComponentCategory
+from trials.models import Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept
 from trials.services.omop.therapy_concept_mapper import (
     build_omop_columns,
     map_codes_to_concept_ids,
@@ -112,6 +112,36 @@ def test_load_therapy_omop_concept_ids_command(tmp_path):
     call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=out)
     assert Therapy.objects.get(code='zz_thalidomide').omop_concept_id == 19137042
     assert TherapyComponent.objects.get(code='zz_lipodox').omop_concept_id == 1338512
+    # OmopConcept titles upserted (concept_id -> name/vocab) for resolving names
+    assert OmopConcept.objects.get(concept_id=19137042).concept_name == 'thalidomide'
+    assert OmopConcept.objects.get(concept_id=19137042).vocabulary_id == 'RxNorm'
+    assert OmopConcept.objects.get(concept_id=1338512).concept_name == 'doxorubicin'
+
+
+def test_load_populates_omop_concept_without_vocab_row(tmp_path):
+    # OmopConcept is keyed by concept_id → populated even when cb_code isn't a vocab
+    # row; empty omop_vocab → None; rows without a concept are not created.
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_not_vocab', 'X', '870101', 'somedrug', 'RxNorm', 'curated'])
+        w.writerow(['component', 'zz_novocab', 'Y', '870102', 'otherdrug', '', 'auto'])
+        w.writerow(['regimen', 'zz_skip', 'Z', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    assert OmopConcept.objects.get(concept_id=870101).concept_name == 'somedrug'
+    assert OmopConcept.objects.get(concept_id=870102).vocabulary_id is None  # empty vocab
+    assert not OmopConcept.objects.filter(concept_name='').exists()
+
+
+def test_load_dry_run_skips_omop_concept(tmp_path):
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_x', 'X', '870199', 'thalidomide', 'RxNorm', 'curated'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), dry_run=True, stdout=StringIO())
+    assert not OmopConcept.objects.filter(concept_id=870199).exists()
 
 
 def test_load_therapy_omop_concept_ids_exclude_llm(tmp_path):
