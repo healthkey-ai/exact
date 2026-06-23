@@ -112,6 +112,26 @@ def min_max_match(
         return 'matched'
 
 
+def _resolve_omop_concepts(concept_id_values):
+    """Resolve a list of OMOP concept_id strings to [{code, title, vocab}] via
+    OmopConcept. Unresolved concept_ids still return their code (title/vocab None)."""
+    if not concept_id_values:
+        return []
+    from trials.models import OmopConcept
+    cids = [int(v) for v in concept_id_values if str(v).isdigit()]
+    by_id = {c.concept_id: c for c in OmopConcept.objects.filter(concept_id__in=cids)}
+    out = []
+    for v in concept_id_values:
+        code = int(v) if str(v).isdigit() else v
+        c = by_id.get(code) if isinstance(code, int) else None
+        out.append({
+            'code': code,
+            'title': c.concept_name if c else None,
+            'vocab': c.vocabulary_id if c else None,
+        })
+    return out
+
+
 class UserToTrialAttrMatcher:
     def __init__(self, trial: 'Trial', patient_info: 'PatientInfo') -> None:
         self.trial = trial
@@ -311,6 +331,18 @@ class UserToTrialAttrMatcher:
             "therapyComponentsRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), therapy_components_to_therapy, mismatch_status),
             "therapyComponentsExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), therapy_components_to_therapy),
         }
+
+        # OMOP code + title per criterion (additive). Only the OMOP-mapped levels
+        # (regimen + component) hold concept_ids; resolve the TRIAL's required/excluded
+        # concept_ids to OMOP names via OmopConcept. Types stay CB-coded (no OMOP).
+        if omop_therapy_enabled():
+            for key, col in (
+                ('therapiesRequired', THERAPY_MATCH_PROFILE.therapies_required),
+                ('therapiesExcluded', THERAPY_MATCH_PROFILE.therapies_excluded),
+                ('therapyComponentsRequired', THERAPY_MATCH_PROFILE.therapy_components_required),
+                ('therapyComponentsExcluded', THERAPY_MATCH_PROFILE.therapy_components_excluded),
+            ):
+                out[key]['omopConcepts'] = _resolve_omop_concepts(getattr(self.trial, col))
 
         return out
 
