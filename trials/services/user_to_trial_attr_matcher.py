@@ -234,36 +234,36 @@ class UserToTrialAttrMatcher:
         return 'not_matched'
 
     def therapy_related_things_match_status(self):
-        therapies = []
-        therapy_components = []
-        therapy_components_to_therapy = {}
-        therapy_types = []
-        therapy_types_to_therapy = {}
+        from trials.services.therapy_match_profile import omop_therapy_enabled
+        from trials.services.omop.therapy_graph import resolve_regimens
+
+        therapies = {}                       # regimen match-value -> title
+        therapy_components_to_therapy = {}   # component match-value -> title
+        therapy_types_to_therapy = {}        # CB category code -> title (types not OMOP-mapped)
         therapy_codes = self.patient_info_attr.get_user_therapies()
 
         mismatch_status = self.therapy_related_things_mismatch_status()
 
-        if len(therapy_codes) > 0:
-            from trials.models import Therapy
-
-            therapies = Therapy.objects.filter(
-                code__in=therapy_codes
-            ).prefetch_related('components__categories')
-            for therapy in therapies:
-                # Sort in Python so the prefetch cache is reused — `.order_by()`
-                # would issue a fresh components query per therapy (an N+1 in
-                # this per-request, per-trial matcher hot path).
-                for component in sorted(therapy.components.all(), key=lambda c: c.id):
-                    if component not in therapy_components:
-                        therapy_components.append(component)
-                        therapy_components_to_therapy[component.code] = component.title
-
-                        for category in component.categories.all():
-                            if category not in therapy_types:
-                                therapy_types.append(category)
-                                therapy_types_to_therapy[category.code] = category.title
-
-        therapies = {x.code: x.title for x in therapies}
+        # Build the patient-side display maps keyed by whatever the trial columns
+        # hold per the active profile, so match_required/excluded overlap correctly:
+        # under OMOP regimen/component keys are concept_ids (reverse-mapped via the
+        # CB graph), type keys are CB category codes (legacy column); legacy → codes.
+        if therapy_codes:
+            omop = omop_therapy_enabled()
+            for therapy in resolve_regimens(therapy_codes):
+                if omop:
+                    if therapy.omop_concept_id is not None:
+                        therapies[str(therapy.omop_concept_id)] = therapy.title
+                else:
+                    therapies[therapy.code] = therapy.title
+                for component in therapy.components.order_by('id').all():
+                    if omop:
+                        if component.omop_concept_id is not None:
+                            therapy_components_to_therapy.setdefault(str(component.omop_concept_id), component.title)
+                    else:
+                        therapy_components_to_therapy.setdefault(component.code, component.title)
+                    for category in component.categories.all():
+                        therapy_types_to_therapy.setdefault(category.code, category.title)
 
         def match_required(trial_values, matching_values, mismatch_status):
             overlap = get_overlap(trial_values, matching_values.keys())

@@ -104,6 +104,44 @@ def test_type_excluded_blocks_via_cb_category_graph():
 
 # ── legacy unchanged ─────────────────────────────────────────────────
 
+# ── detail display (therapy_related_things_match_status) under OMOP ───
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_display_component_required_status_via_concept_id():
+    _graph()
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyComponentsRequired']['status'] == 'matched'
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_display_component_excluded_status_via_concept_id():
+    _graph()
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_excluded=[str(BORT_CID)])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyComponentsExcluded']['status'] == 'not_matched'
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_display_type_required_status_via_cb_graph():
+    _graph()
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyTypesRequired']['status'] == 'matched'
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_display_type_excluded_status_via_cb_graph():
+    _graph()
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=['zz_proteasome_inh'])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyTypesExcluded']['status'] == 'not_matched'
+
+
 def test_legacy_component_and_type_still_match_by_code():
     _graph()
     pi = PatientInfo(disease='multiple myeloma')
