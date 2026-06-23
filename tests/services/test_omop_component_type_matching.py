@@ -14,7 +14,7 @@ from django.test import override_settings
 
 from trials.models import (
     Therapy, TherapyComponent, TherapyComponentCategory,
-    TherapyComponentConnection, TherapyComponentCategoryConnection,
+    TherapyComponentConnection, TherapyComponentCategoryConnection, OmopConcept,
 )
 from trials.services.omop.therapy_graph import derive_component_and_type_values
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
@@ -140,6 +140,41 @@ def test_display_type_excluded_status_via_cb_graph():
     trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=['zz_proteasome_inh'])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesExcluded']['status'] == 'not_matched'
+
+
+# ── detail response: OMOP code + title (omopConcepts) ────────────────
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_display_includes_omop_concepts_code_and_title():
+    _graph()
+    OmopConcept.objects.create(concept_id=BORT_CID, concept_name='bortezomib', vocabulary_id='RxNorm')
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyComponentsRequired']['omopConcepts'] == [
+        {'code': BORT_CID, 'title': 'bortezomib', 'vocab': 'RxNorm'}
+    ]
+    # types are CB-coded (not OMOP) → no omopConcepts on the type criterion
+    assert 'omopConcepts' not in out['therapyTypesRequired']
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_omop_concepts_unresolved_keeps_code():
+    _graph()  # no OmopConcept row for BORT_CID
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyComponentsRequired']['omopConcepts'] == [
+        {'code': BORT_CID, 'title': None, 'vocab': None}
+    ]
+
+
+def test_no_omop_concepts_field_when_flag_off():
+    _graph()
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy='zz_vrd', prior_therapy='One line')
+    trial = TrialFactory(disease='multiple myeloma', therapy_components_required=['zz_bort'])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert 'omopConcepts' not in out['therapyComponentsRequired']
 
 
 def test_legacy_component_and_type_still_match_by_code():
