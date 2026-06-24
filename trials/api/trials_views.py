@@ -140,7 +140,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         if self.action == 'list':
             queryset = queryset.with_potential_attrs_count(patient_info)
-            queryset = queryset.order_by('-match_score', '-posted_date')
+            queryset = queryset.order_by('-match_score', '-posted_date', 'id')
 
         if self.action == 'search':
             if search_type == 'favorites':
@@ -178,6 +178,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 order.append(F('match_score').desc(nulls_last=True))
             else:  # goodnessScore
                 order.append(F('goodness_score').desc(nulls_last=True))
+            order.append(F('id').asc())
             queryset = queryset.order_by(*order)
 
         if self.action in ['list', 'search']:

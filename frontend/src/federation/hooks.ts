@@ -2,13 +2,20 @@
 // `TrialMatches` instances mounted in the same host share the cache
 // (e.g. mounting two filtered views with the same patient doesn't
 // re-request).
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useQuery,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
-import { fetchFormSettings, fetchTrials } from "./api";
+import { fetchFormSettings, fetchTrialDetail, fetchTrials } from "./api";
 import type {
   FilterState,
   PatientInfo,
+  TrialDetailResponse,
   TrialsResponse,
 } from "./types";
 
@@ -29,11 +36,46 @@ export function useTrials({
   personId,
   filters,
   enabled = true,
-}: UseTrialsArgs): UseQueryResult<TrialsResponse> {
-  return useQuery({
+}: UseTrialsArgs): UseInfiniteQueryResult<InfiniteData<TrialsResponse>> {
+  return useInfiniteQuery({
     queryKey: ["exact-trials", personId ?? null, patientInfo ?? null, filters ?? null],
-    queryFn: () => fetchTrials({ apiClient, patientInfo, personId, filters }),
+    queryFn: ({ pageParam }) =>
+      fetchTrials({ apiClient, patientInfo, personId, filters, page: pageParam }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      lastPage.next != null ? (lastPageParam as number) + 1 : undefined,
     enabled: enabled && (patientInfo != null || personId != null),
+    staleTime: 30_000,
+  });
+}
+
+interface UseTrialDetailArgs {
+  apiClient: AxiosInstance;
+  trialId: number | string;
+  patientInfo?: PatientInfo | null;
+  personId?: string | number;
+  filters?: FilterState;
+  enabled?: boolean;
+}
+
+export function useTrialDetail({
+  apiClient,
+  trialId,
+  patientInfo,
+  personId,
+  filters,
+  enabled = true,
+}: UseTrialDetailArgs): UseQueryResult<TrialDetailResponse> {
+  return useQuery({
+    queryKey: [
+      "exact-trial-detail",
+      trialId,
+      personId ?? null,
+      patientInfo ?? null,
+      filters ?? null,
+    ],
+    queryFn: () => fetchTrialDetail({ apiClient, trialId, patientInfo, personId, filters }),
+    enabled: enabled && trialId != null,
     staleTime: 30_000,
   });
 }

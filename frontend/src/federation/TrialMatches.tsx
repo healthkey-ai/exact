@@ -8,7 +8,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { FilterBar } from "./FilterBar";
 import { TrialCard } from "./TrialCard";
-import { TrialDetail } from "./TrialDetail";
+import { TrialDetailPage } from "./TrialDetailPage";
+import { groupByMatchingType } from "./grouping";
 import { useTrials } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import type { FilterState, MatchingType, TrialMatch, TrialMatchesProps } from "./types";
@@ -74,18 +75,17 @@ function TrialMatchesInner({
 
   const query = useTrials({ apiClient, patientInfo, personId, filters });
 
-  const grouped = useMemo(() => {
-    const trials = query.data?.results ?? [];
-    const buckets: Record<MatchingType, TrialMatch[]> = {
-      eligible: [],
-      potential: [],
-      not_eligible: [],
-    };
-    for (const t of trials) {
-      buckets[t.matchingType]?.push(t);
-    }
-    return buckets;
-  }, [query.data]);
+  const allTrials = useMemo(
+    () => query.data?.pages.flatMap((p) => p.results) ?? [],
+    [query.data],
+  );
+
+  const totalCount = query.data?.pages[0]?.itemsTotalCount ?? null;
+
+  const grouped = useMemo(
+    () => groupByMatchingType(allTrials),
+    [allTrials],
+  );
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -96,6 +96,22 @@ function TrialMatchesInner({
     setSelectedTrial(trial);
     onTrialSelect?.(trial);
   };
+
+  // Selecting a trial swaps the whole view for the in-remote detail page
+  // (CB navigates to its own `/t/:id`; the remote owns the detail itself).
+  // No host router needed — `Back to all trials` clears the selection.
+  if (selectedTrial) {
+    return (
+      <TrialDetailPage
+        apiClient={apiClient}
+        trialId={selectedTrial.trialId}
+        patientInfo={patientInfo}
+        personId={personId}
+        filters={filters}
+        onBack={() => setSelectedTrial(null)}
+      />
+    );
+  }
 
   return (
     <div className="exact-root" style={{ padding: "1rem" }}>
@@ -116,68 +132,66 @@ function TrialMatchesInner({
         </p>
       ) : null}
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: selectedTrial ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)",
-          gap: "1.5rem",
-        }}
-      >
-        <div>
-          {GROUP_ORDER.map((group) => {
-            const trials = grouped[group];
-            if (!trials.length) return null;
-            return (
-              <section key={group} style={{ marginBottom: "1.5rem" }}>
-                <h3
-                  style={{
-                    fontSize: "0.875rem",
-                    fontWeight: 600,
-                    color: "var(--exact-color-text-muted)",
-                    margin: "0 0 0.5rem",
-                  }}
-                >
-                  {GROUP_LABELS[group]} ({trials.length})
-                </h3>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                  {trials.map((t) => (
-                    <TrialCard
-                      key={t.trialId}
-                      trial={t}
-                      onSelect={handleSelect}
-                      isSelected={selectedTrial?.trialId === t.trialId}
-                    />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
+      {GROUP_ORDER.map((group) => {
+        const trials = grouped[group];
+        if (!trials.length) return null;
+        return (
+          <section key={group} style={{ marginBottom: "1.5rem" }}>
+            <h3
+              style={{
+                fontSize: "0.875rem",
+                fontWeight: 600,
+                color: "var(--exact-color-text-muted)",
+                margin: "0 0 0.5rem",
+              }}
+            >
+              {GROUP_LABELS[group]} ({trials.length})
+            </h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              {trials.map((t) => (
+                <TrialCard key={t.trialId} trial={t} onSelect={handleSelect} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
 
-          {!query.isLoading &&
-          patientInfo == null &&
-          personId == null ? (
-            <p style={{ color: "var(--exact-color-text-muted)" }}>
-              Pass a <code>patientInfo</code> payload or <code>personId</code> to
-              load trial matches.
-            </p>
-          ) : null}
+      {!query.isLoading && patientInfo == null && personId == null ? (
+        <p style={{ color: "var(--exact-color-text-muted)" }}>
+          Pass a <code>patientInfo</code> payload or <code>personId</code> to load
+          trial matches.
+        </p>
+      ) : null}
 
-          {!query.isLoading &&
-          (patientInfo != null || personId != null) &&
-          (query.data?.results.length ?? 0) === 0 ? (
-            <p style={{ color: "var(--exact-color-text-muted)" }}>
-              No trials matched the current filters.
-            </p>
-          ) : null}
+      {!query.isLoading &&
+      (patientInfo != null || personId != null) &&
+      allTrials.length === 0 ? (
+        <p style={{ color: "var(--exact-color-text-muted)" }}>
+          No trials matched the current filters.
+        </p>
+      ) : null}
+
+      {query.hasNextPage ? (
+        <div style={{ textAlign: "center", marginTop: "1rem" }}>
+          <button
+            onClick={() => query.fetchNextPage()}
+            disabled={query.isFetchingNextPage}
+            style={{
+              padding: "0.5rem 1.25rem",
+              borderRadius: "0.375rem",
+              border: "1px solid var(--exact-color-border, #d1d5db)",
+              background: "var(--exact-color-surface, #fff)",
+              color: "var(--exact-color-text, #111827)",
+              cursor: query.isFetchingNextPage ? "wait" : "pointer",
+              fontSize: "0.875rem",
+            }}
+          >
+            {query.isFetchingNextPage
+              ? "Loading…"
+              : `Load more (${allTrials.length} / ${totalCount ?? "…"})`}
+          </button>
         </div>
-
-        {selectedTrial ? (
-          <TrialDetail
-            trial={selectedTrial}
-            onClose={() => setSelectedTrial(null)}
-          />
-        ) : null}
-      </div>
+      ) : null}
     </div>
   );
 }

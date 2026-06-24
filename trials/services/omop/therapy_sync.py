@@ -23,7 +23,7 @@ def sync_trial_omop_columns(trial_id):
     Returns ``(None, None, False)`` if the trial no longer exists. Writes via
     QuerySet.update() (no signal re-fire) and only when values change.
     """
-    with transaction.atomic():
+    with transaction.atomic(using='trials'):
         trial = Trial.objects.select_for_update().filter(id=trial_id).first()
         if trial is None:
             return None, None, False
