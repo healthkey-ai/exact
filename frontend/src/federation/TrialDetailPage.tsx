@@ -9,9 +9,10 @@
 // SoC) are deliberately out of scope.
 import { useEffect } from "react";
 
-import { Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
+import { Field, FieldTooltip, ScorePill, SUITABILITY_HREF, asText, renderMd } from "./bits";
 import { useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
+import { FIELD_TOOLTIPS } from "./tooltips";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 
 interface Props {
@@ -82,16 +83,20 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
   const notMatched = field.matchingType === "not_matched";
   const required = formatValue(field.value, field.options);
   const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
+  const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
 
   return (
     <div className="exact-elig__row">
-      <div className="exact-elig__label">{field.label}</div>
+      <div className="exact-elig__label">
+        {field.label}
+        {tooltip ? <FieldTooltip text={tooltip} /> : null}
+      </div>
       <div
         className={`exact-elig__cell${matched ? " is-matched" : ""}`}
         data-col="required"
       >
         <span className="exact-elig__colhdr">Required</span>
-        <span className="exact-elig__val">{required}</span>
+        <span className="exact-elig__val">{renderMd(required)}</span>
         {field.units ? <span className="exact-elig__units">{field.units}</span> : null}
         {matched ? (
           <span className="exact-elig__check" aria-label="matches">
@@ -104,7 +109,7 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
         data-col="yours"
       >
         <span className="exact-elig__colhdr">Your Value</span>
-        <span className="exact-elig__val">{yours}</span>
+        <span className="exact-elig__val">{renderMd(yours)}</span>
         {field.uunits ?? field.units ? (
           <span className="exact-elig__units">{field.uunits ?? field.units}</span>
         ) : null}
@@ -210,6 +215,11 @@ export function TrialDetailPage({
               <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
               {eligibility.length ? (
                 <div className="exact-elig">
+                  <div className="exact-elig__thead" aria-hidden="true">
+                    <div />
+                    <div className="exact-elig__thead-col">Required</div>
+                    <div className="exact-elig__thead-col">Your Value</div>
+                  </div>
                   {eligibility.map((field) => (
                     <EligibilityRow key={field.name} field={field} />
                   ))}
