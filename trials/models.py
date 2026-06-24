@@ -166,7 +166,13 @@ class Therapy(TimeStampMixin):
     omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this code (pinned CTOMOP release); null when the regimen has no clean standard concept and is expanded into its components/classes at backfill. Source for the trial omop_* columns.")
 
     def full_title(self):
-        components = ", ".join([x.title for x in self.components.order_by('id').all()])
+        # Sort in Python so a `prefetch_related('components')` cache is reused.
+        # `.order_by('id')` would issue a fresh query per therapy (an N+1 that
+        # dominated ValueOptions.all_options() — ~288 queries), since ordering
+        # builds a new queryset that ignores the prefetched cache.
+        components = ", ".join(
+            c.title for c in sorted(self.components.all(), key=lambda c: c.id)
+        )
         return f"{self.title} ({components})" if components else self.title
 
     def __str__(self):
