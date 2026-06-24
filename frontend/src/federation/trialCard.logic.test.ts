@@ -31,8 +31,8 @@ describe("renderMd", () => {
     expect(Array.isArray(result)).toBe(true);
     const strong = result.find(isValidElement);
     expect(strong).toBeTruthy();
-    expect((strong as React.ReactElement).type).toBe("strong");
-    expect((strong as React.ReactElement).props.children).toBe("IMiDs");
+    expect((strong as React.ReactElement<{ children: unknown }>).type).toBe("strong");
+    expect((strong as React.ReactElement<{ children: unknown }>).props.children).toBe("IMiDs");
   });
 
   it("interleaves plain text and <strong> nodes", () => {
@@ -46,8 +46,8 @@ describe("renderMd", () => {
     const result = renderMd("**A**, **B**") as React.ReactNode[];
     const strongs = result.filter(isValidElement);
     expect(strongs).toHaveLength(2);
-    expect((strongs[0] as React.ReactElement).props.children).toBe("A");
-    expect((strongs[1] as React.ReactElement).props.children).toBe("B");
+    expect((strongs[0] as React.ReactElement<{ children: unknown }>).props.children).toBe("A");
+    expect((strongs[1] as React.ReactElement<{ children: unknown }>).props.children).toBe("B");
   });
 });
 
