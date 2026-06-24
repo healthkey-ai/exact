@@ -72,7 +72,9 @@ export interface TrialMatch {
 }
 
 export interface TrialsResponse {
+  /** Total number of pages (not items). Use `itemsTotalCount` for total items. */
   count: number;
+  itemsTotalCount: number;
   next: string | null;
   previous: string | null;
   results: TrialMatch[];

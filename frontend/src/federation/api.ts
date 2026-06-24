@@ -30,6 +30,8 @@ interface FetchTrialsArgs {
   personId?: string | number;
   /** Filter prefs, sent as query params. */
   filters?: FilterState;
+  /** 1-indexed page number; omit or pass 1 for the first page. */
+  page?: number;
 }
 
 /** Fetch the trial-match list. Two paths depending on inputs:
@@ -51,8 +53,10 @@ export async function fetchTrials({
   patientInfo,
   personId,
   filters,
+  page,
 }: FetchTrialsArgs): Promise<TrialsResponse> {
   const params = filterStateToParams(filters);
+  if (page != null && page > 1) params.page = String(page);
   const hasInlinePayload = patientInfo != null && Object.keys(patientInfo).length > 0;
 
   if (hasInlinePayload) {

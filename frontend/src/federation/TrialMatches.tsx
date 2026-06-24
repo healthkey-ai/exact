@@ -75,9 +75,16 @@ function TrialMatchesInner({
 
   const query = useTrials({ apiClient, patientInfo, personId, filters });
 
-  const grouped = useMemo(
-    () => groupByMatchingType(query.data?.results ?? []),
+  const allTrials = useMemo(
+    () => query.data?.pages.flatMap((p) => p.results) ?? [],
     [query.data],
+  );
+
+  const totalCount = query.data?.pages[0]?.itemsTotalCount ?? null;
+
+  const grouped = useMemo(
+    () => groupByMatchingType(allTrials),
+    [allTrials],
   );
 
   const diseaseCode = useMemo(() => {
@@ -158,10 +165,32 @@ function TrialMatchesInner({
 
       {!query.isLoading &&
       (patientInfo != null || personId != null) &&
-      (query.data?.results.length ?? 0) === 0 ? (
+      allTrials.length === 0 ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>
           No trials matched the current filters.
         </p>
+      ) : null}
+
+      {query.hasNextPage ? (
+        <div style={{ textAlign: "center", marginTop: "1rem" }}>
+          <button
+            onClick={() => query.fetchNextPage()}
+            disabled={query.isFetchingNextPage}
+            style={{
+              padding: "0.5rem 1.25rem",
+              borderRadius: "0.375rem",
+              border: "1px solid var(--exact-color-border, #d1d5db)",
+              background: "var(--exact-color-surface, #fff)",
+              color: "var(--exact-color-text, #111827)",
+              cursor: query.isFetchingNextPage ? "wait" : "pointer",
+              fontSize: "0.875rem",
+            }}
+          >
+            {query.isFetchingNextPage
+              ? "Loading…"
+              : `Load more (${allTrials.length} / ${totalCount ?? "…"})`}
+          </button>
+        </div>
       ) : null}
     </div>
   );

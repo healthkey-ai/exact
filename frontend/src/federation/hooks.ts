@@ -2,7 +2,13 @@
 // `TrialMatches` instances mounted in the same host share the cache
 // (e.g. mounting two filtered views with the same patient doesn't
 // re-request).
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useQuery,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
 import { fetchFormSettings, fetchTrialDetail, fetchTrials } from "./api";
@@ -30,10 +36,14 @@ export function useTrials({
   personId,
   filters,
   enabled = true,
-}: UseTrialsArgs): UseQueryResult<TrialsResponse> {
-  return useQuery({
+}: UseTrialsArgs): UseInfiniteQueryResult<InfiniteData<TrialsResponse>> {
+  return useInfiniteQuery({
     queryKey: ["exact-trials", personId ?? null, patientInfo ?? null, filters ?? null],
-    queryFn: () => fetchTrials({ apiClient, patientInfo, personId, filters }),
+    queryFn: ({ pageParam }) =>
+      fetchTrials({ apiClient, patientInfo, personId, filters, page: pageParam }),
+    initialPageParam: 1,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      lastPage.next != null ? (lastPageParam as number) + 1 : undefined,
     enabled: enabled && (patientInfo != null || personId != null),
     staleTime: 30_000,
   });
