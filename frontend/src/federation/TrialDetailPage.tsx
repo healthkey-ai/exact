@@ -141,7 +141,7 @@ export function TrialDetailPage({
     : "";
 
   return (
-    <div className="exact-root exact-detail" style={{ padding: "1rem" }}>
+    <div className="exact-root exact-detail">
       <button type="button" className="exact-detail__back" onClick={onBack}>
         <BackArrow />
         <span>Back to all trials</span>
