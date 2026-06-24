@@ -97,9 +97,23 @@ function TrialMatchesInner({
     onTrialSelect?.(trial);
   };
 
+  // When the detail view opens, push a synthetic history entry so the
+  // browser ← back button returns to the trial list instead of navigating
+  // to the previous host page. The popstate listener tears itself down
+  // when the detail closes (effect cleanup) or when the patient context
+  // resets (selectedTrial becomes null via the reset effect above).
+  useEffect(() => {
+    if (!selectedTrial) return;
+    window.history.pushState({ exactTrialDetail: selectedTrial.trialId }, "");
+    const handler = () => setSelectedTrial(null);
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, [selectedTrial]);
+
   // Selecting a trial swaps the whole view for the in-remote detail page
   // (CB navigates to its own `/t/:id`; the remote owns the detail itself).
-  // No host router needed — `Back to all trials` clears the selection.
+  // `onBack` calls history.back() so the synthetic entry is consumed and
+  // the popstate listener above fires setSelectedTrial(null).
   if (selectedTrial) {
     return (
       <TrialDetailPage
@@ -108,7 +122,7 @@ function TrialMatchesInner({
         patientInfo={patientInfo}
         personId={personId}
         filters={filters}
-        onBack={() => setSelectedTrial(null)}
+        onBack={() => window.history.back()}
       />
     );
   }

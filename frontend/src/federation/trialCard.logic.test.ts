@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { isValidElement } from "react";
 
-import { asText, scoreTier } from "./bits";
+import { asText, renderMd, scoreTier } from "./bits";
 
 describe("scoreTier", () => {
   // Thresholds mirror CB `getScoreColor`: >=80 green, >=60 yellow, else red.
@@ -15,6 +16,38 @@ describe("scoreTier", () => {
   it("returns red below 60", () => {
     expect(scoreTier(59)).toBe("red");
     expect(scoreTier(0)).toBe("red");
+  });
+});
+
+describe("renderMd", () => {
+  it("returns the raw string unchanged when there are no ** markers", () => {
+    expect(renderMd("plain text")).toBe("plain text");
+    expect(renderMd("")).toBe("");
+  });
+
+  it("returns an array containing a <strong> element for **bold** text", () => {
+    const result = renderMd("**IMiDs**") as React.ReactNode[];
+    // parts: ["", <strong>IMiDs</strong>, ""]
+    expect(Array.isArray(result)).toBe(true);
+    const strong = result.find(isValidElement);
+    expect(strong).toBeTruthy();
+    expect((strong as React.ReactElement).type).toBe("strong");
+    expect((strong as React.ReactElement).props.children).toBe("IMiDs");
+  });
+
+  it("interleaves plain text and <strong> nodes", () => {
+    const result = renderMd("Pre **bold** post") as React.ReactNode[];
+    expect(result[0]).toBe("Pre ");
+    expect(isValidElement(result[1])).toBe(true);
+    expect(result[2]).toBe(" post");
+  });
+
+  it("handles multiple bold segments", () => {
+    const result = renderMd("**A**, **B**") as React.ReactNode[];
+    const strongs = result.filter(isValidElement);
+    expect(strongs).toHaveLength(2);
+    expect((strongs[0] as React.ReactElement).props.children).toBe("A");
+    expect((strongs[1] as React.ReactElement).props.children).toBe("B");
   });
 });
 

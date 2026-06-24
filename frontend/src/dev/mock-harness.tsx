@@ -88,7 +88,8 @@ const results = [
 ] as unknown as TrialMatch[];
 
 const trials: TrialsResponse = {
-  count: results.length,
+  count: 1,
+  itemsTotalCount: results.length,
   next: null,
   previous: null,
   results,
