@@ -211,6 +211,7 @@ CACHES = build_caches(
     redis_url=os.environ.get('REDIS_URL'),
     debug=DEBUG,
     environment=ENVIRONMENT,
+    force_redis=os.environ.get('CACHE_BACKEND', '').lower() == 'redis',
     redis_ca_certs=os.environ.get('REDIS_SSL_CA_CERTS'),
 )
 
