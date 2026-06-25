@@ -11,7 +11,9 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 
-from trials.models import Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept
+from trials.models import (
+    Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept, TherapyOmopMapping,
+)
 from trials.services.omop.therapy_concept_mapper import (
     build_omop_columns,
     map_codes_to_concept_ids,
@@ -154,6 +156,73 @@ def test_load_therapy_omop_concept_ids_exclude_llm(tmp_path):
     call_command('load_therapy_omop_concept_ids', csv=str(csv_path), include_llm=False, stdout=StringIO())
     # llm row skipped when --exclude-llm
     assert TherapyComponent.objects.get(code='zz_lipodox2').omop_concept_id is None
+
+
+def test_load_populates_crosswalk_including_unmapped(tmp_path):
+    # The crosswalk (#4476) records EVERY CSV row — mapped and unmapped — keyed
+    # by (level, cb_code), so coverage / SME gaps live in the DB, not just the file.
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_vrd', 'ZZ VRd', '111', 'RVD', 'RxNorm', 'auto'])
+        w.writerow(['component', 'zz_bort', 'ZZ Bort', '222', 'bortezomib', 'RxNorm', 'curated'])
+        w.writerow(['regimen', 'zz_asct', 'ZZ ASCT', '', '', '', 'no_omop'])
+        w.writerow(['regimen', 'zz_epd', 'ZZ EPd', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    assert TherapyOmopMapping.objects.count() == 4
+    vrd = TherapyOmopMapping.objects.get(level='regimen', cb_code='zz_vrd')
+    assert vrd.omop_concept_id == 111 and vrd.omop_name == 'RVD' and vrd.match == 'auto'
+    asct = TherapyOmopMapping.objects.get(level='regimen', cb_code='zz_asct')
+    assert asct.omop_concept_id is None and asct.match == 'no_omop'
+    unmapped = set(
+        TherapyOmopMapping.objects.filter(omop_concept_id__isnull=True).values_list('cb_code', flat=True)
+    )
+    assert unmapped == {'zz_asct', 'zz_epd'}
+
+
+def test_crosswalk_records_llm_rows_even_when_excluded_from_vocab(tmp_path):
+    # --exclude-llm gates the vocab/OmopConcept writes, but the crosswalk still
+    # records the llm row (it documents the mapping regardless of load policy).
+    TherapyComponent.objects.create(code='zz_ide', title='ZZ Ide')
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_ide', 'ZZ Ide', '333', 'idecabtagene', 'RxNorm', 'llm'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), include_llm=False, stdout=StringIO())
+    row = TherapyOmopMapping.objects.get(level='regimen', cb_code='zz_ide')
+    assert row.omop_concept_id == 333 and row.match == 'llm'
+
+
+def test_crosswalk_is_idempotent_and_updates_in_place(tmp_path):
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_vrd', 'ZZ VRd', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    row = TherapyOmopMapping.objects.get(level='regimen', cb_code='zz_vrd')
+    assert row.omop_concept_id is None and row.match == 'needs_review'
+    # re-load the same (level, cb_code) now mapped → updates in place, no dup
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_vrd', 'ZZ VRd', '111', 'RVD', 'RxNorm', 'curated'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    assert TherapyOmopMapping.objects.count() == 1
+    row.refresh_from_db()
+    assert row.omop_concept_id == 111 and row.match == 'curated'
+
+
+def test_dry_run_does_not_write_crosswalk(tmp_path):
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_vrd', 'ZZ VRd', '111', 'RVD', 'RxNorm', 'auto'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), dry_run=True, stdout=StringIO())
+    assert TherapyOmopMapping.objects.count() == 0
 
 
 def test_backfill_command_populates_trial_columns():
