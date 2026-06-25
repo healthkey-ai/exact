@@ -149,12 +149,13 @@ export function renderMd(text: string): React.ReactNode {
 export function FieldTooltip({ text }: { text: string }) {
   const id = useId();
   return (
-    <span className="exact-tooltip__wrap" role="tooltip" aria-describedby={id}>
+    <span className="exact-tooltip__wrap">
       <button
         type="button"
         className="exact-tooltip__trigger"
         tabIndex={0}
         aria-label="More information"
+        aria-describedby={id}
       >
         ?
       </button>
