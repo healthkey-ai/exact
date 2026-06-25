@@ -272,6 +272,43 @@ class OmopConcept(TimeStampMixin):
         return f"{self.concept_id}: {self.concept_name}"
 
 
+class TherapyOmopMapping(TimeStampMixin):
+    """Per-row cb↔OMOP therapy crosswalk, materialized from the curated
+    ``docs/omop/mapping/therapy_omop_mapping.csv`` by
+    ``load_therapy_omop_concept_ids``.
+
+    One row per ``(level, cb_code)`` — the authoritative, queryable/auditable
+    record behind the ``omop_concept_id`` written onto the vocab models and the
+    :class:`OmopConcept` titles. Unlike those, it keeps the *unmapped* rows
+    (``needs_review`` / ``no_omop``, null ``omop_concept_id``) so coverage / SME
+    gaps are visible in the DB, not just in the file. ``omop_concept_id`` is a
+    plain (indexed) column, not a FK, so unreviewed rows and concepts not yet in
+    :class:`OmopConcept` can coexist without ordering/integrity coupling.
+    Ported from CancerBot (CB owns the upstream, #4476); EXACT reads/populates it locally.
+    """
+    LEVEL_CHOICES = [('regimen', 'regimen'), ('component', 'component'), ('category', 'category')]
+    # auto/curated/llm carry a CTOMOP-verified concept_id; needs_review/no_omop don't
+    MATCH_CHOICES = [
+        ('auto', 'auto'), ('curated', 'curated'), ('llm', 'llm'),
+        ('needs_review', 'needs_review'), ('no_omop', 'no_omop'),
+    ]
+    level = models.CharField(max_length=16, choices=LEVEL_CHOICES)
+    cb_code = models.CharField(max_length=255)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True)
+    omop_name = models.TextField(blank=True, null=True)
+    omop_vocab = models.TextField(blank=True, null=True)
+    match = models.CharField(max_length=16, choices=MATCH_CHOICES)
+
+    class Meta:
+        unique_together = ['level', 'cb_code']
+        indexes = [
+            models.Index(fields=['match'], name='idx_therapy_omop_map_match'),
+        ]
+
+    def __str__(self):
+        return f"{self.level}:{self.cb_code} -> {self.omop_concept_id or '(none)'} [{self.match}]"
+
+
 class TherapyDisease(TimeStampMixin):
     therapy = models.ForeignKey(Therapy, models.CASCADE, blank=True, null=True)
     disease = models.ForeignKey(Disease, models.CASCADE, blank=True, null=True)

@@ -1,13 +1,17 @@
 """Load OMOP concept_ids onto the therapy vocab models from the curated mapping.
 
 Reads docs/omop/mapping/therapy_omop_mapping.csv (CB code -> OMOP concept_id,
-produced + curated against CTOMOP, see that dir) and (a) sets omop_concept_id on
-Therapy / TherapyComponent / TherapyComponentCategory (#4451), and (b) upserts
-OmopConcept(concept_id -> concept_name, vocabulary_id) so the API can resolve the
-concept_ids in trial omop_* columns to OMOP titles.
+produced + curated against CTOMOP, see that dir) and:
+- sets omop_concept_id on Therapy / TherapyComponent / TherapyComponentCategory (#4451);
+- upserts OmopConcept(concept_id -> concept_name, vocabulary_id) so the API can
+  resolve the concept_ids in trial omop_* columns to OMOP titles;
+- upserts TherapyOmopMapping (the per-row cb<->OMOP crosswalk, #4476) for EVERY
+  CSV row, including the unmapped `needs_review` / `no_omop` rows (null
+  concept_id), so coverage / SME gaps are queryable in the DB.
 
-Only rows with a concept_id and an accepted match type are loaded; `no_omop`
-(procedures / non-drug) and `needs_review` rows are skipped.
+For the vocab-model omop_concept_id + OmopConcept writes, only rows with a
+concept_id and an accepted match type are loaded; `no_omop` (procedures /
+non-drug) and `needs_review` rows are skipped. The crosswalk table keeps them.
 
 Ported from CancerBot (CB epic #4447). The mapping CSV is vendored from CB so
 EXACT can populate vocab concept_ids in single-DB / local runs.
@@ -21,7 +25,9 @@ from collections import Counter
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from trials.models import Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept
+from trials.models import (
+    Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept, TherapyOmopMapping,
+)
 
 LEVEL_MODEL = {
     'regimen': Therapy,
@@ -54,13 +60,31 @@ class Command(BaseCommand):
         skipped = 0
         concepts = 0             # distinct OmopConcept rows upserted
         seen_concepts = set()
+        crosswalk = 0            # TherapyOmopMapping rows upserted (all CSV rows)
 
         with open(opts['csv']) as f:
             for row in csv.DictReader(f):
-                if row['match'] not in accepted or not row['omop_concept_id']:
+                cid = int(row['omop_concept_id']) if row['omop_concept_id'] else None
+
+                # Crosswalk (#4476): one row per (level, cb_code) for EVERY CSV
+                # row — including unmapped needs_review/no_omop (null concept_id) —
+                # so coverage / SME gaps are visible in the DB, not just the file.
+                if not dry_run:
+                    TherapyOmopMapping.objects.update_or_create(
+                        level=row['level'],
+                        cb_code=row['cb_code'],
+                        defaults={
+                            'omop_concept_id': cid,
+                            'omop_name': (row.get('omop_name') or '').strip() or None,
+                            'omop_vocab': (row.get('omop_vocab') or '').strip() or None,
+                            'match': (row.get('match') or '').strip(),
+                        },
+                    )
+                crosswalk += 1
+
+                if row['match'] not in accepted or cid is None:
                     skipped += 1
                     continue
-                cid = int(row['omop_concept_id'])
 
                 # OmopConcept (concept_id -> title/vocab): keyed by concept_id, so it
                 # covers every accepted concept independent of the vocab tables.
@@ -102,3 +126,4 @@ class Command(BaseCommand):
             )
         self.stdout.write(f"{prefix}total set={sum(updated.values())} skipped(no-concept/review)={skipped}")
         self.stdout.write(f"{prefix}OmopConcept rows upserted={concepts}")
+        self.stdout.write(f"{prefix}TherapyOmopMapping (crosswalk) rows upserted={crosswalk}")
