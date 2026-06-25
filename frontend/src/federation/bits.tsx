@@ -2,7 +2,7 @@
 // page, mirroring CancerBot UI v2's `ScorePill` / `Field`. Structure lives in
 // `exact.css` (`.exact-pill*`, `.exact-field`); tier colors are applied inline
 // from the `--exact-color-*` token set so a host can re-theme.
-import { useState } from "react";
+import { useId, useState } from "react";
 
 /** CB's Suitability-score explainer article (linked from the pill). */
 export const SUITABILITY_HREF =
@@ -134,6 +134,36 @@ export function asText(value: unknown, sep = ", "): string {
   if (value == null) return "";
   if (Array.isArray(value)) return value.filter(Boolean).join(sep);
   return String(value);
+}
+
+/** Render inline markdown — `**bold**` only. Returns a string when there are
+ *  no markers so callers that pass the result to plain DOM attrs stay safe. */
+export function renderMd(text: string): React.ReactNode {
+  const parts = text.split(/\*\*(.*?)\*\*/);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) => (i % 2 === 1 ? <strong key={i}>{p}</strong> : p));
+}
+
+/** "?" help icon that shows a tooltip on hover/focus. CSS-only positioning,
+ *  no external library. Mirrors CB's Label + Tooltip pattern. */
+export function FieldTooltip({ text }: { text: string }) {
+  const id = useId();
+  return (
+    <span className="exact-tooltip__wrap">
+      <button
+        type="button"
+        className="exact-tooltip__trigger"
+        tabIndex={0}
+        aria-label="More information"
+        aria-describedby={id}
+      >
+        ?
+      </button>
+      <span id={id} className="exact-tooltip__box" role="tooltip">
+        {text}
+      </span>
+    </span>
+  );
 }
 
 export const EyeIcon = () => (

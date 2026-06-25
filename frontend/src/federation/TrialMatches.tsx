@@ -75,9 +75,16 @@ function TrialMatchesInner({
 
   const query = useTrials({ apiClient, patientInfo, personId, filters });
 
-  const grouped = useMemo(
-    () => groupByMatchingType(query.data?.results ?? []),
+  const allTrials = useMemo(
+    () => query.data?.pages.flatMap((p) => p.results) ?? [],
     [query.data],
+  );
+
+  const totalCount = query.data?.pages[0]?.itemsTotalCount ?? null;
+
+  const grouped = useMemo(
+    () => groupByMatchingType(allTrials),
+    [allTrials],
   );
 
   const diseaseCode = useMemo(() => {
@@ -90,9 +97,23 @@ function TrialMatchesInner({
     onTrialSelect?.(trial);
   };
 
+  // When the detail view opens, push a synthetic history entry so the
+  // browser ← back button returns to the trial list instead of navigating
+  // to the previous host page. The popstate listener tears itself down
+  // when the detail closes (effect cleanup) or when the patient context
+  // resets (selectedTrial becomes null via the reset effect above).
+  useEffect(() => {
+    if (!selectedTrial) return;
+    window.history.pushState({ exactTrialDetail: selectedTrial.trialId }, "");
+    const handler = () => setSelectedTrial(null);
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, [selectedTrial]);
+
   // Selecting a trial swaps the whole view for the in-remote detail page
   // (CB navigates to its own `/t/:id`; the remote owns the detail itself).
-  // No host router needed — `Back to all trials` clears the selection.
+  // `onBack` calls history.back() so the synthetic entry is consumed and
+  // the popstate listener above fires setSelectedTrial(null).
   if (selectedTrial) {
     return (
       <TrialDetailPage
@@ -101,7 +122,7 @@ function TrialMatchesInner({
         patientInfo={patientInfo}
         personId={personId}
         filters={filters}
-        onBack={() => setSelectedTrial(null)}
+        onBack={() => window.history.back()}
       />
     );
   }
@@ -158,10 +179,32 @@ function TrialMatchesInner({
 
       {!query.isLoading &&
       (patientInfo != null || personId != null) &&
-      (query.data?.results.length ?? 0) === 0 ? (
+      allTrials.length === 0 ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>
           No trials matched the current filters.
         </p>
+      ) : null}
+
+      {query.hasNextPage ? (
+        <div style={{ textAlign: "center", marginTop: "1rem" }}>
+          <button
+            onClick={() => query.fetchNextPage()}
+            disabled={query.isFetchingNextPage}
+            style={{
+              padding: "0.5rem 1.25rem",
+              borderRadius: "0.375rem",
+              border: "1px solid var(--exact-color-border, #d1d5db)",
+              background: "var(--exact-color-surface, #fff)",
+              color: "var(--exact-color-text, #111827)",
+              cursor: query.isFetchingNextPage ? "wait" : "pointer",
+              fontSize: "0.875rem",
+            }}
+          >
+            {query.isFetchingNextPage
+              ? "Loading…"
+              : `Load more (${allTrials.length} / ${totalCount ?? "…"})`}
+          </button>
+        </div>
       ) : null}
     </div>
   );
