@@ -342,6 +342,17 @@ class TrialQuerySet(models.QuerySet):
             })
             count = new_count
 
+        query = query.by_therapy_id(study_info.therapy_id)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.therapy_id',
+                'val': study_info.therapy_id,
+                'records': new_count,
+                'dropped': count - new_count,
+            })
+            count = new_count
+
         query = query.by_intervention_treatment(study_info.search_treatment)
         if add_traces:
             new_count = query.count()
@@ -514,6 +525,20 @@ class TrialQuerySet(models.QuerySet):
             Q(brief_title__icontains=search_title) |
             Q(official_title__icontains=search_title)
         )
+
+    def by_therapy_id(self, therapy_ids: list[int]) -> models.QuerySet:
+        """Filter trials by intervention-arm concept_id(s).
+
+        Matches trials where ``omop_intervention_concept_ids`` contains ANY of
+        the given concept_ids. Populated by CB during trial sync; empty until
+        CB backfill runs (filter is a no-op on such trials).
+        """
+        if not therapy_ids:
+            return self
+        q = Q()
+        for tid in therapy_ids:
+            q |= Q(omop_intervention_concept_ids__contains=[tid])
+        return self.filter(q)
 
     def by_intervention_treatment(self, search_treatment):
         if not search_treatment or search_treatment == '':
