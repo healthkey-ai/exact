@@ -73,13 +73,9 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         return val if val else None
 
     def _int_list(key):
-        if hasattr(params, 'getlist'):
-            raw = params.getlist(key)
-        elif key in params:
-            v = params[key]
-            raw = v if isinstance(v, list) else [v]
-        else:
-            raw = []
+        raw = params.getlist(key) if hasattr(params, 'getlist') else (
+            [params[key]] if key in params else []
+        )
         result = []
         for v in raw:
             try:

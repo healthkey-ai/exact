@@ -348,6 +348,17 @@ class TrialQuerySet(models.QuerySet):
             })
             count = new_count
 
+        query = query.by_therapy_id(study_info.therapy_id)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.therapy_id',
+                'val': study_info.therapy_id,
+                'records': new_count,
+                'dropped': count - new_count,
+            })
+            count = new_count
+
         query = query.by_intervention_treatment(study_info.search_treatment)
         if add_traces:
             new_count = query.count()
