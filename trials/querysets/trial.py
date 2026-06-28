@@ -281,6 +281,10 @@ class TrialQuerySet(models.QuerySet):
 
         query = self
 
+        # therapy_id applies to all search paths (standard and admin).
+        if study_info:
+            query = query.by_therapy_id(study_info.therapy_id)
+
         if search_type in ['all', 'favorites', 'my_trials']:
             query, _ = query.filter_for_admin(study_info, patient_info)
             max_distance = D(mi=1000)
@@ -341,17 +345,6 @@ class TrialQuerySet(models.QuerySet):
                 'val': study_info.search_title,
                 'records': new_count,
                 'dropped': count-new_count
-            })
-            count = new_count
-
-        query = query.by_therapy_id(study_info.therapy_id)
-        if add_traces:
-            new_count = query.count()
-            traces.append({
-                'attr': 'study_info.therapy_id',
-                'val': study_info.therapy_id,
-                'records': new_count,
-                'dropped': count - new_count,
             })
             count = new_count
 
