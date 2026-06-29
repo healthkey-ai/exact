@@ -1387,6 +1387,9 @@ class TrialQuerySet(models.QuerySet):
         # Inclusion is satisfied when the patient overlaps the required list, OR
         # overlaps any "sufficient alone" criterion (#4402), OR the trial sets no
         # inclusion gate at all (both lists empty). Then drop excluded matches.
+        # Note: this is a coarse pre-filter — it does not enforce min_count>=2.
+        # The Python matcher (user_to_trial_attr_matcher) enforces min_count exactly.
+        # No trials with min_count>=2 exist yet; tighten this queryset when CB #4405 ships.
         no_inclusion_gate = Q(high_risk_mcl_criteria_required__exact=[]) & Q(high_risk_mcl_criteria_sufficient_any__exact=[])
         return self.filter(
             Q(high_risk_mcl_criteria_required__has_any_keys=values)
