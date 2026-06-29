@@ -270,7 +270,7 @@ class UserToTrialAttrMatcher:
         # CB graph), type keys are CB category codes (legacy column); legacy → codes.
         if therapy_codes:
             omop = omop_therapy_enabled()
-            for therapy in resolve_regimens(therapy_codes):
+            for therapy in resolve_regimens(therapy_codes).prefetch_related('components__categories'):
                 if omop:
                     if therapy.omop_concept_id is not None:
                         therapies[str(therapy.omop_concept_id)] = therapy.title
