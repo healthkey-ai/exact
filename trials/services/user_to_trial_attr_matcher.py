@@ -276,7 +276,7 @@ class UserToTrialAttrMatcher:
                         therapies[str(therapy.omop_concept_id)] = therapy.title
                 else:
                     therapies[therapy.code] = therapy.title
-                for component in therapy.components.order_by('id').all():
+                for component in sorted(therapy.components.all(), key=lambda c: c.id):
                     if omop:
                         if component.omop_concept_id is not None:
                             therapy_components_to_therapy.setdefault(str(component.omop_concept_id), component.title)
