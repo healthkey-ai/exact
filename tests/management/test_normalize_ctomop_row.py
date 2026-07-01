@@ -79,13 +79,28 @@ class TestStageNormalization:
 
 
 # ---------------------------------------------------------------------------
-# Tumor grade — int (1-4) → EXACT code ('10', '20', '30', '40')
+# Tumor grade — int (1-3) → EXACT code ('10', '20', '30'). Any other int
+# (4+) collapses to None (#69): WHO FL grading is 1/2/3A/3B only, Grade 4
+# is clinically invalid, and orphan codes leave the UI rendering blank.
 # ---------------------------------------------------------------------------
 
 class TestTumorGrade:
-    @pytest.mark.parametrize('grade, expected', [(1, '10'), (2, '20'), (3, '30'), (4, '40')])
+    @pytest.mark.parametrize('grade, expected', [(1, '10'), (2, '20'), (3, '30')])
     def test_int_to_code(self, grade, expected):
         assert _normalize_ctomop_row(_row(tumor_grade=grade))['tumor_grade'] == expected
+
+    def test_grade_4_normalizes_to_none(self):
+        """Regression for #69 / paired with #56: WHO FL grading is 1/2/3A/3B
+        only — Grade 4 is clinically invalid. The previous mapping produced
+        '40', which had no matching dropdown label after PR #66 removed it
+        from value_options.tumor_grades, leaving the UI rendering blank."""
+        assert _normalize_ctomop_row(_row(tumor_grade=4))['tumor_grade'] is None
+
+    def test_unknown_int_grade_normalizes_to_none(self):
+        # Grade 5 / 6 / etc. — anything outside the WHO 1-3 range — collapses
+        # to None rather than producing an orphan code.
+        assert _normalize_ctomop_row(_row(tumor_grade=5))['tumor_grade'] is None
+        assert _normalize_ctomop_row(_row(tumor_grade=99))['tumor_grade'] is None
 
     def test_string_code_passes_through(self):
         # Already-normalised values must not be double-converted
@@ -322,6 +337,54 @@ class TestGenderNormalization:
         result = _normalize_ctomop_row(_row(gender='F', gender_source_value='M'))
         assert result['gender'] == 'F'
 
+    def test_omop_concept_name_female(self):
+        # HTTP path sends the OMOP concept name 'Female' (concept_id 8532).
+        assert _normalize_ctomop_row(_row(gender='Female'))['gender'] == 'F'
+
+    def test_omop_concept_name_male(self):
+        assert _normalize_ctomop_row(_row(gender='Male'))['gender'] == 'M'
+
+    def test_omop_concept_name_case_insensitive(self):
+        assert _normalize_ctomop_row(_row(gender='FEMALE'))['gender'] == 'F'
+        assert _normalize_ctomop_row(_row(gender=' male '))['gender'] == 'M'
+
+    def test_coded_gender_is_idempotent(self):
+        assert _normalize_ctomop_row(_row(gender='F'))['gender'] == 'F'
+        assert _normalize_ctomop_row(_row(gender='M'))['gender'] == 'M'
+
+    def test_full_word_gender_wins_over_source_value(self):
+        # A populated full-word gender is translated unconditionally; the
+        # empty-gender source-value fallback never overrides it.
+        result = _normalize_ctomop_row(_row(gender='Female', gender_source_value='M'))
+        assert result['gender'] == 'F'
+
+    def test_unknown_gender_mapped_to_blank(self):
+        # Non-binary OMOP concepts have no EXACT code; blank (None) so the
+        # matcher treats gender as unknown instead of excluding the patient.
+        assert _normalize_ctomop_row(_row(gender='Unknown'))['gender'] is None
+        assert _normalize_ctomop_row(_row(gender='Ambiguous'))['gender'] is None
+        assert _normalize_ctomop_row(_row(gender='Other'))['gender'] is None
+
+    def test_unmapped_concept_id_mapped_to_blank(self):
+        # An unrecognized concept id in `gender` is also blanked, not left as int.
+        assert _normalize_ctomop_row(_row(gender=99999))['gender'] is None
+
+    def test_empty_string_gender_falls_back_to_concept_id(self):
+        # An empty-string gender is blanked, then recovered from the concept id.
+        result = _normalize_ctomop_row(_row(gender='', gender_concept_id=8532))
+        assert result['gender'] == 'F'
+
+    def test_unknown_gender_falls_back_to_source_value(self):
+        # Blanking an unrecognized name lets the empty-gender fallback recover
+        # a value from gender_source_value when one is present.
+        result = _normalize_ctomop_row(_row(gender='Unknown', gender_source_value='M'))
+        assert result['gender'] == 'M'
+
+    def test_bare_concept_id_in_gender_field(self):
+        # The endpoint may put the OMOP concept id directly in `gender`.
+        assert _normalize_ctomop_row(_row(gender=8507))['gender'] == 'M'
+        assert _normalize_ctomop_row(_row(gender=8532))['gender'] == 'F'
+
 
 # ---------------------------------------------------------------------------
 # Receptor-status alias resolution — requires _build_code_lookup()
@@ -386,7 +449,7 @@ _MOCK_LOOKUP = {
 
 
 @patch(
-    'trials.management.commands.search_trials_for_patients._build_code_lookup',
+    'trials.services.patient_info.ctomop_adapter._build_code_lookup',
     return_value=_MOCK_LOOKUP,
 )
 class TestReceptorStatusAliases:

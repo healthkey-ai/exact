@@ -17,6 +17,8 @@ PYTHON="${PYTHON:-$([ -x "$(dirname "$SCRIPT_DIR_TMP")/.venv/bin/python" ] && ec
 # Options:
 #   PERSON_IDS=1,2,3           — specific person IDs to test (default: all)
 #   PATIENT_LIMIT=50           — max number of patients to process (default: all)
+#   SEARCH_LIMIT=5             — top N trials per patient (default: 20)
+#   RESULTS_CSV=results.csv    — also write ground truth format CSV (for evaluate_ground_truth)
 
 set -e
 
@@ -33,9 +35,25 @@ if [ -f "$ROOT_DIR/.env" ]; then
   set +o allexport
 fi
 
+# Redact credentials from a DSN before logging: keep scheme/host/db, mask user:pass.
+# Greedy match to the LAST '@' so a password containing '@' is fully masked, and
+# handle schemeless DSNs (user:pass@host/db) that still carry credentials.
+mask_dsn() {
+  local dsn="$1"
+  if [[ "$dsn" =~ ^([^:]+://).*@(.*)$ ]]; then
+    printf '%s***@%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  elif [[ "$dsn" =~ ^.*@(.*)$ ]]; then
+    printf '***@%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "$dsn"
+  fi
+}
+
 PATIENT_DB="${PATIENT_DATABASE_URL:-}"
 PERSON_IDS="${PERSON_IDS:-}"
 PATIENT_LIMIT="${PATIENT_LIMIT:-}"
+RESULTS_CSV="${RESULTS_CSV:-}"
+SEARCH_LIMIT="${SEARCH_LIMIT:-20}"
 
 # ── Validate ──────────────────────────────────────────────────────────
 if [ -z "$PATIENT_DATABASE_URL" ]; then
@@ -53,8 +71,8 @@ fi
 echo "=============================================="
 echo "Step 1: Verify connectivity"
 echo "=============================================="
-echo "  Trials DB: $TRIALS_DATABASE_URL"
-echo "  Patient DB: $PATIENT_DATABASE_URL"
+echo "  Trials DB: $(mask_dsn "$TRIALS_DATABASE_URL")"
+echo "  Patient DB: $(mask_dsn "$PATIENT_DATABASE_URL")"
 
 TRIAL_COUNT=$($PYTHON manage.py shell -c "
 from trials.models import Trial
@@ -74,7 +92,7 @@ echo "Step 2: Run trial search for patients (direct DB)"
 echo "=============================================="
 SEARCH_ARGS=(
   --source-db-url "$PATIENT_DATABASE_URL"
-  --limit 20
+  --limit "$SEARCH_LIMIT"
   --output /tmp/exact_local_test_results.json
 )
 
@@ -84,6 +102,10 @@ fi
 
 if [ -n "$PATIENT_LIMIT" ]; then
   SEARCH_ARGS+=(--patient-limit "$PATIENT_LIMIT")
+fi
+
+if [ -n "$RESULTS_CSV" ]; then
+  SEARCH_ARGS+=(--ground-truth-csv "$RESULTS_CSV")
 fi
 
 $PYTHON manage.py search_trials_for_patients "${SEARCH_ARGS[@]}"

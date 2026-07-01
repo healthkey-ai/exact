@@ -148,27 +148,26 @@ make runserver
 The API is available at `http://localhost:8000/`.
 Interactive API docs: `http://localhost:8000/swagger/`
 
-### 8. Make your first request
+### 8. Run your first patient-to-trial search
 
-With the test trials seeded (step 5 above), try listing all trials:
-
-```bash
-curl -s http://localhost:8000/trials/ \
-  -H "Authorization: Token <your-token>" \
-  | python -m json.tool | head -40
-```
-
-Or search with a patient profile:
+With the test trials seeded (step 5 above), run the CLI matching command:
 
 ```bash
-curl -s http://localhost:8000/trials/ \
-  -H "Authorization: Token <your-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"patientInfo": {"disease": "multiple myeloma", "patientAge": 60, "priorTherapy": "One line"}}' \
-  | python -m json.tool | head -60
+python manage.py search_trials_for_patients \
+  --patient-id <ctomop_person_id>
 ```
 
-You should see up to 8 ranked trials with `matchScore` and `matchingType` fields.
+To search for multiple patients and save results to CSV:
+
+```bash
+PERSON_IDS=123,456 \
+RESULTS_CSV=results.csv \
+bash scripts/trials4patients.sh
+```
+
+See [docs/trials4patients.md](trials4patients.md) for all options and environment variables.
+
+The interactive API docs are still available at `http://localhost:8000/swagger/`.
 
 ---
 
@@ -251,6 +250,27 @@ python -m pytest tests/services/test_user_to_trial_attr_matcher.py
 python -m pytest tests/services/test_user_to_trial_attr_matcher.py::test_name -v
 ```
 
+#### Test environment setup
+
+Before running tests locally, create `.env.test` from the provided sample:
+
+```bash
+cp .env.test.sample .env.test
+```
+
+`.env.test` must **not** contain `TRIALS_DATABASE_URL` or `PATIENT_DATABASE_URL`.
+If those URLs are present (e.g. in your main `.env`), Django's `load_dotenv()`
+would route test queries to the remote databases, causing permission errors.
+
+The `ci.sh` script handles this automatically by setting `DOTENV_PATH=.env.test`
+before starting pytest, so Django loads the test env instead of `.env`:
+
+```bash
+bash ci.sh        # recommended — uses .env.test automatically
+# or manually:
+DOTENV_PATH=.env.test python -m pytest
+```
+
 #### Test database setup
 
 The test suite uses `conftest.py` to seed static reference data once per
@@ -308,14 +328,37 @@ python manage.py seed_test_trials
 
 ---
 
+## Configuration & secrets
+
+EXACT is a **public** repository. All runtime configuration is supplied through
+environment variables — never commit secret values to git.
+
+- **Local dev:** copy `.env.example` to `.env` and fill in values. Everything
+  matching `.env*` (except `.env.example`) is git-ignored.
+- **Secrets never enter git.** `.gitignore` blocks `.env*`, Terraform state and
+  vars (`*.tfvars`, `*.tfstate*`, `.terraform/`), service-account JSON
+  (`*serviceAccount*.json`, `*-firebase-adminsdk-*.json`, `*-sa-key.json`,
+  `firebase-sa-key.json`), and private keys (`*.pem`, `*.key`).
+- **Production/staging:** secrets such as `SECRET_KEY`, database credentials,
+  `TRIALS_DATABASE_URL`, and `CTOMOP_SERVICE_TOKEN` come from the host
+  platform's secret store (e.g. GCP Secret Manager) and are injected as
+  environment variables at runtime — never from files in this repo.
+- **When CI deployment is added**, it should authenticate to the cloud
+  *keyless* (GitHub OIDC / Workload Identity Federation). Do not store a
+  long-lived service-account JSON key in the repo or in CI.
+
+---
+
 ## Environment variable reference
 
 | Variable | Default | Description |
 |---|---|---|
 | `SECRET_KEY` | `django-insecure-…` | Django secret key — **change in production** |
-| `DEBUG` | `true` | Debug mode; set to `false` in production |
+| `DEBUG` | `false` | Debug mode; set to `true` only for local development. Pre-#24 it defaulted to `true`. |
 | `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated allowed host names |
 | `CSRF_TRUSTED_ORIGINS` | _(empty)_ | Comma-separated CSRF-trusted origins |
+| `CORS_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated allowlist of browser origins — preferred for staging/prod. |
+| `CORS_ALLOW_ALL_ORIGINS` | `false` | Set to `true` for local-dev "let anything in" mode. Pre-#24 this was hardcoded `True` in settings. |
 | `DATABASE_NAME` | `exact` | PostgreSQL database name |
 | `DATABASE_USER` | `exact` | PostgreSQL user |
 | `DATABASE_PASSWORD` | _(empty)_ | PostgreSQL password |

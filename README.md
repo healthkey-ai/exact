@@ -3,17 +3,17 @@
 EXACT (EXtracting Attributes from Clinical Trials) is a stateless search and
 matching engine for clinical trials. It connects to an external database that
 holds the trial catalog and reference data — EXACT does not own or manage that
-data. Patient profiles are passed inline with each API request; nothing is
-persisted.
+data. 
 
-The only data EXACT stores locally is authentication (users and tokens).
+Patient profiles are passed inline with each API request. They can also be retrieved from an external database that has a PatientInfo table in the form implemented by [CTOMOP](https://github.com/healthkey-ai/ctomop), which exposes a flat projection of a patient record from underlying OMOP tables. 
 
 ## Documentation
 
 | Doc | Description |
 |-----|-------------|
 | [docs/overview.md](docs/overview.md) | Architecture, key components, data flow |
-| [scripts/README.md](scripts/README.md) | Running trial search for patients |
+| [docs/trials4patients.md](docs/trials4patients.md) | Running trial search for patients |
+| [docs/evaluator.md](docs/evaluator.md) | Evaluating EXACT results against ground truth |
 | [docs/setup.md](docs/setup.md) | Local development setup |
 | [docs/api.md](docs/api.md) | REST API reference |
 
@@ -29,7 +29,18 @@ export PATIENT_DATABASE_URL=postgresql://...
 bash scripts/trials4patients.sh
 ```
 
-See [scripts/README.md](scripts/README.md) for options and full usage.
+See [docs/trials4patients.md](docs/trials4patients.md) for all options and output structure.
+
+## Evaluating results
+
+To score EXACT results against a ground-truth CSV:
+
+```bash
+RESULTS_CSV=results.csv bash scripts/trials4patients.sh
+bash scripts/evaluator/evaluate.sh scripts/evaluator/ground_truth.csv results.csv
+```
+
+See [docs/evaluator.md](docs/evaluator.md) for metrics, full workflow, and output options.
 
 ## Quick start (connecting to an existing trials database)
 
@@ -59,3 +70,5 @@ python manage.py runserver
 
 See [docs/setup.md](docs/setup.md) for full instructions including database
 setup, environment variables, and test configuration.
+
+See [docs/setup.md](docs/setup.md) for configuration, secrets management, and environment variable reference.

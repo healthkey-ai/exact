@@ -1,0 +1,97 @@
+name: deploy-staging
+
+# Keyless (Workload Identity Federation) build + blue-green deploy to the
+# shared staging GCP project. Mirrors the house pattern: build the image into
+# Artifact Registry, roll out a no-traffic revision, run migrations in the
+# dedicated Cloud Run job, then switch traffic.
+#
+# Env/secret wiring for both the service and the migrate job lives in the
+# staging infra Terraform; this workflow only swaps the container image and
+# orchestrates the rollout.
+#
+# Required GitHub Actions repository variables:
+#   GCP_PROJECT_ID               shared project id
+#   GCP_REGION                   e.g. us-central1
+#   GCP_AR_REPO                  Artifact Registry repository id holding the exact image
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  projects/.../providers/...
+#   GCP_SERVICE_ACCOUNT          exact-staging-gh@<project>.iam.gserviceaccount.com
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SERVICE: exact-staging
+      MIGRATE_JOB: exact-staging-migrate
+      REGION: ${{ vars.GCP_REGION }}
+      REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/exact
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "$REGISTRY" --quiet
+
+      - name: Build and push image
+        run: |
+          docker build --platform linux/amd64 --provenance=false -f Dockerfile.gcp \
+            -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy new revision (no traffic)
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --region "$REGION" \
+            --no-traffic
+
+      - name: Run database migrations
+        run: |
+          gcloud run jobs update "$MIGRATE_JOB" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --region "$REGION"
+          gcloud run jobs execute "$MIGRATE_JOB" \
+            --region "$REGION" \
+            --wait
+          # Second pass migrates the split trials DB. The migrate_trials_db
+          # command self-gates on settings.TRIALS_DB_MIGRATE inside the
+          # container: a no-op (returns before opening the 'trials' connection)
+          # unless the flag is on, so an externally-managed/read-only trials DB
+          # is never touched and its django_migrations recorder is never
+          # created. When on (a copy we own, e.g. staging) it runs
+          # `migrate --database=trials --fake-initial`, which idempotently fakes
+          # 0001 against the seeded copy and applies the rest for real.
+          gcloud run jobs execute "$MIGRATE_JOB" \
+            --region "$REGION" \
+            --wait \
+            --args=manage.py,migrate_trials_db
+
+      - name: Route traffic to new revision
+        run: |
+          gcloud run services update-traffic "$SERVICE" \
+            --region "$REGION" \
+            --to-latest

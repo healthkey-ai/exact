@@ -1360,7 +1360,7 @@ class TherapiesMapper:
     def later_therapy_fl(self):
         return [
             "axicabtagene_ciloleucel", "tisagenlecleucel", "polatuzumab_vedotin", "idelalisib",
-            "copanlisib", "duvelisib", "tazemetostat", "l_r", "br", "obinutuzumab", "agsct",
+            "copanlisib", "duvelisib", "tazemetostat", "lr", "br", "obinutuzumab", "agsct",
             "radiotherapy", "clinical_trials"
         ]
 
@@ -1369,10 +1369,10 @@ class TherapiesMapper:
             "fulvestrant", "exemestane_everolimus", "alpelisib_fulvestrant", "capivasertib_fulvestrant",
             "elacestrant", "tamoxifen", "megestrol_acetate", "capecitabine", "eribulin", "vinorelbine",
             "gemcitabine", "paclitaxel", "docetaxel", "trastuzumab_deruxtecan", "tucatinib_trastuzumab_capecitabine",
-            "lapatinib", "neratinib", "margetuximab_chemotherapy", "trastuzumab_emtansine", "sacituzumab_govitecan",
+            "lapatinib", "neratinib", "margetuximab", "trastuzumab_emtansine", "sacituzumab_govitecan",
             "sacituzumab_govitecan", "atezolizumab_nab_paclitaxel", "pembrolizumab_chemotherapy", "olaparib",
             "talazoparib", "carboplatin", "cisplatin", "eribulin", "capecitabine", "gemcitabine", "vinorelbine",
-            "olaparib", "talazoparib", "alpelisib", "capivasertib", "larotrectinib", "entrectinib", "immune_checkpoint_inhibitor",
+            "olaparib", "talazoparib", "alpelisib", "capivasertib", "larotrectinib", "entrectinib", "immune_checkpoint_inhibitors",
         ]
 
     def supportive_all(self):

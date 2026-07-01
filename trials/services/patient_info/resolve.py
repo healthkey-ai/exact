@@ -1,33 +1,131 @@
 """
-PatientInfo resolver — stateless (inline JSON) only.
+PatientInfo resolver — supports two contract shapes.
 
-The caller sends patient data as {"patient_info": {...}} in the request body.
-No DB lookup is performed; PatientInfo is never persisted by this path.
+1. Inline payload: `{"patient_info": {...}}` in the request body. No DB
+   lookup; PatientInfo is never persisted by this path. CancerBot
+   depends on this contract — do not change.
+2. CTOMOP fetch: `?person_id=` query param or `person_id` in the body.
+   Looks up the patient from CTOMOP via `CtomopClient` and feeds the
+   row through `build_patient_info_from_ctomop_row` (#102). Gated behind
+   `EXACT_ALLOW_PERSON_ID_LOOKUP` (off by default outside local/DEBUG) —
+   see the authorization boundary below.
+
+The inline path takes precedence — if both `patient_info` and
+`person_id` are present, the inline payload wins (lets callers stage
+the migration without breaking).
+
+## Authorization boundary
+
+The CTOMOP `person_id` path calls CTOMOP with a static service token
+(`CTOMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
+and CTOMOP does not enforce row-level authz for that token — so honoring
+an arbitrary `person_id` lets any authenticated caller enumerate other
+patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
+patients (it's stateless for patient data — see project memory
+`feedback_exact_no_own_db.md`), so there's nothing in-tree to verify
+against.
+
+Because no production caller uses this path (the federation host fetches
+the patient from CTOMOP `/patient-info/me/` under the end-user's own token
+and forwards it inline), the path is gated OFF by default outside
+local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
+`person_id` while the gate is off gets a 403.
+
+Re-enabling it in production requires BOTH:
+- forwarding the caller's identity to CTOMOP (token exchange / pass-through
+  bearer or actor_iss/actor_sub — see hk-labs `ctomop_client.py`), AND
+- CTOMOP enforcing per-user authz (its `PatientUser`/consent models), or
+  using the self-scoped `/patient-info/me/` route.
+
+Tracked as #150/#108.
 """
 import ast
 import datetime as dt
 import json
 from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
 
 from trials.services.patient_info.normalize import normalize_patient_info
 
+if TYPE_CHECKING:
+    from trials.services.patient_info.patient_info import PatientInfo
 
-def resolve_patient_info(request):
-    """
-    Build an in-memory PatientInfo instance from the request body.
 
-    Returns None if no patient_info payload is present (caller may proceed
-    without patient context, e.g. for public trial browsing).
+def resolve_patient_info(request) -> Optional['PatientInfo']:
     """
-    patient_info_data = request.data.get('patient_info')
-    if not patient_info_data:
+    Build an in-memory PatientInfo instance from the request.
+
+    Resolution order:
+      1. Inline `patient_info` payload (existing contract — unchanged).
+      2. `person_id` query param or body field — fetch from CTOMOP.
+      3. Return None — caller may proceed without patient context
+         (e.g. public trial browsing).
+    """
+    patient_info_data = _get_body_field(request, 'patient_info')
+    if patient_info_data:
+        return _build_in_memory(patient_info_data)
+
+    person_id = _extract_person_id(request)
+    if person_id:
+        # IDOR gate (#150/#108): the CTOMOP fetch uses a static service token
+        # not bound to the caller, and CTOMOP doesn't enforce row-level authz
+        # for it — so honoring an arbitrary person_id leaks other patients'
+        # PHI. Off by default outside local/DEBUG; reject rather than silently
+        # ignore so the disabled path can't masquerade as a no-patient search.
+        from django.conf import settings
+        if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied(
+                'person_id lookup is disabled. Provide an inline patient_info '
+                'payload instead.'
+            )
+        return _resolve_from_ctomop(person_id)
+
+    return None
+
+
+def _get_body_field(request, name: str) -> Any:
+    """Read a field from request.data, tolerating None or non-dict bodies."""
+    data = getattr(request, 'data', None)
+    if not isinstance(data, dict):
         return None
-    return _build_in_memory(patient_info_data)
+    return data.get(name)
 
 
-def _build_in_memory(data: dict):
+def _extract_person_id(request) -> Optional[Any]:
+    """Return person_id from query params first, then body. None if absent.
+
+    The return is `Any` (not `str`) because the body path can carry a JSON
+    integer (e.g. `{"person_id": 9003}`) while the query-string path always
+    yields `str`. `CtomopClient.fetch_patient` coerces both to int before
+    constructing the URL.
+    """
+    query_params = getattr(request, 'query_params', None)
+    if query_params:
+        pid = query_params.get('person_id') or query_params.get('personId')
+        if pid:
+            return pid
+
+    body_pid = _get_body_field(request, 'person_id') or _get_body_field(request, 'personId')
+    return body_pid or None
+
+
+def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
+    """Fetch the CTOMOP row and adapt it to a PatientInfo. None on any error."""
+    from trials.services.patient_info.ctomop_adapter import (
+        build_patient_info_from_ctomop_row,
+    )
+    from trials.services.patient_info.ctomop_client import CtomopClient
+
+    row = CtomopClient().fetch_patient(person_id)
+    if not row:
+        return None
+    return build_patient_info_from_ctomop_row(row)
+
+
+def _build_in_memory(data: dict) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields."""
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
@@ -49,6 +147,8 @@ def _build_in_memory(data: dict):
     _coerce_numerics(filtered, PatientInfo)
     # Coerce string-encoded lists/dicts for JSONField columns (CB can send "[{...}]" as str)
     _coerce_json_fields(filtered, PatientInfo)
+    # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
+    _normalize_structured_json_fields(filtered)
 
     pi = PatientInfo(**filtered)
 
@@ -102,6 +202,50 @@ def _coerce_numerics(data: dict, model_cls):
                 data[f.name] = Decimal(val)
             except (InvalidOperation, TypeError):
                 data[f.name] = None
+
+
+def _normalize_structured_json_fields(data: dict):
+    """Enforce list-of-dicts shape on JSON fields whose consumers call `.get(...)` per item.
+
+    Bare-string items (legacy rows, malformed CTOMOP input) would otherwise crash
+    the matcher and trial-details renderer with `'str' object has no attribute 'get'`.
+    """
+    for key in ('later_therapies', 'supportive_therapies'):
+        val = data.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, list):
+            data[key] = []
+            continue
+        coerced = []
+        for item in val:
+            if isinstance(item, dict):
+                coerced.append(item)
+            elif isinstance(item, str) and item.strip():
+                coerced.append({'therapy': item.strip()})
+        data[key] = coerced
+
+    val = data.get('genetic_mutations')
+    if val is not None:
+        if not isinstance(val, list):
+            data['genetic_mutations'] = []
+        else:
+            data['genetic_mutations'] = [item for item in val if isinstance(item, dict)]
+
+    # MCL list-of-strings fields: code lists (e.g. ['bone_marrow', 'gi_tract']).
+    # Coerce None / non-list / non-string items to [] so the default=list
+    # contract holds when CB sends `null` or `_coerce_json_fields` falls
+    # through on malformed input (which sets the value to None).
+    # NB: bulky_disease_criteria / high_risk_mcl_criteria are derived
+    # comma-strings (computed in normalize for MCL), not list inputs.
+    for key in ('extranodal_sites',):
+        val = data.get(key)
+        if key not in data:
+            continue
+        if not isinstance(val, list):
+            data[key] = []
+            continue
+        data[key] = [s.strip() for s in val if isinstance(s, str) and s.strip()]
 
 
 def _coerce_json_fields(data: dict, model_cls):

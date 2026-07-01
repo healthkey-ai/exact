@@ -30,6 +30,7 @@ services:
       DATABASE_PASSWORD: exact
       DATABASE_PORT: "5432"
       MALLOC_NANO_ZONE: "0"
+      PORT: "${PORT:-8000}"
     volumes:
       - /tmp:/tmp
     entrypoint: ["/app/docker/entrypoint.sh"]

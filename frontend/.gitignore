@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.bak
+.vite-remote/
+.vite/
+.env.local
+.env.*.local

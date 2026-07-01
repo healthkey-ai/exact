@@ -7,12 +7,14 @@ from trials.services.loaders.load_ethnicity_options import LoadEthnicityOptions
 from trials.services.loaders.load_genetic_mutations import LoadGeneticMutations
 from trials.services.loaders.load_lang_options import LoadLangOptions
 from trials.services.loaders.load_markers import LoadMarkers
+from trials.services.loaders.load_mcl_options import LoadMclOptions
 from trials.services.loaders.load_planned_therapy_options import LoadPlannedTherapyOptions
 from trials.services.loaders.load_preferred_countries_options import LoadPreferredCountriesOptions
 from trials.services.loaders.load_scth_options import LoadScthOptions
 from trials.services.loaders.load_supportive_therapies import LoadSupportiveTherapies
 from trials.services.loaders.load_tnm_options import LoadTnmOptions
 from trials.services.loaders.load_toxicity_grade_options import LoadToxicityGradeOptions
+from trials.services.loaders.load_trial_taxonomy import LoadTrialTaxonomy
 
 
 BC_TRIAL_TYPES = [
@@ -120,14 +122,20 @@ class Command(BaseCommand):
         self.stdout.write('Seeding markers...')
         LoadMarkers().load_all()
 
+        self.stdout.write('Seeding MCL options (protein expressions, morphologic variants)...')
+        LoadMclOptions().load_all()
+
         self.stdout.write('Seeding supportive therapies...')
         LoadSupportiveTherapies().load_all()
 
         self.stdout.write('Seeding concomitant medications...')
         LoadConcomitantMedications().load_all()
 
-        self.stdout.write('Seeding trial types...')
+        self.stdout.write('Seeding trial types (legacy)...')
         self._seed_trial_types()
+
+        self.stdout.write('Seeding trial taxonomy (TrialType + connections)...')
+        LoadTrialTaxonomy().load_all()
 
         self.stdout.write('Seeding pre-existing condition categories...')
         self._seed_pre_existing_categories()
@@ -141,6 +149,7 @@ class Command(BaseCommand):
             'MM': 'Multiple Myeloma',
             'FL': 'Follicular Lymphoma',
             'CLL': 'Chronic Lymphocytic Leukemia',
+            'MCL': 'Mantle Cell Lymphoma',
         }
         for code, title in diseases.items():
             Disease.objects.update_or_create(code=code, defaults={'title': title})

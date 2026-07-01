@@ -118,6 +118,8 @@ _FIELDS = [
     _f(BooleanField, 'meets_crab'),
     _f(IntegerField, 'estimated_glomerular_filtration_rate'),
     _f(BooleanField, 'renal_adequacy_status', default=False),
+    _f(BooleanField, 'hepatic_adequacy_status', default=False),
+    _f(BooleanField, 'haematological_adequacy_status', default=False),
     _f(IntegerField, 'liver_enzyme_levels_ast'),
     _f(IntegerField, 'liver_enzyme_levels_alt'),
     _f(IntegerField, 'liver_enzyme_levels_alp'),
@@ -130,6 +132,8 @@ _FIELDS = [
     _f(IntegerField, 'kappa_flc'),
     _f(IntegerField, 'lambda_flc'),
     _f(BooleanField, 'meets_slim'),
+    _f(BooleanField, 'meets_lugano'),
+    _f(BooleanField, 'meets_gelf'),
     # Labs block
     _f(DecimalField, 'monoclonal_protein_serum', decimal_places=2, max_digits=10),
     _f(DecimalField, 'monoclonal_protein_urine', decimal_places=2, max_digits=10),
@@ -209,6 +213,21 @@ _FIELDS = [
     _f(FloatField, 'clonal_bone_marrow_b_lymphocytes'),
     _f(IntegerField, 'clonal_b_lymphocyte_count'),
     _f(BooleanField, 'bone_marrow_involvement'),
+    # MCL-specific
+    # mipi_risk / mipi_c_risk / bulky_disease_criteria / high_risk_mcl_criteria
+    # are derived in normalize._normalize_mcl_derivations from age / ECOG / WBC /
+    # LDH / Ki67 / markers / sizes (#41). Caller-supplied values are overwritten
+    # when the patient's disease is MCL.
+    _f(TextField, 'morphologic_variant'),
+    _f(FloatField, 'largest_lesion_size'),
+    _f(IntegerField, 'p53_ihc'),  # p53 IHC expression %, range 0-100
+    _f(TextField, 'disease_behavior'),
+    _f(TextField, 'disease_subtype'),
+    _f(JSONField, 'extranodal_sites', default=list),
+    _f(TextField, 'mipi_risk'),
+    _f(TextField, 'mipi_c_risk'),
+    _f(TextField, 'bulky_disease_criteria'),
+    _f(TextField, 'high_risk_mcl_criteria'),
 ]
 
 _FIELD_MAP = {f.name: f for f in _FIELDS}

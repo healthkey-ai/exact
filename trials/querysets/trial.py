@@ -8,24 +8,30 @@ from django.contrib.postgres.search import SearchVector, SearchQuery
 
 from django.db import models
 from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, QuerySet, Min, Subquery
+from django.db.models.expressions import RawSQL
 from django.db.models.functions import Coalesce, Least
 from django.contrib.gis.geos import Point
-from django.db.models import F, FloatField, ExpressionWrapper, IntegerField
+from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField
 
 from django.utils import timezone
 
 import datetime as dt
 
+from trials.constants import TRIAL_SCORE_MAX
 from trials.enums import PriorTherapyLines
 from trials.services.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
     THERAPY_LINES_ATTRS_UNDERSCORED,
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
+    sct_value_is_none,
 )
+from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
 from trials.services.user_to_trial_attrs_mapper import UserToTrialAttrsMapper
+from trials.services.utils import disease_attr_applies
 
 
 if TYPE_CHECKING:
@@ -71,6 +77,128 @@ def get_recruitment_status_filter_values(recruitment_status):
         return [status]
 
 
+# ---------------------------------------------------------------------------
+# Dispatch table for filter_by_patient_info's custom_search branch (#29).
+#
+# `filter_by_patient_info` used to be a ~110-line if/elif chain on
+# user_attr — adding any new patient attr meant grepping the whole method,
+# inserting a branch, and praying the dispatch order didn't matter. The
+# table below collapses that into data: per-user_attr handler callables
+# that take `(scope, value, ctx)` and return the new scope. Handlers
+# that need shared state (therapy-line tracking, patient_info access)
+# mutate ctx in place.
+# ---------------------------------------------------------------------------
+
+
+def _csv(value):
+    return value.split(",") if value else []
+
+
+def _csv_stripped(value):
+    return [x.strip() for x in _csv(value)]
+
+
+def _filter_disease(scope, value, _ctx):
+    return scope.filter(disease__iexact=value.lower())
+
+
+def _filter_tumor_grade(scope, value, _ctx):
+    return scope.eligible_for_tumor_grade(str(value).lower())
+
+
+def _filter_prior_therapy(scope, value, ctx):
+    scope = scope.eligible_for_prior_therapy(value)
+    # Apply the therapy-related-things filter ONLY ONCE per
+    # filter_by_patient_info call; ctx tracks the flag.
+    if ctx['has_no_prior_therapy'] and not ctx['is_therapies_filter_applied']:
+        scope = scope.eligible_for_therapy_related_things_from_lines(
+            ctx['user_therapies'], ctx['has_no_prior_therapy']
+        )
+        ctx['is_therapies_filter_applied'] = True
+    return scope
+
+
+def _filter_concomitant_medications(scope, value, ctx):
+    return scope.eligible_for_concomitant_medications_and_washout_period(
+        value, ctx['patient_info'].concomitant_medication_date
+    )
+
+
+def _filter_last_treatment(scope, value, ctx):
+    if not ctx['has_no_prior_therapy']:
+        return scope.eligible_for_washout_period_duration(value)
+    return scope
+
+
+def _filter_therapy_lines_once(scope, _value, ctx):
+    # Used for therapy-line attrs (first_line_therapy, second_line_therapy,
+    # later_therapy, later_therapies, supportive_therapies) — the actual
+    # filter is applied once at most across all of them.
+    if not ctx['is_therapies_filter_applied']:
+        scope = scope.eligible_for_therapy_related_things_from_lines(
+            ctx['user_therapies'], ctx['has_no_prior_therapy']
+        )
+        ctx['is_therapies_filter_applied'] = True
+    return scope
+
+
+_CUSTOM_SEARCH_DISPATCH = {
+    # Stateful / special handlers.
+    'disease': _filter_disease,
+    'tumor_grade': _filter_tumor_grade,
+    'prior_therapy': _filter_prior_therapy,
+    'concomitant_medications': _filter_concomitant_medications,
+    'last_treatment': _filter_last_treatment,
+    # Pass-through.
+    'stage': lambda s, v, _c: s.eligible_for_stage(v),
+    'flipi_score_options': lambda s, v, _c: s.eligible_for_flipi_score_options(v),
+    'genetic_mutations': lambda s, v, _c: s.eligible_for_genetic_mutations(v),
+    'plasma_cell_leukemia': lambda s, v, _c: s.eligible_for_plasma_cell_leukemia(v),
+    'progression': lambda s, v, _c: s.eligible_for_progression(v),
+    'treatment_refractory_status': lambda s, v, _c: s.eligible_for_treatment_refractory_status(v),
+    'pre_existing_condition_categories': lambda s, v, _c: s.eligible_for_pre_existing_condition(v),
+    'stem_cell_transplant_history': lambda s, v, _c: s.eligible_for_stem_cell_transplant_history(v),
+    'bcl2_inhibitor_refractory': lambda s, v, _c: s.eligible_for_bcl2_inhibitor_refractory(v),
+    'btk_inhibitor_refractory': lambda s, v, _c: s.eligible_for_btk_inhibitor_refractory(v),
+    'tp53_disruption': lambda s, v, _c: s.eligible_for_tp53_disruption(v),
+    # Comma-separated.
+    'ethnicity': lambda s, v, _c: s.eligible_for_ethnicity(_csv(v)),
+    'languages_skills': lambda s, v, _c: s.eligible_for_languages_skills(_csv(v)),
+    'planned_therapies': lambda s, v, _c: s.eligible_for_planned_therapies(_csv(v)),
+    'cytogenic_markers': lambda s, v, _c: s.eligible_for_cytogenic_markers(_csv(v)),
+    'molecular_markers': lambda s, v, _c: s.eligible_for_molecular_marker(_csv(v)),
+    'histologic_type': lambda s, v, _c: s.eligible_for_histologic_types(_csv(v)),
+    'estrogen_receptor_status': lambda s, v, _c: s.eligible_for_estrogen_receptor_statuses(_csv(v)),
+    'progesterone_receptor_status': lambda s, v, _c: s.eligible_for_progesterone_receptor_statuses(_csv(v)),
+    'her2_status': lambda s, v, _c: s.eligible_for_her2_statuses(_csv(v)),
+    'hrd_status': lambda s, v, _c: s.eligible_for_hrd_statuses(_csv(v)),
+    'hr_status': lambda s, v, _c: s.eligible_for_hr_statuses(_csv(v)),
+    'tumor_stage': lambda s, v, _c: s.eligible_for_tumor_stages(_csv(v)),
+    'nodes_stage': lambda s, v, _c: s.eligible_for_nodes_stages(_csv(v)),
+    'distant_metastasis_stage': lambda s, v, _c: s.eligible_for_distant_metastasis_stages(_csv(v)),
+    'staging_modalities': lambda s, v, _c: s.eligible_for_staging_modalities(_csv(v)),
+    'protein_expressions': lambda s, v, _c: s.eligible_for_protein_expressions(_csv(v)),
+    # Comma-separated + per-value strip.
+    'richter_transformation': lambda s, v, _c: s.eligible_for_richter_transformations(_csv_stripped(v)),
+    'tumor_burden': lambda s, v, _c: s.eligible_for_tumor_burdens(_csv_stripped(v)),
+    'disease_activity': lambda s, v, _c: s.eligible_for_disease_activities(_csv_stripped(v)),
+    'binet_stage': lambda s, v, _c: s.eligible_for_binet_stages(_csv_stripped(v)),
+    # MCL (#94). Single-string patient attrs are CSV-split for parity with
+    # the matcher's COMPUTED branch at user_to_trial_attr_matcher.py:592-594
+    # — without that, a `'classic,leukemic'` value would matcher-overlap as
+    # two codes but queryset-filter on the literal joined string, silently
+    # dropping every trial. Patient list attrs flow through unchanged.
+    'morphologic_variant': lambda s, v, _c: s.eligible_for_morphologic_variants(_csv_stripped(v)),
+    'disease_behavior': lambda s, v, _c: s.eligible_for_disease_behaviors(_csv_stripped(v)),
+    'disease_subtype': lambda s, v, _c: s.eligible_for_disease_subtypes(_csv_stripped(v)),
+    'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv_stripped(v)),
+    'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv_stripped(v)),
+    'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(v),
+    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv_stripped(v)),
+    'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv_stripped(v)),
+}
+
+
 class TrialQuerySet(models.QuerySet):
     def recruiting(self):
         return self.filter(recruitment_status='RECRUITING')
@@ -81,6 +209,18 @@ class TrialQuerySet(models.QuerySet):
     # UserTrial removed — no favorites/participation tracking in standalone app
 
     def add_potential_attrs_count(self, attributes, search_type=None, counts=None, filled_attributes=None):
+        """Annotate trials with potential_attrs_count, match_score, and
+        potential_profit_avg from `num_nonnulls()` of the candidate CASE
+        expressions.
+
+        The fragments in `attributes` / `filled_attributes` come from
+        `UserToTrialAttrsMapper.potential_attrs_to_check` — values are
+        SQL CASE-WHEN strings built from the static
+        `USER_TO_TRIAL_ATTRS_MAPPING` (no user-supplied SQL). Migrating
+        from the deprecated `.extra(select=…)/extra(where=…)` to
+        `annotate(RawSQL(…))` + filter-on-annotation (#97) — same SQL
+        emitted, same return shape.
+        """
         if filled_attributes is None:
             filled_attributes = []
 
@@ -88,20 +228,39 @@ class TrialQuerySet(models.QuerySet):
         filled_attrs = ','.join(filled_attributes + ['NULL'])
         all_attrs = ','.join(attributes + filled_attributes + ['NULL'])
 
-        query = self.extra(select={'potential_attrs_count': f'num_nonnulls({attrs})'})
-
-        # (filled / filled + potential) * 100
-        match_score_sql = f'num_nonnulls({filled_attrs}) * 100 / num_nonnulls({all_attrs})'
-        query = query.extra(select={'match_score': match_score_sql})
+        # (filled / filled + potential) * 100 — integer division, capped at 100.
+        # NULLIF guards against div-by-zero on the `patient_info=None` path
+        # where `all_attrs` collapses to just `'NULL'` and num_nonnulls = 0
+        # (latent crash in the pre-port `.extra()` form too — closed here
+        # since the new test surface exercises that path).
+        match_score_sql = (
+            f'num_nonnulls({filled_attrs}) * 100 / '
+            f'NULLIF(num_nonnulls({all_attrs}), 0)'
+        )
 
         sql_conditions = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info=None, counts=counts)
-        sql_conditions = ' + '.join([*sql_conditions.values(), '0'])
-        query = query.extra(select={'potential_profit_avg': f'({sql_conditions}) / NULLIF(num_nonnulls({attrs}), 0)'})
+        sql_conditions_sum = ' + '.join([*sql_conditions.values(), '0'])
+
+        # BigIntegerField on potential_profit_avg: the numerator sums
+        # arbitrary counts across the catalog and can exceed 2^31 in the
+        # large-counts case (same rationale as #25 / PR #98).
+        query = self.annotate(
+            potential_attrs_count=RawSQL(
+                f'num_nonnulls({attrs})', [], output_field=IntegerField()
+            ),
+            match_score=RawSQL(
+                match_score_sql, [], output_field=IntegerField()
+            ),
+            potential_profit_avg=RawSQL(
+                f'({sql_conditions_sum}) / NULLIF(num_nonnulls({attrs}), 0)',
+                [], output_field=BigIntegerField(),
+            ),
+        )
 
         if search_type == 'eligible':
-            query = query.extra(where=[f'num_nonnulls({attrs}) = 0'])
+            query = query.filter(potential_attrs_count=0)
         elif search_type == 'potential':
-            query = query.extra(where=[f'num_nonnulls({attrs}) > 0'])
+            query = query.filter(potential_attrs_count__gt=0)
         return query
 
     def filtered_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None):
@@ -122,6 +281,10 @@ class TrialQuerySet(models.QuerySet):
 
         query = self
 
+        # therapy_id applies to all search paths (standard and admin).
+        if study_info:
+            query = query.by_therapy_id(study_info.therapy_id)
+
         if search_type in ['all', 'favorites', 'my_trials']:
             query, _ = query.filter_for_admin(study_info, patient_info)
             max_distance = D(mi=1000)
@@ -129,7 +292,7 @@ class TrialQuerySet(models.QuerySet):
                 max_distance = D(mi=study_info.distance) if str(study_info.distance_units).lower() == 'miles' else D(
                     km=study_info.distance)
             query = query.with_distance_optimized(
-                geo_point=patient_info.geo_point,
+                geo_point=patient_info.geo_point if patient_info else None,
                 max_distance=max_distance,
                 recruitment_status=study_info.recruitment_status
             )
@@ -137,7 +300,7 @@ class TrialQuerySet(models.QuerySet):
             return query, []
 
         else:
-            query, study_traces = query.filter_by_study_info(study_info, add_traces, user_geo_point=patient_info.geo_point)
+            query, study_traces = query.filter_by_study_info(study_info, add_traces, user_geo_point=patient_info.geo_point if patient_info else None)
             query, patient_traces = query.filter_by_patient_info(patient_info, add_traces)
 
             return query, list(study_traces) + list(patient_traces)
@@ -153,9 +316,10 @@ class TrialQuerySet(models.QuerySet):
         query = query.by_study_id(study_info.study_id)
         query = query.by_register(study_info.register)
         query = query.by_trial_type(study_info.trial_type)
+        query = query.by_trial_purpose(study_info.trial_purpose)
         query = query.by_study_type(study_info.study_type)
         query = query.by_validated_only(study_info.validated_only)
-        if patient_info.disease is not None and patient_info.disease != '':
+        if patient_info and patient_info.disease is not None and patient_info.disease != '':
             query = query.filter(disease__icontains=patient_info.disease.lower())
 
         query = query.order_by('is_validated')
@@ -181,6 +345,17 @@ class TrialQuerySet(models.QuerySet):
                 'val': study_info.search_title,
                 'records': new_count,
                 'dropped': count-new_count
+            })
+            count = new_count
+
+        query = query.by_therapy_id(study_info.therapy_id)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.therapy_id',
+                'val': study_info.therapy_id,
+                'records': new_count,
+                'dropped': count - new_count,
             })
             count = new_count
 
@@ -212,6 +387,17 @@ class TrialQuerySet(models.QuerySet):
             traces.append({
                 'attr': 'study_info.trial_type',
                 'val': study_info.trial_type,
+                'records': new_count,
+                'dropped': count-new_count
+            })
+            count = new_count
+
+        query = query.by_trial_purpose(study_info.trial_purpose)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.trial_purpose',
+                'val': study_info.trial_purpose,
                 'records': new_count,
                 'dropped': count-new_count
             })
@@ -324,7 +510,6 @@ class TrialQuerySet(models.QuerySet):
                 'records': new_count,
                 'dropped': count-new_count
             })
-            # count = new_count
 
         return query, traces
 
@@ -347,24 +532,41 @@ class TrialQuerySet(models.QuerySet):
             Q(official_title__icontains=search_title)
         )
 
+    def by_therapy_id(self, therapy_ids: list[int]) -> models.QuerySet:
+        """Filter trials by intervention-arm concept_id(s).
+
+        Matches trials where ``omop_intervention_concept_ids`` contains ANY of
+        the given concept_ids. Populated by CB during trial sync; empty until
+        CB backfill runs (filter is a no-op on such trials).
+        """
+        if not therapy_ids:
+            return self
+        q = Q()
+        for tid in therapy_ids:
+            q |= Q(omop_intervention_concept_ids__contains=[tid])
+        return self.filter(q)
+
     def by_intervention_treatment(self, search_treatment):
         if not search_treatment or search_treatment == '':
             return self
 
+        # Translate the legacy word-operator grammar into websearch syntax.
+        # websearch_to_tsquery tolerates arbitrary text (it never raises on
+        # malformed input), unlike the raw tsquery this used to hand-build —
+        # which 500'd on unbalanced operators and on any multi-word term.
         query = search_treatment.lower()
-        query = f"'{query}'"
-        query = query.replace(' and not ', "' & !'")
-        query = query.replace(' not ', "' & !'")
-        if query.startswith("'not "):
-            query = query.replace("'not ", "!'")
-        query = query.replace(' and ', "' & '")
-        query = query.replace(' or ', "' | '")
+        query = query.replace(' and not ', ' -')
+        query = query.replace(' not ', ' -')
+        if query.startswith('not '):
+            query = '-' + query[len('not '):]
+        query = query.replace(' and ', ' ')
+        # 'or' is already the OR operator in websearch syntax — left as-is.
 
         # https://docs.djangoproject.com/en/5.1/ref/contrib/postgres/search/#full-text-search
         return self.annotate(
             search=SearchVector("intervention_treatments_text"),
         ).filter(
-            search=SearchQuery(query, search_type="raw")
+            search=SearchQuery(query, search_type="websearch")
         )
 
     def by_register(self, register):
@@ -372,6 +574,15 @@ class TrialQuerySet(models.QuerySet):
 
     def by_trial_type(self, trial_type):
         return self.eligible_for_relation('trial_type__code', trial_type)
+
+    def by_trial_purpose(self, trial_purpose):
+        """Filter by Trial.purpose. Accepts a code string or a TrialPurpose
+        instance (uses its `.code`); blank/None is a no-op.
+        """
+        if trial_purpose is None or trial_purpose == '':
+            return self
+        code = getattr(trial_purpose, 'code', trial_purpose)
+        return self.eligible_for_relation('purpose__code', code)
 
     def by_study_type(self, study_type):
         if not study_type or str(study_type).upper() in ('', 'ALL'):
@@ -425,38 +636,6 @@ class TrialQuerySet(models.QuerySet):
             )
 
         return self
-
-    def with_distance_optimized_old(self, geo_point, max_distance=None):
-        if not geo_point:
-            return self
-
-        from trials.models import LocationTrial
-        from django.db.models import Subquery, OuterRef, Value, Case, When, IntegerField
-        from django.contrib.gis.db.models.functions import Distance
-
-        location_qs = LocationTrial.objects.filter(
-            trial=OuterRef('pk')
-        )
-
-        if max_distance is not None:
-            location_qs = location_qs.filter(
-                location__geo_point__dwithin=(geo_point, max_distance)
-            )
-
-        location_qs = location_qs.annotate(
-            dist=Distance('location__geo_point', geo_point)
-        ).order_by('dist')
-
-        qs = self.annotate(
-            distance=Subquery(location_qs.values('dist')[:1]),
-            is_null_distance=Case(
-                When(distance__isnull=True, then=Value(1)),
-                default=Value(0),
-                output_field=IntegerField()
-            )
-        ).distinct()
-
-        return qs
 
     def with_distance_optimized(self, geo_point, max_distance=None, recruitment_status=None):
         if not geo_point:
@@ -544,7 +723,15 @@ class TrialQuerySet(models.QuerySet):
         elif status == "RECRUITING_AND_NOT_YET_RECRUITING":
             return self.filter(recruitment_status__in=["RECRUITING", "NOT_YET_RECRUITING"])
 
-        return self.eligible_for_str_value('recruitment_status', recruitment_status.upper())
+        # `allow_blank=False`: recruitment status is trial metadata, not
+        # patient eligibility — a blank or NULL `recruitment_status` on a
+        # trial is missing data, not "unknown can-match". Defaulting to
+        # `allow_blank=True` (as the helper does) silently widened
+        # filters like "COMPLETED" / "TERMINATED" to also match
+        # incompletely-ingested trials.
+        return self.eligible_for_str_value(
+            'recruitment_status', recruitment_status.upper(), allow_blank=False,
+        )
 
     def by_validated_only(self, validated_only):
         if validated_only is not True:
@@ -579,7 +766,14 @@ class TrialQuerySet(models.QuerySet):
                                         geo_point=None,
                                         recruitment_status=None) -> QuerySet["Trial"]:
         from django.db.models import F, ExpressionWrapper, Value, FloatField, Subquery, OuterRef, Min
-        from django.db.models.functions import Cast, Least, Coalesce
+        from django.db.models.functions import Cast, Least, Greatest, Coalesce
+        from trials.services.utils import normalize_goodness_weights
+
+        benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight = (
+            normalize_goodness_weights(
+                benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight
+            )
+        )
 
         meters_per_200_miles = 200 * 1609.34
 
@@ -614,24 +808,38 @@ class TrialQuerySet(models.QuerySet):
 
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
 
-        max_benefit = Value(20.0, output_field=FloatField())
-        max_burden = Value(20.0, output_field=FloatField())
-        max_risk = Value(20.0, output_field=FloatField())
+        zero = Value(0.0, output_field=FloatField())
+        score_max = float(TRIAL_SCORE_MAX)
+        max_benefit = Value(score_max, output_field=FloatField())
+        max_burden = Value(score_max, output_field=FloatField())
+        max_risk = Value(score_max, output_field=FloatField())
 
-        # score = (0.50×Benefit + 0.25(1-PB) + 0.15(1-Risk) + 0.10(1-DistancePenalty)) × 100 + 0.5
+        # Component scores live on a 0–20 scale; clamp each to [0, 20] (mirrors
+        # the defensive clamp in Trial.get_goodness_score) so out-of-range data
+        # can't drive a term past its weight. distance_expr is already bounded
+        # to [0, 1] by the Least(..., 1.0) above.
+        benefit_clamped = Least(Greatest(Coalesce(F('benefit_score'), zero), zero), max_benefit)
+        burden_clamped = Least(Greatest(Coalesce(F('patient_burden_score'), max_burden), zero), max_burden)
+        risk_clamped = Least(Greatest(Coalesce(F('risk_score'), max_risk), zero), max_risk)
+
+        # score = (Wb×Benefit/20 + Wpb×(1−PB/20) + Wr×(1−Risk/20) + Wd×(1−DistancePenalty)) × 100 / ΣW + 0.5
+        # Wb / Wpb / Wr / Wd are the caller-supplied benefit / patient-burden /
+        # risk / distance weights (default 25/25/25/25 — equal). +0.5 is a
+        # rounding nudge before the IntegerField cast. The composite is clamped
+        # to [0, 100] as a final guard.
+        raw_score = (
+                benefit_weight * benefit_clamped / max_benefit +
+                patient_burden_weight * (1 - burden_clamped / max_burden) +
+                risk_weight * (1 - risk_clamped / max_risk) +
+                distance_penalty_weight * (1 - distance_expr)
+        ) * 100 / weights_sum + 0.5
         score_expr = ExpressionWrapper(
-            (
-                    benefit_weight * Coalesce(F('benefit_score'), Value(0.0)) / max_benefit +
-                    patient_burden_weight * (1 - Coalesce(F('patient_burden_score'), max_burden) / max_burden) +
-                    risk_weight * (1 - Coalesce(F('risk_score'), max_risk) / max_risk) +
-                    distance_penalty_weight * (1 - distance_expr)
-            ) * 100 / weights_sum + 0.5,
+            Least(Greatest(raw_score, zero), Value(100.0, output_field=FloatField())),
             output_field=IntegerField()
         )
 
         return self.annotate(
             goodness_score=score_expr,
-            # distance_expr=distance_expr
         )
 
     def eligible_for_min_max_value(self, attr_min_name, attr_max_name, value, skip_blank=True):
@@ -858,48 +1066,49 @@ class TrialQuerySet(models.QuerySet):
 
     def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False) -> models.QuerySet:
         if has_no_prior_therapy:
-            return self.filter(therapies_required__exact=[], therapy_components_required__exact=[], therapy_types_required__exact=[])
+            return self.filter(**{
+                f'{THERAPY_MATCH_PROFILE.therapies_required}__exact': [],
+                f'{THERAPY_MATCH_PROFILE.therapy_components_required}__exact': [],
+                f'{THERAPY_MATCH_PROFILE.therapy_types_required}__exact': [],
+            })
 
         if therapy_codes is None or therapy_codes == []:
             return self
 
-        from trials.models import TherapyComponent, TherapyComponentCategory
-
         scope = self.eligible_for_therapy_from_lines(therapy_codes)
 
-        components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__code__in=therapy_codes).all()
-        component_codes = [x.code for x in components]
+        # Component + type values from the regimen via the CB graph (shared with the
+        # matcher). Under OMOP: components → their OMOP concept_ids (vs the omop
+        # component column), types → CB category codes (vs the LEGACY therapy_types
+        # column the OMOP profile keeps). See trials/services/omop/therapy_graph.
+        from trials.services.omop.therapy_graph import derive_component_and_type_values
+        component_codes, therapy_types = derive_component_and_type_values(therapy_codes)
 
-        if len(component_codes) > 0:
+        if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
-
-        categories = TherapyComponentCategory.objects.filter(
-            therapycomponentcategoryconnection__component__in=components).all()
-        therapy_types = [x.code for x in categories]
-
-        if len(therapy_types) > 0:
+        if therapy_types:
             scope = scope.eligible_for_therapy_types(therapy_types)
         return scope
 
     def eligible_for_therapy_from_lines(self, therapy_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_codes,
-            required_attr_name='therapies_required',
-            excluded_attr_name='therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapies_excluded
         )
 
     def eligible_for_therapy_components(self, therapy_component_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_component_codes,
-            required_attr_name='therapy_components_required',
-            excluded_attr_name='therapy_components_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapy_components_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_components_excluded
         )
 
     def eligible_for_therapy_types(self, therapy_type_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_type_codes,
-            required_attr_name='therapy_types_required',
-            excluded_attr_name='therapy_types_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapy_types_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_types_excluded
         )
 
     def eligible_for_pre_existing_condition(self, pre_existing_conditions: list[str]) -> models.QuerySet:
@@ -914,7 +1123,10 @@ class TrialQuerySet(models.QuerySet):
         if stem_cell_transplant_history is None or str(stem_cell_transplant_history) == '':
             return self
 
-        if str(stem_cell_transplant_history).lower() == 'none':
+        # See sct_value_is_none() — tolerates both storage shapes
+        # ('None' bare string from signal cleanup; ['None'] list from
+        # the multiselect) and whitespace/casing variants (#4333, #4340).
+        if sct_value_is_none(stem_cell_transplant_history):
             return self.exclude(stem_cell_transplant_history_required=True)
 
         if not isinstance(stem_cell_transplant_history, (list, tuple)):
@@ -963,15 +1175,15 @@ class TrialQuerySet(models.QuerySet):
     def eligible_for_planned_therapies(self, planned_therapies: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=planned_therapies,
-            required_attr_name='planned_therapies_required',
-            excluded_attr_name='planned_therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.planned_therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.planned_therapies_excluded
         )
 
     def eligible_for_supportive_therapies(self, supportive_therapies: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=supportive_therapies,
-            required_attr_name='supportive_therapies_required',
-            excluded_attr_name='supportive_therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_excluded
         )
 
     def eligible_for_cytogenic_markers(self, cytogenic_markers: list[str]) -> models.QuerySet:
@@ -1006,33 +1218,19 @@ class TrialQuerySet(models.QuerySet):
             required_attr_name='languages_skills_required'
         )
 
-    # ── Receptor status parent-code expansion ─────────────────────────────────
-    # Trials may store a generic parent code (e.g. "er_plus") while the patient
-    # carries a specific child code (e.g. "er_plus_with_hi_exp") after CTOMOP
-    # normalization.  Including the parent in the filter ensures trials that
-    # accepted the generic code still match.
-    _ER_PARENTS = {'er_plus_with_hi_exp': 'er_plus', 'er_plus_with_low_exp': 'er_plus'}
-    _PR_PARENTS = {'pr_plus_with_hi_exp': 'pr_plus', 'pr_plus_with_low_exp': 'pr_plus'}
-    _HR_PARENTS = {'hr_plus_with_hi_exp': 'hr_plus', 'hr_plus_with_low_exp': 'hr_plus'}
-
-    @staticmethod
-    def _expand_receptor_codes(values: list[str], parent_map: dict) -> list[str]:
-        expanded = list(values)
-        for v in values:
-            parent = parent_map.get(v)
-            if parent and parent not in expanded:
-                expanded.append(parent)
-        return expanded
+    # Receptor parent-code expansion lives in trials.services.receptor_hierarchy
+    # — shared with the matcher's uvalue_function lambdas so SQL filtering and
+    # match-status display stay in sync.
 
     def eligible_for_estrogen_receptor_statuses(self, estrogen_receptor_statuses: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
-            values=self._expand_receptor_codes(estrogen_receptor_statuses, self._ER_PARENTS),
+            values=expand_receptor_values(estrogen_receptor_statuses, 'er'),
             required_attr_name='estrogen_receptor_statuses_required'
         )
 
     def eligible_for_progesterone_receptor_statuses(self, progesterone_receptor_statuses: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
-            values=self._expand_receptor_codes(progesterone_receptor_statuses, self._PR_PARENTS),
+            values=expand_receptor_values(progesterone_receptor_statuses, 'pr'),
             required_attr_name='progesterone_receptor_statuses_required'
         )
 
@@ -1050,7 +1248,7 @@ class TrialQuerySet(models.QuerySet):
 
     def eligible_for_hr_statuses(self, hr_statuses: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
-            values=self._expand_receptor_codes(hr_statuses, self._HR_PARENTS),
+            values=expand_receptor_values(hr_statuses, 'hr'),
             required_attr_name='hr_statuses_required'
         )
 
@@ -1129,6 +1327,78 @@ class TrialQuerySet(models.QuerySet):
             required_attr_name='binet_stages_required'
         )
 
+    # ------------------------------------------------------------------
+    # MCL filters (#94). The patient-side attrs land here as a single
+    # string (variant / risk / behavior / subtype), a comma-string of
+    # derived codes (bulky_disease_criteria / high_risk_mcl_criteria,
+    # split via _csv_stripped in dispatch), or a list (extranodal_sites).
+    # All map to JSON-list trial columns checked via the shared helpers.
+    # ------------------------------------------------------------------
+
+    def eligible_for_morphologic_variants(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_and_excluded_lists(
+            values=values,
+            required_attr_name='morphologic_variants_required',
+            excluded_attr_name='morphologic_variants_excluded',
+        )
+
+    def eligible_for_disease_behaviors(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='disease_behaviors_required',
+        )
+
+    def eligible_for_disease_subtypes(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='disease_subtypes_required',
+        )
+
+    def eligible_for_extranodal_sites(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='extranodal_sites_required',
+        )
+
+    def eligible_for_mipi_risks(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='mipi_risks_required',
+        )
+
+    def eligible_for_mipi_c_risks(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='mipi_c_risks_required',
+        )
+
+    def eligible_for_bulky_disease_criteria(self, values: list[str]) -> models.QuerySet:
+        return self.eligible_for_required_lists(
+            values=values,
+            required_attr_name='bulky_disease_criteria_required',
+        )
+
+    def eligible_for_high_risk_mcl_criteria(self, criteria: list[str]) -> models.QuerySet:
+        if criteria is None or criteria == []:
+            return self
+
+        values = [str(x).strip() for x in criteria]
+
+        # Inclusion is satisfied when the patient overlaps the required list, OR
+        # overlaps any "sufficient alone" criterion (#4402), OR the trial sets no
+        # inclusion gate at all (both lists empty). Then drop excluded matches.
+        # Note: this is a coarse pre-filter — it does not enforce min_count>=2.
+        # The Python matcher (user_to_trial_attr_matcher) enforces min_count exactly.
+        # No trials with min_count>=2 exist yet; tighten this queryset when CB #4405 ships.
+        no_inclusion_gate = Q(high_risk_mcl_criteria_required__exact=[]) & Q(high_risk_mcl_criteria_sufficient_any__exact=[])
+        return self.filter(
+            Q(high_risk_mcl_criteria_required__has_any_keys=values)
+            | Q(high_risk_mcl_criteria_sufficient_any__has_any_keys=values)
+            | no_inclusion_gate
+        ).exclude(
+            Q(high_risk_mcl_criteria_excluded__has_any_keys=values)
+        )
+
     def eligible_for_tp53_disruption(self, tp53_disruption: bool) -> models.QuerySet:
         """
         Filter trials based on TP53 disruption status.
@@ -1187,133 +1457,40 @@ class TrialQuerySet(models.QuerySet):
             else:
                 user_attr_type = type(patient_info.__class__._meta.get_field(user_attr))
 
-            if user_attr_type in ['int', models.fields.IntegerField] and user_attr_value == 0:
-                continue
-            if user_attr_type in ['float', models.fields.DecimalField] and user_attr_value == 0.0:
-                continue
-            if user_attr_type in ['float', models.fields.FloatField] and user_attr_value == 0.0:
-                continue
+            allow_blank_values = trial_attr_meta.get("allow_blank_values", False)
+            if not allow_blank_values:
+                if user_attr_type in ['int', models.fields.IntegerField] and user_attr_value == 0:
+                    continue
+                if user_attr_type in ['float', models.fields.DecimalField] and user_attr_value == 0.0:
+                    continue
+                if user_attr_type in ['float', models.fields.FloatField] and user_attr_value == 0.0:
+                    continue
 
             # do the search now
             trial_attr_name = trial_attr_meta["attr"]
-            if "disease" in trial_attr_meta and (patient_info_attr.disease_code is None or patient_info_attr.disease_code not in trial_attr_meta["disease"]):
+            if "disease" in trial_attr_meta and (
+                patient_info_attr.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], patient_info_attr.disease_code)
+            ):
                 continue
 
-            # if "search_conditions" in trial_attr_meta:
-            #     # check for skip the filter
-            #     conditions_value = getattr(patient_info, trial_attr_meta["search_conditions"]["attr_name"])
-            #     if conditions_value == trial_attr_meta["search_conditions"]["attr_value"]:
-            #         if trial_attr_meta["search_conditions"]["action"] == "skip":
-            #             continue
-
             if "custom_search" in trial_attr_meta and trial_attr_meta["custom_search"] is True:
-                if user_attr == "stage":
-                    scope = scope.eligible_for_stage(user_attr_value)
-                elif user_attr == "disease":
-                    scope = scope.filter(disease__iexact=user_attr_value.lower())
-                elif user_attr == "tumor_grade":
-                    scope = scope.eligible_for_tumor_grade(str(user_attr_value).lower())
-                elif user_attr == "flipi_score_options":
-                    scope = scope.eligible_for_flipi_score_options(user_attr_value)
-                elif user_attr == "prior_therapy":
-                    scope = scope.eligible_for_prior_therapy(user_attr_value)
-                    if has_no_prior_therapy and not is_therapies_filter_applied:
-                        scope = scope.eligible_for_therapy_related_things_from_lines(user_therapies, has_no_prior_therapy)
-                        is_therapies_filter_applied = True
-                elif user_attr == "genetic_mutations":
-                    scope = scope.eligible_for_genetic_mutations(user_attr_value)
-                elif user_attr == "plasma_cell_leukemia":
-                    scope = scope.eligible_for_plasma_cell_leukemia(user_attr_value)
-                elif user_attr == "progression":
-                    scope = scope.eligible_for_progression(user_attr_value)
-                elif user_attr == "treatment_refractory_status":
-                    scope = scope.eligible_for_treatment_refractory_status(user_attr_value)
-                elif user_attr == "pre_existing_condition_categories":
-                    scope = scope.eligible_for_pre_existing_condition(user_attr_value)
-                elif user_attr == "ethnicity":
-                    ethnicities = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_ethnicity(ethnicities)
-                elif user_attr == "languages_skills":
-                    languages_skills = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_languages_skills(languages_skills)
-                elif user_attr == "stem_cell_transplant_history":
-                    scope = scope.eligible_for_stem_cell_transplant_history(user_attr_value)
-                elif user_attr == "concomitant_medications":
-                    scope = scope.eligible_for_concomitant_medications_and_washout_period(user_attr_value, patient_info.concomitant_medication_date)
-                elif user_attr == "last_treatment":
-                    if not has_no_prior_therapy:
-                        scope = scope.eligible_for_washout_period_duration(user_attr_value)
-                elif user_attr == "planned_therapies":
-                    planned_therapies = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_planned_therapies(planned_therapies)
-                elif user_attr == "cytogenic_markers":
-                    cytogenic_markers = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_cytogenic_markers(cytogenic_markers)
-                elif user_attr == "molecular_markers":
-                    molecular_markers = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_molecular_marker(molecular_markers)
-                elif user_attr == "histologic_type":
-                    histologic_types = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_histologic_types(histologic_types)
-                elif user_attr == "estrogen_receptor_status":
-                    estrogen_receptor_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_estrogen_receptor_statuses(estrogen_receptor_statuses)
-                elif user_attr == "progesterone_receptor_status":
-                    progesterone_receptor_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_progesterone_receptor_statuses(progesterone_receptor_statuses)
-                elif user_attr == "her2_status":
-                    her2_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_her2_statuses(her2_statuses)
-                elif user_attr == "hrd_status":
-                    hrd_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_hrd_statuses(hrd_statuses)
-                elif user_attr == "hr_status":
-                    hr_statuses = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_hr_statuses(hr_statuses)
-                elif user_attr == "tumor_stage":
-                    tumor_stages = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_tumor_stages(tumor_stages)
-                elif user_attr == "nodes_stage":
-                    nodes_stages = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_nodes_stages(nodes_stages)
-                elif user_attr == "distant_metastasis_stage":
-                    distant_metastasis_stages = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_distant_metastasis_stages(distant_metastasis_stages)
-                elif user_attr == "staging_modalities":
-                    staging_modalities = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_staging_modalities(staging_modalities)
-                elif user_attr == "protein_expressions":
-                    protein_expressions = user_attr_value.split(",") if user_attr_value else []
-                    scope = scope.eligible_for_protein_expressions(protein_expressions)
-                elif user_attr == "richter_transformation":
-                    richter_transformations = user_attr_value.split(",") if user_attr_value else []
-                    richter_transformations = [x.strip() for x in richter_transformations]
-                    scope = scope.eligible_for_richter_transformations(richter_transformations)
-                elif user_attr == "tumor_burden":
-                    tumor_burdens = user_attr_value.split(",") if user_attr_value else []
-                    tumor_burdens = [x.strip() for x in tumor_burdens]
-                    scope = scope.eligible_for_tumor_burdens(tumor_burdens)
-                elif user_attr == "bcl2_inhibitor_refractory":
-                    scope = scope.eligible_for_bcl2_inhibitor_refractory(user_attr_value)
-                elif user_attr == "btk_inhibitor_refractory":
-                    scope = scope.eligible_for_btk_inhibitor_refractory(user_attr_value)
-                elif user_attr == "disease_activity":
-                    disease_activities = user_attr_value.split(",") if user_attr_value else []
-                    disease_activities = [x.strip() for x in disease_activities]
-                    scope = scope.eligible_for_disease_activities(disease_activities)
-                elif user_attr == "binet_stage":
-                    binet_stages = user_attr_value.split(",") if user_attr_value else []
-                    binet_stages = [x.strip() for x in binet_stages]
-                    scope = scope.eligible_for_binet_stages(binet_stages)
-                elif user_attr == "tp53_disruption":
-                    scope = scope.eligible_for_tp53_disruption(user_attr_value)
+                ctx = {
+                    'patient_info': patient_info,
+                    'has_no_prior_therapy': has_no_prior_therapy,
+                    'user_therapies': user_therapies,
+                    'is_therapies_filter_applied': is_therapies_filter_applied,
+                }
+                handler = _CUSTOM_SEARCH_DISPATCH.get(user_attr)
+                if handler is not None:
+                    scope = handler(scope, user_attr_value, ctx)
                 elif user_attr in [*THERAPY_LINES_ATTRS_UNDERSCORED, 'supportive_therapies']:
-                    if not is_therapies_filter_applied:
-                        # apply filter just once
-                        scope = scope.eligible_for_therapy_related_things_from_lines(user_therapies, has_no_prior_therapy)
-                        is_therapies_filter_applied = True
+                    scope = _filter_therapy_lines_once(scope, user_attr_value, ctx)
                 else:
-                    raise Exception(f'type "{trial_attr_meta["type"]}" is not supported for user_attr "{user_attr}"')
+                    raise Exception(
+                        f'type "{trial_attr_meta["type"]}" is not supported for user_attr "{user_attr}"'
+                    )
+                is_therapies_filter_applied = ctx['is_therapies_filter_applied']
 
             elif trial_attr_meta["type"] == "value":
                 scope = scope.eligible_for_value(trial_attr_name, user_attr_value)
@@ -1339,14 +1516,14 @@ class TrialQuerySet(models.QuerySet):
                     attr_min_name = trial_attr_meta["attr_min"]
                 else:
                     attr_min_name = f'{trial_attr_meta["attr"]}_min'
-                scope = scope.eligible_for_min_max_value(attr_min_name, None, user_attr_value)
+                scope = scope.eligible_for_min_max_value(attr_min_name, None, user_attr_value, skip_blank=not allow_blank_values)
 
             elif trial_attr_meta["type"] == "max_value":
                 if 'attr_max' in trial_attr_meta:
                     attr_max_name = trial_attr_meta["attr_max"]
                 else:
                     attr_max_name = f'{trial_attr_meta["attr"]}_max'
-                scope = scope.eligible_for_min_max_value(None, attr_max_name, user_attr_value)
+                scope = scope.eligible_for_min_max_value(None, attr_max_name, user_attr_value, skip_blank=not allow_blank_values)
 
             elif trial_attr_meta["type"] == "min_max_value":
                 if "attr_min" in trial_attr_meta:
@@ -1357,7 +1534,7 @@ class TrialQuerySet(models.QuerySet):
                     attr_max_name = trial_attr_meta["attr_max"]
                 else:
                     attr_max_name = f'{trial_attr_meta["attr"]}_max'
-                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value)
+                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value, skip_blank=not allow_blank_values)
 
                 user_attr_value_uln = patient_info_attr.get_uln_value(user_attr)
                 if user_attr_value_uln:

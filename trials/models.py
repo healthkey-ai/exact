@@ -1,12 +1,13 @@
 import inflection
 
+from django.core.validators import MaxValueValidator
 from django.db import models
 from django.contrib.gis.db.models import PointField
 from django.contrib.gis.db.models.functions import Distance
 from geopy.distance import distance as geopy_distance
 from django.contrib.postgres.indexes import GinIndex, GistIndex, Index
 from django.contrib.postgres.search import SearchVector
-from django.db.models import TextField, JSONField, Case, When, Value, IntegerField, Q
+from django.db.models import TextField, JSONField, Case, When, Value, IntegerField, F, Q
 from django.db.models.functions import Length, Lower
 from django.contrib.postgres.fields import ArrayField
 from django.contrib.gis.geos import Point
@@ -14,6 +15,7 @@ from django.contrib.gis.geos import Point
 from django.utils.functional import cached_property
 
 from trials.querysets.trial import TrialQuerySet
+from trials.constants import TRIAL_SCORE_MAX
 from trials.enums import PriorTherapyLines
 from trials.services.patient_info.convertors.base_convertor import BaseConvertor
 from trials.services.patient_info.convertors.egfr_calculator import EgfrCalculator
@@ -161,9 +163,16 @@ class Therapy(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     description = models.TextField(blank=True, null=True)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this code (pinned CTOMOP release); null when the regimen has no clean standard concept and is expanded into its components/classes at backfill. Source for the trial omop_* columns.")
 
     def full_title(self):
-        components = ", ".join([x.title for x in self.components.order_by('id').all()])
+        # Sort in Python so a `prefetch_related('components')` cache is reused.
+        # `.order_by('id')` would issue a fresh query per therapy (an N+1 that
+        # dominated ValueOptions.all_options() — ~288 queries), since ordering
+        # builds a new queryset that ignores the prefetched cache.
+        components = ", ".join(
+            c.title for c in sorted(self.components.all(), key=lambda c: c.id)
+        )
         return f"{self.title} ({components})" if components else self.title
 
     def __str__(self):
@@ -206,6 +215,7 @@ class DiseaseRoundTherapyConnection(TimeStampMixin):
 class TherapyComponent(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug component (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_components_* columns.")
 
     def __str__(self):
         return self.title
@@ -230,6 +240,7 @@ class TherapyComponentConnection(TimeStampMixin):
 class TherapyComponentCategory(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug class (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_types_* columns.")
 
     def __str__(self):
         return self.title
@@ -241,6 +252,61 @@ class TherapyComponentCategoryConnection(TimeStampMixin):
 
     class Meta:
         unique_together = ['category', 'component']
+
+
+class OmopConcept(TimeStampMixin):
+    """OMOP concept_id → display title + vocabulary.
+
+    Resolves the concept_ids stored in the trial ``omop_*`` therapy columns (and
+    patient ``*_therapy_id``) to human-readable names for the API, independent of
+    which vocab model a concept came from (regimen / component / class / future
+    expanded concepts). Populated from the curated ``therapy_omop_mapping.csv``
+    (omop_concept_id, omop_name, omop_vocab) by ``load_therapy_omop_concept_ids``.
+    Ported from CancerBot (CB owns the upstream); EXACT reads/populates it locally.
+    """
+    concept_id = models.BigIntegerField(primary_key=True)
+    concept_name = models.TextField(blank=False, null=False)
+    vocabulary_id = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.concept_id}: {self.concept_name}"
+
+
+class TherapyOmopMapping(TimeStampMixin):
+    """Per-row cb↔OMOP therapy crosswalk, materialized from the curated
+    ``docs/omop/mapping/therapy_omop_mapping.csv`` by
+    ``load_therapy_omop_concept_ids``.
+
+    One row per ``(level, cb_code)`` — the authoritative, queryable/auditable
+    record behind the ``omop_concept_id`` written onto the vocab models and the
+    :class:`OmopConcept` titles. Unlike those, it keeps the *unmapped* rows
+    (``needs_review`` / ``no_omop``, null ``omop_concept_id``) so coverage / SME
+    gaps are visible in the DB, not just in the file. ``omop_concept_id`` is a
+    plain (indexed) column, not a FK, so unreviewed rows and concepts not yet in
+    :class:`OmopConcept` can coexist without ordering/integrity coupling.
+    Ported from CancerBot (CB owns the upstream, #4476); EXACT reads/populates it locally.
+    """
+    LEVEL_CHOICES = [('regimen', 'regimen'), ('component', 'component'), ('category', 'category')]
+    # auto/curated/llm carry a CTOMOP-verified concept_id; needs_review/no_omop don't
+    MATCH_CHOICES = [
+        ('auto', 'auto'), ('curated', 'curated'), ('llm', 'llm'),
+        ('needs_review', 'needs_review'), ('no_omop', 'no_omop'),
+    ]
+    level = models.CharField(max_length=16, choices=LEVEL_CHOICES)
+    cb_code = models.CharField(max_length=255)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True)
+    omop_name = models.TextField(blank=True, null=True)
+    omop_vocab = models.TextField(blank=True, null=True)
+    match = models.CharField(max_length=16, choices=MATCH_CHOICES)
+
+    class Meta:
+        unique_together = ['level', 'cb_code']
+        indexes = [
+            models.Index(fields=['match'], name='idx_therapy_omop_map_match'),
+        ]
+
+    def __str__(self):
+        return f"{self.level}:{self.cb_code} -> {self.omop_concept_id or '(none)'} [{self.match}]"
 
 
 class TherapyDisease(TimeStampMixin):
@@ -273,9 +339,21 @@ class Trial(TimeStampMixin):
     contact_email = models.TextField(default='')
     link = models.TextField(default='')
     enrollment_count = models.PositiveIntegerField(blank=True, null=True)
-    patient_burden_score = models.PositiveIntegerField(blank=True, null=True)
-    risk_score = models.PositiveIntegerField(blank=True, null=True)
-    benefit_score = models.PositiveIntegerField(blank=True, null=True)
+    patient_burden_score = models.PositiveIntegerField(
+        blank=True, null=True,
+        validators=[MaxValueValidator(TRIAL_SCORE_MAX)],
+        help_text=f'Patient burden on a 0–{TRIAL_SCORE_MAX} scale (higher = more burden).',
+    )
+    risk_score = models.PositiveIntegerField(
+        blank=True, null=True,
+        validators=[MaxValueValidator(TRIAL_SCORE_MAX)],
+        help_text=f'Risk on a 0–{TRIAL_SCORE_MAX} scale (higher = more risk).',
+    )
+    benefit_score = models.PositiveIntegerField(
+        blank=True, null=True,
+        validators=[MaxValueValidator(TRIAL_SCORE_MAX)],
+        help_text=f'Benefit on a 0–{TRIAL_SCORE_MAX} scale (higher = more benefit).',
+    )
 
     # Study Dates
     submitted_date = models.DateField(blank=True, null=True, default=None)
@@ -291,6 +369,7 @@ class Trial(TimeStampMixin):
     phases = models.JSONField(blank=True, default=list)
     phase_code_min = models.IntegerField(blank=True, null=True)
     trial_type = models.ForeignKey("TrialType", models.PROTECT, blank=True, null=True)
+    purpose = models.ForeignKey("TrialPurpose", models.PROTECT, blank=True, null=True, related_name='trials')
 
     # PATIENT REQUIREMENTS
     brief_summary = models.TextField(blank=True, null=True)
@@ -345,6 +424,22 @@ class Trial(TimeStampMixin):
     supportive_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
     planned_therapies_required = models.JSONField(blank=True, null=False, default=list)
     planned_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    # OMOP cutover (CB epic #4447): concept_id-as-string mirrors of the therapy
+    # columns, filled upstream by CB. Read-only in EXACT; matching reads these
+    # only when the OMOP TherapyMatchProfile is active (Phase 3, behind a flag).
+    omop_therapies_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_types_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_types_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_components_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_components_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_supportive_therapies_required = models.JSONField(blank=True, null=False, default=list)
+    omop_supportive_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_planned_therapies_required = models.JSONField(blank=True, null=False, default=list)
+    omop_planned_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    # Populated by CB during trial sync: OMOP concept_ids of the intervention arm
+    # (what therapy the trial is giving/testing). Used by ?therapy_id= search.
+    omop_intervention_concept_ids = models.JSONField(blank=True, null=False, default=list)
     relapse_count_min = models.IntegerField(blank=True, null=True)
     relapse_count_max = models.IntegerField(blank=True, null=True)
     remission_duration_min = models.IntegerField(blank=True, null=True)
@@ -398,6 +493,8 @@ class Trial(TimeStampMixin):
     estimated_glomerular_filtration_rate_min = models.IntegerField(blank=True, null=True)
     estimated_glomerular_filtration_rate_max = models.IntegerField(blank=True, null=True)
     renal_adequacy_required = models.BooleanField(blank=True, null=True)
+    hepatic_adequacy_required = models.BooleanField(blank=True, null=True, help_text="Is a hepatic adequacy required?")
+    haematological_adequacy_required = models.BooleanField(blank=True, null=True, help_text="Is a haematological adequacy required?")
     liver_enzyme_level_ast_abs_min = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     liver_enzyme_level_ast_abs_max = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     liver_enzyme_level_ast_uln_min = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
@@ -550,6 +647,24 @@ class Trial(TimeStampMixin):
     clonal_b_lymphocyte_count_max = models.IntegerField(blank=True, null=True)
     bone_marrow_involvement_required = models.BooleanField(blank=True, null=True, db_index=True)
 
+    # MCL
+    largest_lesion_size_min = models.FloatField(blank=True, null=True)
+    largest_lesion_size_max = models.FloatField(blank=True, null=True)
+    p53_ihc_min = models.IntegerField(blank=True, null=True)
+    p53_ihc_max = models.IntegerField(blank=True, null=True)
+    morphologic_variants_required = models.JSONField(blank=True, null=False, default=list)
+    morphologic_variants_excluded = models.JSONField(blank=True, null=False, default=list)
+    disease_behaviors_required = models.JSONField(blank=True, null=False, default=list)
+    disease_subtypes_required = models.JSONField(blank=True, null=False, default=list)
+    extranodal_sites_required = models.JSONField(blank=True, null=False, default=list)
+    bulky_disease_criteria_required = models.JSONField(blank=True, null=False, default=list)
+    mipi_risks_required = models.JSONField(blank=True, null=False, default=list)
+    mipi_c_risks_required = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_required = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_excluded = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_sufficient_any = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_min_count = models.PositiveSmallIntegerField(blank=True, null=True, default=None)
+
     locations = models.ManyToManyField(
         'Location',
         blank=True,
@@ -590,11 +705,63 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['therapy_components_required', 'therapy_components_excluded'], name='idx_therapy_comps_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['supportive_therapies_required', 'supportive_therapies_excluded'], name='idx_sup_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['planned_therapies_required', 'planned_therapies_excluded'], name='idx_planned_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_therapies_required', 'omop_therapies_excluded'], name='idx_omop_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_therapy_types_required', 'omop_therapy_types_excluded'], name='idx_omop_therapy_types_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_therapy_components_required', 'omop_therapy_components_excluded'], name='idx_omop_therapy_comps_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_supportive_therapies_required', 'omop_supportive_therapies_excluded'], name='idx_omop_sup_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_planned_therapies_required', 'omop_planned_therapies_excluded'], name='idx_omop_planned_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_intervention_concept_ids'], name='idx_omop_intervention_cids_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['cytogenic_markers_required', 'cytogenic_markers_excluded'], name='idx_cytogenic_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['molecular_markers_required', 'molecular_markers_excluded'], name='idx_molecular_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['tumor_stages_required', 'tumor_stages_excluded'], name='idx_tumor_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['nodes_stages_required', 'nodes_stages_excluded'], name='idx_nodes_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['distant_metastasis_stages_required', 'distant_metastasis_stages_excluded'], name='idx_d_m_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['morphologic_variants_required', 'morphologic_variants_excluded'], name='idx_morph_variants_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['disease_behaviors_required'], name='idx_disease_behaviors_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['disease_subtypes_required'], name='idx_disease_subtypes_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['extranodal_sites_required'], name='idx_extranodal_sites_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['bulky_disease_criteria_required'], name='idx_bulky_disease_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['mipi_risks_required'], name='idx_mipi_risks_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['mipi_c_risks_required'], name='idx_mipi_c_risks_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_required'], name='idx_hr_mcl_required_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_excluded'], name='idx_hr_mcl_excluded_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_sufficient_any'], name='idx_hr_mcl_sufficient_gin', opclasses=['jsonb_ops']),
+            # B-tree indexes on hot-path sort/filter columns (#27). Match the
+            # actual ORDER BY direction at trials_views.py:156,158 — a plain
+            # ASC NULLS LAST B-tree (Django default) cannot serve a
+            # `.desc(nulls_last=True)` ORDER BY, so the planner would fall
+            # back to seq scan + sort. trial_type is a ForeignKey so Django
+            # auto-indexes it.
+            Index(
+                F('enrollment_count').desc(nulls_last=True),
+                name='idx_trials_enroll_count',
+            ),
+            Index(
+                F('last_update_date').desc(nulls_last=True),
+                name='idx_trials_last_update',
+            ),
+        ]
+        constraints = [
+            # Component scores must stay on the documented 0–TRIAL_SCORE_MAX
+            # scale (see trials.constants). NULL is allowed (scores are
+            # optional). Enforced at the DB so bulk_create / update_or_create /
+            # raw save() — which bypass field validators — can't drift the
+            # scale and produce an out-of-range goodness score.
+            models.CheckConstraint(
+                condition=Q(benefit_score__isnull=True)
+                | Q(benefit_score__gte=0, benefit_score__lte=TRIAL_SCORE_MAX),
+                name='trials_benefit_score_0_20',
+            ),
+            models.CheckConstraint(
+                condition=Q(patient_burden_score__isnull=True)
+                | Q(patient_burden_score__gte=0, patient_burden_score__lte=TRIAL_SCORE_MAX),
+                name='trials_patient_burden_score_0_20',
+            ),
+            models.CheckConstraint(
+                condition=Q(risk_score__isnull=True)
+                | Q(risk_score__gte=0, risk_score__lte=TRIAL_SCORE_MAX),
+                name='trials_risk_score_0_20',
+            ),
         ]
 
     def attrs_to_fill_in(self, counts):
@@ -614,30 +781,54 @@ class Trial(TimeStampMixin):
         return [self.locations_name[0]] if len(self.locations_name) > 0 else []
 
     def get_distance_obj(self, pi, recruitment_status=None):
+        """Closest distance from patient to any LocationTrial of this Trial.
+
+        Materializes locationtrial_set as a Python list and filters in
+        Python so the TrialsViewSet prefetch (`Prefetch('locationtrial_set',
+        select_related('location'))`) is honored. The previous version
+        cloned the queryset via `.filter(recruitment_status__in=...)`
+        which issued a fresh DB query per Trial — the production N+1
+        flagged in #26.
+        """
         from trials.querysets.trial import get_recruitment_status_filter_values
 
         if hasattr(self, 'distance') and self.distance:
             return self.distance
 
-        if hasattr(self, 'locationtrial_set') and self.locationtrial_set.exists():
-            status_values = get_recruitment_status_filter_values(recruitment_status)
-            location_trials = self.locationtrial_set.all()
-            if status_values is not None:
-                location_trials = location_trials.filter(recruitment_status__in=status_values)
+        if not hasattr(self, 'locationtrial_set'):
+            return None
+        # `.all()` honors a `Prefetch` cache when one was declared;
+        # `list(...)` then materializes once, after which subsequent
+        # filtering happens in Python without further DB hits.
+        location_trials = list(self.locationtrial_set.all())
+        if not location_trials:
+            return None
 
-            for lt in location_trials:
-                if hasattr(lt, 'distance'):
-                    return lt.distance
+        status_values = get_recruitment_status_filter_values(recruitment_status)
+        if status_values is not None:
+            location_trials = [
+                lt for lt in location_trials
+                if lt.recruitment_status in status_values
+            ]
 
-            min_distance = None
-            for lt in location_trials:
-                if lt.location and lt.location.geo_point and pi.geo_point:
-                    p1 = Point(lt.location.geo_point.y, lt.location.geo_point.x, srid=4326)
-                    p2 = Point(pi.geo_point.y, pi.geo_point.x, srid=4326)
-                    dist = geopy_distance(p1, p2)
-                    if min_distance is None or dist < min_distance:
-                        min_distance = dist
-            return min_distance
+        for lt in location_trials:
+            if hasattr(lt, 'distance'):
+                return lt.distance
+
+        if pi is None or pi.geo_point is None:
+            return None
+
+        # Hoist the patient Point out of the loop (was rebuilt per
+        # LocationTrial in the prior version).
+        pi_point = Point(pi.geo_point.y, pi.geo_point.x, srid=4326)
+        min_distance = None
+        for lt in location_trials:
+            if lt.location and lt.location.geo_point:
+                p1 = Point(lt.location.geo_point.y, lt.location.geo_point.x, srid=4326)
+                dist = geopy_distance(p1, pi_point)
+                if min_distance is None or dist < min_distance:
+                    min_distance = dist
+        return min_distance
 
     def get_distance_penalty(self, pi, recruitment_status=None):
         if not pi or not pi.geo_point:
@@ -655,21 +846,86 @@ class Trial(TimeStampMixin):
 
     def get_goodness_score(self, patient_info, benefit_weight=25, patient_burden_weight=25,
                            risk_weight=25, distance_penalty_weight=25):
+        from trials.services.utils import normalize_goodness_weights
+        benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight = (
+            normalize_goodness_weights(
+                benefit_weight, patient_burden_weight, risk_weight, distance_penalty_weight
+            )
+        )
         weights_sum = benefit_weight + patient_burden_weight + risk_weight + distance_penalty_weight
         distance_penalty = self.get_distance_penalty(patient_info)
-        max_val = 20.0
-        return int(
-            (
-                float(benefit_weight) * (self.benefit_score if self.benefit_score is not None else 0.0) / max_val +
-                float(patient_burden_weight) * (1 - (self.patient_burden_score if self.patient_burden_score is not None else max_val) / max_val) +
-                float(risk_weight) * (1 - (self.risk_score if self.risk_score is not None else max_val) / max_val) +
-                float(distance_penalty_weight) * (1 - distance_penalty / max_val)
-            ) * 100 / float(weights_sum) + 0.5
-        )
+        # Component scores and the distance penalty are all on a 0–20 scale,
+        # so a single normalizer maps every term to [0, 1].
+        max_val = float(TRIAL_SCORE_MAX)
+
+        # Component scores live on a 0–20 scale. Clamp before normalizing so
+        # out-of-range inputs (e.g. mis-scaled data) can't drive a component
+        # term past its weight and push the composite outside [0, 100].
+        def _clamp(value, default):
+            if value is None:
+                return default
+            return min(max_val, max(0.0, float(value)))
+
+        benefit = _clamp(self.benefit_score, 0.0)
+        burden = _clamp(self.patient_burden_score, max_val)
+        risk = _clamp(self.risk_score, max_val)
+
+        raw = (
+            float(benefit_weight) * benefit / max_val +
+            float(patient_burden_weight) * (1 - burden / max_val) +
+            float(risk_weight) * (1 - risk / max_val) +
+            float(distance_penalty_weight) * (1 - distance_penalty / max_val)
+        ) * 100 / float(weights_sum)
+        return max(0, min(100, int(raw + 0.5)))
 
     def sorted_locations_by_distance(self, user_geo_point, recruitment_status=None):
+        """Return LocationTrial rows ordered by distance from user_geo_point.
+
+        Honors a `locationtrial_set` prefetch when present (TrialsViewSet
+        prefetches with `select_related('location')` for the list endpoint
+        — see #26), filtering and sorting in Python so the prefetched
+        cache isn't bypassed by a fresh `.select_related(...)` call.
+        Falls back to the QuerySet path for callers that didn't prefetch,
+        keeping the original DB-annotated `distance` ordering for those.
+
+        When user_geo_point is None: returns all matching LocationTrial
+        rows. When set: returns a single-element list with the closest one,
+        matching the prior contract.
+        """
         from trials.querysets.trial import get_recruitment_status_filter_values
         status_values = get_recruitment_status_filter_values(recruitment_status)
+
+        cached = (
+            self._prefetched_objects_cache.get('locationtrial_set')
+            if hasattr(self, '_prefetched_objects_cache') else None
+        )
+        if cached is not None:
+            location_trials = list(cached)
+            if status_values is not None:
+                location_trials = [
+                    lt for lt in location_trials
+                    if lt.recruitment_status in status_values
+                ]
+            if not user_geo_point:
+                return location_trials
+
+            # Hoist the patient Point so it's built once, not per LT.
+            user_point = Point(user_geo_point.y, user_geo_point.x, srid=4326)
+
+            def _distance_key(lt):
+                # Sort LocationTrials with missing geo last (matches the
+                # DB-side null_distance_flag ordering in the fallback).
+                # `lt.pk` is the stable tie-breaker so the prefetched and
+                # fallback paths can't drift apart when all-null inputs
+                # tie at (1, 0.0).
+                if not lt.location or not lt.location.geo_point:
+                    return (1, 0.0, lt.pk)
+                lt_point = Point(lt.location.geo_point.y, lt.location.geo_point.x, srid=4326)
+                return (0, geopy_distance(lt_point, user_point).km, lt.pk)
+            location_trials.sort(key=_distance_key)
+            return [location_trials[0]] if location_trials else location_trials
+
+        # Fallback: no prefetch cached — issue a DB query like before.
         location_trials = self.locationtrial_set.select_related('location')
         if status_values is not None:
             location_trials = location_trials.filter(recruitment_status__in=status_values)
@@ -835,6 +1091,16 @@ class TrialType(OptionsListMixin):
         return self.title
 
 
+class TrialPurpose(OptionsListMixin):
+    """High-level purpose of a trial (treatment / prevention / diagnostic /
+    screening / supportive_care / health_services_research / basic_science /
+    device_feasibility / other). Codes mirror the top-level keys of
+    `trials.trial_taxonomy.TRIAL_TAXONOMY`.
+    """
+    def __str__(self):
+        return self.title
+
+
 class MutationOrigin(OptionsListMixin):
     pass
 
@@ -924,6 +1190,14 @@ class BinetStage(OptionsListMixin):
 
 
 class ProteinExpression(OptionsListMixin):
+    pass
+
+
+class MorphologicVariant(OptionsListMixin):
+    pass
+
+
+class HighRiskMclCriteria(OptionsListMixin):
     pass
 
 

@@ -26,8 +26,8 @@ redis==6.4.0
 # Units / quantity conversion
 django-pint==1.0.4
 
-# API schema
-coreapi==2.3.3
+# Auth — house OIDC Identity model (Firebase ID-token verification)
+firebase-admin==7.4.0
 
 # Utilities
 django-countries==8.2.0

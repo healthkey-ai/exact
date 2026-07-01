@@ -25,11 +25,14 @@ ATTR_FALSE_VALUE_IS_BLANK = [
     'noPlasmaCellLeukemiaRequired',
     'plasmaCellLeukemiaRequired',
     'renalAdequacyRequired',
+    'hepaticAdequacyRequired',
+    'haematologicalAdequacyRequired',
     'abnormalKappaLambdaRatio',
     'kappaLambdaAbnormalRequired',
     'meetsCRAB',
     'meetsSLIM',
     'meetsLugano',
+    'meetsGELF',
     'pulmonaryFunctionTestResultRequired',
     'boneImagingResultRequired',
     'noGeographicExposureRiskRequired',
@@ -104,6 +107,8 @@ ATTR_DEPS_MAPPING = {
     'stemCellTransplantHistory': ['priorTherapy', 'laterTherapies', 'laterTherapy', 'secondLineTherapy', 'firstLineTherapy'],
     'estimatedGlomerularFiltrationRate': ['serumCreatinineLevel', 'patientAge', 'gender'],
     'renalAdequacyStatus': ['estimatedGlomerularFiltrationRate', 'creatinineClearanceRate'],
+    'hepaticAdequacyStatus': ['liverEnzymeLevelsAst', 'liverEnzymeLevelsAlt', 'serumBilirubinLevelTotal', 'ethnicity', 'gender'],
+    'haematologicalAdequacyStatus': ['absoluteNeutrophileCount', 'plateletCount', 'hemoglobinLevel'],
     'hrStatus': ['estrogenReceptorStatus', 'progesteroneReceptorStatus'],
     'tnbcStatus': ['estrogenReceptorStatus', 'progesteroneReceptorStatus', 'her2Status'],
     'tp53Disruption': ['cytogenicMarkers', 'molecularMarkers'],
@@ -323,8 +328,8 @@ ATTR_GROUP_MAPPING = {
     'isValidated': 'ignore',
     'isLabeled': 'ignore',
 
-    'matchScore': ['general'],  # TODO: add to `general` on another level
-    'disease': ['general', 'disease'],  # TODO: add to `general` on another level
+    'matchScore': ['general'],
+    'disease': ['general', 'disease'],
 
     # == Disease group ==
     # + Patient Age
@@ -526,6 +531,8 @@ ATTR_GROUP_MAPPING = {
     'estimatedGlomerularFiltrationRateMin': 'blood',
     'estimatedGlomerularFiltrationRateMax': 'blood',
     'renalAdequacyRequired': 'blood',
+    'hepaticAdequacyRequired': 'blood',
+    'haematologicalAdequacyRequired': 'blood',
     'liverEnzymeLevelAstAbsMin': 'blood',
     'liverEnzymeLevelAstAbsMax': 'blood',
     'liverEnzymeLevelAstUlnMin': 'blood',

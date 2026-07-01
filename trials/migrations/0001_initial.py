@@ -6,6 +6,7 @@ import django.contrib.postgres.search
 import django.db.models.deletion
 import django.db.models.functions.text
 import trials.enums
+from django.contrib.postgres.operations import CreateExtension
 from django.db import migrations, models
 
 
@@ -17,6 +18,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # Must precede the geometry column on trials.Site (geo_point). Existing
+        # databases already have 0001 recorded as applied, so this no-ops there;
+        # a fresh deploy creates the extension before any GeoDjango column.
+        CreateExtension('postgis'),
         migrations.CreateModel(
             name='BinetStage',
             fields=[

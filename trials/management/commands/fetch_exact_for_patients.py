@@ -15,14 +15,18 @@ Usage
 -----
     python manage.py fetch_exact_for_patients \\
       --source-db-url $PATIENT_DATABASE_URL \\
-      --cache-dir scripts/cache/patients \\
+      --cache-dir ~/.cache/exact/patients \\
       --limit 10
+
+Cache files contain PHI (patient names + full patient_info), so the default
+cache dir is OUTSIDE the repo tree and files are written mode 0600. Writing
+the cache inside the repo requires the explicit --allow-in-repo-cache flag.
 
 Options
 -------
     --source-db-url   PostgreSQL URL for the patient DB
                       (falls back to PATIENT_DATABASE_URL env var)
-    --cache-dir       Directory to write cache files (default: scripts/cache/patients)
+    --cache-dir       Directory to write cache files (default: ~/.cache/exact/patients)
     --limit           Top-N trials to fetch per patient (default: 10)
     --person-ids      Comma-separated list of person IDs to restrict to
     --refresh         Re-fetch even if a cache file already exists
@@ -33,10 +37,16 @@ import logging
 import os
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 logger = logging.getLogger(__name__)
+
+# Files written here contain PHI (names, full patient_info). Default to a
+# secure location outside the repo working tree so it can never be committed.
+DEFAULT_CACHE_DIR = os.path.expanduser('~/.cache/exact/patients')
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 # ── helpers reused from sister command ─────────────────────────────────────
@@ -72,10 +82,18 @@ def _psql_query_rows(db_url, sql):
     if result.returncode != 0:
         raise RuntimeError(f'psql error: {result.stderr.strip()}')
     rows = []
+    skipped = 0
     for line in result.stdout.splitlines():
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             rows.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            skipped += 1
+            logger.warning('Skipping non-JSON line from psql: %.80s — %s', line, exc)
+    if skipped:
+        logger.warning('Skipped %d non-JSON line(s) from psql output.', skipped)
     return rows
 
 
@@ -204,8 +222,14 @@ class Command(BaseCommand):
         )
         parser.add_argument(
             '--cache-dir',
-            default='scripts/cache/patients',
-            help='Directory to write cache files (default: scripts/cache/patients)',
+            default=DEFAULT_CACHE_DIR,
+            help=f'Directory to write PHI cache files (default: {DEFAULT_CACHE_DIR})',
+        )
+        parser.add_argument(
+            '--allow-in-repo-cache',
+            action='store_true',
+            help='Explicitly permit writing the PHI cache inside the repo tree '
+                 '(unsafe — files may be committed). Off by default.',
         )
         parser.add_argument(
             '--limit',
@@ -250,7 +274,16 @@ class Command(BaseCommand):
             return
 
         cache_dir = options['cache_dir']
+        cache_path = Path(cache_dir).resolve()
+        if REPO_ROOT in cache_path.parents or cache_path == REPO_ROOT:
+            if not options['allow_in_repo_cache']:
+                raise CommandError(
+                    f'Refusing to write PHI cache inside the repo tree ({cache_path}). '
+                    f'Use an outside-repo --cache-dir (default: {DEFAULT_CACHE_DIR}) '
+                    f'or pass --allow-in-repo-cache to override.'
+                )
         os.makedirs(cache_dir, exist_ok=True)
+        os.chmod(cache_dir, 0o700)
 
         person_ids = [int(x) for x in options['person_ids'].split(',') if x.strip()]
         limit = options['limit']
@@ -306,8 +339,15 @@ class Command(BaseCommand):
                     'details': details,
                 }
                 trial_count = len(trial_ids)
-                with open(cache_file, 'w') as f:
+                # O_NOFOLLOW: refuse to follow a planted symlink at the cache
+                # path (would otherwise write PHI / chmod the link target).
+                fd = os.open(cache_file,
+                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'w') as f:
                     json.dump(cache_data, f, indent=2, default=str)
+                # O_CREAT's mode is ignored when the file already exists (e.g. a
+                # 0644 file from a prior run on --refresh), so enforce 0600 here.
+                os.chmod(cache_file, 0o600)
 
                 self.stdout.write(self.style.SUCCESS(
                     f' OK ({trial_count} trials)'

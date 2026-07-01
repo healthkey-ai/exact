@@ -26,6 +26,7 @@ def normalize_patient_info(pi) -> None:
     _normalize_metastatic_status(pi)
     _normalize_measurable_disease_imwg(pi)
     _normalize_last_treatment(pi)
+    _normalize_mcl_derivations(pi)
 
     attr = PatientInfoAttributes(pi)
     pi.bmi = attr.bmi
@@ -39,6 +40,8 @@ def normalize_patient_info(pi) -> None:
     if sct:
         pi.stem_cell_transplant_history = [sct]
     pi.renal_adequacy_status = attr.renal_adequacy_status
+    pi.hepatic_adequacy_status = attr.hepatic_adequacy_status
+    pi.haematological_adequacy_status = attr.haematological_adequacy_status
     egfr = EgfrCalculator.call(pi)
     if egfr:
         pi.estimated_glomerular_filtration_rate = egfr
@@ -176,12 +179,14 @@ def _normalize_metastatic_status(pi) -> None:
 
 def _normalize_measurable_disease_imwg(pi) -> None:
     def serum_m_protein_high():
-        if not pi.monoclonal_protein_serum:
+        # Use `is None` not `not X`: 0 is a real clinical measurement
+        # ("no monoclonal protein detected"), not missing data (#81).
+        if pi.monoclonal_protein_serum is None:
             return None
         return pi.monoclonal_protein_serum >= 0.5
 
     def serum_m_urine_high():
-        if not pi.monoclonal_protein_urine:
+        if pi.monoclonal_protein_urine is None:
             return None
         return pi.monoclonal_protein_urine >= 200
 
@@ -196,18 +201,50 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         if pi.kappa_flc is None or pi.lambda_flc is None:
             return None
         ratio = kappa_lambda_ratio()
-        if not ratio:
+        # Use `is None` not `not ratio`: ratio=0 (kappa=0/lambda>0) is a
+        # real clinical signal — well below the 0.26 abnormal threshold —
+        # not missing data (#81).
+        if ratio is None:
             return False
         if not (ratio < 0.26 or ratio > 1.65):
             return False
         return pi.kappa_flc >= 100 or pi.lambda_flc >= 100
 
-    for component in [serum_m_protein_high(), serum_m_urine_high(), kappa_lambda_abnormal_and_high()]:
+    components = [serum_m_protein_high(), serum_m_urine_high(), kappa_lambda_abnormal_and_high()]
+    for component in components:
         if component is True:
             pi.measurable_disease_imwg = True
             return
+    # All components None → no relevant lab data, result is unknown.
+    # Avoids the "shows No by default" UX bug (#4143 / #4156).
+    if all(c is None for c in components):
+        pi.measurable_disease_imwg = None
+        return
     pi.measurable_disease_imwg = False
 
 
 def _normalize_last_treatment(pi) -> None:
     pi.last_treatment = pi.later_date or pi.second_line_date or pi.first_line_date
+
+
+def _normalize_mcl_derivations(pi) -> None:
+    """Overwrite caller-supplied MCL risk scores with derived values.
+
+    The PatientInfo field declarations note these are caller-settable for
+    forward-compat but always overwritten here (#41 / see
+    patient_info.py:215). Skips non-MCL patients so other diseases keep
+    whatever defaults / inputs they had.
+    """
+    if str(pi.disease).lower() != 'mantle cell lymphoma':
+        return
+
+    # Late import: PatientInfoAttributes imports normalize indirectly via
+    # configs -> matcher, so resolving it at module load creates a cycle.
+    from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+    attr = PatientInfoAttributes(pi)
+    pi.mipi_risk = attr.mipi_risk
+    pi.mipi_c_risk = attr.mipi_c_risk
+    # bulky_disease_criteria and high_risk_mcl_criteria are comma-joined
+    # strings (or None), per CB.
+    pi.bulky_disease_criteria = attr.bulky_disease_criteria
+    pi.high_risk_mcl_criteria = attr.high_risk_mcl_criteria

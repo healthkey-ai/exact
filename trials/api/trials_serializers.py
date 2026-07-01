@@ -178,7 +178,30 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
 
         response['details'] = details_and_groups['details']
         response['groupNames'] = details_and_groups['group_names']
-        response['matchScore'] = getattr(instance, 'match_score', None)
         response['goodnessScore'] = getattr(instance, 'goodness_score', None)
+
+        # Per-patient match — reported on the detail view (get_trial_by_id), not
+        # just trial info + goodness. Uses the conflict-aware Python matcher rather
+        # than the list/search `match_score` ANNOTATION: that annotation only counts
+        # filled-vs-null attrs and assumes filtered_trials already dropped the
+        # not-eligible rows. retrieve returns the trial by id WITHOUT that filter,
+        # so a conflicting trial (e.g. wrong disease/age/gender) must be scored by
+        # the matcher (which returns 0 / not_eligible on a conflict), not mislabeled
+        # eligible by the completeness annotation.
+        if patient_info is not None:
+            from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+            matcher = UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
+            # one pass for both (instead of trial_match_score() + trial_match_status()) — #201
+            response['matchScore'], response['matchingType'] = matcher.match_score_and_status()
+            if self.context.get('explain'):
+                from trials.services.trial_match_explainer import TrialMatchExplainer
+                # reuse the matcher instance rather than building a second one — #201
+                response['matchReasons'] = TrialMatchExplainer(instance, patient_info, matcher=matcher).explain()
+            else:
+                response['matchReasons'] = None
+        else:
+            response['matchScore'] = None
+            response['matchingType'] = None
+            response['matchReasons'] = None
 
         return response

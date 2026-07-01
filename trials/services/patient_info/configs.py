@@ -8,6 +8,7 @@ from trials.services.patient_info.convertors.bilirubin_convertor import Bilirubi
 from trials.services.patient_info.convertors.scr_uln_calculator import ScrUlnCalculator
 from trials.services.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
 from trials.services.patient_info.convertors.serum_creatinine_convertor import SerumCreatinineConvertor
+from trials.services.receptor_hierarchy import expand_uvalue as _receptor_uvalue
 
 THERAPY_LINES_ATTRS = ["firstLineTherapy", "secondLineTherapy", "laterTherapy", "laterTherapies"]
 THERAPY_LINES_ATTRS_UNDERSCORED = ["first_line_therapy", "second_line_therapy", "later_therapy", "later_therapies"]
@@ -17,20 +18,6 @@ THERAPIES_ATTRS_UNDERSCORED = ["therapies_required", "therapies_excluded", "ther
 TRIAL_GENETIC_MUTATIONS_ATTRS_UNDERSCORED = ["mutation_genes_required", "mutation_variants_required", "mutation_origins_required", "mutation_interpretations_required"]
 
 ATTR_MAPPING_TYPE_COMPUTED = "computed"
-
-# Receptor status hierarchy: subtypes must also match generic parent codes.
-# E.g. a patient with er_plus_with_hi_exp is also er_plus.
-_ER_PARENT_CODES = {'er_plus_with_hi_exp': 'er_plus', 'er_plus_with_low_exp': 'er_plus'}
-_PR_PARENT_CODES = {'pr_plus_with_hi_exp': 'pr_plus', 'pr_plus_with_low_exp': 'pr_plus'}
-_HR_PARENT_CODES = {'hr_plus_with_hi_exp': 'hr_plus', 'hr_plus_with_low_exp': 'hr_plus'}
-
-
-def _receptor_uvalue(code, parent_map):
-    """Return code plus its generic parent (comma-joined) so the matcher can overlap against either."""
-    if not code:
-        return code
-    parent = parent_map.get(code)
-    return f"{code},{parent}" if parent else code
 
 # "priorSCT": "prior SCT",
 # "priorAutologousSCT": "prior autologous SCT",
@@ -63,6 +50,32 @@ SCT_HISTORY_EXCLUDED_MAPPING = {
     'completedASCT': ['priorAutologousSCT'],
     'completedAllogeneicSCT': ['priorAllogeneicSCT']
 }
+
+
+def sct_value_is_none(value):
+    """True iff `value` represents "no SCT history", tolerant to shape.
+
+    `stem_cell_transplant_history` is stored as a JSONField but two
+    canonical "no SCT" shapes coexist:
+      - bare string `'None'`  (signal cleanup at trials/signals.py:105)
+      - one-element list `['None']`  (user picked "None" from the
+        multiselect on the form)
+
+    Defensive against whitespace + casing drift on either shape so that
+    `[' None ']`, `['none']`, `'NONE'`, etc. all match — preventing the
+    silent require-SCT match regression class (#4333) from returning
+    under casing/whitespace variants (#4340).
+
+    Python `None` is rejected: it means "patient hasn't answered"
+    (Unknown), which is semantically distinct from the explicit "None"
+    answer.
+    """
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple)):
+        return len(value) == 1 and str(value[0]).strip().lower() == 'none'
+    return str(value).strip().lower() == 'none'
+
 
 TRIAL_ATTRS_JSON_AS_A_LIST = (
     "planned_therapies_required",
@@ -109,6 +122,17 @@ TRIAL_ATTRS_JSON_AS_A_LIST = (
     "richter_transformations_excluded",
     "tumor_burdens_required",
     "disease_activities_required",
+    "morphologic_variants_required",
+    "morphologic_variants_excluded",
+    "disease_behaviors_required",
+    "disease_subtypes_required",
+    "extranodal_sites_required",
+    "bulky_disease_criteria_required",
+    "mipi_risks_required",
+    "mipi_c_risks_required",
+    "high_risk_mcl_criteria_required",
+    "high_risk_mcl_criteria_excluded",
+    "high_risk_mcl_criteria_sufficient_any",
 )
 
 USER_TO_TRIAL_ATTRS_MAPPING = {
@@ -189,6 +213,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "karnofsky_performance_score": {
         "type": "min_max_value",
         "searchable": True,
+        "allow_blank_values": True,
         "attr": "karnofsky_performance_score",
     },
     "ecog_performance_status": {
@@ -211,6 +236,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "peripheral_neuropathy_grade": {
         "type": "min_max_value",
         "searchable": True,
+        "allow_blank_values": True,
         "attr": "peripheral_neuropathy_grade",
     },
 
@@ -258,6 +284,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "disease": "MM",
         "searchable": True,
         "is_computed_value": True,
+        "under_user_control": True,
         "attr": "measurable_disease_imwg_required",
     },
     # MM-specific END
@@ -455,6 +482,132 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     },
     # CLL-specific END
 
+    # MCL-specific START
+    "morphologic_variant": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["morphologic_variants_required", "morphologic_variants_excluded"],
+        "uvalue_function": {
+            "morphologic_variants_required":
+                lambda patient_info: patient_info.morphologic_variant,
+            "morphologic_variants_excluded":
+                lambda patient_info: patient_info.morphologic_variant,
+        }
+    },
+    "largest_lesion_size": {
+        "type": "min_max_value",
+        # No custom_search — routed through the type-based min_max_value
+        # branch in filter_by_patient_info like every other min_max_value
+        # config (weight, patient_age, etc.). #94 fix.
+        "searchable": True,
+        "disease": "MCL",
+        "attr_min": "largest_lesion_size_min",
+        "attr_max": "largest_lesion_size_max",
+        "attr": ["largest_lesion_size_min", "largest_lesion_size_max"],
+    },
+    "p53_ihc": {
+        "type": "min_max_value",
+        "searchable": True,
+        "disease": "MCL",
+        "attr_min": "p53_ihc_min",
+        "attr_max": "p53_ihc_max",
+        "attr": ["p53_ihc_min", "p53_ihc_max"],
+    },
+    "disease_behavior": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["disease_behaviors_required"],
+        "uvalue_function": {
+            "disease_behaviors_required":
+                lambda patient_info: patient_info.disease_behavior,
+        }
+    },
+    "disease_subtype": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["disease_subtypes_required"],
+        "uvalue_function": {
+            "disease_subtypes_required":
+                lambda patient_info: patient_info.disease_subtype,
+        }
+    },
+    "extranodal_sites": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["extranodal_sites_required"],
+        "uvalue_function": {
+            "extranodal_sites_required":
+                lambda patient_info: patient_info.extranodal_sites,
+        }
+    },
+    "mipi_risk": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["mipi_risks_required"],
+        "uvalue_function": {
+            "mipi_risks_required":
+                lambda patient_info: patient_info.mipi_risk,
+        }
+    },
+    "mipi_c_risk": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["mipi_c_risks_required"],
+        "uvalue_function": {
+            "mipi_c_risks_required":
+                lambda patient_info: patient_info.mipi_c_risk,
+        }
+    },
+    "bulky_disease_criteria": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["bulky_disease_criteria_required"],
+        "uvalue_function": {
+            "bulky_disease_criteria_required":
+                lambda patient_info: patient_info.bulky_disease_criteria,
+        }
+    },
+    # Authoring compound/"tiered" rules (e.g. Jain classification, NCT05861050):
+    # ">=1 primary high-risk feature; secondary gene mutations only count if a
+    # primary is also present" is expressed with the existing schema as
+    # required=[primary features] + min_count=1. Secondary genes are omitted —
+    # they can never qualify a patient alone, and once any primary is present
+    # min_count=1 is already met. A full tiered/only_if_tier engine is only
+    # needed for min_count>=2 compound trials (none yet); deferred (CB #4405).
+    "high_risk_mcl_criteria": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "is_computed_value": True,
+        "computed_value_type": "str",
+        "disease": "MCL",
+        "attr": [
+            "high_risk_mcl_criteria_required",
+            "high_risk_mcl_criteria_excluded",
+            "high_risk_mcl_criteria_sufficient_any",
+        ],
+        "criteria_count_match": True,
+        "criteria_required_attr": "high_risk_mcl_criteria_required",
+        "criteria_excluded_attr": "high_risk_mcl_criteria_excluded",
+        "criteria_sufficient_any_attr": "high_risk_mcl_criteria_sufficient_any",
+        "criteria_min_count_attr": "high_risk_mcl_criteria_min_count",
+        "criteria_derived": lambda patient_info: patient_info.high_risk_mcl_criteria,
+        "criteria_unknown_codes": lambda pia, required: pia.high_risk_mcl_criteria_unknown_codes(required),
+        "criteria_all_unknown_codes": lambda pia: pia.high_risk_mcl_criteria_all_unknown_codes(),
+        "uvalue_function": {
+            "high_risk_mcl_criteria_required": lambda patient_info: patient_info.high_risk_mcl_criteria,
+            "high_risk_mcl_criteria_excluded": lambda patient_info: patient_info.high_risk_mcl_criteria,
+            "high_risk_mcl_criteria_sufficient_any": lambda patient_info: patient_info.high_risk_mcl_criteria,
+        }
+    },
+    # MCL-specific END
+
     # BC-specific START
     "menopausal_status": {
         "type": "str_value",
@@ -513,7 +666,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": ["estrogen_receptor_statuses_required"],
         "uvalue_function": {
             "estrogen_receptor_statuses_required":
-                lambda patient_info: _receptor_uvalue(patient_info.estrogen_receptor_status, _ER_PARENT_CODES),
+                lambda patient_info: _receptor_uvalue(patient_info.estrogen_receptor_status, 'er'),
         }
     },
     "progesterone_receptor_status": {
@@ -523,7 +676,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": ["progesterone_receptor_statuses_required"],
         "uvalue_function": {
             "progesterone_receptor_statuses_required":
-                lambda patient_info: _receptor_uvalue(patient_info.progesterone_receptor_status, _PR_PARENT_CODES),
+                lambda patient_info: _receptor_uvalue(patient_info.progesterone_receptor_status, 'pr'),
         }
     },
     "her2_status": {
@@ -553,7 +706,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": ["hr_statuses_required"],
         "uvalue_function": {
             "hr_statuses_required":
-                lambda patient_info: _receptor_uvalue(patient_info.hr_status, _HR_PARENT_CODES),
+                lambda patient_info: _receptor_uvalue(patient_info.hr_status, 'hr'),
         }
     },
     "tnbc_status": {
@@ -923,16 +1076,25 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "type": "bool_restriction",
         "searchable": True,
         "is_computed_value": True,
-        # "under_user_control": True,
+        "under_user_control": True,
         "attr": "meets_slim",
     },
-    # "meets_lugano": {
-    #     "type": "bool_restriction",
-    #     "searchable": True,
-    #     "is_computed_value": True,
-    #     "under_user_control": True,
-    #     "attr": "meets_slim",
-    # },
+    "meets_lugano": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "under_user_control": True,
+        "disease": "FL",
+        "attr": "meets_lugano",
+    },
+    "meets_gelf": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "under_user_control": True,
+        "disease": "FL",
+        "attr": "meets_gelf",
+    },
 
     # --------
     # Labs tab
@@ -1073,6 +1235,18 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "is_computed_value": True,
         # "under_user_control": True,
         "attr": "renal_adequacy_required",
+    },
+    "hepatic_adequacy_status": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "attr": "hepatic_adequacy_required",
+    },
+    "haematological_adequacy_status": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "attr": "haematological_adequacy_required",
     },
 }
 

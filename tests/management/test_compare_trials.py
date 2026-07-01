@@ -34,7 +34,7 @@ class TestSqlEscaping:
 
 
 # ---------------------------------------------------------------------------
-# _study_preferences_from_cb — CancerBot study_info → StudyPreferences
+# _study_preferences_from_cb — reference study_info → StudyPreferences
 # ---------------------------------------------------------------------------
 
 class TestStudyPreferencesFromCb:
@@ -131,7 +131,7 @@ class TestStudyPreferencesFromCb:
 #
 # Priority:
 #   1. patient['zipcode'] / patient['country_code']   (compare_input.json)
-#   2. cb_geo['postalCode'] / cb_geo['country']        (cancerbot_patients_data.json)
+#   2. cb_geo['postalCode'] / cb_geo['country']        (reference_patients_data.json)
 #   3. '' / 'US'                                       (defaults)
 # ---------------------------------------------------------------------------
 

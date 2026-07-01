@@ -4,3 +4,8 @@ Dockerfile
 .git
 .idea
 .env*
+# Node deps/build artifacts: the Dockerfile.gcp frontend stage runs its own
+# `npm ci`, so host node_modules (darwin-native binaries) must not leak into
+# the linux build and clobber it. dist is rebuilt in-stage.
+node_modules/
+frontend/dist

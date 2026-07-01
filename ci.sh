@@ -1,5 +1,9 @@
 #!/bin/sh
 
-dropdb test_biblum
+export MALLOC_NANO_ZERO=0
 
-python -m pytest trials/tests -vv
+# Use a test-specific env file that has no external DB URLs,
+# so Django's load_dotenv() doesn't route queries to the remote DBs.
+export DOTENV_PATH=.env.test
+
+python -m pytest

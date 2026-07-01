@@ -59,7 +59,7 @@ class PatientInfoGeoPoint:
 
     @staticmethod
     def country_and_postal_code_by_geolocation(longitude, latitude):
-        geolocator = Nominatim(user_agent="cancerbot.org")
+        geolocator = Nominatim(user_agent="exact.app")
         location = geolocator.reverse(f"{latitude}, {longitude}")
         address = location.raw.get('address', {})
         country_code = address.get('country_code')

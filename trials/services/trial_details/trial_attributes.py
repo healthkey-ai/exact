@@ -11,6 +11,7 @@ from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
+from trials.services.utils import disease_attr_applies
 from trials.services.value_options import ValueOptions
 
 
@@ -57,9 +58,13 @@ class TrialAttributes:
         self.all_options['mutationOriginsRequired'] = self.all_options['geneticMutationAllOrigins']
         self.all_options['mutationInterpretationsRequired'] = self.all_options['geneticMutationAllInterpretations']
 
-        self.all_options['firstLineOutcome'] = self.all_options['therapyOutcome']
-        self.all_options['secondLineOutcome'] = self.all_options['therapyOutcome']
-        self.all_options['laterOutcome'] = self.all_options['therapyOutcome']
+        # Per #4137 the treatment-outcome dropdown is disease-aware: BC drops
+        # the MM-specific IMWG categories (sCR / VGPR / MRD). Other diseases
+        # still see the full enum.
+        outcome_options_key = self._therapy_outcome_options_key()
+        self.all_options['firstLineOutcome'] = self.all_options[outcome_options_key]
+        self.all_options['secondLineOutcome'] = self.all_options[outcome_options_key]
+        self.all_options['laterOutcome'] = self.all_options[outcome_options_key]
         self.all_options['preExistingConditionsExcluded'] = self.all_options['preExistingConditionCategories']
         self.all_options['therapyTypesRequired'] = self.all_options['therapyTypesAll']
         self.all_options['therapyTypesExcluded'] = self.all_options['therapyTypesAll']
@@ -143,10 +148,41 @@ class TrialAttributes:
             self.all_options['plannedTherapiesExcluded'] = self.all_options['plannedTherapiesCll']
             self.all_options['stage'] = self.all_options['stagesCll']
             self.all_options['stages'] = self.all_options['stagesCll']
+        elif self._trial.disease.lower() == 'mantle cell lymphoma':
+            self.all_options['firstLineTherapy'] = self.all_options['therapiesFirstLineMcl']
+            self.all_options['secondLineTherapy'] = self.all_options['therapiesSecondLineMcl']
+            self.all_options['laterTherapy'] = self.all_options['therapiesLaterLineMcl']
+            self.all_options['laterTherapies'] = self.all_options['laterTherapy']
+            self.all_options['supportiveTherapiesRequired'] = self.all_options['supportiveTherapiesMcl']
+            self.all_options['supportiveTherapiesExcluded'] = self.all_options['supportiveTherapiesMcl']
+            self.all_options['therapiesRequired'] = self.all_options['therapiesMcl']
+            self.all_options['therapiesExcluded'] = self.all_options['therapiesMcl']
+            self.all_options['plannedTherapies'] = self.all_options['plannedTherapiesMcl']
+            self.all_options['plannedTherapiesRequired'] = self.all_options['plannedTherapiesMcl']
+            self.all_options['plannedTherapiesExcluded'] = self.all_options['plannedTherapiesMcl']
+            self.all_options['stage'] = self.all_options['stagesMcl']
+            self.all_options['stages'] = self.all_options['stagesMcl']
 
         for k, v in self.all_options.items():
             self._all_value_options[k] = v
             self._all_value_options[f'u{k}'] = v
+
+    # Map PatientInfo.disease (title, lowercased) → the per-disease therapy
+    # outcomes options key in all_options. Diseases not listed here fall back
+    # to the union `therapyOutcome` key.
+    _DISEASE_TO_OUTCOME_KEY = {
+        'multiple myeloma': 'therapyOutcomeMm',
+        'follicular lymphoma': 'therapyOutcomeFl',
+        'breast cancer': 'therapyOutcomeBc',
+        'chronic lymphocytic leukemia': 'therapyOutcomeCll',
+        'mantle cell lymphoma': 'therapyOutcomeMcl',
+    }
+
+    def _therapy_outcome_options_key(self):
+        if not self._patient_info:
+            return 'therapyOutcome'
+        disease = (self._patient_info.disease or '').lower()
+        return self._DISEASE_TO_OUTCOME_KEY.get(disease, 'therapyOutcome')
 
     def get_context_from_user(self):
         out = {}
@@ -745,7 +781,10 @@ class TrialAttributes:
             subform_details = subform_attrs[user_attr] if user_attr in subform_attrs else None
             ureadonly = ('is_computed_value' in trial_attr_meta and trial_attr_meta['is_computed_value'] is True) or subform_details is not None
 
-            if "disease" in trial_attr_meta and (self._patient_info_attr.disease_code is None or self._patient_info_attr.disease_code not in trial_attr_meta["disease"]):
+            if "disease" in trial_attr_meta and (
+                self._patient_info_attr.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self._patient_info_attr.disease_code)
+            ):
                 continue
 
             if trial_attr_meta["type"] == "min_value":

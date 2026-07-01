@@ -9,12 +9,12 @@ directly with a controlled mock queryset to capture the actual kwargs.
 import pytest
 from unittest.mock import patch, MagicMock, call
 
-from trials.api.trials_views import TrailsViewSet
+from trials.api.trials_views import TrialsViewSet
 
 
-def _make_view(query_params: dict, action: str = 'list') -> TrailsViewSet:
-    """Return a TrailsViewSet instance with a mock request."""
-    view = TrailsViewSet()
+def _make_view(query_params: dict, action: str = 'list') -> TrialsViewSet:
+    """Return a TrialsViewSet instance with a mock request."""
+    view = TrialsViewSet()
     view.action = action
     view.format_kwarg = None
 

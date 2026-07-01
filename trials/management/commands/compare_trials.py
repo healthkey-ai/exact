@@ -1,7 +1,7 @@
 """
 Management command: compare_trials
 
-Reads an input JSON file with patient names and their CancerBot top-5 trial
+Reads an input JSON file with patient names and their reference top-5 trial
 IDs, looks each patient up in the external patient database, runs EXACT
 matching (direct ORM, no web server), and compares the top-5 results.
 
@@ -272,11 +272,11 @@ def _lookup_patient(db_url, patient, strategy):
 # Management command
 # ------------------------------------------------------------------
 
-CANCERBOT_BASE = 'https://app.cancerbot.org'
+REFERENCE_BASE = 'https://app.cancerbot.org'
 
 
 def _study_preferences_from_cb(si):
-    """Map a CancerBot study_info dict to a StudyPreferences instance."""
+    """Map a reference study_info dict to a StudyPreferences instance."""
     from trials.services.study_preferences import StudyPreferences
 
     def _s(key):
@@ -313,11 +313,11 @@ def _study_preferences_from_cb(si):
 
 
 def _cb_fetch_trial(token, trial_id):
-    """Fetch a single trial from CancerBot with patient context (scores, distance, match type)."""
+    """Fetch a single trial from the reference system with patient context (scores, distance, match type)."""
     import requests
     try:
         resp = requests.get(
-            f'{CANCERBOT_BASE}/api/v1/trials/{trial_id}/',
+            f'{REFERENCE_BASE}/api/v1/trials/{trial_id}/',
             headers={'Authorization': f'Token {token}'},
             timeout=10,
         )
@@ -350,7 +350,7 @@ def _cb_fetch_wider_ranking(token, target_ids=None, page_size=50):
     while True:
         try:
             resp = requests.get(
-                f'{CANCERBOT_BASE}/api/v1/trials/search/',
+                f'{REFERENCE_BASE}/api/v1/trials/search/',
                 headers={'Authorization': f'Token {token}'},
                 params={'page_size': page_size, 'page': page, 'type': 'eligible_and_potential'},
                 timeout=15,
@@ -390,7 +390,7 @@ def _cb_fetch_user_weights(token):
     }
     try:
         resp = requests.get(
-            f'{CANCERBOT_BASE}/api/v1/users/my-details/',
+            f'{REFERENCE_BASE}/api/v1/users/my-details/',
             headers={'Authorization': f'Token {token}'},
             timeout=10,
         )
@@ -422,7 +422,7 @@ def _cb_fetch_trial_explain(token, trial_id):
     import requests
     try:
         resp = requests.get(
-            f'{CANCERBOT_BASE}/api/v1/trials/{trial_id}/',
+            f'{REFERENCE_BASE}/api/v1/trials/{trial_id}/',
             headers={'Authorization': f'Token {token}'},
             timeout=15,
         )
@@ -451,7 +451,7 @@ def _cb_fetch_trial_explain(token, trial_id):
 
 
 class Command(BaseCommand):
-    help = 'Compare EXACT top-5 trial results against CancerBot top-5 for a list of patients.'
+    help = 'Compare EXACT top-5 trial results against reference top-5 for a list of patients.'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -519,8 +519,8 @@ class Command(BaseCommand):
             return
         self.stdout.write(f'Patient lookup: {strategy["description"]}')
 
-        # Load CancerBot data if available (produced by fetch_cancerbot_patients.py)
-        cb_data_path = os.path.join(os.path.dirname(input_path), 'cancerbot_patients_data.json')
+        # Load reference patient data if available
+        cb_data_path = os.path.join(os.path.dirname(input_path), 'reference_patients_data.json')
         cb_scores_by_name = {}      # name -> {trial_id: {'score', 'rank', 'burden', 'distance', 'distanceUnits'}}
         cb_geo_by_name = {}         # name -> {'country': x, 'postalCode': y}
         cb_token_by_name = {}       # name -> auth token
@@ -554,12 +554,12 @@ class Command(BaseCommand):
         top_n = options['top_n']
 
         from trials.models import Trial
-        all_cb_ids = {i for p in patients for i in p.get('cancerbot_trial_ids', [])}
-        existing_ids = set(Trial.objects.filter(id__in=all_cb_ids).values_list('id', flat=True))
-        missing_ids = all_cb_ids - existing_ids
+        all_ref_ids = {i for p in patients for i in p.get('cancerbot_trial_ids', [])}
+        existing_ids = set(Trial.objects.filter(id__in=all_ref_ids).values_list('id', flat=True))
+        missing_ids = all_ref_ids - existing_ids
         if missing_ids:
             self.stdout.write(self.style.WARNING(
-                f'Ignoring {len(missing_ids)} CancerBot trial IDs not found in trials DB: '
+                f'Ignoring {len(missing_ids)} reference trial IDs not found in trials DB: '
                 f'{sorted(missing_ids)}'
             ))
 
@@ -567,9 +567,9 @@ class Command(BaseCommand):
 
         for patient in patients:
             name = patient['name']
-            cancerbot_ids = [i for i in patient.get('cancerbot_trial_ids', []) if i not in missing_ids]
+            reference_ids = [i for i in patient.get('cancerbot_trial_ids', []) if i not in missing_ids]
             cb_geo = cb_geo_by_name.get(name, {})
-            # JSON zipcode takes priority over cancerbot_patients_data.json geo;
+            # JSON zipcode takes priority over reference_patients_data.json geo;
             # cb_geo is used as a last-resort fallback when the JSON has no zipcode.
             json_zip     = patient.get('zipcode')
             json_country = patient.get('country_code')
@@ -585,7 +585,7 @@ class Command(BaseCommand):
                     'disease': patient.get('disease'),
                     'stage': patient.get('stage'),
                     'error': 'patient not found in DB',
-                    'cancerbot_top5': cancerbot_ids,
+                    'reference_top5': reference_ids,
                     'exact_top5': [],
                 })
                 continue
@@ -601,7 +601,7 @@ class Command(BaseCommand):
                     ending='',
                 )
 
-            n = len(cancerbot_ids)
+            n = len(reference_ids)
             cb_scores = dict(cb_scores_by_name.get(name, {}))
             cb_token = cb_token_by_name.get(name)
             raw_study_info = cb_study_info_by_name.get(name)
@@ -619,7 +619,7 @@ class Command(BaseCommand):
                     row, n,
                     zipcode=use_zip,
                     country_code=use_country,
-                    watch_ids=cancerbot_ids,
+                    watch_ids=reference_ids,
                     study_prefs=study_prefs,
                     weights=cb_weights,
                 )
@@ -632,29 +632,29 @@ class Command(BaseCommand):
                     'disease': patient.get('disease'),
                     'stage': patient.get('stage'),
                     'error': str(e),
-                    'cancerbot_top5': cancerbot_ids,
+                    'reference_top5': reference_ids,
                     'exact_top5': [],
                 })
                 continue
 
-            cancerbot_set = set(cancerbot_ids)
+            reference_set = set(reference_ids)
             exact_set = set(exact_ids)
-            overlap = [i for i in exact_ids if i in cancerbot_set]
-            exact_only = [i for i in exact_ids if i not in cancerbot_set]
-            cancerbot_only = [i for i in cancerbot_ids if i not in exact_set]
+            overlap = [i for i in exact_ids if i in reference_set]
+            exact_only = [i for i in exact_ids if i not in reference_set]
+            reference_only = [i for i in reference_ids if i not in exact_set]
 
             self.stdout.write(
                 f' overlap {len(overlap)}/{n} | '
-                f'exact_only={exact_only} | cancerbot_only={cancerbot_only}'
+                f'exact_only={exact_only} | reference_only={reference_only}'
             )
             for rank, tid in enumerate(exact_ids, 1):
-                self.stdout.write(f'    {rank}. https://app.cancerbot.org/t/{tid}')
+                self.stdout.write(f'    {rank}. https://app.exact.org/t/{tid}')
             zip_label = f'{use_country} / {use_zip}' if use_zip else '—'
             self.stdout.write(f'    zip: {zip_label}')
 
             # Score comparison table for all trials (overlap + disputed)
             exact_rank = {tid: rank for rank, tid in enumerate(exact_ids, 1)}
-            all_disputed = sorted(set(exact_ids) | set(cancerbot_ids))
+            all_disputed = sorted(set(exact_ids) | set(reference_ids))
             if all_disputed:
                 # Back-fill missing scores for all table rows via per-trial detail
                 # endpoint (covers CB-only trials with null stored score, and any
@@ -673,7 +673,7 @@ class Command(BaseCommand):
 
                 # Fetch a wider CB ranking for any trial still missing a rank
                 # (covers EXACT-only trials and overlap trials whose rank wasn't
-                # stored in cancerbot_patients_data.json).
+                # stored in reference_patients_data.json).
                 missing_rank = [
                     tid for tid in all_disputed
                     if cb_scores.get(tid, {}).get('rank') is None
@@ -691,7 +691,7 @@ class Command(BaseCommand):
                 rows_t = []
                 for tid in all_disputed:
                     in_exact = tid in exact_set
-                    in_cb = tid in cancerbot_set
+                    in_cb = tid in reference_set
                     tag = ('overlap' if in_exact and in_cb
                            else 'EXACT only' if in_exact
                            else 'CB only')
@@ -874,7 +874,7 @@ class Command(BaseCommand):
                                 else:
                                     self.stdout.write(
                                         '    CB: no explain data available '
-                                        '(re-run fetch_cancerbot_patients.py to capture attributesToFillIn)'
+                                        '(re-run fetch_reference_patients.py to capture attributesToFillIn)'
                                     )
 
             results.append({
@@ -882,14 +882,14 @@ class Command(BaseCommand):
                 'person_id': person_id,
                 'disease': patient.get('disease'),
                 'stage': patient.get('stage'),
-                'cancerbot_top5': cancerbot_ids,
+                'reference_top5': reference_ids,
                 'exact_top5': exact_ids,
                 'overlap_count': len(overlap),
                 'overlap_total': n,
                 'overlap_ids': overlap,
                 'exact_only': exact_only,
-                'cancerbot_only': cancerbot_only,
-                'cancerbot_only_probe': {str(tid): probe.get(tid, {}) for tid in cancerbot_only},
+                'reference_only': reference_only,
+                'reference_only_probe': {str(tid): probe.get(tid, {}) for tid in reference_only},
             })
 
         # Summary
@@ -927,7 +927,7 @@ class Command(BaseCommand):
         Build a PatientInfo from the DB row, run filtered_trials + goodness
         scoring, and return the top-N trial IDs ordered by goodness_score desc.
 
-        Also probes watch_ids (typically cancerbot_only trials) to report whether
+        Also probes watch_ids (typically reference_only trials) to report whether
         each was filtered out (ineligible) or passed eligibility but ranked below top-N.
 
         Returns (top_ids, probe_results) where probe_results is a dict:
