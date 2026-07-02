@@ -214,6 +214,18 @@ class PatientInfoAttributes:
 
         return list(set(out))
 
+    def get_user_therapy_component_ids(self):
+        """Return the patient's component concept_ids (CTOMOP-supplied, OMOP mode only).
+
+        Returns None when the field is absent — callers treat None as unknown and
+        fail-closed (skip component/type filtering in the queryset; return 'unknown'
+        in the matcher).  Returns a non-empty list or [] when the field is present.
+        """
+        val = self.get_value('therapy_component_ids')
+        if val is None:
+            return None
+        return [str(v) for v in val if v is not None and str(v).strip().isdigit()]
+
     @cached_property
     def disease_code(self):
         disease = str(self.patient_info.disease).lower()

@@ -90,6 +90,9 @@ _FIELDS = [
     _f(TextField, 'second_line_outcome'),
     _f(TextField, 'later_therapy'),
     _f(JSONField, 'later_therapies', default=list),
+    # Component concept_ids supplied directly by CTOMOP (promop#189) under OMOP mode.
+    # None when the consumer has not sent them; used by component_category_lookup for types.
+    _f(JSONField, 'therapy_component_ids', default=None),
     _f(DateField, 'later_date'),
     _f(TextField, 'later_outcome'),
     _f(TextField, 'old_supportive_therapies'),

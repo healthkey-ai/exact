@@ -26,13 +26,14 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from trials.models import (
-    Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept, TherapyOmopMapping,
+    Therapy, TherapyComponent, OmopConcept, TherapyOmopMapping,
 )
 
+# category level removed (ADR 0001 decision A): TherapyComponentCategory.omop_concept_id
+# mapped HemOnc class concepts that can never overlap patient-side CB codes — drop.
 LEVEL_MODEL = {
     'regimen': Therapy,
     'component': TherapyComponent,
-    'category': TherapyComponentCategory,
 }
 DEFAULT_CSV = os.path.join(settings.BASE_DIR, 'docs', 'omop', 'mapping', 'therapy_omop_mapping.csv')
 # match types that carry a CTOMOP-verified concept_id
@@ -82,7 +83,7 @@ class Command(BaseCommand):
                     )
                 crosswalk += 1
 
-                if row['match'] not in accepted or cid is None:
+                if row['match'] not in accepted or cid is None or row['level'] not in LEVEL_MODEL:
                     skipped += 1
                     continue
 
@@ -119,7 +120,7 @@ class Command(BaseCommand):
                     model.objects.filter(pk=obj.pk).update(omop_concept_id=cid)
 
         prefix = '[dry-run] ' if dry_run else ''
-        for level in ('regimen', 'component', 'category'):
+        for level in ('regimen', 'component'):
             self.stdout.write(
                 f"{prefix}{level:10s} set={updated[level]:3d} unchanged={unchanged[level]:3d} "
                 f"code_not_found={missing_code[level]:3d}"

@@ -130,37 +130,6 @@ component,st._john_s_wort,St. John's Wort,,,,needs_review
 component,exemestane,Exemestane,1398399,exemestane,RxNorm,auto
 component,rituximab,Rituximab,1314273,rituximab,RxNorm,auto
 component,lenalidomide,Lenalidomide,19026972,lenalidomide,RxNorm,auto
-category,anti_cd20_monoclonal_antibodies,Anti-CD20 Monoclonal Antibodies,35807389,Anti-CD20 antibody,HemOnc,curated
-category,pi3k_inhibitors,PI3K Inhibitors,35807303,PI3K inhibitor,HemOnc,curated
-category,chemotherapy_(alkylating_agent),Chemotherapy (Alkylating Agent),35807238,Alkylating agent,HemOnc,curated
-category,chemotherapy_(anthracycline),Chemotherapy (Anthracycline),35807214,Anthracycline,HemOnc,curated
-category,immunomodulatory_drug_(imid),Immunomodulatory Drug (IMiD),35807403,Immunomodulatory drugs (IMiDs),HemOnc,curated
-category,proteasome_inhibitor,Proteasome Inhibitor,35807295,Proteasome inhibitor,HemOnc,curated
-category,monoclonal_antibody_(anti_cd38),Monoclonal Antibody (Anti-CD38),35807345,Anti-CD38 antibody,HemOnc,curated
-category,monoclonal_antibody_(anti_slamf7),Monoclonal Antibody (Anti-SLAMF7),35807363,Anti-SLAMF7 antibody,HemOnc,curated
-category,bispecific_antibody,Bispecific Antibody,35807364,Bispecific antibody medication,HemOnc,curated
-category,antibody_drug_conjugate_(adc),Antibody-Drug Conjugate (ADC),35807221,Antibody-drug conjugate,HemOnc,curated
-category,corticosteroid,Corticosteroid,,,,needs_review
-category,car_t_cell_therapy,CAR-T Cell Therapy,35807448,Chimeric antigen receptor T-cell,HemOnc,curated
-category,hdac_inhibitor,HDAC Inhibitor,947794,Histone deacetylase (HDAC) inhibitors,ATC,curated
-category,targeted_therapy_(bcl_2_inhibitor),Targeted Therapy (BCL-2 Inhibitor),35807456,Bcl-2 inhibitor,HemOnc,curated
-category,targeted_therapy_(xpo1_inhibitor),Targeted Therapy (XPO1 Inhibitor),35807438,XPO1 inhibitor,HemOnc,curated
-category,stem_cell_transplant,Stem Cell Transplant,,,,no_omop
-category,radiotherapy,Radiotherapy,,,,no_omop
-category,supportive_therapy_(bisphosphonate),Supportive Therapy (Bisphosphonate),35807233,Bisphosphonate,HemOnc,curated
-category,supportive_therapy_(rankl_inhibitor),Supportive Therapy (RANKL Inhibitor),35807351,RANK ligand inhibitor,HemOnc,curated
-category,supportive_therapy,Supportive Therapy,,,,needs_review
-category,treatment_for_high_risk_smoldering_multiple_myeloma,Treatment for High-Risk Smoldering Multiple Myeloma,,,,needs_review
-category,diagnostic_tool,Diagnostic Tool,,,,no_omop
-category,mtor_inhibitor,mTOR Inhibitor,35807369,MTOR inhibitor,HemOnc,curated
-category,surgery,Surgery,,,,no_omop
-category,hormonal_therapy,Hormonal Therapy,,,,needs_review
-category,tyrosine_kinase_inhibitor,Tyrosine Kinase Inhibitor,912198,Tyrosine kinase inhibitor,HemOnc,curated
-category,monoclonal_antibody,Monoclonal Antibody,21603754,Monoclonal antibodies,ATC,auto
-category,antibody_drug_conjugate,Antibody-Drug Conjugate,35807221,Antibody-drug conjugate,HemOnc,curated
-category,chemotherapy,Chemotherapy,,,,needs_review
-category,targeted_therapy,Targeted Therapy,912163,Targeted therapeutic,HemOnc,curated
-category,immunotherapy,Immunotherapy,35807189,Immunotherapeutic,HemOnc,curated
 regimen,vrd,VRd,35806260,RVD,HemOnc,curated
 regimen,dara_vrd,Dara-VRd,911993,Dara-RVd,HemOnc,curated
 regimen,dara_rd,Dara-Rd,35806311,Dara-Rd,HemOnc,auto

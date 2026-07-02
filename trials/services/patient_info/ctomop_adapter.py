@@ -406,6 +406,12 @@ def normalize_ctomop_row(row: dict) -> dict:
         row['later_therapies'] = [
             {'therapy': str(c)} for c in later_ids if c not in _EMPTY_CID
         ]
+        # Component concept_ids (promop#189): CTOMOP populates therapy_component_ids
+        # when it knows the patient's component-level therapies.  Pass through as-is;
+        # None / absent means unknown — callers fail-closed on missing data.
+        comp_ids = row.get('therapy_component_ids')
+        if comp_ids is not None:
+            row['therapy_component_ids'] = [c for c in comp_ids if c not in _EMPTY_CID]
     else:
         # Legacy mode: resolve CTOMOP display strings (e.g. "Anastrozole (Arimidex)")
         # to EXACT normalized codes (e.g. "anastrozole") via the LRU-cached

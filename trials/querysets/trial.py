@@ -112,7 +112,8 @@ def _filter_prior_therapy(scope, value, ctx):
     # filter_by_patient_info call; ctx tracks the flag.
     if ctx['has_no_prior_therapy'] and not ctx['is_therapies_filter_applied']:
         scope = scope.eligible_for_therapy_related_things_from_lines(
-            ctx['user_therapies'], ctx['has_no_prior_therapy']
+            ctx['user_therapies'], ctx['has_no_prior_therapy'],
+            component_concept_ids=ctx.get('user_therapy_component_ids'),
         )
         ctx['is_therapies_filter_applied'] = True
     return scope
@@ -136,7 +137,8 @@ def _filter_therapy_lines_once(scope, _value, ctx):
     # filter is applied once at most across all of them.
     if not ctx['is_therapies_filter_applied']:
         scope = scope.eligible_for_therapy_related_things_from_lines(
-            ctx['user_therapies'], ctx['has_no_prior_therapy']
+            ctx['user_therapies'], ctx['has_no_prior_therapy'],
+            component_concept_ids=ctx.get('user_therapy_component_ids'),
         )
         ctx['is_therapies_filter_applied'] = True
     return scope
@@ -1035,7 +1037,12 @@ class TrialQuerySet(models.QuerySet):
             Q(**{f'{excluded_attr_name}__has_any_keys': values})
         )
 
-    def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False) -> models.QuerySet:
+    def eligible_for_therapy_related_things_from_lines(
+        self,
+        therapy_codes: list[str],
+        has_no_prior_therapy=False,
+        component_concept_ids=None,
+    ) -> models.QuerySet:
         if has_no_prior_therapy:
             return self.filter(**{
                 f'{THERAPY_MATCH_PROFILE.therapies_required}__exact': [],
@@ -1048,12 +1055,23 @@ class TrialQuerySet(models.QuerySet):
 
         scope = self.eligible_for_therapy_from_lines(therapy_codes)
 
-        # Component + type values from the regimen via the CB graph (shared with the
-        # matcher). Under OMOP: components → their OMOP concept_ids (vs the omop
-        # component column), types → CB category codes (vs the LEGACY therapy_types
-        # column the OMOP profile keeps). See trials/services/omop/therapy_graph.
-        from trials.services.omop.therapy_graph import derive_component_and_type_values
-        component_codes, therapy_types = derive_component_and_type_values(therapy_codes)
+        from trials.services.therapy_match_profile import omop_therapy_enabled
+        if omop_therapy_enabled():
+            # OMOP: component concept_ids arrive from the patient directly (promop#189);
+            # types are one lookup: component_concept_ids → CB category codes.
+            from trials.services.omop.component_category_lookup import (
+                component_concept_ids_to_type_codes,
+            )
+            component_codes = component_concept_ids
+            therapy_types = (
+                component_concept_ids_to_type_codes(component_concept_ids)
+                if component_concept_ids is not None
+                else None
+            )
+        else:
+            # Legacy: derive components + types from regimen codes via the CB graph.
+            from trials.services.omop.therapy_graph import derive_component_and_type_values
+            component_codes, therapy_types = derive_component_and_type_values(therapy_codes)
 
         if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
@@ -1408,6 +1426,7 @@ class TrialQuerySet(models.QuerySet):
 
         has_no_prior_therapy = patient_info.prior_therapy in ["None"]
         user_therapies = patient_info_attr.get_user_therapies()
+        user_therapy_component_ids = patient_info_attr.get_user_therapy_component_ids()
         is_therapies_filter_applied = False
 
 
@@ -1447,6 +1466,7 @@ class TrialQuerySet(models.QuerySet):
                     'patient_info': patient_info,
                     'has_no_prior_therapy': has_no_prior_therapy,
                     'user_therapies': user_therapies,
+                    'user_therapy_component_ids': user_therapy_component_ids,
                     'is_therapies_filter_applied': is_therapies_filter_applied,
                 }
                 handler = _CUSTOM_SEARCH_DISPATCH.get(user_attr)
