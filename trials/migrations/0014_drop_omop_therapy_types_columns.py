@@ -22,6 +22,15 @@ class Migration(migrations.Migration):
         migrations.RunSQL(
             sql='DROP INDEX CONCURRENTLY IF EXISTS idx_omop_therapy_types_gin',
             reverse_sql=migrations.RunSQL.noop,
+            # state_operations keeps Django's migration state in sync with the
+            # CONCURRENTLY drop — without it, Django still "sees" the index in
+            # its state graph and generates a new migration to remove it.
+            state_operations=[
+                migrations.RemoveIndex(
+                    model_name='trial',
+                    name='idx_omop_therapy_types_gin',
+                ),
+            ],
         ),
         migrations.RemoveField(
             model_name='trial',
