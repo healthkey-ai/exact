@@ -21,17 +21,18 @@ def component_concept_ids_to_type_codes(concept_ids):
     Returns None when concept_ids is None.  Returns [] when the lookup yields
     nothing (patient has no resolvable types).
 
-    Accepts a list; internally converts to a tuple for the cached inner call so
-    the same concept_id set for one patient isn't queried repeatedly across N trials.
+    Accepts a list; internally converts to a sorted tuple for the cached inner
+    call so the same concept_id SET (regardless of input order) hits the same
+    cache entry across N trials on the same request.
     """
     if concept_ids is None:
         return None
-    return _lookup(tuple(concept_ids))
+    return _lookup(tuple(sorted(concept_ids, key=str)))
 
 
 @functools.lru_cache(maxsize=256)
 def _lookup(concept_ids_tuple):
-    """Cached DB lookup — keyed on the sorted tuple of concept_id strings."""
+    """Cached DB lookup — keyed on a sorted tuple of concept_id strings."""
     if not concept_ids_tuple:
         return []
 

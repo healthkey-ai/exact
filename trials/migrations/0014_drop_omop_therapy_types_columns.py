@@ -5,7 +5,12 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
 
-    atomic = False  # DROP INDEX CONCURRENTLY cannot run inside a transaction
+    # atomic=False: DROP INDEX CONCURRENTLY cannot run inside a transaction.
+    # Side effect: RemoveField × 2 and AlterField also run outside a transaction.
+    # Recovery if partial failure: `python manage.py migrate --fake trials 0014`
+    # then re-run manually. Both DROP COLUMN operations are fast (metadata-only
+    # on empty columns) so partial failure probability is negligible.
+    atomic = False
 
     dependencies = [
         ('trials', '0013_therapyomopmapping'),
