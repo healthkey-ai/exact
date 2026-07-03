@@ -16,14 +16,12 @@ pytestmark = pytest.mark.django_db
 def test_trial_omop_columns_round_trip_string_concept_ids():
     t = TrialFactory(
         omop_therapies_required=['12345', '67890'],
-        omop_therapy_types_excluded=['111'],
         omop_therapy_components_required=['222'],
         omop_supportive_therapies_required=['333'],
         omop_planned_therapies_excluded=['444'],
     )
     t.refresh_from_db()
     assert t.omop_therapies_required == ['12345', '67890']
-    assert t.omop_therapy_types_excluded == ['111']
     assert t.omop_therapy_components_required == ['222']
     assert t.omop_supportive_therapies_required == ['333']
     assert t.omop_planned_therapies_excluded == ['444']
@@ -42,7 +40,6 @@ def test_trial_omop_columns_default_empty_list():
     t = TrialFactory()
     for f in (
         'omop_therapies_required', 'omop_therapies_excluded',
-        'omop_therapy_types_required', 'omop_therapy_types_excluded',
         'omop_therapy_components_required', 'omop_therapy_components_excluded',
         'omop_supportive_therapies_required', 'omop_supportive_therapies_excluded',
         'omop_planned_therapies_required', 'omop_planned_therapies_excluded',

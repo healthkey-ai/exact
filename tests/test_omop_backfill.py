@@ -43,23 +43,20 @@ def test_map_codes_to_concept_ids_empty():
     assert map_codes_to_concept_ids(Therapy, []) == ([], [])
 
 
-def test_build_omop_columns_all_six_levels():
+def test_build_omop_columns_regimen_and_component():
     Therapy.objects.create(code='reg_r', title='reg r', omop_concept_id=1)
     Therapy.objects.create(code='reg_x', title='reg x', omop_concept_id=2)
     TherapyComponent.objects.create(code='comp_r', title='comp r', omop_concept_id=3)
-    TherapyComponentCategory.objects.create(code='cat_r', title='cat r', omop_concept_id=4)
     trial = TrialFactory(
         therapies_required=['reg_r'],
         therapies_excluded=['reg_x'],
         therapy_components_required=['comp_r'],
-        therapy_types_required=['cat_r'],
     )
     values, unmapped = build_omop_columns(trial)
     assert values['omop_therapies_required'] == ['1']
     assert values['omop_therapies_excluded'] == ['2']
     assert values['omop_therapy_components_required'] == ['3']
-    assert values['omop_therapy_types_required'] == ['4']
-    # untouched legacy columns map to empty
+    # untouched columns map to empty
     assert values['omop_therapy_components_excluded'] == []
     assert unmapped == {}
 
@@ -240,4 +237,4 @@ def test_vendored_mapping_csv_is_well_formed():
         reader = csv.DictReader(f)
         assert set(reader.fieldnames) >= {'level', 'cb_code', 'omop_concept_id', 'match'}
         levels = {row['level'] for row in reader}
-    assert levels <= {'regimen', 'component', 'category'}
+    assert levels <= {'regimen', 'component'}

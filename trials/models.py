@@ -234,7 +234,7 @@ class TherapyComponentConnection(TimeStampMixin):
 class TherapyComponentCategory(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
-    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug class (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_types_* columns.")
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug class (pinned CTOMOP release); null when unmapped.")
 
     def __str__(self):
         return self.title
@@ -423,8 +423,6 @@ class Trial(TimeStampMixin):
     # only when the OMOP TherapyMatchProfile is active (Phase 3, behind a flag).
     omop_therapies_required = models.JSONField(blank=True, null=False, default=list)
     omop_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
-    omop_therapy_types_required = models.JSONField(blank=True, null=False, default=list)
-    omop_therapy_types_excluded = models.JSONField(blank=True, null=False, default=list)
     omop_therapy_components_required = models.JSONField(blank=True, null=False, default=list)
     omop_therapy_components_excluded = models.JSONField(blank=True, null=False, default=list)
     omop_supportive_therapies_required = models.JSONField(blank=True, null=False, default=list)
@@ -697,7 +695,6 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['supportive_therapies_required', 'supportive_therapies_excluded'], name='idx_sup_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['planned_therapies_required', 'planned_therapies_excluded'], name='idx_planned_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_therapies_required', 'omop_therapies_excluded'], name='idx_omop_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
-            GinIndex(fields=['omop_therapy_types_required', 'omop_therapy_types_excluded'], name='idx_omop_therapy_types_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_therapy_components_required', 'omop_therapy_components_excluded'], name='idx_omop_therapy_comps_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_supportive_therapies_required', 'omop_supportive_therapies_excluded'], name='idx_omop_sup_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_planned_therapies_required', 'omop_planned_therapies_excluded'], name='idx_omop_planned_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
