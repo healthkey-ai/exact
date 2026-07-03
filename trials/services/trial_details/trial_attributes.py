@@ -8,6 +8,7 @@ from django.db.models import Q
 
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
@@ -516,7 +517,8 @@ class TrialAttributes:
 
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
-            value = getattr(self._trial, field_name)
+            active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
+            value = getattr(self._trial, active_col)
 
             trial_field = self._trial.__class__._meta.get_field(field_name)
             trial_field_name = self.get_field_name(trial_field)

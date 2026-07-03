@@ -74,11 +74,7 @@ class TrialTemplates:
                     pass
                 elif field_name in THERAPIES_ATTRS:
                     if field['value'] == []:
-                        # field['value'] is the LEGACY column; under OMOP the backfill
-                        # fills omop_* FROM legacy, so omop non-empty ⟹ legacy non-empty
-                        # (this skip never drops an omop criterion today). Full omop-only
-                        # rendering tracked in #207.
-                        continue  # skip
+                        continue  # skip — active column (legacy or OMOP) has no criteria
                     field['matchingType'] = therapy_match_statuses[field_name]["status"]
                     field['uvalue'] = therapy_match_statuses[field_name]["values"]
                     # OMOP code + title for the OMOP-mapped levels (regimen/component);
