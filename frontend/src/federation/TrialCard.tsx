@@ -1,5 +1,12 @@
-import type { CSSProperties } from "react";
+// Trial card — mirrors CancerBot UI v2's `TrialCard` so the federated list
+// reads as native inside CB. Layout/structure live in `exact.css`
+// (`.exact-card*`); shared bits (score pills, fields) come from `bits.tsx`.
+// Both the card body and the "View Trial" button select the trial, which the
+// host-agnostic `TrialMatches` turns into the in-remote detail page (CB shows
+// its own `/t/:id`; the remote owns the detail view itself).
+import type { KeyboardEvent } from "react";
 
+import { EyeIcon, Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
 import type { TrialMatch } from "./types";
 
 interface Props {
@@ -8,103 +15,88 @@ interface Props {
   isSelected?: boolean;
 }
 
-const BADGE_BASE: CSSProperties = {
-  padding: "0.125rem 0.5rem",
-  borderRadius: "0.25rem",
-  fontSize: "0.75rem",
-  border: "1px solid transparent",
-};
-
-const ELIGIBLE_BADGE: CSSProperties = {
-  ...BADGE_BASE,
-  background: "#dcfce7",
-  color: "#166534",
-  borderColor: "#86efac",
-};
-
-const POTENTIAL_BADGE: CSSProperties = {
-  ...BADGE_BASE,
-  background: "#fef3c7",
-  color: "#92400e",
-  borderColor: "#fcd34d",
-};
-
-const NOT_ELIGIBLE_BADGE: CSSProperties = {
-  ...BADGE_BASE,
-  background: "#fee2e2",
-  color: "#991b1b",
-  borderColor: "#fca5a5",
-};
-
-function matchingStyles(t: TrialMatch): { style: CSSProperties; label: string } {
-  if (t.matchingType === "eligible") {
-    return { style: ELIGIBLE_BADGE, label: "Eligible" };
-  }
-  if (t.matchingType === "not_eligible") {
-    return { style: NOT_ELIGIBLE_BADGE, label: "Not Eligible" };
-  }
-  return { style: POTENTIAL_BADGE, label: "Potential" };
-}
-
 export function TrialCard({ trial, onSelect, isSelected }: Props) {
-  const m = matchingStyles(trial);
-  const card: CSSProperties = {
-    border: `1px solid var(--exact-color-border)`,
-    borderRadius: "var(--exact-border-radius)",
-    padding: "1rem",
-    background: isSelected ? "#f9fafb" : "var(--exact-color-surface)",
-    cursor: onSelect ? "pointer" : "default",
-    width: "100%",
-    textAlign: "left",
-    font: "inherit",
-  };
-  const meta: CSSProperties = {
-    color: "var(--exact-color-text-muted)",
-    fontSize: "0.875rem",
-    marginTop: "0.5rem",
+  const distance =
+    trial.distance != null
+      ? `${trial.distance} ${trial.distanceUnits ?? ""}`.trim()
+      : "";
+
+  const handleSelect = () => onSelect?.(trial);
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!onSelect) return;
+    // Ignore Enter/Space that bubbled up from a nested control (the
+    // "View Trial" button, a score link, or the Field `[more]` toggle) so
+    // activating one of those doesn't also re-fire card selection.
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleSelect();
+    }
   };
 
-  const body = (
-    <>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-        <strong style={{ color: "var(--exact-color-text)" }}>{trial.briefTitle}</strong>
-        <span style={m.style}>{m.label}</span>
+  // Card is a `<div role="button">`, not a real `<button>`: it contains its
+  // own interactive controls (the "View Trial" button, score links), and
+  // nesting interactive elements inside a `<button>` is invalid HTML.
+  return (
+    <div
+      className={`exact-card${isSelected ? " is-selected" : ""}`}
+      style={onSelect ? undefined : { cursor: "default" }}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      aria-pressed={onSelect ? isSelected : undefined}
+      onClick={onSelect ? handleSelect : undefined}
+      onKeyDown={onSelect ? handleKeyDown : undefined}
+    >
+      <div className="exact-card__body">
+        <div className="exact-card__main">
+          <div className="exact-card__head">
+            <h3 className="exact-card__title">{trial.briefTitle}</h3>
+            {trial.studyId ? (
+              <span className="exact-card__studyid">{trial.studyId}</span>
+            ) : null}
+
+            <div className="exact-card__fields">
+              <Field label="Location" value={asText(trial.location)} collapsible />
+              <Field label="Distance" value={distance} />
+            </div>
+
+            <div className="exact-card__fields">
+              <Field
+                label="Intervention/Treatment"
+                value={asText(trial.interventionTreatments)}
+              />
+              <Field label="Trial Type" value={asText(trial.trialType)} />
+              <Field label="Phase" value={asText(trial.phase, " / ")} />
+              <Field label="Status" value={asText(trial.recruitingStatus)} />
+            </div>
+          </div>
+
+          <div className="exact-card__scores">
+            <ScorePill score={trial.matchScore} label="Matching Score" />
+            <ScorePill
+              score={trial.goodnessScore}
+              label="Suitability Score"
+              href={SUITABILITY_HREF}
+            />
+          </div>
+        </div>
+
+        <div className="exact-card__action">
+          {onSelect ? (
+            <button
+              type="button"
+              className="exact-btn-view"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSelect();
+              }}
+            >
+              <EyeIcon />
+              <span>View Trial</span>
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div style={meta}>
-        {[
-          trial.studyId,
-          trial.recruitingStatus,
-          trial.phase && trial.phase.length ? trial.phase.join(" / ") : null,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-      </div>
-      {(() => {
-        // Build the score/distance line by filtering out missing pieces
-        // before joining — a naive concatenation puts a stray leading
-        // separator on the line when matchScore is null but
-        // goodnessScore is present (the common case for the `/trials/`
-        // list when patient context is missing).
-        const pieces: string[] = [];
-        if (trial.matchScore != null) pieces.push(`Match score: ${trial.matchScore}`);
-        if (trial.goodnessScore != null) pieces.push(`Goodness: ${trial.goodnessScore}`);
-        if (trial.distance != null) {
-          pieces.push(`${trial.distance} ${trial.distanceUnits ?? ""}`.trim());
-        }
-        return pieces.length ? <div style={meta}>{pieces.join(" · ")}</div> : null;
-      })()}
-      {trial.sponsor ? (
-        <div style={meta}>Sponsor: {trial.sponsor}</div>
-      ) : null}
-    </>
+    </div>
   );
-
-  if (onSelect) {
-    return (
-      <button type="button" style={card} onClick={() => onSelect(trial)}>
-        {body}
-      </button>
-    );
-  }
-  return <div style={card}>{body}</div>;
 }

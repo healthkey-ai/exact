@@ -17,6 +17,7 @@ import type { AxiosInstance } from "axios";
 import type {
   FilterState,
   PatientInfo,
+  TrialDetailResponse,
   TrialsResponse,
 } from "./types";
 
@@ -29,6 +30,8 @@ interface FetchTrialsArgs {
   personId?: string | number;
   /** Filter prefs, sent as query params. */
   filters?: FilterState;
+  /** 1-indexed page number; omit or pass 1 for the first page. */
+  page?: number;
 }
 
 /** Fetch the trial-match list. Two paths depending on inputs:
@@ -50,8 +53,10 @@ export async function fetchTrials({
   patientInfo,
   personId,
   filters,
+  page,
 }: FetchTrialsArgs): Promise<TrialsResponse> {
   const params = filterStateToParams(filters);
+  if (page != null && page > 1) params.page = String(page);
   const hasInlinePayload = patientInfo != null && Object.keys(patientInfo).length > 0;
 
   if (hasInlinePayload) {
@@ -67,6 +72,53 @@ export async function fetchTrials({
     params.person_id = String(personId);
   }
   const response = await apiClient.get<TrialsResponse>("/trials/", { params });
+  return response.data;
+}
+
+interface FetchTrialDetailArgs {
+  apiClient: AxiosInstance;
+  trialId: number | string;
+  patientInfo?: PatientInfo | null;
+  personId?: string | number;
+  /** Same study preferences the list uses (recruitmentStatus, distanceUnits,
+   *  scoring weights, …). Sent so the detail's scores/distance/units agree
+   *  with the card the user selected. */
+  filters?: FilterState;
+}
+
+/** Fetch a single trial's detail (header meta, summary, and the per-patient
+ *  eligibility table in `details.trialEligibilityAttributes`). Mirrors
+ *  `fetchTrials`'s two patient-context paths:
+ *
+ *  - **Inline patient profile**: POSTs to `/trials/{id}/match/` with
+ *    `{ patient_info: … }` — the detail-level alias for `retrieve` (the
+ *    GET retrieve can't carry a body; see `TrialsViewSet.match_detail`).
+ *  - **Server-side resolver path** (`personId` only, or no context): GETs
+ *    `/trials/{id}/?person_id=…`.
+ */
+export async function fetchTrialDetail({
+  apiClient,
+  trialId,
+  patientInfo,
+  personId,
+  filters,
+}: FetchTrialDetailArgs): Promise<TrialDetailResponse> {
+  const params = filterStateToParams(filters);
+  const hasInlinePayload = patientInfo != null && Object.keys(patientInfo).length > 0;
+
+  if (hasInlinePayload) {
+    const response = await apiClient.post<TrialDetailResponse>(
+      `/trials/${trialId}/match/`,
+      { patient_info: patientInfo },
+      { params },
+    );
+    return response.data;
+  }
+
+  if (personId != null) params.person_id = String(personId);
+  const response = await apiClient.get<TrialDetailResponse>(`/trials/${trialId}/`, {
+    params,
+  });
   return response.data;
 }
 
@@ -105,8 +157,9 @@ export async function normalizeCtomopRow(
 
 /** Convert the camelCase filter state to the query-string shape EXACT's
  *  view expects. The mapping is 1:1 with `study_preferences_from_query_params`
- *  in `trials/services/study_preferences.py`. */
-function filterStateToParams(filters?: FilterState): Record<string, string> {
+ *  in `trials/services/study_preferences.py`. Exported so the unit tests can
+ *  lock the mapping against backend param drift. */
+export function filterStateToParams(filters?: FilterState): Record<string, string> {
   const out: Record<string, string> = {};
   if (!filters) return out;
   if (filters.recruitmentStatus) out.recruitmentStatus = filters.recruitmentStatus;

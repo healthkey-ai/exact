@@ -6,6 +6,7 @@ from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from rest_framework.views import APIView
 
 from trials.api.pagination import TrialsPagination
@@ -75,6 +76,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         try:
             patient_info = resolve_patient_info(self.request)
+        except APIException:
+            # Already an HTTP-meaningful response (e.g. PermissionDenied from
+            # the person_id IDOR gate, #150) — let DRF render it as-is.
+            raise
         except Exception:
             # Don't swallow into a silent None: that would run the matcher with
             # no patient context and return an unfiltered/unscored trial list
@@ -138,9 +143,15 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 recruitment_status=study_prefs.recruitment_status,
             )
 
-        if self.action == 'list':
+        if self.action in ('list', 'retrieve'):
+            # Annotates `match_score` (and potential_attrs_count). The detail
+            # page shows the Matching Score too, so `retrieve` needs this —
+            # without it `TrialDetailsSerializer` reads `match_score` as None
+            # and the detail page shows "N/A" for every trial.
             queryset = queryset.with_potential_attrs_count(patient_info)
-            queryset = queryset.order_by('-match_score', '-posted_date')
+
+        if self.action == 'list':
+            queryset = queryset.order_by('-match_score', '-posted_date', 'id')
 
         if self.action == 'search':
             if search_type == 'favorites':
@@ -178,6 +189,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 order.append(F('match_score').desc(nulls_last=True))
             else:  # goodnessScore
                 order.append(F('goodness_score').desc(nulls_last=True))
+            order.append(F('id').asc())
             queryset = queryset.order_by(*order)
 
         if self.action in ['list', 'search']:
@@ -264,6 +276,24 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # ordering.
         self.action = 'list'
         return self.list(request, *args, **kwargs)
+
+    @action(methods=['post'], detail=True, url_path='match')
+    def match_detail(self, request, *args, **kwargs):
+        """POST alias for `retrieve`, carrying `patient_info` in the body.
+
+        The detail endpoint needs patient context to render the eligibility
+        table (`details.trialEligibilityAttributes` with the patient's
+        `uvalue` / `matchingType`). `retrieve` is GET-only and GET-with-body
+        is forbidden by the Fetch spec / silently dropped by axios's XHR
+        adapter, so a host carrying an inline `patient_info` payload (the CB
+        contract) can't reach it over GET. Mirror the list-level `match`
+        action: bind to `retrieve` so `get_queryset` runs the retrieve
+        annotations and `get_serializer_context` resolves the body's
+        `patient_info`, then delegate. Hosts on the `?person_id=` path keep
+        using plain `GET /trials/{pk}/`.
+        """
+        self.action = 'retrieve'
+        return self.retrieve(request, *args, **kwargs)
 
     @action(methods=['get'], detail=False)
     def search(self, request, *args, **kwargs):

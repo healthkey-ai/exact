@@ -1,17 +1,21 @@
-/* Tailwind v4: import theme + utilities ONLY. Skipping `preflight.css`
- * keeps Tailwind's global CSS reset (`* { margin: 0 }`, `html,body`
- * resets, default font-family stripping, etc.) out of the federated
- * bundle so the host's existing styles aren't clobbered when this remote
- * mounts. Same trade-off documented in SoC. */
-@layer theme, utilities;
-@import "tailwindcss/theme.css" layer(theme);
-@import "tailwindcss/utilities.css" layer(utilities);
-
-@source "./**/*.tsx";
+/* Hand-written, fully scoped under `.exact-root` — this stylesheet ships NO
+ * Tailwind layers. The federated components use only `.exact-*` class names
+ * (never Tailwind utilities), so importing `tailwindcss/utilities.css` + a
+ * `@source` scan only emitted UNSCOPED globals that leaked into the host: a
+ * `*,::before,::after { --tw-* }` custom-property block, bare `.flex` /
+ * `.border` / `.hidden` utilities (matched from those words appearing in inline
+ * style strings and `.filter(Boolean)`), and `@property` registrations. None of
+ * it was used by the remote. Dropping the Tailwind import removes that leak and
+ * keeps the "no global CSS / host-agnostic" contract honest. Preflight was
+ * already excluded for the same reason. */
 
 /* Scoped tokens. The host can override any `--exact-*` var on `:root`
  * or on a `.exact-root` ancestor without colliding with its own design
- * system. Per hk-labs `docs/module-federation.md` CSS token contract. */
+ * system. Per hk-labs `docs/module-federation.md` CSS token contract.
+ *
+ * Defaults below mirror CancerBot UI v2's design tokens so the trials
+ * list looks native inside CB out of the box (see CB `client/global.css`).
+ * A host with a different palette overrides the same vars. */
 .exact-root {
   --exact-color-primary: #0c5fc0;
   --exact-color-eligible: #16a34a;
@@ -19,12 +23,39 @@
   --exact-color-not-eligible: #dc2626;
   --exact-color-muted: #6b7280;
   --exact-color-surface: #ffffff;
-  --exact-color-border: #e5e7eb;
-  --exact-color-text: #111827;
-  --exact-color-text-muted: #4b5563;
-  --exact-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  --exact-color-border: hsl(0 0% 91.4%); /* CB --border-secondary */
+  --exact-color-text: hsl(216 17% 14%); /* CB --text-primary-900 */
+  --exact-color-text-muted: hsl(220 9% 32%); /* CB --text-secondary-700 */
+  --exact-color-text-tertiary: hsl(218 8% 46%); /* CB --text-quaternary-500 */
+
+  /* Score-pill tiers — CB success / warning / error ramps. */
+  --exact-color-success-50: hsl(152 88% 95%);
+  --exact-color-success-200: hsl(152 68% 81%);
+  --exact-color-success-700: hsl(152 91% 29%);
+  --exact-color-warning-50: hsl(48 100% 96%);
+  --exact-color-warning-200: hsl(43 98% 77%);
+  --exact-color-warning-700: hsl(25 95% 37%);
+  --exact-color-error-50: hsl(4 86% 97%);
+  --exact-color-error-200: hsl(5 86% 89%);
+  --exact-color-error-700: hsl(5 79% 40%);
+
+  /* "View Trial" CTA — CB --brand-green-500, hover collapses to success-700.
+   * `on-brand` is the label color that sits on the green fill; tokenized so a
+   * host that themes the CTA to a light color can keep the text readable. */
+  --exact-color-brand-green: hsl(146 70% 45%);
+  --exact-color-brand-green-hover: hsl(152 91% 29%);
+  --exact-color-on-brand: #ffffff;
+
+  /* Default to `inherit` so the remote picks up the host's typography
+   * (CB sets Manrope on <body>) and reads as native. A host can still
+   * pin a font by overriding this token. */
+  --exact-font-family: inherit;
   --exact-border-radius: 0.5rem;
+  --exact-radius-card: 0.75rem; /* CB rounded-xl */
+  --exact-shadow-sm: 0 1px 2px 0 rgba(10, 13, 18, 0.05);
+  --exact-shadow-card: 0 0 0 1px rgba(10, 13, 18, 0.18) inset,
+    0 -2px 0 0 rgba(10, 13, 18, 0.05) inset,
+    0 1px 2px 0 rgba(10, 13, 18, 0.05);
 
   font-family: var(--exact-font-family);
   color: var(--exact-color-text);
@@ -36,4 +67,406 @@
 .exact-root *::before,
 .exact-root *::after {
   box-sizing: inherit;
+}
+
+/* ---------------------------------------------------------------------------
+ * Trial card — mirrors CancerBot's `TrialCard` layout (CB
+ * `client/components/trials/TrialCard.tsx`). Selectors are scoped under
+ * `.exact-root` so the class names can't leak into / collide with the host.
+ * Media queries replicate CB's `md:flex-row` responsive switch, which inline
+ * styles can't express.
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-card {
+  display: flex;
+  width: 100%;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.exact-root .exact-card:hover {
+  box-shadow: var(--exact-shadow-card);
+}
+.exact-root .exact-card.is-selected {
+  border-color: var(--exact-color-primary);
+}
+.exact-root .exact-card__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.exact-root .exact-card__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+  min-width: 0;
+}
+.exact-root .exact-card__head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+}
+.exact-root .exact-card__title {
+  margin: 0;
+  font-size: 1.25rem;
+  line-height: 1.625rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-card__studyid {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--exact-color-text-tertiary);
+}
+.exact-root .exact-card__fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 1rem;
+  row-gap: 0.25rem;
+}
+.exact-root .exact-field {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-field__label {
+  font-weight: 700;
+}
+.exact-root .exact-field__value {
+  font-weight: 400;
+}
+.exact-root .exact-field__toggle {
+  margin-left: 0.25rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+.exact-root .exact-field__toggle:hover {
+  text-decoration: underline;
+}
+.exact-root .exact-card__scores {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.exact-root .exact-card__action {
+  padding: 0 1.25rem 1.25rem;
+}
+.exact-root .exact-btn-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  background: var(--exact-color-brand-green);
+  box-shadow: var(--exact-shadow-card);
+  color: var(--exact-color-on-brand);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.exact-root .exact-btn-view:hover {
+  background: var(--exact-color-brand-green-hover);
+}
+
+/* Score pill — CB `ScorePill`. Tier colors are applied inline from the
+ * token set; structure lives here. */
+.exact-root .exact-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+.exact-root .exact-pill__val {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border: 1px solid;
+  border-radius: 9999px;
+  background: var(--exact-color-surface);
+  font-weight: 500;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+.exact-root .exact-pill__label {
+  font-weight: 500;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+}
+
+@media (min-width: 768px) {
+  .exact-root .exact-card__body {
+    flex-direction: row;
+  }
+  .exact-root .exact-card__action {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 1.25rem 1.25rem 1.25rem 0;
+  }
+  .exact-root .exact-btn-view {
+    width: auto;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Trial detail page — mirrors CancerBot's `/t/:id` (CB
+ * `client/pages/TrialDetails.tsx`): back link, header + score pills, meta,
+ * summary card, and the read-only Required/Your-Value eligibility table.
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-detail {
+  font-size: 0.875rem;
+  padding: 0.75rem 0.5rem;
+}
+.exact-root .exact-detail__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 1rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+.exact-root .exact-detail__back:hover {
+  text-decoration: underline;
+}
+.exact-root .exact-detail__title {
+  margin: 0 0 0.75rem;
+  font-size: 1.25rem;
+  line-height: 1.75rem;
+  font-weight: 700;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-detail__scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.exact-root .exact-detail__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--exact-color-border);
+}
+.exact-root .exact-detail__nct {
+  color: var(--exact-color-primary);
+  text-decoration: none;
+}
+.exact-root .exact-detail__nct:hover {
+  text-decoration: underline;
+}
+.exact-root .exact-detail__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.exact-root .exact-panel {
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  padding: 0.875rem 1rem;
+}
+.exact-root .exact-panel__title {
+  margin: 0 0 0.625rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-detail__summary-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.35rem;
+  color: var(--exact-color-text-muted);
+  white-space: pre-wrap;
+}
+.exact-root .exact-elig {
+  display: flex;
+  flex-direction: column;
+}
+/* Column header row — hidden on mobile, shown on desktop */
+.exact-root .exact-elig__thead {
+  display: none;
+}
+.exact-root .exact-elig__thead-col {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--exact-color-text-muted);
+  text-align: center;
+  white-space: nowrap;
+}
+.exact-root .exact-elig__row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.375rem;
+  padding: 0.5rem 0;
+  border-top: 1px solid var(--exact-color-border);
+}
+/* thead is always the first child (even when display:none on mobile),
+   so use the adjacent sibling to strip the redundant border from row #1. */
+.exact-root .exact-elig__thead + .exact-elig__row {
+  border-top: 0;
+}
+.exact-root .exact-elig__label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-elig__cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  font-size: 0.8125rem;
+  color: var(--exact-color-text);
+  min-height: 2rem;
+}
+.exact-root .exact-elig__cell.is-matched {
+  border-color: var(--exact-color-success-200);
+  background: var(--exact-color-success-50);
+  color: var(--exact-color-success-700);
+}
+.exact-root .exact-elig__cell.is-mismatch {
+  border-color: var(--exact-color-error-200);
+  background: var(--exact-color-error-50);
+  color: var(--exact-color-error-700);
+}
+/* Mobile: show "REQUIRED" / "YOUR VALUE" labels inside cells */
+.exact-root .exact-elig__colhdr {
+  min-width: 5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--exact-color-text-tertiary);
+}
+.exact-root .exact-elig__val {
+  flex: 1;
+}
+.exact-root .exact-elig__check {
+  display: inline-flex;
+  color: var(--exact-color-success-700);
+}
+.exact-root .exact-elig__units {
+  font-size: 0.75rem;
+  color: var(--exact-color-text-tertiary);
+}
+
+/* Field tooltip: "?" icon + floating text box on hover/focus */
+.exact-root .exact-tooltip__wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.25rem;
+  vertical-align: middle;
+}
+.exact-root .exact-tooltip__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border-radius: 50%;
+  border: 1px solid var(--exact-color-border);
+  background: var(--exact-color-surface);
+  color: var(--exact-color-text-muted);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: default;
+  padding: 0;
+}
+.exact-root .exact-tooltip__box {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 0.375rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  width: max-content;
+  max-width: min(28rem, 80vw);
+  padding: 0.5rem 0.75rem;
+  background: #1e3a5f;
+  color: #fff;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  border-radius: 0.375rem;
+  white-space: pre-line;
+  pointer-events: none;
+}
+/* Show on hover or focus-within */
+.exact-root .exact-tooltip__wrap:hover .exact-tooltip__box,
+.exact-root .exact-tooltip__wrap:focus-within .exact-tooltip__box {
+  display: block;
+}
+
+@media (min-width: 679px) {
+  /* Show table column headers, hide per-cell labels */
+  .exact-root .exact-elig__thead {
+    display: grid;
+    grid-template-columns: minmax(8rem, 14rem) minmax(7rem, 1fr) minmax(7rem, 1fr);
+    gap: 0.75rem;
+    padding: 0 0 0.5rem;
+    border-bottom: 1px solid var(--exact-color-border);
+    margin-bottom: 0.25rem;
+  }
+  .exact-root .exact-elig__colhdr {
+    display: none;
+  }
+  .exact-root .exact-elig__row {
+    grid-template-columns: minmax(8rem, 14rem) minmax(7rem, 1fr) minmax(7rem, 1fr);
+    align-items: start;
+    gap: 0.75rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .exact-root .exact-detail__grid {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+  .exact-root .exact-detail__summary {
+    width: 300px;
+    flex: none;
+  }
+  .exact-root .exact-detail__elig {
+    flex: 1;
+    min-width: 0;
+  }
 }

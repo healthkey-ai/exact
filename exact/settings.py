@@ -199,11 +199,21 @@ TRIALS_DB_MIGRATE = os.environ.get('TRIALS_DB_MIGRATE', 'false').lower() == 'tru
 
 DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-    }
-}
+# Shared Redis cache when REDIS_URL is configured (deploys), else per-process
+# LocMemCache (local dev / CI / tests). Keyed off the *raw* env var, not the
+# Celery-defaulted `redis_url` below, so an unset REDIS_URL never points the
+# cache at a non-existent localhost Redis. A per-process cache here would make
+# `ValueOptions.all_options()` (~490 queries) rebuild on every cold gunicorn
+# worker — see exact/cache_config.py.
+from exact.cache_config import build_caches  # noqa: E402
+
+CACHES = build_caches(
+    redis_url=os.environ.get('REDIS_URL'),
+    debug=DEBUG,
+    environment=ENVIRONMENT,
+    force_redis=os.environ.get('CACHE_BACKEND', '').lower() == 'redis',
+    redis_ca_certs=os.environ.get('REDIS_SSL_CA_CERTS'),
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -254,6 +264,23 @@ _token_auth_default = (
 )
 ENABLE_DRF_TOKEN_AUTH = os.environ.get(
     'ENABLE_DRF_TOKEN_AUTH', _token_auth_default
+).lower() in ('1', 'true')
+
+# The server-side `?person_id=` resolver fetches a patient from CTOMOP using a
+# STATIC service token with no binding to the authenticated caller, and CTOMOP
+# does not enforce row-level authz for that token — so any authenticated caller
+# can enumerate person_ids and read other patients' PHI (IDOR, #150/#108).
+# No production caller uses this path (the federation host fetches the patient
+# via CTOMOP `/patient-info/me/` under the end-user's own token and forwards it
+# inline), so gate it off by default outside local/DEBUG. Re-enable only once
+# caller-identity is forwarded to CTOMOP and CTOMOP enforces per-user authz.
+# Same fail-closed shape as ENABLE_DRF_TOKEN_AUTH: an unset ENVIRONMENT in a
+# deploy yields OFF, not ON.
+_person_id_lookup_default = (
+    'true' if (DEBUG or os.environ.get('ENVIRONMENT') == 'local') else 'false'
+)
+EXACT_ALLOW_PERSON_ID_LOOKUP = os.environ.get(
+    'EXACT_ALLOW_PERSON_ID_LOOKUP', _person_id_lookup_default
 ).lower() in ('1', 'true')
 
 _AUTH_CLASSES = [

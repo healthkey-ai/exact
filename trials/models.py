@@ -166,7 +166,13 @@ class Therapy(TimeStampMixin):
     omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this code (pinned CTOMOP release); null when the regimen has no clean standard concept and is expanded into its components/classes at backfill. Source for the trial omop_* columns.")
 
     def full_title(self):
-        components = ", ".join([x.title for x in self.components.order_by('id').all()])
+        # Sort in Python so a `prefetch_related('components')` cache is reused.
+        # `.order_by('id')` would issue a fresh query per therapy (an N+1 that
+        # dominated ValueOptions.all_options() — ~288 queries), since ordering
+        # builds a new queryset that ignores the prefetched cache.
+        components = ", ".join(
+            c.title for c in sorted(self.components.all(), key=lambda c: c.id)
+        )
         return f"{self.title} ({components})" if components else self.title
 
     def __str__(self):
@@ -429,6 +435,9 @@ class Trial(TimeStampMixin):
     omop_supportive_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
     omop_planned_therapies_required = models.JSONField(blank=True, null=False, default=list)
     omop_planned_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    # Populated by CB during trial sync: OMOP concept_ids of the intervention arm
+    # (what therapy the trial is giving/testing). Used by ?therapy_id= search.
+    omop_intervention_concept_ids = models.JSONField(blank=True, null=False, default=list)
     relapse_count_min = models.IntegerField(blank=True, null=True)
     relapse_count_max = models.IntegerField(blank=True, null=True)
     remission_duration_min = models.IntegerField(blank=True, null=True)
@@ -698,6 +707,7 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['omop_therapy_components_required', 'omop_therapy_components_excluded'], name='idx_omop_therapy_comps_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_supportive_therapies_required', 'omop_supportive_therapies_excluded'], name='idx_omop_sup_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_planned_therapies_required', 'omop_planned_therapies_excluded'], name='idx_omop_planned_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_intervention_concept_ids'], name='idx_omop_intervention_cids_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['cytogenic_markers_required', 'cytogenic_markers_excluded'], name='idx_cytogenic_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['molecular_markers_required', 'molecular_markers_excluded'], name='idx_molecular_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['tumor_stages_required', 'tumor_stages_excluded'], name='idx_tumor_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
