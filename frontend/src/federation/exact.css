@@ -238,7 +238,7 @@
  * `client/pages/TrialDetails.tsx`): back link, header + score pills, meta,
  * summary card, and the read-only Required/Your-Value eligibility table.
  * ------------------------------------------------------------------------- */
-.exact-root .exact-detail {
+.exact-root.exact-detail {
   font-size: 0.875rem;
   padding: 0.75rem 0.5rem;
 }

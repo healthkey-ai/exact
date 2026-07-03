@@ -79,32 +79,3 @@ def test_flag_off_leaves_later_therapies_list_untouched():
     lst = [{'therapy': 'pomalidomide'}]
     r = normalize_ctomop_row(_row(later_therapies=list(lst)))
     assert r['later_therapies'] == lst  # legacy: not concept-remapped
-
-
-# ── therapy_component_ids passthrough (promop#189) ───────────────────
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_component_ids_absent_leaves_key_absent():
-    r = normalize_ctomop_row(_row())
-    assert 'therapy_component_ids' not in r
-
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_component_ids_present_passed_through():
-    r = normalize_ctomop_row(_row(therapy_component_ids=[1001, 1002]))
-    assert r['therapy_component_ids'] == [1001, 1002]
-
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_component_ids_sentinels_dropped():
-    r = normalize_ctomop_row(_row(therapy_component_ids=[1001, 0, None, '', '0']))
-    assert r['therapy_component_ids'] == [1001]
-
-
-@override_settings(EXACT_OMOP_THERAPY=False)
-def test_component_ids_not_filtered_in_legacy_mode():
-    # In legacy mode the adapter doesn't process therapy_component_ids at all —
-    # it passes through unchanged (sentinels are NOT stripped). The field is
-    # unused for matching in legacy mode regardless.
-    r = normalize_ctomop_row(_row(therapy_component_ids=[1001, 0, None]))
-    assert r['therapy_component_ids'] == [1001, 0, None]

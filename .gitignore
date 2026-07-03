@@ -15,6 +15,9 @@ venv/
 # gstack tooling / scratch
 .gstack/
 
+# Local data
+data/
+
 # Secrets / credentials — NEVER commit (this repo is PUBLIC)
 serviceAccountKeys/
 *serviceAccount*.json
@@ -55,8 +58,3 @@ trials/management/commands/evaluate_ethalon_live.py
 tests/management/test_evaluate_ethalon_live.py
 scripts/evaluator/evaluate_live.sh
 republish_latest.sh
-.gstack/
-
-# Python virtualenvs (local dev)
-.venv/
-venv/

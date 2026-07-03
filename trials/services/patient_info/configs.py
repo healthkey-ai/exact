@@ -574,6 +574,13 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
                 lambda patient_info: patient_info.bulky_disease_criteria,
         }
     },
+    # Authoring compound/"tiered" rules (e.g. Jain classification, NCT05861050):
+    # ">=1 primary high-risk feature; secondary gene mutations only count if a
+    # primary is also present" is expressed with the existing schema as
+    # required=[primary features] + min_count=1. Secondary genes are omitted —
+    # they can never qualify a patient alone, and once any primary is present
+    # min_count=1 is already met. A full tiered/only_if_tier engine is only
+    # needed for min_count>=2 compound trials (none yet); deferred (CB #4405).
     "high_risk_mcl_criteria": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,

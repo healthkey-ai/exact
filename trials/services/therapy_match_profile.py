@@ -24,9 +24,10 @@ Only regimen + drug-component flip to OMOP concept_ids. The columns that stay on
 the legacy (internal-code) columns under OMOP:
 - ``therapy_types_*`` (drug class / component-category): types are deliberately
   NOT OMOP-mapped (HemOnc's class structure is poor) — EXACT keeps CB's own
-  category vocabulary.  Under OMOP the patient's component concept_ids are mapped
-  to CB category codes via a flat lookup (component_category_lookup), and those
-  codes overlap the legacy ``therapy_types_*`` columns (ADR 0001 decision A).
+  category vocabulary and matches types through the CB graph
+  ``categories ↔ components ↔ therapies`` (the matcher reverse-maps the patient's
+  component concept_ids back to internal components, then to CB categories, and
+  overlaps those against the legacy ``therapy_types_*`` columns). See #197.
 - ``planned_*`` / ``supportive_*``: their vocabs have no ``omop_concept_id`` yet,
   so the backfill leaves the omop_* columns empty — flipping them would silently
   drop the constraint.
@@ -59,7 +60,7 @@ LEGACY_THERAPY_MATCH_PROFILE = TherapyMatchProfile()
 
 # OMOP cutover profile: regimen + component read the omop_* concept_id columns.
 # therapy_types_* / planned_* / supportive_* intentionally stay legacy (see module
-# docstring): types are matched via the component→category lookup, not OMOP concept_ids.
+# docstring): types are matched via the CB category graph, not OMOP concept_ids.
 OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
     therapies_required='omop_therapies_required',
     therapies_excluded='omop_therapies_excluded',

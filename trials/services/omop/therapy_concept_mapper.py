@@ -16,11 +16,9 @@ Conventions (per the plan review): concept_ids are stored as STRINGS; output
 arrays are de-duplicated and stably sorted; unknown or unmapped (null
 ``omop_concept_id``) codes are dropped and reported; the mapping is idempotent.
 """
-from trials.models import Therapy, TherapyComponent
+from trials.models import Therapy, TherapyComponent, TherapyComponentCategory
 
 # (vocab model, legacy required col, legacy excluded col, omop required col, omop excluded col)
-# TherapyComponentCategory is excluded: its OMOP class concept_ids are unmatchable
-# (patient types always arrive as CB category codes, not HemOnc concept_ids — ADR 0001 decision A).
 THERAPY_LEVELS = [
     (Therapy,
      'therapies_required', 'therapies_excluded',
@@ -28,6 +26,9 @@ THERAPY_LEVELS = [
     (TherapyComponent,
      'therapy_components_required', 'therapy_components_excluded',
      'omop_therapy_components_required', 'omop_therapy_components_excluded'),
+    (TherapyComponentCategory,
+     'therapy_types_required', 'therapy_types_excluded',
+     'omop_therapy_types_required', 'omop_therapy_types_excluded'),
 ]
 
 

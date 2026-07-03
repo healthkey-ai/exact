@@ -1,14 +1,13 @@
-"""OMOP component + type matching — minimal-EXACT design (ADR 0001).
+"""OMOP component + type matching via the CB graph (#197 design).
 
 Under EXACT_OMOP_THERAPY:
-- regimen matches via direct concept_id overlap (omop_therapies_* columns).
-- component concept_ids arrive from CTOMOP directly (PatientInfo.therapy_component_ids)
-  and overlap omop_therapy_components_* columns — no reverse-resolution.
-- type (category) codes are derived via a flat component_concept_id→CB category
-  lookup (component_category_lookup) and overlap the LEGACY therapy_types_* columns.
-- None therapy_component_ids → components/types unknown (fail-closed).
+- regimen + component match on OMOP concept_ids (omop_* columns);
+- type/category is NOT OMOP-mapped — matched through the CB graph
+  (categories ↔ components ↔ therapies) against the LEGACY therapy_types_* columns.
 
-Legacy (flag off): regimen codes → CB graph → component codes + type codes (unchanged).
+The matcher reverse-maps the patient's regimen concept_ids to internal Therapies
+(Therapy.omop_concept_id), walks to components (→ their OMOP concept_ids) and to
+categories (→ CB codes).
 """
 import pytest
 from django.test import override_settings
@@ -17,7 +16,6 @@ from trials.models import (
     Therapy, TherapyComponent, TherapyComponentCategory,
     TherapyComponentConnection, TherapyComponentCategoryConnection, OmopConcept,
 )
-from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
 from trials.services.omop.therapy_graph import derive_component_and_type_values
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from trials.services.patient_info.patient_info import PatientInfo
@@ -40,196 +38,130 @@ def _graph():
     return vrd, bort, lena, pi_cat
 
 
-# ── component→category lookup (new) ──────────────────────────────────
-
-def test_component_concept_ids_to_type_codes_resolves_categories():
-    _graph()
-    codes = component_concept_ids_to_type_codes([str(BORT_CID)])
-    assert codes == ['zz_proteasome_inh']
-
-
-def test_component_concept_ids_to_type_codes_none_returns_none():
-    assert component_concept_ids_to_type_codes(None) is None
-
-
-def test_component_concept_ids_to_type_codes_empty_returns_empty():
-    assert component_concept_ids_to_type_codes([]) == []
-
-
-def test_component_concept_ids_to_type_codes_unknown_concept_returns_empty():
-    _graph()
-    assert component_concept_ids_to_type_codes(['99999999']) == []
-
-
-# ── legacy graph: unchanged ───────────────────────────────────────────
+# ── shared derivation helper ─────────────────────────────────────────
 
 def test_derive_legacy_codes_when_flag_off():
     _graph()
     comps, types = derive_component_and_type_values(['zz_vrd'])
-    assert sorted(comps) == ['zz_bort', 'zz_lena']
-    assert types == ['zz_proteasome_inh']
+    assert sorted(comps) == ['zz_bort', 'zz_lena']           # internal codes
+    assert types == ['zz_proteasome_inh']                    # CB category code
 
-
-# ── matcher: component level (direct overlap under OMOP) ─────────────
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_component_required_matches_via_direct_concept_id():
+def test_derive_concept_ids_for_components_cb_codes_for_types_when_flag_on():
     _graph()
-    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT_CID])
+    comps, types = derive_component_and_type_values([str(VRD_CID)])  # patient sends regimen concept_id
+    assert sorted(comps) == [str(BORT_CID), str(LEN_CID)]    # component OMOP concept_ids
+    assert types == ['zz_proteasome_inh']                    # types stay CB codes (not OMOP-mapped)
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_derive_none_when_regimen_concept_unknown():
+    _graph()
+    assert derive_component_and_type_values(['99999999']) == (None, None)
+
+
+# ── matcher: component level on OMOP concepts ────────────────────────
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_component_required_matches_via_concept_id():
+    _graph()
+    pi = PatientInfo(disease='multiple myeloma')
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
     res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
     assert res == 'matched'
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_component_excluded_blocks_via_direct_concept_id():
+def test_component_excluded_blocks_via_concept_id():
     _graph()
-    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT_CID])
+    pi = PatientInfo(disease='multiple myeloma')
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_excluded=[str(BORT_CID)])
     res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
     assert res == 'not_matched'
 
 
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_component_unknown_when_no_component_ids_sent():
-    """When CTOMOP has not sent therapy_component_ids (None), components are unknown."""
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma')  # therapy_component_ids defaults to None
-    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
-    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
-    assert res == 'unknown'
-
-
-# ── matcher: type level via component→category lookup (new) ───────────
+# ── matcher: type level via CB category graph (legacy column) ─────────
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_type_required_matches_via_component_category_lookup():
+def test_type_required_matches_via_cb_category_graph():
     _graph()
-    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT_CID])
+    pi = PatientInfo(disease='multiple myeloma')
+    # type column stays LEGACY (CB code) even under OMOP
     trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
     res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
     assert res == 'matched'
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_type_excluded_blocks_via_component_category_lookup():
+def test_type_excluded_blocks_via_cb_category_graph():
     _graph()
-    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT_CID])
+    pi = PatientInfo(disease='multiple myeloma')
     trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=['zz_proteasome_inh'])
     res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
     assert res == 'not_matched'
 
 
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_type_unknown_when_no_component_ids_sent():
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma')
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
-    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
-    assert res == 'unknown'
+# ── legacy unchanged ─────────────────────────────────────────────────
 
-
-# ── legacy (flag off): unchanged ─────────────────────────────────────
-
-def test_legacy_component_and_type_still_match_by_code():
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma')
-    trial = TrialFactory(
-        disease='multiple myeloma',
-        therapy_components_required=['zz_bort'],
-        therapy_types_required=['zz_proteasome_inh'],
-    )
-    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things(['zz_vrd'], False)
-    assert res == 'matched'
-
-
-# ── detail display under OMOP ──────────────────────────────────────────
+# ── detail display (therapy_related_things_match_status) under OMOP ───
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_component_required_status_via_direct_concept_id():
+def test_display_component_required_status_via_concept_id():
     _graph()
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        therapy_component_ids=[BORT_CID],
-        prior_therapy='One line',
-    )
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyComponentsRequired']['status'] == 'matched'
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_component_excluded_status_via_direct_concept_id():
+def test_display_component_excluded_status_via_concept_id():
     _graph()
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        therapy_component_ids=[BORT_CID],
-        prior_therapy='One line',
-    )
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_excluded=[str(BORT_CID)])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyComponentsExcluded']['status'] == 'not_matched'
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_type_required_status_via_lookup():
+def test_display_type_required_status_via_cb_graph():
     _graph()
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        therapy_component_ids=[BORT_CID],
-        prior_therapy='One line',
-    )
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
     trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesRequired']['status'] == 'matched'
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_type_excluded_status_via_lookup():
+def test_display_type_excluded_status_via_cb_graph():
     _graph()
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        therapy_component_ids=[BORT_CID],
-        prior_therapy='One line',
-    )
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
     trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=['zz_proteasome_inh'])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesExcluded']['status'] == 'not_matched'
 
 
-# ── detail: OMOP code + title (omopConcepts) ─────────────────────────
+# ── detail response: OMOP code + title (omopConcepts) ────────────────
 
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_display_includes_omop_concepts_code_and_title():
     _graph()
     OmopConcept.objects.create(concept_id=BORT_CID, concept_name='bortezomib', vocabulary_id='RxNorm')
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        therapy_component_ids=[BORT_CID],
-        prior_therapy='One line',
-    )
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyComponentsRequired']['omopConcepts'] == [
         {'code': BORT_CID, 'title': 'bortezomib', 'vocab': 'RxNorm'}
     ]
+    # types are CB-coded (not OMOP) → no omopConcepts on the type criterion
     assert 'omopConcepts' not in out['therapyTypesRequired']
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_omop_concepts_unresolved_keeps_code():
-    _graph()
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        therapy_component_ids=[BORT_CID],
-        prior_therapy='One line',
-    )
+    _graph()  # no OmopConcept row for BORT_CID
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID), prior_therapy='One line')
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyComponentsRequired']['omopConcepts'] == [
@@ -245,39 +177,13 @@ def test_no_omop_concepts_field_when_flag_off():
     assert 'omopConcepts' not in out['therapyComponentsRequired']
 
 
-# ── display/match consistency when component IDs absent ──────────────
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_component_required_is_unknown_when_no_component_ids():
-    """Regression: display must not show 'not_matched' when the matcher returns 'unknown'.
-
-    When CTOMOP has not sent therapy_component_ids (None), the matcher returns
-    'unknown' for component/type required criteria. The display must agree —
-    previously the `or []` coercion converted None to [] and fed an empty
-    overlap to match_required(), which returned 'not_matched' from the regimen-
-    level mismatch_status. That contradicts the matcher output visible in the
-    trial list (trial appears as potentially eligible).
-    """
+def test_legacy_component_and_type_still_match_by_code():
     _graph()
-    pi = PatientInfo(
+    pi = PatientInfo(disease='multiple myeloma')
+    trial = TrialFactory(
         disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        prior_therapy='One line',
-        # therapy_component_ids not supplied → None
+        therapy_components_required=['zz_bort'],
+        therapy_types_required=['zz_proteasome_inh'],
     )
-    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
-    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
-    assert out['therapyComponentsRequired']['status'] == 'unknown'
-
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_type_required_is_unknown_when_no_component_ids():
-    _graph()
-    pi = PatientInfo(
-        disease='multiple myeloma',
-        first_line_therapy=str(VRD_CID),
-        prior_therapy='One line',
-    )
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
-    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
-    assert out['therapyTypesRequired']['status'] == 'unknown'
+    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things(['zz_vrd'], False)
+    assert res == 'matched'

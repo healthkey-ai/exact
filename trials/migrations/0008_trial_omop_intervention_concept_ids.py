@@ -5,7 +5,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("trials", "0012_omopconcept"),
+        ("trials", "0007_alter_trial_benefit_score_and_more"),
     ]
 
     operations = [

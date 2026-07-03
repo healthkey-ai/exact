@@ -174,6 +174,7 @@ export function filterStateToParams(filters?: FilterState): Record<string, strin
   if (filters.sponsor) out.sponsor = filters.sponsor;
   if (filters.register) out.register = filters.register;
   if (filters.searchTitle) out.searchTitle = filters.searchTitle;
+  if (filters.searchTreatment) out.searchTreatment = filters.searchTreatment;
   if (filters.type) out.type = filters.type;
   if (filters.sort) out.sort = filters.sort;
   return out;
