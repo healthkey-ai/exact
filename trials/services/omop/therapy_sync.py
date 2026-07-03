@@ -9,7 +9,7 @@ Ported from CancerBot (CB epic #4447). EXACT has no live post_save sync task —
 in production CB owns the trials table and ships the populated omop_* columns;
 EXACT only runs this from the backfill command (local single-DB mode).
 """
-from django.db import transaction
+from django.db import router, transaction
 
 from trials.models import Trial
 from trials.services.omop.therapy_concept_mapper import build_omop_columns
@@ -23,7 +23,8 @@ def sync_trial_omop_columns(trial_id):
     Returns ``(None, None, False)`` if the trial no longer exists. Writes via
     QuerySet.update() (no signal re-fire) and only when values change.
     """
-    with transaction.atomic(using='trials'):
+    _db = router.db_for_write(Trial) or 'default'
+    with transaction.atomic(using=_db):
         trial = Trial.objects.select_for_update().filter(id=trial_id).first()
         if trial is None:
             return None, None, False

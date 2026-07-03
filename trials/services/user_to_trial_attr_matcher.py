@@ -303,10 +303,13 @@ class UserToTrialAttrMatcher:
                         therapy_types_to_therapy[code] = cat_title.get(code, code)
             else:
                 # Legacy: walk the CB graph to build display maps.
+                # prefetch_related avoids N+1; sort in Python (.order_by() on a
+                # prefetched queryset bypasses the cache and re-issues queries).
                 from trials.services.omop.therapy_graph import resolve_regimens
-                for therapy in resolve_regimens(therapy_codes):
+                qs = resolve_regimens(therapy_codes).prefetch_related('components__categories')
+                for therapy in qs:
                     therapies[therapy.code] = therapy.title
-                    for component in therapy.components.order_by('id').all():
+                    for component in sorted(therapy.components.all(), key=lambda c: c.id):
                         therapy_components_to_therapy.setdefault(component.code, component.title)
                         for category in component.categories.all():
                             therapy_types_to_therapy.setdefault(category.code, category.title)
