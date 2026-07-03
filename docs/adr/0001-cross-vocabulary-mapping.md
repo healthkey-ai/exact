@@ -1,6 +1,6 @@
 # ADR 0001: Cross-vocabulary therapy matching (CB ↔ OMOP ↔ EXACT)
 
-- **Status:** Accepted. **Authoring (CB crosswalk) + materialized trial `omop_*` columns + the flag seam are implemented** behind `EXACT_OMOP_THERAPY` (default OFF) on branch `feat/omop-crosswalk-exact` (EXACT PRs #192–#208, #4476; CB epic #4447), **not yet merged to `main`**. The **matching design (§3–§4) is the decided target** — the feat branch currently uses an interim graph-based derivation; see "Delta from the current feat-branch implementation" + "Migration". Non-therapy domains: proposed (future, last section).
+- **Status:** Accepted. **Full minimal-EXACT design implemented** behind `EXACT_OMOP_THERAPY` (default OFF): crosswalk + materialized `omop_*` trial columns (CB epic #4447, EXACT PRs #192–#208, #4476) + component concept_id support + `component→category` lookup + removal of `therapy_graph` reverse-resolution (EXACT PR #217). **Pending merge `2omop` → `main`.** Non-therapy domains: proposed (future, last section).
 - **Date:** 2026-06-18 (rewritten 2026-06-19)
 - **Deciders:** EXACT + CancerBot teams
 - **Reviews:** Codex (consult) + gstack `/plan-eng-review` on the options; this revision reconciled against the as-built code after auditing CB epic #4447 and the EXACT port.
@@ -56,7 +56,7 @@ A standalone ETL *replaces* every trial's fields with CTOMOP vocab so EXACT need
 
 ## Decision — the design
 
-**Authoring (CB) + materialized distribution columns (CB-filled) + a flag-gated matching seam (EXACT), with all `CB↔HemOnc` mapping kept out of EXACT.** §1–§2 are as-built; §3–§4 are the decided target (the current `feat` branch differs — see "Delta from the current feat-branch implementation"). Concretely:
+**Authoring (CB) + materialized distribution columns (CB-filled) + a flag-gated matching seam (EXACT), with all `CB↔HemOnc` mapping kept out of EXACT.** §1–§4 are fully implemented behind the flag (PR #217 completed the final delta to the minimal-EXACT design). Concretely:
 
 ### 1. The crosswalk lives in CB and is curated there
 - Built offline **in CB** by `cancerbot/docs/omop/mapping/build_mapping.py`: name-match CB vocab titles against pinned Athena/CTOMOP dumps (RxNorm drugs, **HemOnc** regimens, drug-class categories) + hand-curated overrides + explicit `NO_OMOP` (procedures). `build_mapping.py` itself does **no** LLM step; the `llm`-tagged rows are LLM-proposed and merged into the CSV by a separate curation step. **EXACT vendors only the resulting CSV** (`docs/omop/mapping/therapy_omop_mapping.csv`) and loads it via `load_therapy_omop_concept_ids` (which accepts `auto`/`curated`/`llm` rows).
@@ -103,7 +103,7 @@ HemOnc's class structure fits our category hierarchy poorly, so **we keep our ow
 - **`therapy` (regimen) and `component` (drug) map 1:1 to concept_ids — in CB.** CB fills the trial `omop_therapies_*` / `omop_therapy_components_*` columns; **CTOMOP** supplies the patient's regimen + component concept_ids. EXACT never resolves either — pure overlap on both sides.
 - **`type` (category) is the one thing EXACT knows.** Types have no usable OMOP concept (below), so they stay a **CB-hierarchy construct**. EXACT holds **one CB-generated lookup, `component_concept_id → CB category code`**: the patient's component concepts resolve to CB categories, overlapped against the trial's legacy `therapy_types_*` (CB codes). The category linkage is CB-authored (`TherapyComponentCategoryConnection`); EXACT just reads the compiled `component→category` table.
 
-Net effect: **EXACT holds no `CB↔HemOnc` therapy/component mapping and no reverse-resolution** (the current `omop/therapy_graph.py` regimen→internal→graph walk is removed). The only crosswalk in EXACT is `component→category`.
+Net effect: **EXACT holds no `CB↔HemOnc` therapy/component mapping and no reverse-resolution** (`omop/therapy_graph.py` reverse-resolution removed in PR #217). The only crosswalk in EXACT is `component→category`.
 
 ### Why types are NOT OMOP-mapped (decided A)
 
@@ -128,11 +128,11 @@ Under `EXACT_OMOP_THERAPY=ON`, patient on RVd supplies regimen `[35806260]` + co
 
 Net: regimen + component match in **OMOP concept_id space with zero EXACT logic**; types match in **CB-category-code space** via the single `component→category` lookup.
 
-### Delta from the current feat-branch implementation
+### Delta from the original feat-branch implementation *(completed in PR #217)*
 
-The `feat/omop-crosswalk-exact` code today does this differently and must change to reach the decision:
-- **Today:** patient arrives regimen-only; `omop/therapy_graph.py` reverse-maps regimen `concept_id` → internal `Therapy` (via `Therapy.omop_concept_id`) → components → categories (all CB M2M). `omop_therapy_types_*` is built (dead).
-- **Target (decided):** CTOMOP surfaces component concepts on `PatientInfo`; EXACT drops `therapy_graph` reverse-resolution and does pure overlap for regimen+component; adds a compiled `component→category` lookup for types; drops `omop_therapy_types_*` + the `category` pipeline level.
+The original `feat/omop-crosswalk-exact` build used an interim approach that has since been replaced:
+- **Was:** patient arrived regimen-only; `omop/therapy_graph.py` reverse-mapped regimen `concept_id` → internal `Therapy` (via `Therapy.omop_concept_id`) → components → categories (all CB M2M). `omop_therapy_types_*` columns existed (dead).
+- **Now (PR #217):** CTOMOP surfaces component `concept_id`s on `PatientInfo`; EXACT does pure overlap for regimen + component; `trials/services/omop/component_category_lookup.py` resolves component → CB category codes; `omop_therapy_types_*` columns and the `category` pipeline level are dropped (migration 0014, `DROP INDEX CONCURRENTLY`).
 
 ## Distribution: read-only replica
 
@@ -152,11 +152,13 @@ The `omop_*` trial columns ARE the integration contract. Other projects read the
 - **Demographics:** OMOP gender/ethnicity (gender + ethnicity→RACE concepts) is built in CB but **not yet ported to EXACT** (`shadow_compare` notes therapy-only).
 - **Levels:** `planned_*`/`supportive_*` await concept_ids in their vocabs; `therapy_types_*` intentionally stays legacy (CB category codes).
 
-### Migration to the decided minimal-EXACT design (delta from `feat/omop-crosswalk-exact`)
-1. **CTOMOP (under our control):** surface patient **component (drug) concept_ids** on the `PatientInfo` contract (data already exists in OMOP `DrugExposure.drug_concept`, RxNorm), alongside the regimen ids (PR #168).
-2. **CB:** generate + ship a compiled **`component_concept_id → CB category code`** lookup (from `TherapyComponentCategoryConnection`), regenerated on component↔category changes, `shadow_compare`-guarded like the columns.
-3. **EXACT:** remove `omop/therapy_graph.py` reverse-resolution; regimen+component = direct overlap on the patient-supplied concepts; add the `component→category` lookup for types.
-4. **EXACT:** drop `omop_therapy_types_*` columns + the `category` level from `THERAPY_LEVELS` and the CB pipeline; `makemigrations --check` after dropping the columns + their GIN indexes.
+### Migration to the decided minimal-EXACT design *(completed in PR #217)*
+
+All four steps done:
+1. ✓ **CTOMOP + EXACT:** component (drug) `concept_id`s surfaced on `PatientInfo` (CTOMOP PR #168 + `PatientInfoAttributes.get_user_therapy_component_ids()` in EXACT).
+2. ✓ **EXACT:** `component→category` lookup implemented in `trials/services/omop/component_category_lookup.py`: reads `TherapyComponent.omop_concept_id → TherapyComponentCategoryConnection → TherapyComponentCategory.code` from EXACT's existing taxonomy tables. (The underlying `TherapyComponentCategoryConnection` data is CB-authored and synced to EXACT via the normal taxonomy load — no separate CB-shipped artifact needed.)
+3. ✓ **EXACT:** `omop/therapy_graph.py` removed; regimen + component matching is pure `concept_id` overlap on patient-supplied ids; `component_category_lookup.py` handles type resolution.
+4. ✓ **EXACT:** `omop_therapy_types_*` columns dropped (migration 0014, `DROP INDEX CONCURRENTLY`); `category` level removed from `THERAPY_LEVELS` and CB pipeline.
 
 ## Generic cross-vocabulary mapping — non-therapy domains (future, NOT yet built)
 
