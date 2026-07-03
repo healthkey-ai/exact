@@ -34,6 +34,21 @@ def django_db_setup(django_db_setup, django_db_blocker):
         LoadTrialTaxonomy().load_all()
 
 
+@pytest.fixture(autouse=True)
+def clear_component_lookup_cache():
+    """Clear the component_category_lookup lru_cache between tests.
+
+    The cache is module-level. pytest-django rolls back DB transactions after
+    each test but does NOT clear Python module caches, so a test that seeds
+    TherapyComponent rows and calls _lookup() would leave stale cache entries
+    visible to subsequent tests that assume a clean DB for the same concept_ids.
+    """
+    from trials.services.omop.component_category_lookup import _lookup
+    _lookup.cache_clear()
+    yield
+    _lookup.cache_clear()
+
+
 @pytest.fixture
 def patient_info():
     return PatientInfo(disease='multiple myeloma')
