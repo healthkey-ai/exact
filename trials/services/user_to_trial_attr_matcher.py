@@ -353,6 +353,12 @@ class UserToTrialAttrMatcher:
             "therapiesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), therapies, mismatch_status),
             "therapiesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), therapies),
             "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), therapy_types_to_therapy, component_mismatch_status),
+            # Excluded criteria when component_ids=None → therapy_types_to_therapy/
+            # therapy_components_to_therapy are both empty → match_excluded finds no
+            # overlap → returns 'matched' (= patient not disqualified). This is intentional
+            # fail-open: if we don't know what the patient had, we can't disqualify them
+            # on exclusion criteria. Contrast with required criteria which use
+            # component_mismatch_status to return 'unknown' in the same situation.
             "therapyTypesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), therapy_types_to_therapy),
             "therapyComponentsRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), therapy_components_to_therapy, component_mismatch_status),
             "therapyComponentsExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), therapy_components_to_therapy),

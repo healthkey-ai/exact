@@ -1073,6 +1073,13 @@ class TrialQuerySet(models.QuerySet):
             from trials.services.omop.therapy_graph import derive_component_and_type_values
             component_codes, therapy_types = derive_component_and_type_values(therapy_codes)
 
+        # Both None and [] skip the component/type filter here (the queryset is a
+        # pre-filter; the matcher makes the authoritative decision per-trial). For None
+        # (unknown), skipping is fail-open; for [] (known-empty), skipping is also
+        # correct — an empty component list can't satisfy any component requirement, so
+        # the trial passes pre-filtering and the matcher marks it 'not_matched' in the
+        # detail view. CTOMOP sends either absent (→ None) or a non-empty list, so the
+        # [] case is currently theoretical.
         if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
         if therapy_types:

@@ -12,6 +12,7 @@ The result overlaps the legacy ``therapy_types_*`` columns (CB category codes, u
 Returns ``None`` when concept_ids is None (unknown → fail-closed); returns ``[]`` when the
 lookup yields no categories (known-empty → no types to match).
 """
+import functools
 
 
 def component_concept_ids_to_type_codes(concept_ids):
@@ -19,14 +20,23 @@ def component_concept_ids_to_type_codes(concept_ids):
 
     Returns None when concept_ids is None.  Returns [] when the lookup yields
     nothing (patient has no resolvable types).
+
+    Accepts a list; internally converts to a tuple for the cached inner call so
+    the same concept_id set for one patient isn't queried repeatedly across N trials.
     """
     if concept_ids is None:
         return None
-    if not concept_ids:
+    return _lookup(tuple(concept_ids))
+
+
+@functools.lru_cache(maxsize=256)
+def _lookup(concept_ids_tuple):
+    """Cached DB lookup — keyed on the sorted tuple of concept_id strings."""
+    if not concept_ids_tuple:
         return []
 
     from trials.models import TherapyComponent
-    cids = [int(v) for v in concept_ids if str(v).isdigit()]
+    cids = [int(v) for v in concept_ids_tuple if str(v).isdigit()]
     if not cids:
         return []
 

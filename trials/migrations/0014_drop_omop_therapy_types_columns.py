@@ -5,14 +5,18 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
 
+    atomic = False  # DROP INDEX CONCURRENTLY cannot run inside a transaction
+
     dependencies = [
         ('trials', '0013_therapyomopmapping'),
     ]
 
     operations = [
-        migrations.RemoveIndex(
-            model_name='trial',
-            name='idx_omop_therapy_types_gin',
+        # Use CONCURRENTLY to avoid ACCESS EXCLUSIVE lock on the Trial table.
+        # atomic=False is required (CONCURRENTLY is forbidden inside transactions).
+        migrations.RunSQL(
+            sql='DROP INDEX CONCURRENTLY IF EXISTS idx_omop_therapy_types_gin',
+            reverse_sql=migrations.RunSQL.noop,
         ),
         migrations.RemoveField(
             model_name='trial',
