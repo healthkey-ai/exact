@@ -211,6 +211,7 @@ CACHES = build_caches(
     redis_url=os.environ.get('REDIS_URL'),
     debug=DEBUG,
     environment=ENVIRONMENT,
+    force_redis=os.environ.get('CACHE_BACKEND', '').lower() == 'redis',
     redis_ca_certs=os.environ.get('REDIS_SSL_CA_CERTS'),
 )
 
@@ -376,6 +377,20 @@ ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') =
 # ---------------------------------------------------------------------------
 CTOMOP_BASE = os.environ.get('CTOMOP_BASE', '')
 CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
+
+
+# ---------------------------------------------------------------------------
+# OMOP therapy matching (epic #4447 cutover).
+# When True, trial therapy matching reads the omop_* concept_id columns instead
+# of the legacy internal-code columns. Matching is a direct concept_id overlap:
+# patient therapies are supplied as concept_ids by the consumer (CTOMOP), with no
+# EXACT-side translation. OFF by default — capability-gated: only
+# flip once the vocab omop_concept_id mappings are loaded and the trial omop_*
+# columns are backfilled (see trials/services/omop/ + the shadow-compare report).
+# Only the three mapped levels (regimen/component/class) flip; planned/supportive
+# stay on the legacy columns until their vocabs gain concept_ids.
+# ---------------------------------------------------------------------------
+EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', 'true', 'yes', 'on')
 
 
 # ---------------------------------------------------------------------------

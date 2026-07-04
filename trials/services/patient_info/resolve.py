@@ -236,7 +236,9 @@ def _normalize_structured_json_fields(data: dict):
     # Coerce None / non-list / non-string items to [] so the default=list
     # contract holds when CB sends `null` or `_coerce_json_fields` falls
     # through on malformed input (which sets the value to None).
-    for key in ('extranodal_sites', 'bulky_disease_criteria'):
+    # NB: bulky_disease_criteria / high_risk_mcl_criteria are derived
+    # comma-strings (computed in normalize for MCL), not list inputs.
+    for key in ('extranodal_sites',):
         val = data.get(key)
         if key not in data:
             continue

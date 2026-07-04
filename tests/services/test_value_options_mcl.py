@@ -66,6 +66,7 @@ class TestMclFormSettingsRegistry:
             'concomitantMedicationsMcl',
             'stagesMcl',
             'bulkyDiseaseCriteria',
+            'highRiskMclCriteria',
             'therapiesMcl',
             'plannedTherapiesMcl',
             'therapyOutcomeMcl',

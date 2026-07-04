@@ -18,3 +18,14 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+
+## Porting changes from CancerBot (CB)
+
+CancerBot (`/Users/lm/work/biblum/cancerbot`) is the **primary/upstream** for search & matcher
+logic; EXACT is downstream and receives ported changes. The therapy matcher/queryset/config is
+~95% identical between the repos — keep it that way.
+
+When porting any search/matcher change from CB, or touching therapy matching / the OMOP fields,
+**read and follow [docs/porting-from-cancerbot.md](docs/porting-from-cancerbot.md) first.** Core
+rules: port verbatim (no mid-port refactors), keep legacy-mode EXACT byte-identical to CB, and
+confine all OMOP divergence to the `TherapyMatchProfile` seam behind the (default-OFF) feature flag.

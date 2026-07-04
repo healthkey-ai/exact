@@ -3,6 +3,8 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+
 if TYPE_CHECKING:
     from trials.models import Trial
     from trials.services.patient_info.patient_info import PatientInfo
@@ -110,6 +112,26 @@ def min_max_match(
         return 'matched'
 
 
+def _resolve_omop_concepts(concept_id_values):
+    """Resolve a list of OMOP concept_id strings to [{code, title, vocab}] via
+    OmopConcept. Unresolved concept_ids still return their code (title/vocab None)."""
+    if not concept_id_values:
+        return []
+    from trials.models import OmopConcept
+    cids = [int(v) for v in concept_id_values if str(v).isdigit()]
+    by_id = {c.concept_id: c for c in OmopConcept.objects.filter(concept_id__in=cids)}
+    out = []
+    for v in concept_id_values:
+        code = int(v) if str(v).isdigit() else v
+        c = by_id.get(code) if isinstance(code, int) else None
+        out.append({
+            'code': code,
+            'title': c.concept_name if c else None,
+            'vocab': c.vocabulary_id if c else None,
+        })
+    return out
+
+
 class UserToTrialAttrMatcher:
     def __init__(self, trial: 'Trial', patient_info: 'PatientInfo') -> None:
         self.trial = trial
@@ -170,6 +192,40 @@ class UserToTrialAttrMatcher:
             return 0
         return int(float(eligible_count) * 100 / float(all_count))
 
+    def match_score_and_status(self) -> tuple[int, 'TrialMatchStatus']:
+        """Single-pass equivalent of (trial_match_score(), trial_match_status()).
+
+        Walks the attr mapping once instead of twice — callers that need both
+        (the detail serializer) avoid the duplicate pass. Results are identical to
+        calling the two methods separately; no caching, so it still reflects the
+        current patient state on every call.
+        """
+        eligible_count = 0
+        all_count = 0
+        has_not_matched = False
+        has_unknown = False
+        for attr, trial_attr_meta in self.mapping.items():
+            if "disease" in trial_attr_meta and (
+                self.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self.disease_code)
+            ):
+                continue
+            status = self.attr_match_status(attr)
+            all_count += 1
+            if status == 'not_matched':
+                has_not_matched = True
+            elif status == 'matched':
+                eligible_count += 1
+            elif status == 'unknown':
+                has_unknown = True
+
+        if has_not_matched:
+            return 0, 'not_eligible'
+        if all_count == 0:
+            return 0, 'eligible'
+        score = int(float(eligible_count) * 100 / float(all_count))
+        return score, ('potential' if has_unknown else 'eligible')
+
     def is_patient_info_attr_blank(self, patient_info_attr: str) -> bool:
         return self.patient_info_attr.is_attr_blank(patient_info_attr)
 
@@ -198,36 +254,36 @@ class UserToTrialAttrMatcher:
         return 'not_matched'
 
     def therapy_related_things_match_status(self):
-        therapies = []
-        therapy_components = []
-        therapy_components_to_therapy = {}
-        therapy_types = []
-        therapy_types_to_therapy = {}
+        from trials.services.therapy_match_profile import omop_therapy_enabled
+        from trials.services.omop.therapy_graph import resolve_regimens
+
+        therapies = {}                       # regimen match-value -> title
+        therapy_components_to_therapy = {}   # component match-value -> title
+        therapy_types_to_therapy = {}        # CB category code -> title (types not OMOP-mapped)
         therapy_codes = self.patient_info_attr.get_user_therapies()
 
         mismatch_status = self.therapy_related_things_mismatch_status()
 
-        if len(therapy_codes) > 0:
-            from trials.models import Therapy
-
-            therapies = Therapy.objects.filter(
-                code__in=therapy_codes
-            ).prefetch_related('components__categories')
-            for therapy in therapies:
-                # Sort in Python so the prefetch cache is reused — `.order_by()`
-                # would issue a fresh components query per therapy (an N+1 in
-                # this per-request, per-trial matcher hot path).
+        # Build the patient-side display maps keyed by whatever the trial columns
+        # hold per the active profile, so match_required/excluded overlap correctly:
+        # under OMOP regimen/component keys are concept_ids (reverse-mapped via the
+        # CB graph), type keys are CB category codes (legacy column); legacy → codes.
+        if therapy_codes:
+            omop = omop_therapy_enabled()
+            for therapy in resolve_regimens(therapy_codes).prefetch_related('components__categories'):
+                if omop:
+                    if therapy.omop_concept_id is not None:
+                        therapies[str(therapy.omop_concept_id)] = therapy.title
+                else:
+                    therapies[therapy.code] = therapy.title
                 for component in sorted(therapy.components.all(), key=lambda c: c.id):
-                    if component not in therapy_components:
-                        therapy_components.append(component)
-                        therapy_components_to_therapy[component.code] = component.title
-
-                        for category in component.categories.all():
-                            if category not in therapy_types:
-                                therapy_types.append(category)
-                                therapy_types_to_therapy[category.code] = category.title
-
-        therapies = {x.code: x.title for x in therapies}
+                    if omop:
+                        if component.omop_concept_id is not None:
+                            therapy_components_to_therapy.setdefault(str(component.omop_concept_id), component.title)
+                    else:
+                        therapy_components_to_therapy.setdefault(component.code, component.title)
+                    for category in component.categories.all():
+                        therapy_types_to_therapy.setdefault(category.code, category.title)
 
         def match_required(trial_values, matching_values, mismatch_status):
             overlap = get_overlap(trial_values, matching_values.keys())
@@ -268,13 +324,25 @@ class UserToTrialAttrMatcher:
             }
 
         out = {
-            "therapiesRequired": match_required(self.trial.therapies_required, therapies, mismatch_status),
-            "therapiesExcluded": match_excluded(self.trial.therapies_excluded, therapies),
-            "therapyTypesRequired": match_required(self.trial.therapy_types_required, therapy_types_to_therapy, mismatch_status),
-            "therapyTypesExcluded": match_excluded(self.trial.therapy_types_excluded, therapy_types_to_therapy),
-            "therapyComponentsRequired": match_required(self.trial.therapy_components_required, therapy_components_to_therapy, mismatch_status),
-            "therapyComponentsExcluded": match_excluded(self.trial.therapy_components_excluded, therapy_components_to_therapy),
+            "therapiesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), therapies, mismatch_status),
+            "therapiesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), therapies),
+            "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), therapy_types_to_therapy, mismatch_status),
+            "therapyTypesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), therapy_types_to_therapy),
+            "therapyComponentsRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), therapy_components_to_therapy, mismatch_status),
+            "therapyComponentsExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), therapy_components_to_therapy),
         }
+
+        # OMOP code + title per criterion (additive). Only the OMOP-mapped levels
+        # (regimen + component) hold concept_ids; resolve the TRIAL's required/excluded
+        # concept_ids to OMOP names via OmopConcept. Types stay CB-coded (no OMOP).
+        if omop_therapy_enabled():
+            for key, col in (
+                ('therapiesRequired', THERAPY_MATCH_PROFILE.therapies_required),
+                ('therapiesExcluded', THERAPY_MATCH_PROFILE.therapies_excluded),
+                ('therapyComponentsRequired', THERAPY_MATCH_PROFILE.therapy_components_required),
+                ('therapyComponentsExcluded', THERAPY_MATCH_PROFILE.therapy_components_excluded),
+            ):
+                out[key]['omopConcepts'] = _resolve_omop_concepts(getattr(self.trial, col))
 
         return out
 
@@ -343,35 +411,25 @@ class UserToTrialAttrMatcher:
 
     def _match_therapy_related_things(self, values, has_no_prior_therapy):
         results = []
-        res = self._match_therapy_things(values, self.trial.therapies_required, self.trial.therapies_excluded, has_no_prior_therapy)
+        res = self._match_therapy_things(values, getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
 
-        therapies = None
-        if values:
-            from trials.models import Therapy
-            therapies = Therapy.objects.filter(code__in=values).all()
+        # Component + type (class) values are derived from the regimen via the CB
+        # graph. Under OMOP the regimen concept_ids are reverse-mapped to internal
+        # Therapies, components → their OMOP concept_ids (vs omop_therapy_components_*),
+        # types → CB category codes (vs the LEGACY therapy_types_* columns, which the
+        # OMOP profile keeps — types are not OMOP-mapped). See #197 / therapy_graph.
+        from trials.services.omop.therapy_graph import derive_component_and_type_values
+        component_codes, therapy_types = derive_component_and_type_values(values)
 
-        if therapies and therapies.count() > 0:
-            from trials.models import TherapyComponent
-            from trials.models import TherapyComponentCategory
-
-            components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__in=therapies).order_by('id').all()
-            component_codes = [x.code for x in components]
-
-            categories = TherapyComponentCategory.objects.filter(therapycomponentcategoryconnection__component__in=components).order_by('id').all()
-            therapy_types = [x.code for x in categories]
-        else:
-            component_codes = None
-            therapy_types = None
-
-        res = self._match_therapy_things(component_codes, self.trial.therapy_components_required, self.trial.therapy_components_excluded, has_no_prior_therapy)
+        res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
 
-        res = self._match_therapy_things(therapy_types, self.trial.therapy_types_required, self.trial.therapy_types_excluded, has_no_prior_therapy)
+        res = self._match_therapy_things(therapy_types, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
@@ -656,6 +714,11 @@ class UserToTrialAttrMatcher:
             return 'matched'
 
     def _match_computed_attr(self, ctx):
+        # "Named OR" criteria attrs (e.g. high-risk MCL) need count/sufficient/
+        # excluded semantics that the generic per-subattr overlap can't express.
+        if ctx.meta.get("criteria_count_match"):
+            return self._match_criteria_count(ctx.meta)
+
         matching_results = []
 
         for trial_subattr_name, uvalue_function in ctx.meta["uvalue_function"].items():
@@ -667,6 +730,127 @@ class UserToTrialAttrMatcher:
         if 'unknown' in matching_results:
             return 'unknown'
         return 'matched'
+
+    def _match_criteria_count(self, trial_attr_meta):
+        """Three-valued match for "named OR" criteria attributes (e.g. high-risk MCL).
+
+        Distinguishes a true unknown (source data for a required criterion was
+        never entered) from a confirmed "none" (sources entered, criterion
+        absent). See #4399. The verdict combines up to three rule sets:
+
+        - required (inclusion) with an optional per-trial minimum count; a null
+          / absent min_count means "any" (effectively 1).
+        - sufficient_any (#4402): any single one of these criteria satisfies
+          inclusion on its own, regardless of min_count. ORed with the required
+          rule.
+        - excluded (#4401): a patient with any excluded criterion is gated out;
+          an undeterminable excluded criterion keeps the trial Potential. ANDed
+          with the inclusion decision.
+
+        Each rule is evaluated three-valued; the aggregate follows the generic
+        computed matcher precedence — not_matched wins, then unknown, else
+        matched.
+        """
+        derived_csv = trial_attr_meta["criteria_derived"](self.patient_info)
+        derived = {c.strip() for c in (derived_csv or '').split(',') if c.strip()}
+
+        def rule_status(codes, threshold):
+            """Three-valued status for "patient meets >= threshold of codes"."""
+            if not codes:
+                return None
+            unknown_codes = trial_attr_meta["criteria_unknown_codes"](self.patient_info_attr, codes)
+            matched = sum(1 for c in codes if c in derived)
+            unknown = sum(1 for c in codes if c not in derived and c in unknown_codes)
+            if matched >= threshold:
+                return 'matched'
+            if matched + unknown >= threshold:
+                return 'unknown'
+            return 'not_matched'
+
+        statuses = []
+
+        # Inclusion: required (>= min_count) OR sufficient_any (>= 1).
+        min_count_attr = trial_attr_meta.get("criteria_min_count_attr")
+        min_count = getattr(self.trial, min_count_attr, None) if min_count_attr else None
+        if not min_count or min_count < 1:
+            min_count = 1
+        required = getattr(self.trial, trial_attr_meta["criteria_required_attr"], None) or []
+
+        sufficient_attr = trial_attr_meta.get("criteria_sufficient_any_attr")
+        sufficient_any = getattr(self.trial, sufficient_attr, None) or [] if sufficient_attr else []
+
+        inclusion_rules = [s for s in (rule_status(required, min_count), rule_status(sufficient_any, 1)) if s is not None]
+        if inclusion_rules:
+            if 'matched' in inclusion_rules:
+                statuses.append('matched')
+            elif 'unknown' in inclusion_rules:
+                statuses.append('unknown')
+            else:
+                statuses.append('not_matched')
+
+        # Exclusion (any one excluded criterion gates the patient out).
+        excluded_attr = trial_attr_meta.get("criteria_excluded_attr")
+        excluded = getattr(self.trial, excluded_attr, None) or [] if excluded_attr else []
+        excl_status = rule_status(excluded, 1)
+        if excl_status == 'matched':
+            statuses.append('not_matched')
+        elif excl_status == 'unknown':
+            statuses.append('unknown')
+
+        if 'not_matched' in statuses:
+            return 'not_matched'
+        if 'unknown' in statuses:
+            return 'unknown'
+        return 'matched'
+
+    def high_risk_mcl_criteria_breakdown(self):
+        """Per-criterion explainability for the high-risk MCL attribute (#4408).
+
+        Returns the aggregate verdict plus, for each of the required / excluded /
+        sufficient_any lists, the per-criterion status: 'matched' (patient has
+        it), 'unknown' (its source data is missing) or 'not_matched' (confirmed
+        absent). Titles are intentionally omitted — the UI maps codes to titles
+        via the high-risk-mcl-criteria options. Returns None for a trial that
+        gates on no high-risk criteria.
+        """
+        meta = self.mapping['high_risk_mcl_criteria']
+        required = getattr(self.trial, meta['criteria_required_attr'], None) or []
+        excluded = getattr(self.trial, meta['criteria_excluded_attr'], None) or []
+        sufficient_any = getattr(self.trial, meta['criteria_sufficient_any_attr'], None) or []
+        if not (required or excluded or sufficient_any):
+            return None
+
+        derived_csv = meta['criteria_derived'](self.patient_info)
+        derived = {c.strip() for c in (derived_csv or '').split(',') if c.strip()}
+
+        def code_status(code, is_exclude):
+            """Per-criterion status in eligibility terms (consistent with the
+            aggregate verdict). For an excluded criterion, presence is
+            disqualifying so it reads not_matched, and confirmed absence reads
+            matched — the inverse of an inclusion criterion."""
+            if code in derived:
+                return 'not_matched' if is_exclude else 'matched'
+            unknown = meta['criteria_unknown_codes'](self.patient_info_attr, [code])
+            if code in unknown:
+                return 'unknown'
+            return 'matched' if is_exclude else 'not_matched'
+
+        def breakdown(codes, is_exclude=False):
+            return [{'code': c, 'status': code_status(c, is_exclude)} for c in codes]
+
+        min_count_attr = meta.get('criteria_min_count_attr')
+        min_count = getattr(self.trial, min_count_attr, None) if min_count_attr else None
+        if not min_count or min_count < 1:
+            min_count = 1
+
+        return {
+            'aggregate': self.attr_match_status('high_risk_mcl_criteria'),
+            'minCount': min_count,
+            'matchedCount': sum(1 for c in required if c in derived),
+            'required': breakdown(required),
+            'excluded': breakdown(excluded, is_exclude=True),
+            'sufficientAny': breakdown(sufficient_any),
+        }
 
     def _match_computed_subattr(self, trial_subattr_name, uvalue_func, is_blank):
         # Naming convention: trial attrs ending in `_excluded` are

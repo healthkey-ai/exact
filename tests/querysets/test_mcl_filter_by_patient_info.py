@@ -3,7 +3,7 @@ Regression test for #94 — filter_by_patient_info must not raise when an
 MCL patient has any of the 8 MCL custom_search attrs non-blank.
 
 Pre-fix, configs.py marked them with `custom_search=True` (or, for
-lesion_size_mcl, `custom_search=True` on a `min_max_value` type) but
+largest_lesion_size, `custom_search=True` on a `min_max_value` type) but
 the queryset had no corresponding `eligible_for_*` method and the
 attrs were absent from `_CUSTOM_SEARCH_DISPATCH`. Any MCL patient
 flowing through `filter_by_patient_info` with any of them set would
@@ -32,13 +32,14 @@ class TestMclFilterByPatientInfoSmoke:
         pi = PatientInfo(
             disease='mantle cell lymphoma',
             morphologic_variant='classic',
-            lesion_size_mcl=5.0,
+            largest_lesion_size=5.0,
             disease_behavior='indolent',
             disease_subtype='cmcl',
             extranodal_sites=['bone_marrow', 'gi_tract'],
             mipi_risk='low',
             mipi_c_risk='low',
-            bulky_disease_criteria=['bulky_lesion_5cm'],
+            bulky_disease_criteria='bulky_lesion_5cm',
+            high_risk_mcl_criteria='tp53_mutation',
         )
         # Pre-fix this would have raised
         #   Exception('type ... is not supported for user_attr "morphologic_variant"')
@@ -48,6 +49,27 @@ class TestMclFilterByPatientInfoSmoke:
         # Result count is a property of the underlying data; we just need
         # the call to succeed without raising.
         assert result.count() >= 0
+
+    @pytest.mark.django_db
+    def test_p53_ihc_min_max_constraint_applied(self):
+        # p53_ihc is wired as a min_max_value attr; a trial's p53 bounds must
+        # actually gate eligibility (regression for the unwired-field gap).
+        t_unconstrained = TrialFactory(disease='mantle cell lymphoma')
+        t_requires_high = TrialFactory(disease='mantle cell lymphoma', p53_ihc_min=50)
+
+        in_range, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='mantle cell lymphoma', p53_ihc=60)
+        )
+        in_ids = set(in_range.values_list('id', flat=True))
+        assert t_unconstrained.id in in_ids
+        assert t_requires_high.id in in_ids, 'p53=60 must satisfy p53_ihc_min=50'
+
+        out_range, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='mantle cell lymphoma', p53_ihc=40)
+        )
+        out_ids = set(out_range.values_list('id', flat=True))
+        assert t_unconstrained.id in out_ids
+        assert t_requires_high.id not in out_ids, 'p53=40 must fail p53_ihc_min=50'
 
 
 class TestMclQuerysetFilters:

@@ -1,4 +1,5 @@
 import pytest
+from django.test import override_settings
 
 from trials.services.value_options import ValueOptions
 from trials.services.trial_details.trial_templates import TrialTemplates
@@ -293,3 +294,54 @@ class TestTrialTemplates:
         # print("\n\n>>>>>res['trialEligibilityAttributes']", res['trialEligibilityAttributes'])
         assert res['trialEligibilityAttributes'] == [{'name': 'stemCellTransplantHistoryRequired', 'label': 'Stem Cell Transplant History', 'type': 'boolean', 'value': False, 'options': None, 'ureadonly': False, 'ufield': 'stemCellTransplantHistory', 'uvalue': False, 'utype': 'select', 'uoptions': [{'value': '', 'label': 'Unknown'}, {'value': 'None', 'label': 'None'}, {'value': 'completedASCT', 'label': 'Completed ASCT'}, {'value': 'eligibleForASCT', 'label': 'Eligible for ASCT'}, {'value': 'ineligibleForASCT', 'label': 'Ineligible for ASCT'}, {'value': 'completedAllogeneicSCT', 'label': 'Completed Allogeneic SCT'}, {'value': 'preASCT', 'label': 'Pre-ASCT'}, {'value': 'postASCT', 'label': 'Post-ASCT'}, {'value': 'neverReceivedSCT', 'label': 'Never Received SCT'}, {'value': 'sctIneligible', 'label': 'SCT-Ineligible'}, {'value': 'relapsedPostASCT', 'label': 'Relapsed Post-ASCT'}, {'value': 'relapsedPostAllogeneicSCT', 'label': 'Relapsed Post-Allogeneic SCT'}, {'value': 'completedTandemSCT', 'label': 'Completed Tandem SCT'}], 'dependencies': ['priorTherapy', 'laterTherapies', 'laterTherapy', 'secondLineTherapy', 'firstLineTherapy'], 'matchingType': 'matched'}, {'name': 'disease', 'label': 'Disease', 'type': 'select', 'value': 'Multiple Myeloma', 'options': [{'value': 'multiple myeloma', 'label': 'Multiple Myeloma'}, {'value': 'follicular lymphoma', 'label': 'Follicular Lymphoma'}, {'value': 'breast cancer', 'label': 'Breast Cancer'}, {'value': 'chronic lymphocytic leukemia', 'label': 'Chronic Lymphocytic Leukemia'}, {'value': 'mantle cell lymphoma', 'label': 'Mantle Cell Lymphoma'}], 'ureadonly': False, 'ufield': 'disease', 'uvalue': 'follicular lymphoma', 'utype': 'select', 'uoptions': [{'value': 'multiple myeloma', 'label': 'Multiple Myeloma'}, {'value': 'follicular lymphoma', 'label': 'Follicular Lymphoma'}, {'value': 'breast cancer', 'label': 'Breast Cancer'}, {'value': 'chronic lymphocytic leukemia', 'label': 'Chronic Lymphocytic Leukemia'}, {'value': 'mantle cell lymphoma', 'label': 'Mantle Cell Lymphoma'}], 'dependencies': [], 'matchingType': 'not_matched'}]
 
+
+
+class TestTrialTemplatesOmop:
+    """Trial detail rendering with EXACT_OMOP_THERAPY=True."""
+
+    @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=True)
+    def test_omop_column_shown_when_legacy_empty(self, patient_info):
+        """therapiesRequired must appear when OMOP column is non-empty even if legacy is []."""
+        trial = TrialFactory(
+            therapies_required=[],
+            omop_therapies_required=[35806260],
+        )
+        pi = patient_info
+        normalize_patient_info(pi)
+
+        res = TrialTemplates(trial, patient_info=pi).potential_attributes_first_view(None)
+        names = [f['name'] for f in res['trialEligibilityAttributes']]
+        assert 'therapiesRequired' in names, (
+            "therapiesRequired missing from detail view — omop_therapies_required not read"
+        )
+
+    @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
+    def test_legacy_column_shown_when_flag_off(self, patient_info):
+        """With flag OFF, legacy column drives rendering; OMOP column is ignored."""
+        trial = TrialFactory(
+            therapies_required=['vrd'],
+            omop_therapies_required=[],
+        )
+        pi = patient_info
+        normalize_patient_info(pi)
+
+        res = TrialTemplates(trial, patient_info=pi).potential_attributes_first_view(None)
+        names = [f['name'] for f in res['trialEligibilityAttributes']]
+        assert 'therapiesRequired' in names
+
+    @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=True)
+    def test_omop_column_skipped_when_empty(self, patient_info):
+        """With flag ON and both columns empty, therapiesRequired must not appear."""
+        trial = TrialFactory(
+            therapies_required=[],
+            omop_therapies_required=[],
+        )
+        pi = patient_info
+        normalize_patient_info(pi)
+
+        res = TrialTemplates(trial, patient_info=pi).potential_attributes_first_view(None)
+        names = [f['name'] for f in res['trialEligibilityAttributes']]
+        assert 'therapiesRequired' not in names

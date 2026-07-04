@@ -233,6 +233,21 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        data = serializer.data
+        # #4408: per-criterion high-risk MCL explainability (detail view only;
+        # None for trials that gate on no high-risk criteria, or without a patient).
+        patient_info = self._resolve_patient_info()
+        if patient_info is not None:
+            from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+            data['highRiskMclCriteriaBreakdown'] = (
+                UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
+                .high_risk_mcl_criteria_breakdown()
+            )
+        return Response(data)
+
     def get_paginated_response(self, data, extra_keys=None):
         assert self.paginator is not None
         return self.paginator.get_paginated_response(data, extra_keys=extra_keys)

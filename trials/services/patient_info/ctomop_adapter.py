@@ -25,6 +25,8 @@ from datetime import date
 from decimal import Decimal
 from functools import lru_cache
 
+from trials.services.therapy_match_profile import omop_therapy_enabled
+
 
 logger = logging.getLogger(__name__)
 
@@ -387,21 +389,36 @@ def normalize_ctomop_row(row: dict) -> dict:
     if not row.get('lactate_dehydrogenase_level') and row.get('ldh_u_l') is not None:
         row['lactate_dehydrogenase_level'] = row['ldh_u_l']
 
-    # ── Therapy fields — resolve CTOMOP display names to EXACT therapy codes ────
-    # CTOMOP stores therapy names as human-readable strings (e.g. "Anastrozole
-    # (Arimidex) (Anastrozole)"). EXACT's eligibility filters use normalized codes
-    # (e.g. "anastrozole"). resolve_therapy_code() does a title→code lookup via
-    # the LRU-cached Therapy/TherapyComponent map, stripping trailing parentheticals
-    # to match the EXACT title. Unresolvable values are set to None so they are
-    # treated as unknown (potential) by the matcher rather than silently skipping
-    # therapy-type exclusion checks.
-    for _tf in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
-        val = row.get(_tf)
-        if isinstance(val, str) and val.strip():
-            row[_tf] = resolve_therapy_code(val)
+    # ── Therapy fields ─────────────────────────────────────────────────────────
+    _EMPTY_CID = (None, '', 0, '0')
+    if omop_therapy_enabled():
+        # OMOP mode: the patient speaks OMOP concept_ids (EXACT does no crosswalk).
+        # The therapy-LINE fields map to the trial omop_* columns, so source them
+        # from CTOMOP's resolved concept_ids: the scalar lines from *_therapy_id,
+        # and the later_therapies list from later_therapy_ids (get_user_therapies
+        # folds that list into the same code set the omop_* overlap reads, so raw
+        # internal codes there would silently never match). A line with no concept
+        # becomes None / [] (unknown) rather than an unmatchable internal code.
+        for _tf in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+            cid = row.get(f'{_tf}_id')
+            row[_tf] = str(cid) if cid not in _EMPTY_CID else None
+        later_ids = row.get('later_therapy_ids') or []
+        row['later_therapies'] = [
+            {'therapy': str(c)} for c in later_ids if c not in _EMPTY_CID
+        ]
+    else:
+        # Legacy mode: resolve CTOMOP display strings (e.g. "Anastrozole (Arimidex)")
+        # to EXACT normalized codes (e.g. "anastrozole") via the LRU-cached
+        # Therapy/TherapyComponent title→code map. Unresolvable values → None so the
+        # matcher treats them as unknown (potential), not a skipped exclusion check.
+        for _tf in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+            val = row.get(_tf)
+            if isinstance(val, str) and val.strip():
+                row[_tf] = resolve_therapy_code(val)
 
-    # JSON list fields (supportive_therapies, later_therapies) expect
-    # [{therapy: code, ...}] objects — clear if CTOMOP sent raw text.
+    # JSON list fields expect [{therapy: code, ...}] objects — clear if CTOMOP sent
+    # raw text. supportive_therapies stays on the legacy column (the OMOP profile
+    # keeps supportive/planned legacy), so it is not concept-remapped above.
     for _tf in ('supportive_therapies', 'later_therapies'):
         val = row.get(_tf)
         if isinstance(val, str) and not val.strip().startswith('['):

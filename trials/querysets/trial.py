@@ -26,6 +26,7 @@ from trials.services.patient_info.configs import (
     sct_value_is_none,
 )
 from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
@@ -193,7 +194,8 @@ _CUSTOM_SEARCH_DISPATCH = {
     'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv_stripped(v)),
     'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv_stripped(v)),
     'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(v),
-    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(v),
+    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv_stripped(v)),
+    'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv_stripped(v)),
 }
 
 
@@ -343,6 +345,17 @@ class TrialQuerySet(models.QuerySet):
                 'val': study_info.search_title,
                 'records': new_count,
                 'dropped': count-new_count
+            })
+            count = new_count
+
+        query = query.by_therapy_id(study_info.therapy_id)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.therapy_id',
+                'val': study_info.therapy_id,
+                'records': new_count,
+                'dropped': count - new_count,
             })
             count = new_count
 
@@ -1053,48 +1066,49 @@ class TrialQuerySet(models.QuerySet):
 
     def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False) -> models.QuerySet:
         if has_no_prior_therapy:
-            return self.filter(therapies_required__exact=[], therapy_components_required__exact=[], therapy_types_required__exact=[])
+            return self.filter(**{
+                f'{THERAPY_MATCH_PROFILE.therapies_required}__exact': [],
+                f'{THERAPY_MATCH_PROFILE.therapy_components_required}__exact': [],
+                f'{THERAPY_MATCH_PROFILE.therapy_types_required}__exact': [],
+            })
 
         if therapy_codes is None or therapy_codes == []:
             return self
 
-        from trials.models import TherapyComponent, TherapyComponentCategory
-
         scope = self.eligible_for_therapy_from_lines(therapy_codes)
 
-        components = TherapyComponent.objects.filter(therapycomponentconnection__therapy__code__in=therapy_codes).all()
-        component_codes = [x.code for x in components]
+        # Component + type values from the regimen via the CB graph (shared with the
+        # matcher). Under OMOP: components → their OMOP concept_ids (vs the omop
+        # component column), types → CB category codes (vs the LEGACY therapy_types
+        # column the OMOP profile keeps). See trials/services/omop/therapy_graph.
+        from trials.services.omop.therapy_graph import derive_component_and_type_values
+        component_codes, therapy_types = derive_component_and_type_values(therapy_codes)
 
-        if len(component_codes) > 0:
+        if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
-
-        categories = TherapyComponentCategory.objects.filter(
-            therapycomponentcategoryconnection__component__in=components).all()
-        therapy_types = [x.code for x in categories]
-
-        if len(therapy_types) > 0:
+        if therapy_types:
             scope = scope.eligible_for_therapy_types(therapy_types)
         return scope
 
     def eligible_for_therapy_from_lines(self, therapy_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_codes,
-            required_attr_name='therapies_required',
-            excluded_attr_name='therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapies_excluded
         )
 
     def eligible_for_therapy_components(self, therapy_component_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_component_codes,
-            required_attr_name='therapy_components_required',
-            excluded_attr_name='therapy_components_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapy_components_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_components_excluded
         )
 
     def eligible_for_therapy_types(self, therapy_type_codes: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=therapy_type_codes,
-            required_attr_name='therapy_types_required',
-            excluded_attr_name='therapy_types_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.therapy_types_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_types_excluded
         )
 
     def eligible_for_pre_existing_condition(self, pre_existing_conditions: list[str]) -> models.QuerySet:
@@ -1161,15 +1175,15 @@ class TrialQuerySet(models.QuerySet):
     def eligible_for_planned_therapies(self, planned_therapies: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=planned_therapies,
-            required_attr_name='planned_therapies_required',
-            excluded_attr_name='planned_therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.planned_therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.planned_therapies_excluded
         )
 
     def eligible_for_supportive_therapies(self, supportive_therapies: list[str]) -> models.QuerySet:
         return self.eligible_for_required_and_excluded_lists(
             values=supportive_therapies,
-            required_attr_name='supportive_therapies_required',
-            excluded_attr_name='supportive_therapies_excluded'
+            required_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_required,
+            excluded_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_excluded
         )
 
     def eligible_for_cytogenic_markers(self, cytogenic_markers: list[str]) -> models.QuerySet:
@@ -1314,10 +1328,11 @@ class TrialQuerySet(models.QuerySet):
         )
 
     # ------------------------------------------------------------------
-    # MCL filters (#94). The patient-side attrs land here as either a
-    # single string (variant / risk / behavior / subtype) or a list of
-    # strings (extranodal_sites / bulky_disease_criteria). All map to
-    # JSON-list trial columns checked via the shared list helpers above.
+    # MCL filters (#94). The patient-side attrs land here as a single
+    # string (variant / risk / behavior / subtype), a comma-string of
+    # derived codes (bulky_disease_criteria / high_risk_mcl_criteria,
+    # split via _csv_stripped in dispatch), or a list (extranodal_sites).
+    # All map to JSON-list trial columns checked via the shared helpers.
     # ------------------------------------------------------------------
 
     def eligible_for_morphologic_variants(self, values: list[str]) -> models.QuerySet:
@@ -1361,6 +1376,27 @@ class TrialQuerySet(models.QuerySet):
         return self.eligible_for_required_lists(
             values=values,
             required_attr_name='bulky_disease_criteria_required',
+        )
+
+    def eligible_for_high_risk_mcl_criteria(self, criteria: list[str]) -> models.QuerySet:
+        if criteria is None or criteria == []:
+            return self
+
+        values = [str(x).strip() for x in criteria]
+
+        # Inclusion is satisfied when the patient overlaps the required list, OR
+        # overlaps any "sufficient alone" criterion (#4402), OR the trial sets no
+        # inclusion gate at all (both lists empty). Then drop excluded matches.
+        # Note: this is a coarse pre-filter — it does not enforce min_count>=2.
+        # The Python matcher (user_to_trial_attr_matcher) enforces min_count exactly.
+        # No trials with min_count>=2 exist yet; tighten this queryset when CB #4405 ships.
+        no_inclusion_gate = Q(high_risk_mcl_criteria_required__exact=[]) & Q(high_risk_mcl_criteria_sufficient_any__exact=[])
+        return self.filter(
+            Q(high_risk_mcl_criteria_required__has_any_keys=values)
+            | Q(high_risk_mcl_criteria_sufficient_any__has_any_keys=values)
+            | no_inclusion_gate
+        ).exclude(
+            Q(high_risk_mcl_criteria_excluded__has_any_keys=values)
         )
 
     def eligible_for_tp53_disruption(self, tp53_disruption: bool) -> models.QuerySet:

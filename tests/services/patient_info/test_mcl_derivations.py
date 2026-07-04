@@ -17,11 +17,11 @@ def _mcl_patient(**kwargs):
     only the field under test."""
     defaults = dict(
         disease='mantle cell lymphoma',
-        patient_age=70,
+        patient_age=50,
         ecog_performance_status=0,
-        white_blood_cell_count=8e9,
-        white_blood_cell_count_units='CELLS/L',
-        lactate_dehydrogenase_level=250,
+        white_blood_cell_count=5000,
+        white_blood_cell_count_units='CELLS/UL',
+        lactate_dehydrogenase_level=200,
         ki67_proliferation_index=15,
     )
     defaults.update(kwargs)
@@ -32,22 +32,34 @@ class TestMipiRiskBuckets:
     """Hoster 2008 MIPI cutoffs: low < 5.7, intermediate < 6.5, high >= 6.5."""
 
     def test_low_for_healthy_inputs(self):
-        # score ≈ 3.32 — well below 5.7
-        pi = _mcl_patient(patient_age=70, ecog_performance_status=0,
-                          white_blood_cell_count=8e9, lactate_dehydrogenase_level=250)
+        # WBC as cells/µL (Hoster 2008). score ≈ 4.41 — below 5.7
+        pi = _mcl_patient(patient_age=35, ecog_performance_status=0,
+                          white_blood_cell_count=5000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=150)
         assert PatientInfoAttributes(pi).mipi_risk == 'low'
 
     def test_intermediate_for_moderate_disease(self):
         # score ≈ 5.91 — in [5.7, 6.5)
-        pi = _mcl_patient(patient_age=85, ecog_performance_status=2,
-                          white_blood_cell_count=50e9, lactate_dehydrogenase_level=700)
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
         assert PatientInfoAttributes(pi).mipi_risk == 'intermediate'
 
     def test_high_for_aggressive_disease(self):
-        # score ≈ 7.10 — well above 6.5
-        pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500)
+        # score well above 6.5
+        pi = _mcl_patient(patient_age=75, ecog_performance_status=3,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=3000)
         assert PatientInfoAttributes(pi).mipi_risk == 'high'
+
+    def test_wbc_uses_per_microliter_magnitude_4421(self):
+        # Regression guard for CB #4421: WBC must be read as cells/µL. A median
+        # 7000/µL patient is 'intermediate'; the old ×10⁹/L reading (log10(7))
+        # scored ~2.82 lower and wrongly returned 'low'.
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
+        assert PatientInfoAttributes(pi).mipi_risk == 'intermediate'
 
     def test_ecog_zero_does_not_add_penalty(self):
         # ECOG 0 and 1 both contribute 0 (predicate is ecog >= 2)
@@ -101,26 +113,26 @@ class TestMipiCRiskMatrix:
         assert PatientInfoAttributes(pi).mipi_c_risk == 'low_intermediate'
 
     def test_intermediate_mipi_plus_low_ki67_is_low_intermediate(self):
-        pi = _mcl_patient(patient_age=85, ecog_performance_status=2,
-                          white_blood_cell_count=50e9, lactate_dehydrogenase_level=700,
-                          ki67_proliferation_index=20)
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250, ki67_proliferation_index=20)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'low_intermediate'
 
     def test_intermediate_mipi_plus_high_ki67_is_high_intermediate(self):
-        pi = _mcl_patient(patient_age=85, ecog_performance_status=2,
-                          white_blood_cell_count=50e9, lactate_dehydrogenase_level=700,
-                          ki67_proliferation_index=50)
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250, ki67_proliferation_index=35)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'high_intermediate'
 
     def test_high_mipi_plus_low_ki67_is_high_intermediate(self):
         pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500,
                           ki67_proliferation_index=20)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'high_intermediate'
 
     def test_high_mipi_plus_high_ki67_is_high(self):
         pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
-                          white_blood_cell_count=200e9, lactate_dehydrogenase_level=1500,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500,
                           ki67_proliferation_index=60)
         assert PatientInfoAttributes(pi).mipi_c_risk == 'high'
 
@@ -145,59 +157,53 @@ class TestBulkyDiseaseCriteria:
     plus a >= 20 variant — mirrors CB so trials matching either spleen
     predicate work."""
 
-    def test_no_size_inputs_returns_empty_list(self):
+    def test_no_size_inputs_returns_none(self):
         pi = _mcl_patient()
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == []
+        assert PatientInfoAttributes(pi).bulky_disease_criteria is None
 
     def test_lesion_5cm_alone(self):
-        pi = _mcl_patient(lesion_size_mcl=5)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == ['bulky_lesion_5cm']
+        pi = _mcl_patient(largest_lesion_size=5)
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == 'bulky_lesion_5cm'
 
     def test_lesion_10cm_fires_all_three_lesion_thresholds(self):
-        pi = _mcl_patient(lesion_size_mcl=12)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_lesion_7_5cm', 'bulky_lesion_10cm',
-        ]
+        pi = _mcl_patient(largest_lesion_size=12)
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_lesion_5cm,bulky_lesion_7_5cm,bulky_lesion_10cm'
 
     def test_lesion_under_5cm_does_not_fire(self):
-        pi = _mcl_patient(lesion_size_mcl=4.9)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == []
+        pi = _mcl_patient(largest_lesion_size=4.9)
+        assert PatientInfoAttributes(pi).bulky_disease_criteria is None
 
     def test_node_5cm_alone(self):
         pi = _mcl_patient(largest_lymph_node_size=5)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == ['bulky_node_5cm']
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == 'bulky_node_5cm'
 
     def test_node_10cm_fires_all_three_node_thresholds(self):
         pi = _mcl_patient(largest_lymph_node_size=10)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_node_5cm', 'bulky_node_7_5cm', 'bulky_node_10cm',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_node_5cm,bulky_node_7_5cm,bulky_node_10cm'
 
     def test_spleen_uses_strict_gt_thresholds(self):
         # Spleen 13 itself does NOT fire bulky_spleen_13cm (predicate is > 13)
         pi_13 = _mcl_patient(spleen_size=13)
-        assert PatientInfoAttributes(pi_13).bulky_disease_criteria == []
+        assert PatientInfoAttributes(pi_13).bulky_disease_criteria is None
         pi_13_1 = _mcl_patient(spleen_size=13.1)
-        assert PatientInfoAttributes(pi_13_1).bulky_disease_criteria == ['bulky_spleen_13cm']
+        assert PatientInfoAttributes(pi_13_1).bulky_disease_criteria == 'bulky_spleen_13cm'
 
     def test_spleen_20_exactly_fires_gte_only(self):
         pi = _mcl_patient(spleen_size=20)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_spleen_13cm', 'bulky_spleen_15cm', 'bulky_spleen_20cm_gte',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_spleen_13cm,bulky_spleen_15cm,bulky_spleen_20cm_gte'
 
     def test_spleen_above_20_fires_both_gt_and_gte(self):
         pi = _mcl_patient(spleen_size=21)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_spleen_13cm', 'bulky_spleen_15cm',
-            'bulky_spleen_20cm_gt', 'bulky_spleen_20cm_gte',
-        ]
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_spleen_13cm,bulky_spleen_15cm,bulky_spleen_20cm_gt,bulky_spleen_20cm_gte'
 
     def test_multiple_anatomic_sites_combine(self):
-        pi = _mcl_patient(lesion_size_mcl=5, largest_lymph_node_size=5, spleen_size=14)
-        assert PatientInfoAttributes(pi).bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_node_5cm', 'bulky_spleen_13cm',
-        ]
+        pi = _mcl_patient(largest_lesion_size=5, largest_lymph_node_size=5, spleen_size=14)
+        assert PatientInfoAttributes(pi).bulky_disease_criteria == \
+            'bulky_lesion_5cm,bulky_node_5cm,bulky_spleen_13cm'
 
 
 class TestNormalizerWiring:
@@ -209,15 +215,14 @@ class TestNormalizerWiring:
         pi = _mcl_patient(
             mipi_risk='high',  # caller-supplied; should be overwritten to 'low'
             mipi_c_risk='high',
-            bulky_disease_criteria=['caller_supplied_garbage'],
-            lesion_size_mcl=12,
+            bulky_disease_criteria='caller_supplied_garbage',
+            largest_lesion_size=12,
         )
         normalize_patient_info(pi)
         assert pi.mipi_risk == 'low'  # actual derivation for the default inputs
         assert pi.mipi_c_risk == 'low'
-        assert pi.bulky_disease_criteria == [
-            'bulky_lesion_5cm', 'bulky_lesion_7_5cm', 'bulky_lesion_10cm',
-        ]
+        assert pi.bulky_disease_criteria == \
+            'bulky_lesion_5cm,bulky_lesion_7_5cm,bulky_lesion_10cm'
 
     @pytest.mark.django_db
     def test_non_mcl_patient_mcl_fields_left_alone(self):
@@ -236,6 +241,100 @@ class TestNormalizerWiring:
     def test_disease_gate_is_case_insensitive(self, disease):
         # str(pi.disease).lower() == 'mantle cell lymphoma' must accept any
         # casing the API caller sends.
-        pi = _mcl_patient(disease=disease, lesion_size_mcl=6)
+        pi = _mcl_patient(disease=disease, largest_lesion_size=6)
         normalize_patient_info(pi)
-        assert pi.bulky_disease_criteria == ['bulky_lesion_5cm']
+        assert pi.bulky_disease_criteria == 'bulky_lesion_5cm'
+
+
+def _high_risk_codes(pi):
+    """Set of derived high-risk MCL criterion codes (comma-string -> set)."""
+    derived = PatientInfoAttributes(pi).high_risk_mcl_criteria
+    return set(derived.split(',')) if derived else set()
+
+
+class TestHighRiskMclCriteriaDerivation:
+    """Ported from CB: patient high-risk MCL criteria derivation (#4399-#4437)."""
+
+    def test_no_inputs_returns_none(self):
+        # Defaults give mipi 'low' / ki67 15 / no markers or sizes -> nothing.
+        assert PatientInfoAttributes(_mcl_patient()).high_risk_mcl_criteria is None
+
+    def test_molecular_marker_codes(self):
+        pi = _mcl_patient(molecular_markers='tp53Mutation,bcl2Amplification')
+        codes = _high_risk_codes(pi)
+        assert 'tp53_mutation' in codes
+        assert 'bcl2_amplification' in codes
+
+    def test_notch_combined_emits_single_code(self):
+        # Ambiguous combined option must NOT emit gene-specific codes (#4406).
+        codes = _high_risk_codes(_mcl_patient(molecular_markers='notch1or2Mutations'))
+        assert 'notch1_or_2' in codes
+        assert 'notch1_mutation' not in codes
+        assert 'notch2_mutation' not in codes
+
+    def test_complex_karyotype_strict_also_satisfies_plain(self):
+        codes = _high_risk_codes(_mcl_patient(cytogenic_markers='complexKaryotypeExcludingT1114'))
+        assert 'complex_karyotype' in codes
+        assert 'complex_karyotype_strict' in codes
+
+    def test_complex_karyotype_plain_only(self):
+        codes = _high_risk_codes(_mcl_patient(cytogenic_markers='complexKaryotype'))
+        assert 'complex_karyotype' in codes
+        assert 'complex_karyotype_strict' not in codes
+
+    def test_p53_ihc_threshold(self):
+        assert 'p53_ihc_gte_50' in _high_risk_codes(_mcl_patient(p53_ihc=50))
+        assert 'p53_ihc_gte_50' not in _high_risk_codes(_mcl_patient(p53_ihc=49))
+
+    def test_ki67_tiers(self):
+        codes = _high_risk_codes(_mcl_patient(ki67_proliferation_index=55))
+        assert codes >= {'ki67_gt_30', 'ki67_gte_30', 'ki67_gt_50', 'ki67_gte_50'}
+
+    def test_high_mipi_code(self):
+        # Aggressive inputs -> mipi high.
+        pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500)
+        assert 'high_mipi' in _high_risk_codes(pi)
+
+    def test_mipi_c_high(self):
+        # mipi high + ki67 >= 30 -> mipi_c high.
+        pi = _mcl_patient(patient_age=90, ecog_performance_status=2,
+                          white_blood_cell_count=100000, white_blood_cell_count_units='CELLS/UL', lactate_dehydrogenase_level=1500,
+                          ki67_proliferation_index=40)
+        assert 'mipi_c_high' in _high_risk_codes(pi)
+
+    def test_size_and_lymphocytosis_codes(self):
+        pi = _mcl_patient(largest_lesion_size=8, largest_lymph_node_size=5,
+                          spleen_size=20, absolute_lymphocyte_count=60000)
+        codes = _high_risk_codes(pi)
+        assert {'lesion_gte_5cm', 'lesion_gte_7_5cm'} <= codes
+        assert 'lesion_gt_10cm' not in codes
+        assert 'node_gte_5cm' in codes
+        assert {'spleen_gte_13cm', 'spleen_gte_15cm', 'spleen_gte_20cm'} <= codes
+        assert 'lymphocytosis_gte_50k' in codes
+
+
+class TestHighRiskMclUnknownCodes:
+    """unknown-vs-none distinction (#4399/#4416)."""
+
+    def test_unknown_when_source_blank(self):
+        # molecular_markers unanswered -> tp53_mutation cannot be ruled absent.
+        attrs = PatientInfoAttributes(_mcl_patient())
+        assert 'tp53_mutation' in attrs.high_risk_mcl_criteria_unknown_codes(['tp53_mutation'])
+
+    def test_known_when_source_answered(self):
+        attrs = PatientInfoAttributes(_mcl_patient(molecular_markers='ccnd1Alteration'))
+        assert attrs.high_risk_mcl_criteria_unknown_codes(['tp53_mutation']) == set()
+
+    def test_notch_specific_unknown_while_combined_selected(self):
+        # Combined NOTCH option leaves gene-specific codes undeterminable.
+        attrs = PatientInfoAttributes(_mcl_patient(molecular_markers='notch1or2Mutations'))
+        unknown = attrs.high_risk_mcl_criteria_unknown_codes(['notch1_mutation'])
+        assert 'notch1_mutation' in unknown
+
+    def test_all_unknown_codes_covers_vocabulary(self):
+        # With no inputs, every code with a backing source is unknown.
+        attrs = PatientInfoAttributes(_mcl_patient())
+        all_unknown = attrs.high_risk_mcl_criteria_all_unknown_codes()
+        assert 'tp53_mutation' in all_unknown
+        assert 'del17p' in all_unknown

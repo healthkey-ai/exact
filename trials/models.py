@@ -163,6 +163,7 @@ class Therapy(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     description = models.TextField(blank=True, null=True)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this code (pinned CTOMOP release); null when the regimen has no clean standard concept and is expanded into its components/classes at backfill. Source for the trial omop_* columns.")
 
     def full_title(self):
         # Sort in Python so a `prefetch_related('components')` cache is reused.
@@ -214,6 +215,7 @@ class DiseaseRoundTherapyConnection(TimeStampMixin):
 class TherapyComponent(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug component (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_components_* columns.")
 
     def __str__(self):
         return self.title
@@ -238,6 +240,7 @@ class TherapyComponentConnection(TimeStampMixin):
 class TherapyComponentCategory(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug class (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_types_* columns.")
 
     def __str__(self):
         return self.title
@@ -249,6 +252,61 @@ class TherapyComponentCategoryConnection(TimeStampMixin):
 
     class Meta:
         unique_together = ['category', 'component']
+
+
+class OmopConcept(TimeStampMixin):
+    """OMOP concept_id → display title + vocabulary.
+
+    Resolves the concept_ids stored in the trial ``omop_*`` therapy columns (and
+    patient ``*_therapy_id``) to human-readable names for the API, independent of
+    which vocab model a concept came from (regimen / component / class / future
+    expanded concepts). Populated from the curated ``therapy_omop_mapping.csv``
+    (omop_concept_id, omop_name, omop_vocab) by ``load_therapy_omop_concept_ids``.
+    Ported from CancerBot (CB owns the upstream); EXACT reads/populates it locally.
+    """
+    concept_id = models.BigIntegerField(primary_key=True)
+    concept_name = models.TextField(blank=False, null=False)
+    vocabulary_id = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.concept_id}: {self.concept_name}"
+
+
+class TherapyOmopMapping(TimeStampMixin):
+    """Per-row cb↔OMOP therapy crosswalk, materialized from the curated
+    ``docs/omop/mapping/therapy_omop_mapping.csv`` by
+    ``load_therapy_omop_concept_ids``.
+
+    One row per ``(level, cb_code)`` — the authoritative, queryable/auditable
+    record behind the ``omop_concept_id`` written onto the vocab models and the
+    :class:`OmopConcept` titles. Unlike those, it keeps the *unmapped* rows
+    (``needs_review`` / ``no_omop``, null ``omop_concept_id``) so coverage / SME
+    gaps are visible in the DB, not just in the file. ``omop_concept_id`` is a
+    plain (indexed) column, not a FK, so unreviewed rows and concepts not yet in
+    :class:`OmopConcept` can coexist without ordering/integrity coupling.
+    Ported from CancerBot (CB owns the upstream, #4476); EXACT reads/populates it locally.
+    """
+    LEVEL_CHOICES = [('regimen', 'regimen'), ('component', 'component'), ('category', 'category')]
+    # auto/curated/llm carry a CTOMOP-verified concept_id; needs_review/no_omop don't
+    MATCH_CHOICES = [
+        ('auto', 'auto'), ('curated', 'curated'), ('llm', 'llm'),
+        ('needs_review', 'needs_review'), ('no_omop', 'no_omop'),
+    ]
+    level = models.CharField(max_length=16, choices=LEVEL_CHOICES)
+    cb_code = models.CharField(max_length=255)
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True)
+    omop_name = models.TextField(blank=True, null=True)
+    omop_vocab = models.TextField(blank=True, null=True)
+    match = models.CharField(max_length=16, choices=MATCH_CHOICES)
+
+    class Meta:
+        unique_together = ['level', 'cb_code']
+        indexes = [
+            models.Index(fields=['match'], name='idx_therapy_omop_map_match'),
+        ]
+
+    def __str__(self):
+        return f"{self.level}:{self.cb_code} -> {self.omop_concept_id or '(none)'} [{self.match}]"
 
 
 class TherapyDisease(TimeStampMixin):
@@ -366,6 +424,19 @@ class Trial(TimeStampMixin):
     supportive_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
     planned_therapies_required = models.JSONField(blank=True, null=False, default=list)
     planned_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    # OMOP cutover (CB epic #4447): concept_id-as-string mirrors of the therapy
+    # columns, filled upstream by CB. Read-only in EXACT; matching reads these
+    # only when the OMOP TherapyMatchProfile is active (Phase 3, behind a flag).
+    omop_therapies_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_types_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_types_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_components_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_components_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_supportive_therapies_required = models.JSONField(blank=True, null=False, default=list)
+    omop_supportive_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    omop_planned_therapies_required = models.JSONField(blank=True, null=False, default=list)
+    omop_planned_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
     # Populated by CB during trial sync: OMOP concept_ids of the intervention arm
     # (what therapy the trial is giving/testing). Used by ?therapy_id= search.
     omop_intervention_concept_ids = models.JSONField(blank=True, null=False, default=list)
@@ -422,6 +493,8 @@ class Trial(TimeStampMixin):
     estimated_glomerular_filtration_rate_min = models.IntegerField(blank=True, null=True)
     estimated_glomerular_filtration_rate_max = models.IntegerField(blank=True, null=True)
     renal_adequacy_required = models.BooleanField(blank=True, null=True)
+    hepatic_adequacy_required = models.BooleanField(blank=True, null=True, help_text="Is a hepatic adequacy required?")
+    haematological_adequacy_required = models.BooleanField(blank=True, null=True, help_text="Is a haematological adequacy required?")
     liver_enzyme_level_ast_abs_min = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     liver_enzyme_level_ast_abs_max = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     liver_enzyme_level_ast_uln_min = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
@@ -575,8 +648,10 @@ class Trial(TimeStampMixin):
     bone_marrow_involvement_required = models.BooleanField(blank=True, null=True, db_index=True)
 
     # MCL
-    lesion_size_mcl_min = models.FloatField(blank=True, null=True)
-    lesion_size_mcl_max = models.FloatField(blank=True, null=True)
+    largest_lesion_size_min = models.FloatField(blank=True, null=True)
+    largest_lesion_size_max = models.FloatField(blank=True, null=True)
+    p53_ihc_min = models.IntegerField(blank=True, null=True)
+    p53_ihc_max = models.IntegerField(blank=True, null=True)
     morphologic_variants_required = models.JSONField(blank=True, null=False, default=list)
     morphologic_variants_excluded = models.JSONField(blank=True, null=False, default=list)
     disease_behaviors_required = models.JSONField(blank=True, null=False, default=list)
@@ -585,6 +660,10 @@ class Trial(TimeStampMixin):
     bulky_disease_criteria_required = models.JSONField(blank=True, null=False, default=list)
     mipi_risks_required = models.JSONField(blank=True, null=False, default=list)
     mipi_c_risks_required = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_required = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_excluded = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_sufficient_any = models.JSONField(blank=True, null=False, default=list)
+    high_risk_mcl_criteria_min_count = models.PositiveSmallIntegerField(blank=True, null=True, default=None)
 
     locations = models.ManyToManyField(
         'Location',
@@ -626,6 +705,11 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['therapy_components_required', 'therapy_components_excluded'], name='idx_therapy_comps_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['supportive_therapies_required', 'supportive_therapies_excluded'], name='idx_sup_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['planned_therapies_required', 'planned_therapies_excluded'], name='idx_planned_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_therapies_required', 'omop_therapies_excluded'], name='idx_omop_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_therapy_types_required', 'omop_therapy_types_excluded'], name='idx_omop_therapy_types_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_therapy_components_required', 'omop_therapy_components_excluded'], name='idx_omop_therapy_comps_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_supportive_therapies_required', 'omop_supportive_therapies_excluded'], name='idx_omop_sup_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
+            GinIndex(fields=['omop_planned_therapies_required', 'omop_planned_therapies_excluded'], name='idx_omop_planned_therapies_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['omop_intervention_concept_ids'], name='idx_omop_intervention_cids_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['cytogenic_markers_required', 'cytogenic_markers_excluded'], name='idx_cytogenic_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['molecular_markers_required', 'molecular_markers_excluded'], name='idx_molecular_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
@@ -639,6 +723,9 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['bulky_disease_criteria_required'], name='idx_bulky_disease_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['mipi_risks_required'], name='idx_mipi_risks_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['mipi_c_risks_required'], name='idx_mipi_c_risks_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_required'], name='idx_hr_mcl_required_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_excluded'], name='idx_hr_mcl_excluded_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['high_risk_mcl_criteria_sufficient_any'], name='idx_hr_mcl_sufficient_gin', opclasses=['jsonb_ops']),
             # B-tree indexes on hot-path sort/filter columns (#27). Match the
             # actual ORDER BY direction at trials_views.py:156,158 — a plain
             # ASC NULLS LAST B-tree (Django default) cannot serve a
@@ -1107,6 +1194,10 @@ class ProteinExpression(OptionsListMixin):
 
 
 class MorphologicVariant(OptionsListMixin):
+    pass
+
+
+class HighRiskMclCriteria(OptionsListMixin):
     pass
 
 

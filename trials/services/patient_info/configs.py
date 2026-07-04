@@ -130,6 +130,9 @@ TRIAL_ATTRS_JSON_AS_A_LIST = (
     "bulky_disease_criteria_required",
     "mipi_risks_required",
     "mipi_c_risks_required",
+    "high_risk_mcl_criteria_required",
+    "high_risk_mcl_criteria_excluded",
+    "high_risk_mcl_criteria_sufficient_any",
 )
 
 USER_TO_TRIAL_ATTRS_MAPPING = {
@@ -492,16 +495,24 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
                 lambda patient_info: patient_info.morphologic_variant,
         }
     },
-    "lesion_size_mcl": {
+    "largest_lesion_size": {
         "type": "min_max_value",
         # No custom_search — routed through the type-based min_max_value
         # branch in filter_by_patient_info like every other min_max_value
         # config (weight, patient_age, etc.). #94 fix.
         "searchable": True,
         "disease": "MCL",
-        "attr_min": "lesion_size_mcl_min",
-        "attr_max": "lesion_size_mcl_max",
-        "attr": ["lesion_size_mcl_min", "lesion_size_mcl_max"],
+        "attr_min": "largest_lesion_size_min",
+        "attr_max": "largest_lesion_size_max",
+        "attr": ["largest_lesion_size_min", "largest_lesion_size_max"],
+    },
+    "p53_ihc": {
+        "type": "min_max_value",
+        "searchable": True,
+        "disease": "MCL",
+        "attr_min": "p53_ihc_min",
+        "attr_max": "p53_ihc_max",
+        "attr": ["p53_ihc_min", "p53_ihc_max"],
     },
     "disease_behavior": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
@@ -561,6 +572,38 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "uvalue_function": {
             "bulky_disease_criteria_required":
                 lambda patient_info: patient_info.bulky_disease_criteria,
+        }
+    },
+    # Authoring compound/"tiered" rules (e.g. Jain classification, NCT05861050):
+    # ">=1 primary high-risk feature; secondary gene mutations only count if a
+    # primary is also present" is expressed with the existing schema as
+    # required=[primary features] + min_count=1. Secondary genes are omitted —
+    # they can never qualify a patient alone, and once any primary is present
+    # min_count=1 is already met. A full tiered/only_if_tier engine is only
+    # needed for min_count>=2 compound trials (none yet); deferred (CB #4405).
+    "high_risk_mcl_criteria": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "is_computed_value": True,
+        "computed_value_type": "str",
+        "disease": "MCL",
+        "attr": [
+            "high_risk_mcl_criteria_required",
+            "high_risk_mcl_criteria_excluded",
+            "high_risk_mcl_criteria_sufficient_any",
+        ],
+        "criteria_count_match": True,
+        "criteria_required_attr": "high_risk_mcl_criteria_required",
+        "criteria_excluded_attr": "high_risk_mcl_criteria_excluded",
+        "criteria_sufficient_any_attr": "high_risk_mcl_criteria_sufficient_any",
+        "criteria_min_count_attr": "high_risk_mcl_criteria_min_count",
+        "criteria_derived": lambda patient_info: patient_info.high_risk_mcl_criteria,
+        "criteria_unknown_codes": lambda pia, required: pia.high_risk_mcl_criteria_unknown_codes(required),
+        "criteria_all_unknown_codes": lambda pia: pia.high_risk_mcl_criteria_all_unknown_codes(),
+        "uvalue_function": {
+            "high_risk_mcl_criteria_required": lambda patient_info: patient_info.high_risk_mcl_criteria,
+            "high_risk_mcl_criteria_excluded": lambda patient_info: patient_info.high_risk_mcl_criteria,
+            "high_risk_mcl_criteria_sufficient_any": lambda patient_info: patient_info.high_risk_mcl_criteria,
         }
     },
     # MCL-specific END
@@ -1192,6 +1235,18 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "is_computed_value": True,
         # "under_user_control": True,
         "attr": "renal_adequacy_required",
+    },
+    "hepatic_adequacy_status": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "attr": "hepatic_adequacy_required",
+    },
+    "haematological_adequacy_status": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "is_computed_value": True,
+        "attr": "haematological_adequacy_required",
     },
 }
 
