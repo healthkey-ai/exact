@@ -11,7 +11,10 @@ produced + curated against CTOMOP, see that dir) and:
 
 For the vocab-model omop_concept_id + OmopConcept writes, only rows with a
 concept_id and an accepted match type are loaded; `no_omop` (procedures /
-non-drug) and `needs_review` rows are skipped. The crosswalk table keeps them.
+non-drug) and `needs_review` rows do not write a concept_id. If such a row's
+vocab object previously had a concept_id (stale from a prior accepted run),
+it is cleared to NULL so the backfill does not propagate the old value into
+trial omop_* columns. The crosswalk table records all rows regardless.
 
 Ported from CancerBot (CB epic #4447). The mapping CSV is vendored from CB so
 EXACT can populate vocab concept_ids in single-DB / local runs.
@@ -56,6 +59,7 @@ class Command(BaseCommand):
 
         updated = Counter()      # level -> rows set
         unchanged = Counter()    # already had the value
+        cleared = Counter()      # level -> stale concept_ids nulled (needs_review/no_omop transition)
         missing_code = Counter()  # code not found in vocab table
         skipped = 0
         concepts = 0             # distinct OmopConcept rows upserted
@@ -84,6 +88,17 @@ class Command(BaseCommand):
 
                 if row['match'] not in accepted or cid is None:
                     skipped += 1
+                    # Clear any stale concept_id left from a previous accepted mapping.
+                    # A row that transitions to needs_review/no_omop should not keep an
+                    # old concept_id on the vocab model — that would cause the backfill
+                    # to propagate the wrong OMOP concept into trial omop_* columns.
+                    model = LEVEL_MODEL.get(row['level'])
+                    if model is not None and cid is None:
+                        obj = model.objects.filter(code=row['cb_code']).first()
+                        if obj is not None and obj.omop_concept_id is not None:
+                            cleared[row['level']] += 1
+                            if not dry_run:
+                                model.objects.filter(pk=obj.pk).update(omop_concept_id=None)
                     continue
 
                 # OmopConcept (concept_id -> title/vocab): keyed by concept_id, so it
@@ -101,7 +116,10 @@ class Command(BaseCommand):
                             },
                         )
 
-                model = LEVEL_MODEL[row['level']]
+                model = LEVEL_MODEL.get(row['level'])
+                if model is None:  # non-vocab level (e.g. category) — crosswalk only
+                    skipped += 1
+                    continue
                 obj = model.objects.filter(code=row['cb_code']).first()
                 if obj is None:
                     missing_code[row['level']] += 1
@@ -124,6 +142,8 @@ class Command(BaseCommand):
                 f"{prefix}{level:10s} set={updated[level]:3d} unchanged={unchanged[level]:3d} "
                 f"code_not_found={missing_code[level]:3d}"
             )
-        self.stdout.write(f"{prefix}total set={sum(updated.values())} skipped(no-concept/review)={skipped}")
+        if sum(cleared.values()):
+            self.stdout.write(f"{prefix}stale concept_ids cleared: {dict(cleared)}")
+        self.stdout.write(f"{prefix}total set={sum(updated.values())} cleared={sum(cleared.values())} skipped(no-concept/review)={skipped}")
         self.stdout.write(f"{prefix}OmopConcept rows upserted={concepts}")
         self.stdout.write(f"{prefix}TherapyOmopMapping (crosswalk) rows upserted={crosswalk}")

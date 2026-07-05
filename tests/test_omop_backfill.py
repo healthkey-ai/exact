@@ -225,6 +225,46 @@ def test_dry_run_does_not_write_crosswalk(tmp_path):
     assert TherapyOmopMapping.objects.count() == 0
 
 
+def test_clears_stale_concept_id_on_needs_review_transition(tmp_path):
+    """P2-1 regression: concept_id set by a previous accepted run must be
+    nulled when the row transitions to needs_review, not left stale."""
+    t = Therapy.objects.create(code='zz_bort_maint', title='ZZ Bort Maint', omop_concept_id=1336825)
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_bort_maint', 'ZZ Bort Maint', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    t.refresh_from_db()
+    assert t.omop_concept_id is None
+
+
+def test_clears_stale_concept_id_on_no_omop_transition(tmp_path):
+    """no_omop rows (procedures) also clear a stale concept_id."""
+    tc = TherapyComponent.objects.create(code='zz_asct_comp', title='ZZ ASCT', omop_concept_id=999)
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['component', 'zz_asct_comp', 'ZZ ASCT', '', '', '', 'no_omop'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    tc.refresh_from_db()
+    assert tc.omop_concept_id is None
+
+
+def test_dry_run_does_not_clear_stale_concept_id(tmp_path):
+    """--dry-run must not clear the stale concept_id."""
+    t = Therapy.objects.create(code='zz_bort_maint2', title='ZZ Bort Maint 2', omop_concept_id=1336825)
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_bort_maint2', 'ZZ Bort Maint 2', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), dry_run=True, stdout=StringIO())
+    t.refresh_from_db()
+    assert t.omop_concept_id == 1336825  # unchanged in dry-run
+
+
 def test_backfill_command_populates_trial_columns():
     Therapy.objects.create(code='reg_r', title='reg r', omop_concept_id=42)
     trial = TrialFactory(therapies_required=['reg_r'])
