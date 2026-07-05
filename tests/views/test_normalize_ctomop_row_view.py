@@ -15,6 +15,7 @@ auth, JSON parsing).
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.test import override_settings
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
@@ -94,6 +95,7 @@ class TestNormalizeCtomopRowView:
         response = _post({'therapy_lines_count': 2})
         assert response.data['prior_therapy'] == 'Two lines'
 
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_empty_body_returns_empty_normalized_dict(self, _mock_lookup):
         """An empty payload normalizes to an empty payload — no side effects."""
         response = _post({})

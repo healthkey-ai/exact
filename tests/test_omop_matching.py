@@ -28,6 +28,7 @@ def _two_trials():
     return a, b
 
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_queryset_matches_on_legacy_codes_when_flag_off():
     a, b = _two_trials()
     # Off: patient speaks internal codes (what the legacy columns hold).
@@ -70,6 +71,7 @@ def _matcher_trials():
     return match, other
 
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_matcher_decision_on_legacy_codes_when_flag_off():
     match, other = _matcher_trials()
     pi = PatientInfo(disease='multiple myeloma')

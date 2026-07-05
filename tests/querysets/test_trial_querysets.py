@@ -7,6 +7,7 @@ import datetime as dt
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django.db.models import F
+from django.test import override_settings
 
 from trials.models import *
 from trials.services.patient_info.patient_info import PatientInfo
@@ -180,6 +181,7 @@ class TestTrialQuerySet:
         )) == [t1, t4, t5]
 
     @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_eligible_for_therapy_related_things_from_lines(self):
         from trials.services.loaders.load_therapies import LoadTherapies
         LoadTherapies().load_all()
@@ -246,6 +248,7 @@ class TestTrialQuerySet:
         assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t8, t9, t10]
 
     @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_eligible_for_therapy_related_things_from_lines_treatment_naive(self):
         """
         has_no_prior_therapy=True restricts to trials with all three *_required

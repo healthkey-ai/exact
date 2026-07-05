@@ -86,6 +86,7 @@ component,letrozole,Letrozole,1315946,letrozole,RxNorm,auto
 component,ibritumomab_tiuxetan,Ibritumomab tiuxetan,19068830,ibritumomab tiuxetan,RxNorm,auto
 component,plasmapheresis,Plasmapheresis,,,,no_omop
 component,bortezomib,Bortezomib,1336825,bortezomib,RxNorm,auto
+component,bortezomib_(velcade),Bortezomib (Velcade),1336825,bortezomib,RxNorm,auto
 component,ixazomib,Ixazomib,35606214,ixazomib,RxNorm,auto
 component,tazemetostat,Tazemetostat,37498602,tazemetostat,RxNorm,auto
 component,venetoclax,Venetoclax,35604205,venetoclax,RxNorm,auto
@@ -294,5 +295,5 @@ regimen,lenalidomide_maintenance,Lenalidomide maintenance,19026972,lenalidomide,
 regimen,ibritumomab_tiuxetan_radioimmunotherapy,Ibritumomab tiuxetan radioimmunotherapy,19068830,ibritumomab tiuxetan,RxNorm,llm
 regimen,ivig,IVIG (intravenous immunoglobulin),,,,needs_review
 regimen,plasmapheresis,Plasmapheresis,,,,no_omop
-regimen,bortezomib_maintenance,Bortezomib (maintenance),1336825,bortezomib,RxNorm,auto
+regimen,bortezomib_maintenance,Bortezomib (maintenance),,,,needs_review
 regimen,ixazomib_maintenance,Ixazomib (maintenance),35606214,ixazomib,RxNorm,auto

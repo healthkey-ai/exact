@@ -1,4 +1,5 @@
 import pytest
+from django.test import override_settings
 
 from trials.services.patient_info.patient_info import PatientInfo
 from trials.services.patient_info.normalize import normalize_patient_info
@@ -54,6 +55,7 @@ class TestUserToTrialAttrMatcher:
         assert service.therapy_related_things_mismatch_status() == 'unknown'
 
     @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_therapy_related_things_match_status(self):
         patient_info = PatientInfo(disease='multiple myeloma', prior_therapy='None')
 

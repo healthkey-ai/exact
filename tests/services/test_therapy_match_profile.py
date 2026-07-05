@@ -26,8 +26,22 @@ from trials.services.therapy_match_profile import (
 pytestmark = pytest.mark.django_db
 
 
-def test_active_profile_defaults_to_legacy_columns():
-    # EXACT_OMOP_THERAPY defaults off -> legacy internal-code columns.
+def test_active_profile_defaults_to_omop_columns():
+    # In local dev, EXACT_OMOP_THERAPY=True via .env → OMOP columns active.
+    assert omop_therapy_enabled() is True
+    assert THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
+    assert THERAPY_MATCH_PROFILE.therapies_excluded == 'omop_therapies_excluded'
+    assert THERAPY_MATCH_PROFILE.therapy_components_required == 'omop_therapy_components_required'
+    assert THERAPY_MATCH_PROFILE.therapy_components_excluded == 'omop_therapy_components_excluded'
+    # types stay legacy even in OMOP mode (matched via CB category graph)
+    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'therapy_types_required'
+    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'therapy_types_excluded'
+    assert THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
+    assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'supportive_therapies_required'
+
+
+@override_settings(EXACT_OMOP_THERAPY=False)
+def test_active_profile_uses_legacy_columns_when_flag_off():
     assert omop_therapy_enabled() is False
     assert THERAPY_MATCH_PROFILE.therapies_required == 'therapies_required'
     assert THERAPY_MATCH_PROFILE.therapies_excluded == 'therapies_excluded'
@@ -56,9 +70,9 @@ def test_active_profile_flips_mapped_levels_when_flag_on():
 
 
 def test_get_therapy_match_profile_switches_on_flag():
-    assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
-    with override_settings(EXACT_OMOP_THERAPY=True):
-        assert get_therapy_match_profile() is OMOP_THERAPY_MATCH_PROFILE
+    assert get_therapy_match_profile() is OMOP_THERAPY_MATCH_PROFILE
+    with override_settings(EXACT_OMOP_THERAPY=False):
+        assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
 
 
 def test_underlying_profiles_are_frozen():

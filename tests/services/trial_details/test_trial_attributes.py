@@ -1,4 +1,5 @@
 import pytest
+from django.test import override_settings
 
 from tests.factories import *
 from trials.services.patient_info.patient_info import PatientInfo
@@ -7,6 +8,7 @@ from trials.services.trial_details.trial_attributes import TrialAttributes
 
 class TestTrialAttributes:
     @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_details(self):
         patient_info = PatientInfo(disease='multiple myeloma')
         trial = TrialFactory(hemoglobin_level_min=5, hemoglobin_level_max=15, stem_cell_transplant_history_excluded=['postASCT', 'preASCT'], therapies_required=['vrd'])
@@ -17,6 +19,7 @@ class TestTrialAttributes:
 
 
     @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_therapies(self, patient_info):
         trial = TrialFactory(therapies_required=['vrd'])
 

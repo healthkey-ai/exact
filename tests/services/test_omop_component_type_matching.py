@@ -40,6 +40,7 @@ def _graph():
 
 # ── shared derivation helper ─────────────────────────────────────────
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_derive_legacy_codes_when_flag_off():
     _graph()
     comps, types = derive_component_and_type_values(['zz_vrd'])
@@ -169,6 +170,7 @@ def test_omop_concepts_unresolved_keeps_code():
     ]
 
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_no_omop_concepts_field_when_flag_off():
     _graph()
     pi = PatientInfo(disease='multiple myeloma', first_line_therapy='zz_vrd', prior_therapy='One line')
@@ -177,6 +179,7 @@ def test_no_omop_concepts_field_when_flag_off():
     assert 'omopConcepts' not in out['therapyComponentsRequired']
 
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_legacy_component_and_type_still_match_by_code():
     _graph()
     pi = PatientInfo(disease='multiple myeloma')

@@ -52,7 +52,17 @@ def derive_component_and_type_values(therapy_identifiers):
     ).order_by('id')
 
     if omop_therapy_enabled():
-        component_values = [str(c.omop_concept_id) for c in components if c.omop_concept_id is not None]
+        has_components = False
+        component_values = []
+        for c in components:
+            has_components = True
+            if c.omop_concept_id is not None:
+                component_values.append(str(c.omop_concept_id))
+        # Regimen has components but none are OMOP-mapped yet → unknown, not absent.
+        # Returning None causes _match_therapy_things to treat it as "unknown" rather
+        # than "no components" (which would be not_matched on required-component trials).
+        if has_components and not component_values:
+            component_values = None
     else:
         component_values = [c.code for c in components]
     # types are not OMOP-mapped — CB category codes, both modes
