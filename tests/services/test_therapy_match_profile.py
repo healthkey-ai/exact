@@ -26,8 +26,8 @@ from trials.services.therapy_match_profile import (
 pytestmark = pytest.mark.django_db
 
 
-def test_active_profile_defaults_to_omop_columns():
-    # In local dev, EXACT_OMOP_THERAPY=True via .env → OMOP columns active.
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_active_profile_uses_omop_columns_when_flag_on():
     assert omop_therapy_enabled() is True
     assert THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
     assert THERAPY_MATCH_PROFILE.therapies_excluded == 'omop_therapies_excluded'
@@ -70,7 +70,8 @@ def test_active_profile_flips_mapped_levels_when_flag_on():
 
 
 def test_get_therapy_match_profile_switches_on_flag():
-    assert get_therapy_match_profile() is OMOP_THERAPY_MATCH_PROFILE
+    with override_settings(EXACT_OMOP_THERAPY=True):
+        assert get_therapy_match_profile() is OMOP_THERAPY_MATCH_PROFILE
     with override_settings(EXACT_OMOP_THERAPY=False):
         assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
 

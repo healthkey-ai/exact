@@ -62,6 +62,19 @@ def test_derive_none_when_regimen_concept_unknown():
     assert derive_component_and_type_values(['99999999']) == (None, None)
 
 
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_derive_none_for_components_when_all_component_concept_ids_null():
+    """B1 regression: regimen found but all its components have omop_concept_id=NULL.
+    Must return component_values=None (unknown) not [] (no components), so
+    _match_therapy_things treats it as unknown rather than not_matched."""
+    vrd = Therapy.objects.create(code='zz_vrd_b1', title='zz VRd B1', omop_concept_id=900991)
+    comp = TherapyComponent.objects.create(code='zz_bort_b1', title='zz Bort B1', omop_concept_id=None)
+    TherapyComponentConnection.objects.create(therapy=vrd, component=comp)
+
+    component_values, _ = derive_component_and_type_values(['900991'])
+    assert component_values is None
+
+
 # ── matcher: component level on OMOP concepts ────────────────────────
 
 @override_settings(EXACT_OMOP_THERAPY=True)
