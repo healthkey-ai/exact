@@ -47,24 +47,30 @@ def derive_component_and_type_values(therapy_identifiers):
     components = TherapyComponent.objects.filter(
         therapycomponentconnection__therapy__in=therapies
     ).order_by('id')
-    categories = TherapyComponentCategory.objects.filter(
-        therapycomponentcategoryconnection__component__in=components
-    ).order_by('id')
 
     if omop_therapy_enabled():
         has_components = False
-        component_values = []
+        component_concept_ids = []
         for c in components:
             has_components = True
             if c.omop_concept_id is not None:
-                component_values.append(str(c.omop_concept_id))
+                component_concept_ids.append(c.omop_concept_id)
         # Regimen has components but none are OMOP-mapped yet → unknown, not absent.
         # Returning None causes _match_therapy_things to treat it as "unknown" rather
         # than "no components" (which would be not_matched on required-component trials).
-        if has_components and not component_values:
-            component_values = None
+        if has_components and not component_concept_ids:
+            return None, None
+        component_values = [str(cid) for cid in component_concept_ids]
+        # Types via flat ComponentCategoryOmopLookup (CB-generated, EXACT reads).
+        # Decouples from the internal M2M graph; same CB category codes, no concept
+        # mapping needed — types stay CB-vocabulary (ADR 0001 decision A / #4502).
+        from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
+        type_values = component_concept_ids_to_type_codes(component_values) or []
     else:
         component_values = [c.code for c in components]
-    # types are not OMOP-mapped — CB category codes, both modes
-    type_values = [cat.code for cat in categories]
+        categories = TherapyComponentCategory.objects.filter(
+            therapycomponentcategoryconnection__component__in=components
+        ).order_by('id')
+        type_values = [cat.code for cat in categories]
+
     return component_values, type_values

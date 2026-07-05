@@ -73,6 +73,12 @@ def omop_vocab(db):
     ]:
         TherapyComponent.objects.filter(code=code).update(omop_concept_id=cid)
 
+    # Populate the flat lookup table — derive_component_and_type_values reads
+    # ComponentCategoryOmopLookup in OMOP mode (not the M2M graph directly).
+    # The .update() calls above bypass signals, so we sync explicitly here.
+    from trials.services.omop.component_category_lookup import sync_component_category_lookup
+    sync_component_category_lookup()
+
 # ── real concept_ids (from local vocab — test will fail if mapping drifts) ──
 
 VRD   = '35806260'
