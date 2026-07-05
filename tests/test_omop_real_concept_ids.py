@@ -76,8 +76,14 @@ def omop_vocab(db):
     # Populate the flat lookup table — derive_component_and_type_values reads
     # ComponentCategoryOmopLookup in OMOP mode (not the M2M graph directly).
     # The .update() calls above bypass signals, so we sync explicitly here.
-    from trials.services.omop.component_category_lookup import sync_component_category_lookup
+    from trials.services.omop.component_category_lookup import (
+        clear_lookup_cache,
+        sync_component_category_lookup,
+    )
     sync_component_category_lookup()
+    # Flush the LRU cache so stale entries from other tests don't leak in.
+    yield
+    clear_lookup_cache()
 
 # ── real concept_ids (from local vocab — test will fail if mapping drifts) ──
 

@@ -136,6 +136,12 @@ class Command(BaseCommand):
                     # it has; EXACT keeps the same write for consistency.)
                     model.objects.filter(pk=obj.pk).update(omop_concept_id=cid)
 
+        # Rebuild the flat component → category lookup so OMOP type matching
+        # is consistent with the concept_ids just written. The loader uses
+        # QuerySet.update(), which bypasses signals, so the sync must be explicit.
+        from trials.services.omop.component_category_lookup import sync_component_category_lookup
+        lookup_result = sync_component_category_lookup(dry_run=dry_run)
+
         prefix = '[dry-run] ' if dry_run else ''
         for level in ('regimen', 'component', 'category'):
             self.stdout.write(
@@ -147,3 +153,8 @@ class Command(BaseCommand):
         self.stdout.write(f"{prefix}total set={sum(updated.values())} cleared={sum(cleared.values())} skipped(no-concept/review)={skipped}")
         self.stdout.write(f"{prefix}OmopConcept rows upserted={concepts}")
         self.stdout.write(f"{prefix}TherapyOmopMapping (crosswalk) rows upserted={crosswalk}")
+        self.stdout.write(
+            f"{prefix}ComponentCategoryOmopLookup: total={lookup_result['total']} "
+            f"added={lookup_result['added']} updated={lookup_result['updated']} "
+            f"removed={lookup_result['removed']} unchanged={lookup_result['unchanged']}"
+        )

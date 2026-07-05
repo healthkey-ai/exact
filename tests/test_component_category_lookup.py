@@ -19,6 +19,15 @@ from trials.services.omop.component_category_lookup import (
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def clear_lookup_lru_cache():
+    """Clear the module-level LRU cache before each test to prevent cross-test pollution."""
+    from trials.services.omop.component_category_lookup import clear_lookup_cache
+    clear_lookup_cache()
+    yield
+    clear_lookup_cache()
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _make_component(code, concept_id=None):

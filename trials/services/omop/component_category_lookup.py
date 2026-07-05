@@ -50,6 +50,11 @@ def _lookup(concept_ids_tuple):
     return sorted(codes)
 
 
+def clear_lookup_cache():
+    """Invalidate the per-process LRU cache after a table rebuild."""
+    _lookup.cache_clear()
+
+
 # ── maintenance (rebuild from local M2M graph) ──────────────────────────────
 
 def build_component_category_lookup():
@@ -107,6 +112,10 @@ def sync_component_category_lookup(dry_run=False):
         stale = [cid for cid in existing if cid not in computed]
         if stale and not dry_run:
             ComponentCategoryOmopLookup.objects.filter(component_concept_id__in=stale).delete()
+
+    if not dry_run:
+        # Flush the in-process LRU cache so subsequent calls see the updated table.
+        clear_lookup_cache()
 
     return {
         'added': added,
