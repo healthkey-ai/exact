@@ -19,6 +19,22 @@ Key routing rules:
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
 
+## Local Postgres for tests
+
+Use local PostgreSQL, not a remote/staging database, when running a
+project's test suite — it's dramatically faster (seconds vs. many minutes)
+and matches CI. Local Postgres is already set up on this machine
+(Postgres.app, port 5432, `postgres` superuser role). Remote DBs are for
+migrations and staging/sync checks, not for running tests.
+
+**Shared working directory caveat:** if a human is also working in the same
+repo from another terminal at the same time, remember that a checkout
+shares one working directory across all terminals/sessions — a
+`git checkout`/`switch` in either one changes what the other sees on disk.
+Prefer `git worktree add <path> <branch>` for any verification/testing that
+shouldn't disturb whatever branch the other terminal currently has checked
+out.
+
 ## Porting changes from CancerBot (CB)
 
 CancerBot (`/Users/lm/work/biblum/cancerbot`) is the **primary/upstream** for search & matcher
