@@ -214,6 +214,23 @@ class PatientInfoAttributes:
 
         return list(set(out))
 
+    def get_supportive_therapy_codes(self):
+        """Supportive-therapy codes the patient selected.
+
+        Supportive therapies are a distinct matching axis from prior-line
+        therapies; these codes gate a trial's supportive_therapies_required /
+        supportive_therapies_excluded pair (#4449). Kept separate from
+        get_user_therapies(), which mixes supportive codes into the prior-lines
+        bag (legacy behaviour, intentionally left unchanged here).
+        """
+        out = []
+        if not self.is_attr_blank('supportive_therapies'):
+            for item in self.get_value('supportive_therapies'):
+                therapy_code = item.get('therapy')
+                if therapy_code:
+                    out.append(therapy_code)
+        return list(set(out))
+
     def get_user_therapy_component_ids(self):
         """Return the patient's component concept_ids (CTOMOP-supplied, OMOP mode only).
 

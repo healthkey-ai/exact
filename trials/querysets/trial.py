@@ -132,14 +132,25 @@ def _filter_last_treatment(scope, value, ctx):
 
 def _filter_therapy_lines_once(scope, _value, ctx):
     # Used for therapy-line attrs (first_line_therapy, second_line_therapy,
-    # later_therapy, later_therapies, supportive_therapies) — the actual
-    # filter is applied once at most across all of them.
+    # later_therapy, later_therapies) — the actual filter is applied once at
+    # most across all of them.
     if not ctx['is_therapies_filter_applied']:
         scope = scope.eligible_for_therapy_related_things_from_lines(
             ctx['user_therapies'], ctx['has_no_prior_therapy']
         )
         ctx['is_therapies_filter_applied'] = True
     return scope
+
+
+def _filter_supportive_therapies(scope, _value, ctx):
+    # Dedicated supportive axis (#4449) — same code extraction the matcher uses
+    # (single-sourced via get_supportive_therapy_codes). Supportive codes ALSO feed
+    # the prior-lines fold via get_user_therapies(), which the therapy-line attrs
+    # apply when the patient has a non-blank first/second/later line; this only ADDS
+    # the supportive axis without changing the legacy lines behaviour.
+    return scope.eligible_for_supportive_therapies(
+        ctx['patient_info_attr'].get_supportive_therapy_codes()
+    )
 
 
 _CUSTOM_SEARCH_DISPATCH = {
@@ -165,6 +176,7 @@ _CUSTOM_SEARCH_DISPATCH = {
     'ethnicity': lambda s, v, _c: s.eligible_for_ethnicity(_csv(v)),
     'languages_skills': lambda s, v, _c: s.eligible_for_languages_skills(_csv(v)),
     'planned_therapies': lambda s, v, _c: s.eligible_for_planned_therapies(_csv(v)),
+    'supportive_therapies': _filter_supportive_therapies,
     'cytogenic_markers': lambda s, v, _c: s.eligible_for_cytogenic_markers(_csv(v)),
     'molecular_markers': lambda s, v, _c: s.eligible_for_molecular_marker(_csv(v)),
     'histologic_type': lambda s, v, _c: s.eligible_for_histologic_types(_csv(v)),
@@ -1477,6 +1489,7 @@ class TrialQuerySet(models.QuerySet):
             if "custom_search" in trial_attr_meta and trial_attr_meta["custom_search"] is True:
                 ctx = {
                     'patient_info': patient_info,
+                    'patient_info_attr': patient_info_attr,
                     'has_no_prior_therapy': has_no_prior_therapy,
                     'user_therapies': user_therapies,
                     'is_therapies_filter_applied': is_therapies_filter_applied,
@@ -1484,7 +1497,7 @@ class TrialQuerySet(models.QuerySet):
                 handler = _CUSTOM_SEARCH_DISPATCH.get(user_attr)
                 if handler is not None:
                     scope = handler(scope, user_attr_value, ctx)
-                elif user_attr in [*THERAPY_LINES_ATTRS_UNDERSCORED, 'supportive_therapies']:
+                elif user_attr in THERAPY_LINES_ATTRS_UNDERSCORED:
                     scope = _filter_therapy_lines_once(scope, user_attr_value, ctx)
                 else:
                     raise Exception(

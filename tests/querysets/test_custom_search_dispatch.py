@@ -49,7 +49,8 @@ class TestDispatchTableExhaustive:
             pytest.skip(f'{user_attr} is a stateful handler — covered by integration tests')
 
         scope = MagicMock(spec=TrialQuerySet)
-        ctx = {'patient_info': None, 'has_no_prior_therapy': False,
+        ctx = {'patient_info': None, 'patient_info_attr': MagicMock(),
+               'has_no_prior_therapy': False,
                'user_therapies': {}, 'is_therapies_filter_applied': False}
         # Call the handler with a typical comma-string value so CSV
         # handlers exercise their split path too.
@@ -72,7 +73,9 @@ class TestDispatchTableExhaustive:
         from trials.services.patient_info.configs import (
             THERAPY_LINES_ATTRS_UNDERSCORED,
         )
-        therapy_keys = set(THERAPY_LINES_ATTRS_UNDERSCORED) | {'supportive_therapies'}
+        # supportive_therapies now has a dedicated dispatch entry (#4449) — it is
+        # NOT a therapy-line fallback attr, so it is deliberately excluded here.
+        therapy_keys = set(THERAPY_LINES_ATTRS_UNDERSCORED)
         assert therapy_keys.isdisjoint(_CUSTOM_SEARCH_DISPATCH.keys())
 
     def test_every_custom_search_config_is_routable(self):
@@ -93,9 +96,8 @@ class TestDispatchTableExhaustive:
             if meta.get('custom_search') is True
         }
         routable = (
-            set(_CUSTOM_SEARCH_DISPATCH.keys())
+            set(_CUSTOM_SEARCH_DISPATCH.keys())  # includes supportive_therapies (#4449)
             | set(THERAPY_LINES_ATTRS_UNDERSCORED)
-            | {'supportive_therapies'}
         )
         unroutable = custom_search_keys - routable
         assert not unroutable, (

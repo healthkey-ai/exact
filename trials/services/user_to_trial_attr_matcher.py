@@ -69,12 +69,13 @@ _CUSTOM_SEARCH_NAMED_HANDLERS = {
     'flipi_score_options': '_match_flipi_score_options',
     'prior_therapy': '_match_prior_therapy',
     'genetic_mutations': '_match_genetic_mutations',
+    'supportive_therapies': '_match_supportive_therapies',
 }
 
 # Therapy-line attrs fall back to a single handler after the named
 # dispatch misses (these were originally a `patient_info_attr in [...]`
 # branch in the megamethod).
-_THERAPY_LINES_FALLBACK_ATTRS = frozenset(THERAPY_LINES_ATTRS_UNDERSCORED) | {'supportive_therapies'}
+_THERAPY_LINES_FALLBACK_ATTRS = frozenset(THERAPY_LINES_ATTRS_UNDERSCORED)
 
 # Handlers keyed by `trial_attr_meta["type"]` — the non-custom_search path.
 _TYPE_HANDLERS = {
@@ -703,6 +704,28 @@ class UserToTrialAttrMatcher:
             return 'matched'
 
     # ── custom_search fallbacks ─────────────────────────────────────
+
+    def _match_supportive_therapies(self, ctx):
+        """Enforce the trial's supportive_therapies_required/excluded pair (#4449).
+
+        Mirrors the search-side eligible_for_supportive_therapies: no requirement
+        -> matched; patient hasn't answered -> unknown; required with no overlap or
+        excluded with overlap -> not_matched. Supportive codes still feed
+        first_line_therapy via get_user_therapies(), so the legacy lines behaviour
+        is unchanged.
+        """
+        supportive_required = getattr(self.trial, THERAPY_MATCH_PROFILE.supportive_therapies_required)
+        supportive_excluded = getattr(self.trial, THERAPY_MATCH_PROFILE.supportive_therapies_excluded)
+        if not supportive_required and not supportive_excluded:
+            return 'matched'
+        codes = self.patient_info_attr.get_supportive_therapy_codes()
+        if ctx.is_blank or not codes:
+            return 'unknown'
+        if len(supportive_required) > 0 and len(get_overlap(codes, supportive_required)) == 0:
+            return 'not_matched'
+        if len(supportive_excluded) > 0 and len(get_overlap(codes, supportive_excluded)) > 0:
+            return 'not_matched'
+        return 'matched'
 
     def _match_therapy_lines_attr(self, ctx):
         if ctx.name == 'first_line_therapy':  # calc things for just one line of therapy
