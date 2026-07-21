@@ -64,7 +64,16 @@ class TestEthnicityLoader:
         call_command('load_ethnicity_omop_concept_ids', stdout=out)
         other.refresh_from_db()
         assert other.omop_concept_id is None
-        assert 'cleared=1' in out.getvalue()
+        assert 'cleared=1 ' in out.getvalue()
+
+    def test_loader_corrects_mapped_code_and_does_not_clear_it(self, db):
+        # a MAPPED code carrying a wrong value must be corrected to the curated
+        # cid by the set loop, NOT nulled by the clear step (disjointness).
+        asian, _ = Ethnicity.objects.get_or_create(code='asian', defaults={'title': 'Asian'})
+        Ethnicity.objects.filter(pk=asian.pk).update(omop_concept_id=11111111)
+        call_command('load_ethnicity_omop_concept_ids', stdout=StringIO())
+        asian.refresh_from_db()
+        assert asian.omop_concept_id == 45879439
 
 
 @pytest.mark.django_db
