@@ -27,6 +27,7 @@ from trials.services.patient_info.configs import (
 )
 from trials.services.receptor_hierarchy import expand_values as expand_receptor_values
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PROFILE
 from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.trial_details.configs import PHASE_CODE_MAPPING
@@ -1221,7 +1222,7 @@ class TrialQuerySet(models.QuerySet):
     def eligible_for_ethnicity(self, ethnicities: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
             values=ethnicities,
-            required_attr_name='ethnicity_required'
+            required_attr_name=DEMOGRAPHICS_MATCH_PROFILE.ethnicity_required
         )
 
     def eligible_for_languages_skills(self, languages_skills: list[str]) -> models.QuerySet:

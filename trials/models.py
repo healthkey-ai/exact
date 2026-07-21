@@ -406,6 +406,13 @@ class Trial(TimeStampMixin):
     age_high_limit = models.IntegerField(blank=True, null=True)
     gender = models.CharField(max_length=3, blank=True, null=True)
     ethnicity_required = models.JSONField(blank=True, null=False, default=list)
+    # OMOP demographics cutover (#4447): concept_id mirrors of the legacy demographic
+    # fields, filled by backfill_omop_demographics_columns. Read-only in EXACT;
+    # matching reads these only once the demographics profile/config are flipped.
+    # omop_ethnicity_required = race concept_ids as STRINGS in JSONB (mirrors the
+    # omop_therapies_* convention); omop_gender_concept_id = single OMOP gender concept.
+    omop_ethnicity_required = models.JSONField(blank=True, null=False, default=list)
+    omop_gender_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True)
     consent_capability_required = models.BooleanField(blank=True, null=True, db_index=True)
     no_tobacco_use_required = models.BooleanField(blank=True, null=True, db_index=True)
     no_substance_use_required = models.BooleanField(blank=True, null=True, db_index=True)
@@ -715,6 +722,7 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['phases'], name='idx_phases_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['languages_skills_required'], name='idx_lang_skills_required_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['ethnicity_required'], name='idx_ethnicity_required_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['omop_ethnicity_required'], name='idx_omop_ethnicity_req_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['concomitant_medications_excluded'], name='idx_conc_med_excluded_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['stages'], name='idx_stages_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['pre_existing_conditions_excluded'], name='idx_pre_ex_cond_excluded_gin', opclasses=['jsonb_ops']),
@@ -1072,7 +1080,12 @@ class OptionsListIntCodeMixin(TimeStampMixin):
 
 
 class Ethnicity(OptionsListMixin):
-    pass
+    # OMOP migration (#4447): 'ethnicity' holds race categories (no separate race
+    # field), so this maps to OMOP RACE concepts. concept_id pinned to the CTOMOP
+    # release; null when unmapped (e.g. 'other'). Source for the trial
+    # omop_ethnicity_* cols. Ported from CancerBot; populated by
+    # load_ethnicity_omop_concept_ids.
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP race concept_id (CTOMOP) for this ethnicity value; null when unmapped.")
 
 
 class StemCellTransplant(OptionsListMixin):
