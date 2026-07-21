@@ -11,8 +11,12 @@ produced + curated against CTOMOP, see that dir) and:
 
 For the vocab-model omop_concept_id + OmopConcept writes, only rows with a
 concept_id and an accepted match type are loaded; `no_omop` (procedures /
-non-drug) and `needs_review` rows do not write a concept_id. If such a row's
-vocab object previously had a concept_id (stale from a prior accepted run),
+non-drug) and `needs_review` rows do not write a concept_id. `crosswalk_only`
+(category / drug-class type rows) and `deferred` (component codes not yet
+authored in the vocab) carry a concept_id in the CSV but are AUDIT-only (#4580)
+— recorded in the crosswalk, never written as a runtime vocab mapping. If a
+row's vocab object previously had a concept_id (stale from a prior accepted run
+— null-cid `needs_review`/`no_omop` OR a `crosswalk_only`/`deferred` transition),
 it is cleared to NULL so the backfill does not propagate the old value into
 trial omop_* columns. The crosswalk table records all rows regardless.
 
@@ -38,8 +42,14 @@ LEVEL_MODEL = {
     'category': TherapyComponentCategory,
 }
 DEFAULT_CSV = os.path.join(settings.BASE_DIR, 'docs', 'omop', 'mapping', 'therapy_omop_mapping.csv')
-# match types that carry a CTOMOP-verified concept_id
+# match types that carry a CTOMOP-verified concept_id loaded as a runtime vocab mapping
 ACCEPTED = {'auto', 'curated', 'llm'}
+# Recorded in the crosswalk for audit but NOT runtime-applicable (#4580): they carry a
+# concept_id in the CSV, but any vocab omop_concept_id for the code must be cleared so it
+# is never a runtime mapping / backfilled into trials (matters where category is mapped —
+# EXACT's LEVEL_MODEL still includes category, so this is load-bearing here). A dedicated
+# set (not "any non-accepted") so --exclude-llm can't inadvertently clear a valid llm mapping.
+CROSSWALK_ONLY = {'crosswalk_only', 'deferred'}
 
 
 class Command(BaseCommand):
@@ -59,7 +69,7 @@ class Command(BaseCommand):
 
         updated = Counter()      # level -> rows set
         unchanged = Counter()    # already had the value
-        cleared = Counter()      # level -> stale concept_ids nulled (needs_review/no_omop transition)
+        cleared = Counter()      # level -> stale concept_ids nulled (needs_review/no_omop/crosswalk_only/deferred)
         missing_code = Counter()  # code not found in vocab table
         skipped = 0
         concepts = 0             # distinct OmopConcept rows upserted
@@ -88,12 +98,14 @@ class Command(BaseCommand):
 
                 if row['match'] not in accepted or cid is None:
                     skipped += 1
-                    # Clear any stale concept_id left from a previous accepted mapping.
-                    # A row that transitions to needs_review/no_omop should not keep an
-                    # old concept_id on the vocab model — that would cause the backfill
-                    # to propagate the wrong OMOP concept into trial omop_* columns.
+                    # Clear any stale concept_id left from a previous accepted mapping so the
+                    # backfill can't propagate a wrong/dropped OMOP concept into trial omop_*
+                    # columns. Clear when the row (a) transitions to needs_review/no_omop
+                    # (cid is None), or (b) is crosswalk_only/deferred — recorded for audit
+                    # but must never be a runtime vocab mapping even though the CSV still
+                    # carries its concept_id.
                     model = LEVEL_MODEL.get(row['level'])
-                    if model is not None and cid is None:
+                    if model is not None and (cid is None or row['match'] in CROSSWALK_ONLY):
                         obj = model.objects.filter(code=row['cb_code']).first()
                         if obj is not None and obj.omop_concept_id is not None:
                             cleared[row['level']] += 1

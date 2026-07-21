@@ -258,10 +258,12 @@ class OmopConcept(TimeStampMixin):
     """OMOP concept_id → display title + vocabulary.
 
     Resolves the concept_ids stored in the trial ``omop_*`` therapy columns (and
-    patient ``*_therapy_id``) to human-readable names for the API, independent of
-    which vocab model a concept came from (regimen / component / class / future
-    expanded concepts). Populated from the curated ``therapy_omop_mapping.csv``
-    (omop_concept_id, omop_name, omop_vocab) by ``load_therapy_omop_concept_ids``.
+    patient ``*_therapy_id``) to human-readable names for the API — the runtime title
+    projection for RUNTIME-APPLICABLE concepts (regimen / component). Drug-class "type"
+    concepts are NOT projected here (ADR-A/#4502, #4580): their crosswalk rows are
+    ``crosswalk_only`` and keep their ``omop_name`` for audit in
+    :class:`TherapyOmopMapping` only. Populated from the curated
+    ``therapy_omop_mapping.csv`` by ``load_therapy_omop_concept_ids``.
     Ported from CancerBot (CB owns the upstream); EXACT reads/populates it locally.
     """
     concept_id = models.BigIntegerField(primary_key=True)
@@ -287,10 +289,15 @@ class TherapyOmopMapping(TimeStampMixin):
     Ported from CancerBot (CB owns the upstream, #4476); EXACT reads/populates it locally.
     """
     LEVEL_CHOICES = [('regimen', 'regimen'), ('component', 'component'), ('category', 'category')]
-    # auto/curated/llm carry a CTOMOP-verified concept_id; needs_review/no_omop don't
+    # auto/curated/llm carry a CTOMOP-verified concept_id that IS loaded as a runtime vocab
+    # mapping; needs_review/no_omop carry none. crosswalk_only/deferred carry a concept_id
+    # for AUDIT ONLY and are NOT runtime-applicable (#4580): crosswalk_only = category rows
+    # (drug-class types are not OMOP-mapped, ADR-A/#4502); deferred = component codes not yet
+    # authored in the vocab (Finding B) that would become applicable if the code is added.
     MATCH_CHOICES = [
         ('auto', 'auto'), ('curated', 'curated'), ('llm', 'llm'),
         ('needs_review', 'needs_review'), ('no_omop', 'no_omop'),
+        ('crosswalk_only', 'crosswalk_only'), ('deferred', 'deferred'),
     ]
     level = models.CharField(max_length=16, choices=LEVEL_CHOICES)
     cb_code = models.CharField(max_length=255)
