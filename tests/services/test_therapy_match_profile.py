@@ -117,6 +117,10 @@ def test_supportive_matching_reads_omop_column_under_flag():
         supportive_therapies_excluded=['zz_sup_code'],
         omop_supportive_therapies_excluded=['555'],
     )
+    # Control: excludes 555 at the REGIMEN (omop) level. A supportive-only patient is not
+    # folded as a regimen, so this stays eligible under the flag — proving t's drop is the
+    # omop_supportive column, not the fold resolving 555 as a regimen.
+    t_reg = TrialFactory(omop_therapies_excluded=['555'])
 
     with override_settings(EXACT_OMOP_THERAPY=True):
         # matcher: patient carrying the concept_id is excluded (reads omop column)
@@ -125,11 +129,16 @@ def test_supportive_matching_reads_omop_column_under_flag():
         # the legacy code no longer excludes under the flag
         pi_legacy = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'zz_sup_code'}])
         assert UserToTrialAttrMatcher(t, pi_legacy).attr_match_status('supportive_therapies') == 'matched'
-        # queryset reads the omop column too
-        assert not Trial.objects.filter(pk=t.pk).eligible_for_supportive_therapies(['555']).exists()
+        # queryset reads the omop column too — via the FULL search path
+        result, _ = Trial.objects.filter_by_patient_info(pi)
+        assert not result.filter(pk=t.pk).exists()
+        assert result.filter(pk=t_reg.pk).exists()   # regimen-excluded control NOT folded -> kept
+        result_legacy, _ = Trial.objects.filter_by_patient_info(pi_legacy)
+        assert result_legacy.filter(pk=t.pk).exists()
 
     with override_settings(EXACT_OMOP_THERAPY=False):
         # legacy: the CB code excludes; the concept_id does not
         pi_legacy = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'zz_sup_code'}])
         assert UserToTrialAttrMatcher(t, pi_legacy).attr_match_status('supportive_therapies') == 'not_matched'
-        assert not Trial.objects.filter(pk=t.pk).eligible_for_supportive_therapies(['zz_sup_code']).exists()
+        result_legacy, _ = Trial.objects.filter_by_patient_info(pi_legacy)
+        assert not result_legacy.filter(pk=t.pk).exists()

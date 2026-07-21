@@ -87,19 +87,29 @@ class TestUserToTrialAttrMatcher:
     @pytest.mark.django_db
     @override_settings(EXACT_OMOP_THERAPY=False)
     def test_supportive_therapies_queryset_dedicated_filter(self):
-        # #4449: the search-side eligible_for_supportive_therapies is now wired via
-        # the dispatch table (previously dead code). A trial excluding a supportive
-        # code drops the patient carrying it. Legacy mode (CB-code columns).
+        # #4449: eligible_for_supportive_therapies is wired via the dispatch (previously
+        # dead). Drive the FULL search path (filter_by_patient_info -> _CUSTOM_SEARCH_DISPATCH
+        # -> get_supportive_therapy_codes -> eligible_for_supportive_therapies) so a broken
+        # or misrouted dispatch is caught. Legacy mode (CB-code columns).
         from trials.models import Trial
         t_excl = TrialFactory(supportive_therapies_excluded=['bisphosphonate'])
         t_req = TrialFactory(supportive_therapies_required=['bisphosphonate'])
+        # Control: EXCLUDES bisphosphonate at the regimen/prior-lines level. A
+        # supportive-only patient must NOT be folded into prior-line filtering, so this
+        # trial stays eligible — proving the drop below is the supportive axis, not the fold.
+        t_line = TrialFactory(therapies_excluded=['bisphosphonate'])
 
-        # patient on bisphosphonate: excluded trial drops, required trial keeps
-        assert not Trial.objects.filter(pk=t_excl.pk).eligible_for_supportive_therapies(['bisphosphonate']).exists()
-        assert Trial.objects.filter(pk=t_req.pk).eligible_for_supportive_therapies(['bisphosphonate']).exists()
+        # patient on bisphosphonate: excluded trial drops, required + regimen-control keep
+        result, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'bisphosphonate'}]))
+        assert not result.filter(pk=t_excl.pk).exists()
+        assert result.filter(pk=t_req.pk).exists()
+        assert result.filter(pk=t_line.pk).exists()   # regimen-excluded trial NOT folded -> kept
         # patient on a different code: required trial drops (no overlap), excluded keeps
-        assert not Trial.objects.filter(pk=t_req.pk).eligible_for_supportive_therapies(['epoetin']).exists()
-        assert Trial.objects.filter(pk=t_excl.pk).eligible_for_supportive_therapies(['epoetin']).exists()
+        result, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'epoetin'}]))
+        assert not result.filter(pk=t_req.pk).exists()
+        assert result.filter(pk=t_excl.pk).exists()
 
     @pytest.mark.django_db
     def test_planned_therapies_match_status(self):
