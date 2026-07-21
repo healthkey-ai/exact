@@ -43,22 +43,27 @@ def test_map_codes_to_concept_ids_empty():
     assert map_codes_to_concept_ids(Therapy, []) == ([], [])
 
 
-def test_build_omop_columns_regimen_and_component_levels():
-    # Drug-class "types" are not OMOP-mapped (#4502): build_omop_columns emits the
-    # 4 columns of the two OMOP levels (regimen + component), never omop_therapy_types_*.
+def test_build_omop_columns_regimen_component_and_supportive_levels():
+    # Drug-class "types" are not OMOP-mapped (#4502). Regimen + component + supportive
+    # (cb#4590) ARE mapped; supportive resolves via TherapyComponent concept_ids.
     Therapy.objects.create(code='reg_r', title='reg r', omop_concept_id=1)
     Therapy.objects.create(code='reg_x', title='reg x', omop_concept_id=2)
     TherapyComponent.objects.create(code='comp_r', title='comp r', omop_concept_id=3)
+    Therapy.objects.create(code='sup_r', title='sup r', omop_concept_id=5)
     trial = TrialFactory(
         therapies_required=['reg_r'],
         therapies_excluded=['reg_x'],
         therapy_components_required=['comp_r'],
+        supportive_therapies_required=['sup_r'],
         therapy_types_required=['cat_r'],  # legacy type column — ignored by the OMOP mapper
     )
     values, unmapped = build_omop_columns(trial)
     assert values['omop_therapies_required'] == ['1']
     assert values['omop_therapies_excluded'] == ['2']
     assert values['omop_therapy_components_required'] == ['3']
+    # supportive is now OMOP-mapped via Therapy (regimen) concept_ids (cb#4590)
+    assert values['omop_supportive_therapies_required'] == ['5']
+    assert values['omop_supportive_therapies_excluded'] == []
     # types are not OMOP-mapped — no omop_therapy_types_* key is produced
     assert 'omop_therapy_types_required' not in values
     assert 'omop_therapy_types_excluded' not in values

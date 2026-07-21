@@ -28,9 +28,14 @@ the legacy (internal-code) columns under OMOP:
   ``categories ↔ components ↔ therapies`` (the matcher reverse-maps the patient's
   component concept_ids back to internal components, then to CB categories, and
   overlaps those against the legacy ``therapy_types_*`` columns). See #197.
-- ``planned_*`` / ``supportive_*``: their vocabs have no ``omop_concept_id`` yet,
-  so the backfill leaves the omop_* columns empty — flipping them would silently
-  drop the constraint.
+- ``supportive_*``: the backfill now POPULATES ``omop_supportive_therapies_*``
+  (cb#4590 — supportive codes are components with ``omop_concept_id``), but
+  matching still reads the legacy ``supportive_therapies_*`` columns here and in
+  the config seam. Flipping requires the consumer to supply the patient's
+  supportive therapies as concept_ids; populate now, flip later (cb#4590).
+- ``planned_*``: ``PlannedTherapy`` has no ``omop_concept_id`` (most codes are
+  drug-classes), so the backfill leaves ``omop_planned_therapies_*`` empty —
+  flipping it would silently drop the constraint (cb#4590 follow-up).
 """
 from dataclasses import dataclass
 
