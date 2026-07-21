@@ -7,16 +7,20 @@ by the batch backfill command (and the shadow-comparison harness #4446).
 Ported from CancerBot (CB epic #4447); CB owns the upstream conversion. EXACT is
 the downstream that runs the backfill locally / against CB's read-only trials DB.
 
-Scope: the three therapy levels whose vocab has ``omop_concept_id`` today —
-regimen (``Therapy``), drug component (``TherapyComponent``), drug class
-(``TherapyComponentCategory``). ``planned_*`` / ``supportive_*`` are excluded
-until their vocabs gain ``omop_concept_id``.
+Scope: the two therapy levels whose vocab has ``omop_concept_id`` today —
+regimen (``Therapy``) and drug component (``TherapyComponent``). Drug-class
+"types" (``TherapyComponentCategory``) are intentionally NOT OMOP-mapped (EXACT
+ADR 0001 decision A, #4502): a patient never carries a class concept, so an
+omop_therapy_types_* column could never overlap; types stay a CB-hierarchy
+construct matched in CB-category-code space via ``therapy_types_*``.
+``planned_*`` / ``supportive_*`` are excluded until their vocabs gain
+``omop_concept_id``.
 
 Conventions (per the plan review): concept_ids are stored as STRINGS; output
 arrays are de-duplicated and stably sorted; unknown or unmapped (null
 ``omop_concept_id``) codes are dropped and reported; the mapping is idempotent.
 """
-from trials.models import Therapy, TherapyComponent, TherapyComponentCategory
+from trials.models import Therapy, TherapyComponent
 
 # (vocab model, legacy required col, legacy excluded col, omop required col, omop excluded col)
 THERAPY_LEVELS = [
@@ -26,9 +30,6 @@ THERAPY_LEVELS = [
     (TherapyComponent,
      'therapy_components_required', 'therapy_components_excluded',
      'omop_therapy_components_required', 'omop_therapy_components_excluded'),
-    (TherapyComponentCategory,
-     'therapy_types_required', 'therapy_types_excluded',
-     'omop_therapy_types_required', 'omop_therapy_types_excluded'),
 ]
 
 
@@ -61,8 +62,8 @@ def build_omop_columns(trial):
     """Compute the trial's OMOP therapy column values from its legacy codes.
 
     Returns ``(values, unmapped)``:
-    - ``values``: ``{omop_column_name: [concept_id_str, ...]}`` for all 6 mapped
-      columns (3 levels x required/excluded).
+    - ``values``: ``{omop_column_name: [concept_id_str, ...]}`` for all 4 mapped
+      columns (2 levels x required/excluded).
     - ``unmapped``: ``{legacy_column_name: [code, ...]}`` for codes that could not
       be mapped (only non-empty entries included).
     """

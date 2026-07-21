@@ -40,7 +40,8 @@ def _load(csv_path, *extra):
 def test_crosswalk_only_records_crosswalk_but_no_title_or_vocab(tmp_path):
     # A category row carries a concept_id for audit but is NOT runtime-applicable (#4580):
     # recorded in the crosswalk with match='crosswalk_only', no OmopConcept title, and no
-    # vocab write. (category with no prior cid — the clear rule is a no-op here.)
+    # vocab write. category is NOT a vocab level (#4502: dropped from LEVEL_MODEL), so the
+    # row is recorded for audit only and never touches a vocab omop_concept_id.
     TherapyComponentCategory.objects.create(code='zz_cat', title='ZZ Cat')
     csv_path = _write_csv(tmp_path / 'm.csv', [
         ['category', 'zz_cat', 'ZZ Cat', '21602723', 'Corticosteroids', 'ATC', 'crosswalk_only'],
@@ -51,22 +52,6 @@ def test_crosswalk_only_records_crosswalk_but_no_title_or_vocab(tmp_path):
     assert row.match == 'crosswalk_only' and row.omop_concept_id == 21602723   # audit preserved
     assert not OmopConcept.objects.filter(concept_id=21602723).exists()        # no runtime title
     assert TherapyComponentCategory.objects.get(code='zz_cat').omop_concept_id is None
-
-
-@pytest.mark.django_db
-def test_crosswalk_only_clears_stale_category_cid(tmp_path):
-    # EXACT-specific: category IS in LEVEL_MODEL, so a crosswalk_only category row must
-    # clear a previously-set vocab concept_id even though the CSV still carries a cid —
-    # otherwise the backfill would propagate a drug-class concept into trial omop_* columns.
-    TherapyComponentCategory.objects.create(code='zz_cat2', title='ZZ Cat2', omop_concept_id=21602723)
-    csv_path = _write_csv(tmp_path / 'm.csv', [
-        ['category', 'zz_cat2', 'ZZ Cat2', '21602723', 'Corticosteroids', 'ATC', 'crosswalk_only'],
-    ])
-    _load(csv_path)
-
-    assert TherapyComponentCategory.objects.get(code='zz_cat2').omop_concept_id is None   # cleared
-    assert not OmopConcept.objects.filter(concept_id=21602723).exists()
-    assert TherapyOmopMapping.objects.get(level='category', cb_code='zz_cat2').match == 'crosswalk_only'
 
 
 @pytest.mark.django_db

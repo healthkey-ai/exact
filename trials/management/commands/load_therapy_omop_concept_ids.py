@@ -2,7 +2,8 @@
 
 Reads docs/omop/mapping/therapy_omop_mapping.csv (CB code -> OMOP concept_id,
 produced + curated against CTOMOP, see that dir) and:
-- sets omop_concept_id on Therapy / TherapyComponent / TherapyComponentCategory (#4451);
+- sets omop_concept_id on Therapy / TherapyComponent (#4451; the category level
+  is not OMOP-mapped — decision A, #4502);
 - upserts OmopConcept(concept_id -> concept_name, vocabulary_id) so the API can
   resolve the concept_ids in trial omop_* columns to OMOP titles;
 - upserts TherapyOmopMapping (the per-row cb<->OMOP crosswalk, #4476) for EVERY
@@ -33,22 +34,25 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from trials.models import (
-    Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept, TherapyOmopMapping,
+    Therapy, TherapyComponent, OmopConcept, TherapyOmopMapping,
 )
 
+# Drug-class "types" (category level) are not OMOP-mapped — decision A, #4502.
+# The vocab omop_concept_id + trial omop_therapy_types_* columns are gone; only
+# regimen + component carry concept_ids. Any stray `category` CSV row is still
+# recorded in the TherapyOmopMapping crosswalk (audit) but loads no vocab value.
 LEVEL_MODEL = {
     'regimen': Therapy,
     'component': TherapyComponent,
-    'category': TherapyComponentCategory,
 }
 DEFAULT_CSV = os.path.join(settings.BASE_DIR, 'docs', 'omop', 'mapping', 'therapy_omop_mapping.csv')
 # match types that carry a CTOMOP-verified concept_id loaded as a runtime vocab mapping
 ACCEPTED = {'auto', 'curated', 'llm'}
 # Recorded in the crosswalk for audit but NOT runtime-applicable (#4580): they carry a
 # concept_id in the CSV, but any vocab omop_concept_id for the code must be cleared so it
-# is never a runtime mapping / backfilled into trials (matters where category is mapped —
-# EXACT's LEVEL_MODEL still includes category, so this is load-bearing here). A dedicated
-# set (not "any non-accepted") so --exclude-llm can't inadvertently clear a valid llm mapping.
+# is never a runtime mapping / backfilled into trials — relevant for a `deferred` component
+# whose code exists in the vocab. A dedicated set (not "any non-accepted") so --exclude-llm
+# can't inadvertently clear a valid llm mapping.
 CROSSWALK_ONLY = {'crosswalk_only', 'deferred'}
 
 
@@ -129,7 +133,7 @@ class Command(BaseCommand):
                         )
 
                 model = LEVEL_MODEL.get(row['level'])
-                if model is None:  # non-vocab level (e.g. category) — crosswalk only
+                if model is None:  # non-vocab level (e.g. dropped `category`) — crosswalk only
                     skipped += 1
                     continue
                 obj = model.objects.filter(code=row['cb_code']).first()
@@ -155,7 +159,7 @@ class Command(BaseCommand):
         lookup_result = sync_component_category_lookup(dry_run=dry_run)
 
         prefix = '[dry-run] ' if dry_run else ''
-        for level in ('regimen', 'component', 'category'):
+        for level in ('regimen', 'component'):
             self.stdout.write(
                 f"{prefix}{level:10s} set={updated[level]:3d} unchanged={unchanged[level]:3d} "
                 f"code_not_found={missing_code[level]:3d}"
