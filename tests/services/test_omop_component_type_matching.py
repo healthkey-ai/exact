@@ -17,6 +17,7 @@ from trials.models import (
     TherapyComponentConnection, TherapyComponentCategoryConnection, OmopConcept,
 )
 from trials.services.omop.therapy_graph import derive_component_and_type_values
+from trials.services.omop.component_category_lookup import sync_component_category_lookup
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from trials.services.patient_info.patient_info import PatientInfo
 from tests.factories import TrialFactory
@@ -35,6 +36,11 @@ def _graph():
     TherapyComponentConnection.objects.create(therapy=vrd, component=bort)
     TherapyComponentConnection.objects.create(therapy=vrd, component=lena)
     TherapyComponentCategoryConnection.objects.create(category=pi_cat, component=bort)
+    # Under OMOP, type resolution reads the flat ComponentCategoryOmopLookup
+    # (a04be17 / ADR 0001-A / #4502), not the M2M graph. Production has no live
+    # post_save sync — the loader/rebuild command populates it explicitly — so the
+    # test must sync after wiring the graph, or type_values come back empty.
+    sync_component_category_lookup()
     return vrd, bort, lena, pi_cat
 
 
