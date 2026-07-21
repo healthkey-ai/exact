@@ -28,14 +28,16 @@ the legacy (internal-code) columns under OMOP:
   ``categories ↔ components ↔ therapies`` (the matcher reverse-maps the patient's
   component concept_ids back to internal components, then to CB categories, and
   overlaps those against the legacy ``therapy_types_*`` columns). See #197.
-- ``supportive_*``: the backfill now POPULATES ``omop_supportive_therapies_*``
-  (cb#4590 — supportive codes are components with ``omop_concept_id``), but
-  matching still reads the legacy ``supportive_therapies_*`` columns here and in
-  the config seam. Flipping requires the consumer to supply the patient's
-  supportive therapies as concept_ids; populate now, flip later (cb#4590).
-- ``planned_*``: ``PlannedTherapy`` has no ``omop_concept_id`` (most codes are
-  drug-classes), so the backfill leaves ``omop_planned_therapies_*`` empty —
-  flipping it would silently drop the constraint (cb#4590 follow-up).
+- ``supportive_*``: flips to ``omop_supportive_therapies_*`` under the OMOP profile
+  (#228). The dedicated supportive matching (#4449 — the matcher's
+  ``_match_supportive_therapies`` handler + the queryset
+  ``eligible_for_supportive_therapies``) reads the trial columns via this profile,
+  and the backfill populates the omop columns (cb#4590). The consumer supplies the
+  patient's supportive therapies as concept_ids under the flag; the cutover gate
+  (#221) validates omop_supportive coverage before the flag is flipped on prod.
+- ``planned_*``: stays legacy — ``PlannedTherapy`` has no ``omop_concept_id`` and
+  76/85 planned codes are drug-classes/modalities, so ``omop_planned_therapies_*``
+  is empty and flipping would silently drop the constraint (#230 decision pending).
 """
 from dataclasses import dataclass
 
@@ -71,6 +73,15 @@ OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
     therapies_excluded='omop_therapies_excluded',
     therapy_components_required='omop_therapy_components_required',
     therapy_components_excluded='omop_therapy_components_excluded',
+    # Supportive flips too (#228): the dedicated supportive path (#4449 — the
+    # _match_supportive_therapies matcher handler + eligible_for_supportive_therapies
+    # queryset) reads the trial supportive columns via THIS profile, and the backfill
+    # populates omop_supportive_therapies_* (cb#4590). The consumer supplies the
+    # patient's supportive therapies as concept_ids under the flag; the cutover gate
+    # (#221) validates omop_supportive coverage (no_omop supportive codes backfill to
+    # [] -> would silently drop the constraint) before the flag is flipped on prod.
+    supportive_therapies_required='omop_supportive_therapies_required',
+    supportive_therapies_excluded='omop_supportive_therapies_excluded',
 )
 
 
