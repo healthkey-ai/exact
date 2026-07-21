@@ -106,7 +106,12 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         if patient_info is None:
             patient_info = self._resolve_patient_info()
 
-        queryset = Trial.objects.all()
+        # trial_type is a FK serialized on every trial via StringRelatedField
+        # (list, search, detail); without select_related the serializer fetches
+        # it once per row — an N+1 (ported from CB perf(trials) select_related
+        # trial_type). The JOIN is cheap and the `count` action ignores it, so
+        # eager-load it on the base queryset.
+        queryset = Trial.objects.select_related('trial_type')
         study_prefs = self._resolve_study_preferences()
         search_type = self.request.query_params.get('type', None)
 
