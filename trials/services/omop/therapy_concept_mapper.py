@@ -19,10 +19,11 @@ types stay a CB-hierarchy construct matched in CB-category-code space via
 ``therapy_types_*``. ``planned_*`` is still excluded (``PlannedTherapy`` has no
 ``omop_concept_id`` and most codes are drug-classes, cb#4590 follow-up).
 
-NOTE: populating ``omop_supportive_therapies_*`` does NOT flip supportive
-matching to OMOP — the TherapyMatchProfile + the config seam still read the legacy
-``supportive_therapies_*`` columns (flipping requires the consumer to supply the
-patient's supportive therapies as concept_ids). Populate now, flip later (cb#4590).
+NOTE: this module only POPULATES ``omop_supportive_therapies_*``. In EXACT the
+matcher flip is already done (#228 — the TherapyMatchProfile OMOP profile reads the
+omop supportive columns). It is a safe no-op until promop emits supportive
+concept_ids (promop#230): the patient supportive list is empty, so the filter
+fail-opens. Coverage must be validated (#221) before the prod flip. See #231.
 
 Conventions (per the plan review): concept_ids are stored as STRINGS; output
 arrays are de-duplicated and stably sorted; unknown or unmapped (null

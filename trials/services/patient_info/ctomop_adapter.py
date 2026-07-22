@@ -417,8 +417,11 @@ def normalize_ctomop_row(row: dict) -> dict:
                 row[_tf] = resolve_therapy_code(val)
 
     # JSON list fields expect [{therapy: code, ...}] objects — clear if CTOMOP sent
-    # raw text. supportive_therapies stays on the legacy column (the OMOP profile
-    # keeps supportive/planned legacy), so it is not concept-remapped above.
+    # raw text. supportive_therapies is NOT concept-remapped above because promop
+    # does not emit supportive concept_ids yet (promop#230) — NOT because the profile
+    # keeps it legacy: the OMOP profile DOES flip supportive to the omop column, but
+    # the patient list stays empty so the filter fail-opens (safe no-op) until
+    # promop#230. planned_therapies stays legacy (#230). See #231.
     for _tf in ('supportive_therapies', 'later_therapies'):
         val = row.get(_tf)
         if isinstance(val, str) and not val.strip().startswith('['):
