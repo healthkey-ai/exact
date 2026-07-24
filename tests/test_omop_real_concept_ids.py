@@ -333,3 +333,89 @@ def test_queryset_pi_naive_trial_only_matches_no_prior_therapy():
     ids = set(qs.values_list('id', flat=True))
     assert naive_only.id in ids
     assert with_req.id not in ids
+
+
+# ── #224: component-only OMOP patient (therapy_component_ids, no regimen lines) ──
+
+def test_component_only_queryset_method_filters_by_components():
+    keep = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[BORT])
+    drop = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[CARF])
+    none_req = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[])
+    # No regimen lines ([]), but the consumer supplied components.
+    ids = set(
+        Trial.objects.eligible_for_therapy_related_things_from_lines(
+            [], patient_component_ids=[BORT, LEN]
+        ).values_list('id', flat=True)
+    )
+    assert keep.id in ids        # patient has bortezomib
+    assert none_req.id in ids    # no component requirement
+    assert drop.id not in ids    # patient lacks carfilzomib
+
+
+def test_component_only_filter_by_patient_info_applies_component_filter():
+    keep = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[BORT])
+    drop = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[CARF])
+    # Components supplied, prior therapy declared, but NO regimen-line codes — so the
+    # therapy-line dispatch never fires; the #224 fold must still apply the filter.
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_component_ids=[BORT, LEN])
+    scope, _ = Trial.objects.filter_by_patient_info(pi)
+    ids = set(scope.values_list('id', flat=True))
+    assert keep.id in ids
+    assert drop.id not in ids
+
+
+def test_matcher_component_only_patient_component_match():
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[BORT])
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT, LEN])
+    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things(None, False)
+    assert res == 'matched'
+
+
+def test_matcher_component_only_patient_component_mismatch():
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[CARF])
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT, LEN])
+    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things(None, False)
+    assert res == 'not_matched'
+
+
+@override_settings(EXACT_OMOP_THERAPY=False)
+def test_component_only_fold_skipped_when_flag_off():
+    # Legacy: therapy_component_ids is not consulted; the #224 fold is gated off, so a
+    # trial with an omop component requirement is NOT filtered by it.
+    drop_if_omop = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[CARF])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_component_ids=[BORT, LEN])
+    scope, _ = Trial.objects.filter_by_patient_info(pi)
+    assert drop_if_omop.id in set(scope.values_list('id', flat=True))
+
+
+def test_component_only_does_not_apply_regimen_filter():
+    # The component-only fold must SKIP the regimen filter (passes [] as therapy_codes):
+    # a trial requiring a regimen the patient lacks must not be dropped here (the matcher
+    # refines regimen matching). This also pins the fix for the supportive-codes leak.
+    requires_regimen = TrialFactory(disease='multiple myeloma', omop_therapies_required=[VRD])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_component_ids=[BORT, LEN])
+    scope, _ = Trial.objects.filter_by_patient_info(pi)
+    assert requires_regimen.id in set(scope.values_list('id', flat=True))
+
+
+def test_component_only_component_exclusion_filters():
+    excluded = TrialFactory(disease='multiple myeloma', omop_therapy_components_excluded=[BORT])
+    kept = TrialFactory(disease='multiple myeloma', omop_therapy_components_excluded=[CARF])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_component_ids=[BORT, LEN])
+    ids = set(Trial.objects.filter_by_patient_info(pi)[0].values_list('id', flat=True))
+    assert excluded.id not in ids   # patient had bortezomib → excluded
+    assert kept.id in ids           # patient never had carfilzomib
+
+
+def test_component_only_type_filter_via_lookup():
+    type_match = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_BORT])
+    type_other = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_DARA])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_component_ids=[BORT, LEN])
+    ids = set(Trial.objects.filter_by_patient_info(pi)[0].values_list('id', flat=True))
+    assert type_match.id in ids     # bortezomib → proteasome inhibitor
+    assert type_other.id not in ids # patient has no anti-CD38 component
