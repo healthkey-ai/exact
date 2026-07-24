@@ -378,6 +378,14 @@ ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') =
 CTOMOP_BASE = os.environ.get('CTOMOP_BASE', '')
 CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
 
+# promop concept-graph API (#234; promop ADR 0001 / promop#279) — API + cache
+# source of truth for vocabulary/concept-graph data. Falls back to the CTOMOP_*
+# settings (same promop host) until the dedicated OAuth2 path (#237) lands.
+# Empty default keeps ConceptGraphClient unconfigured (callers get
+# ConceptGraphUnavailable) so nothing silently no-ops.
+PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
+PROMOP_SERVICE_TOKEN = os.environ.get('PROMOP_SERVICE_TOKEN', '')
+
 
 # ---------------------------------------------------------------------------
 # OMOP therapy matching (epic #4447 cutover).
