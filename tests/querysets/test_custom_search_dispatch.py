@@ -131,7 +131,7 @@ class TestTherapyLinesOnceFlag:
 
     def test_first_call_applies_filter_and_flips_flag(self):
         scope = MagicMock(spec=TrialQuerySet)
-        ctx = {'is_therapies_filter_applied': False,
+        ctx = {'is_therapies_filter_applied': False, 'patient_info_attr': MagicMock(),
                'user_therapies': {}, 'has_no_prior_therapy': False}
         _filter_therapy_lines_once(scope, None, ctx)
         assert ctx['is_therapies_filter_applied'] is True
@@ -139,7 +139,7 @@ class TestTherapyLinesOnceFlag:
 
     def test_second_call_is_no_op(self):
         scope = MagicMock(spec=TrialQuerySet)
-        ctx = {'is_therapies_filter_applied': True,
+        ctx = {'is_therapies_filter_applied': True, 'patient_info_attr': MagicMock(),
                'user_therapies': {}, 'has_no_prior_therapy': False}
         result = _filter_therapy_lines_once(scope, None, ctx)
         assert ctx['is_therapies_filter_applied'] is True

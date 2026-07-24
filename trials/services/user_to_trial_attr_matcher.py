@@ -265,26 +265,52 @@ class UserToTrialAttrMatcher:
 
         mismatch_status = self.therapy_related_things_mismatch_status()
 
-        # Build the patient-side display maps keyed by whatever the trial columns
-        # hold per the active profile, so match_required/excluded overlap correctly:
-        # under OMOP regimen/component keys are concept_ids (reverse-mapped via the
-        # CB graph), type keys are CB category codes (legacy column); legacy → codes.
+        # Build the patient-side display maps keyed by whatever the trial columns hold
+        # per the active profile, so match_required/excluded overlap correctly. Regimen
+        # keys: concept_ids under OMOP, codes legacy. Component/type keys: OMOP (Phase P,
+        # #234) — components are consumer-supplied concept_ids (get_user_therapy_component_ids),
+        # types are CB category codes via the flat lookup; legacy — the CB graph walk.
+        omop = omop_therapy_enabled()
         if therapy_codes:
-            omop = omop_therapy_enabled()
             for therapy in resolve_regimens(therapy_codes).prefetch_related('components__categories'):
                 if omop:
                     if therapy.omop_concept_id is not None:
                         therapies[str(therapy.omop_concept_id)] = therapy.title
                 else:
                     therapies[therapy.code] = therapy.title
-                for component in sorted(therapy.components.all(), key=lambda c: c.id):
-                    if omop:
-                        if component.omop_concept_id is not None:
-                            therapy_components_to_therapy.setdefault(str(component.omop_concept_id), component.title)
-                    else:
+                    for component in sorted(therapy.components.all(), key=lambda c: c.id):
                         therapy_components_to_therapy.setdefault(component.code, component.title)
-                    for category in component.categories.all():
-                        therapy_types_to_therapy.setdefault(category.code, category.title)
+                        for category in component.categories.all():
+                            therapy_types_to_therapy.setdefault(category.code, category.title)
+
+        if omop:
+            # OMOP component/type display maps from the consumer-supplied concept_ids
+            # (no regimen->component graph walk). Titles resolved from the local
+            # TherapyComponent / category tables (transitional, while they still exist).
+            component_ids = self.patient_info_attr.get_user_therapy_component_ids() or []
+            if component_ids:
+                from trials.models import TherapyComponent, TherapyComponentCategory
+                from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
+                keys = [str(c) for c in component_ids]
+                int_cids = [int(k) for k in keys if k.isdigit()]
+                title_by_cid = dict(
+                    TherapyComponent.objects.filter(omop_concept_id__in=int_cids)
+                    .values_list('omop_concept_id', 'title')
+                )
+                for key in keys:
+                    # Fall back to the concept_id string when EXACT has no local title
+                    # (promop may supply concepts EXACT holds no local row for) — a None
+                    # value here later TypeErrors in match_required's sorted(set(values)).
+                    title = title_by_cid.get(int(key)) if key.isdigit() else None
+                    therapy_components_to_therapy.setdefault(key, title or key)
+                type_codes = component_concept_ids_to_type_codes(keys) or []
+                if type_codes:
+                    title_by_code = dict(
+                        TherapyComponentCategory.objects.filter(code__in=type_codes)
+                        .values_list('code', 'title')
+                    )
+                    for code in type_codes:
+                        therapy_types_to_therapy.setdefault(code, title_by_code.get(code) or code)
 
         def match_required(trial_values, matching_values, mismatch_status):
             overlap = get_overlap(trial_values, matching_values.keys())
@@ -417,13 +443,17 @@ class UserToTrialAttrMatcher:
             return res
         results.append(res)
 
-        # Component + type (class) values are derived from the regimen via the CB
-        # graph. Under OMOP the regimen concept_ids are reverse-mapped to internal
-        # Therapies, components → their OMOP concept_ids (vs omop_therapy_components_*),
-        # types → CB category codes (vs the LEGACY therapy_types_* columns, which the
-        # OMOP profile keeps — types are not OMOP-mapped). See #197 / therapy_graph.
+        # Component + type (class) values. OMOP mode (Phase P, #234): components are the
+        # consumer-supplied pre-expanded concept_ids (get_user_therapy_component_ids); types
+        # are CB category codes via the flat lookup (types are not OMOP-mapped). Legacy:
+        # derived from the regimen via the CB graph. See #197 / therapy_graph.
         from trials.services.omop.therapy_graph import derive_component_and_type_values
-        component_codes, therapy_types = derive_component_and_type_values(values)
+        from trials.services.therapy_match_profile import omop_therapy_enabled
+        # OMOP only: read the consumer-supplied components. Gated so the legacy path
+        # does no OMOP-specific work (byte-identical to CB).
+        patient_component_ids = (self.patient_info_attr.get_user_therapy_component_ids()
+                                 if omop_therapy_enabled() else None)
+        component_codes, therapy_types = derive_component_and_type_values(values, patient_component_ids)
 
         res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':

@@ -7,16 +7,18 @@ trial columns. This is the single shared derivation so the two stay consistent.
 
 Vocabulary by level (see therapy_match_profile):
 - regimen: handled by the caller directly (concept_ids under OMOP / codes legacy).
-- component: OMOP-mapped — under EXACT_OMOP_THERAPY the patient's regimen
-  concept_ids are reverse-mapped to internal Therapies (via Therapy.omop_concept_id),
-  walked to their components, and the components' OMOP concept_ids are returned
-  (to overlap the omop_therapy_components_* columns). Legacy → internal codes.
+- component: OMOP mode (Phase P, #234) — the patient's component concept_ids are
+  supplied PRE-EXPANDED by the consumer (promop) via ``patient_component_ids``;
+  EXACT no longer reverse-maps regimens to components through the local CB graph.
+  Legacy mode → internal component codes via the CB graph (unchanged).
 - type / component-category: NOT OMOP-mapped — always returned as CB category
   CODES (to overlap the legacy therapy_types_* columns), because EXACT keeps CB's
-  own category vocabulary and matches types through this graph (#197).
+  own category vocabulary and matches types through the flat category lookup (#197).
 
-Returns ``(component_values, type_values)``; ``(None, None)`` when the patient
-has no resolvable regimens (preserves the matcher's "unknown" semantics).
+Returns ``(component_values, type_values)``. ``(None, None)`` means unknown
+(preserves the matcher's "unknown" semantics): OMOP → the consumer sent no
+``therapy_component_ids`` (``patient_component_ids is None``); legacy → the patient
+has no resolvable regimens. An empty list is a known-empty component set.
 """
 from trials.services.therapy_match_profile import omop_therapy_enabled
 
@@ -35,7 +37,27 @@ def resolve_regimens(therapy_identifiers):
     return Therapy.objects.filter(code__in=therapy_identifiers)
 
 
-def derive_component_and_type_values(therapy_identifiers):
+def derive_component_and_type_values(therapy_identifiers, patient_component_ids=None):
+    """Return ``(component_values, type_values)`` for the patient's therapies.
+
+    OMOP mode (Phase P, #234): components are the consumer-supplied pre-expanded
+    ``patient_component_ids`` (no local CB-graph walk). ``None`` = unknown (consumer
+    sent nothing) → ``(None, None)``; ``[]`` = known-empty; a list → those component
+    concept_ids, with types via the flat category lookup (CB category codes; types are
+    NOT OMOP-mapped — ADR 0001 decision A / #4502). ``therapy_identifiers`` is used
+    only by the legacy path.
+
+    Legacy mode (flag OFF): the internal CB-graph expansion — byte-identical to CB.
+    """
+    if omop_therapy_enabled():
+        if patient_component_ids is None:
+            return None, None
+        component_values = [str(cid) for cid in patient_component_ids]
+        from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
+        type_values = component_concept_ids_to_type_codes(component_values) or []
+        return component_values, type_values
+
+    # ── legacy (flag OFF): internal CB-graph expansion — byte-identical to CB ──
     if not therapy_identifiers:
         return None, None
     from trials.models import TherapyComponent, TherapyComponentCategory
@@ -47,30 +69,10 @@ def derive_component_and_type_values(therapy_identifiers):
     components = TherapyComponent.objects.filter(
         therapycomponentconnection__therapy__in=therapies
     ).order_by('id')
-
-    if omop_therapy_enabled():
-        has_components = False
-        component_concept_ids = []
-        for c in components:
-            has_components = True
-            if c.omop_concept_id is not None:
-                component_concept_ids.append(c.omop_concept_id)
-        # Regimen has components but none are OMOP-mapped yet → unknown, not absent.
-        # Returning None causes _match_therapy_things to treat it as "unknown" rather
-        # than "no components" (which would be not_matched on required-component trials).
-        if has_components and not component_concept_ids:
-            return None, None
-        component_values = [str(cid) for cid in component_concept_ids]
-        # Types via flat ComponentCategoryOmopLookup (CB-generated, EXACT reads).
-        # Decouples from the internal M2M graph; same CB category codes, no concept
-        # mapping needed — types stay CB-vocabulary (ADR 0001 decision A / #4502).
-        from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
-        type_values = component_concept_ids_to_type_codes(component_values) or []
-    else:
-        component_values = [c.code for c in components]
-        categories = TherapyComponentCategory.objects.filter(
-            therapycomponentcategoryconnection__component__in=components
-        ).order_by('id')
-        type_values = [cat.code for cat in categories]
+    component_values = [c.code for c in components]
+    categories = TherapyComponentCategory.objects.filter(
+        therapycomponentcategoryconnection__component__in=components
+    ).order_by('id')
+    type_values = [cat.code for cat in categories]
 
     return component_values, type_values
