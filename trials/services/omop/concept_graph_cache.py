@@ -28,9 +28,14 @@ can report versions from other concepts fetched in the same batch. Harmless whil
 
 Backend: Django's cache framework (``caches[alias]``). Production points the alias at a
 **DB-backed cache** (shared across Redis-less Cloud Run instances); tests use LocMemCache.
+The cache is **best-effort**: a backend failure (e.g. the DatabaseCache table not yet
+created, or a transient connection error) degrades to a cache miss / skipped write and the
+underlying client is called — it never turns a cache problem into a request failure. (The
+client's own fail-closed policy still applies to promop failures.)
 """
 import hashlib
 import json
+import logging
 
 from django.conf import settings
 from django.core.cache import InvalidCacheBackendError, caches
@@ -40,6 +45,8 @@ from trials.services.omop.concept_graph_client import (
     ConceptGraphResult,
     _positive_ints,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SECONDS = 3600  # 1h; a release bump invalidates via the release-pinned key
 _KEY_PREFIX = 'cgc'
@@ -116,7 +123,7 @@ class CachedConceptGraphClient:
         missing: list[int] = []
 
         for cid in source_ids:
-            entry = self.cache.get(f'{_KEY_PREFIX}:{prefix}:{cid}')
+            entry = self._cache_get(f'{_KEY_PREFIX}:{prefix}:{cid}')
             if entry is None:
                 missing.append(cid)
             else:
@@ -141,10 +148,9 @@ class CachedConceptGraphClient:
                     # Incomplete — surface but do NOT cache a partial projection.
                     truncated.add(cid)
                 else:
-                    self.cache.set(
+                    self._cache_set(
                         f'{_KEY_PREFIX}:{prefix}:{cid}',
                         {'groups': g, 'versions': res_versions},
-                        self.ttl,
                     )
 
         return ConceptGraphResult(
@@ -152,3 +158,22 @@ class CachedConceptGraphClient:
             truncated=sorted(truncated),
             versions=frozenset(versions),
         )
+
+    # ── best-effort cache access ─────────────────────────────────────────────
+    # A cache-backend failure (missing DatabaseCache table on a fresh deploy, a
+    # transient connection error) must NOT surface as a request failure — degrade
+    # to a miss / skipped write and let the client run. Distinct from the client's
+    # fail-closed policy, which still applies to promop failures.
+
+    def _cache_get(self, key):
+        try:
+            return self.cache.get(key)
+        except Exception as exc:  # noqa: BLE001 — cache is optional; any backend error = miss
+            logger.warning('concept-graph cache read failed (%s); treating as miss', exc)
+            return None
+
+    def _cache_set(self, key, value):
+        try:
+            self.cache.set(key, value, self.ttl)
+        except Exception as exc:  # noqa: BLE001 — best-effort; never break expansion on a cache write
+            logger.warning('concept-graph cache write failed (%s); skipped', exc)

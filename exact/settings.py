@@ -386,6 +386,12 @@ CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
 PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
 PROMOP_SERVICE_TOKEN = os.environ.get('PROMOP_SERVICE_TOKEN', '')
 
+# Cache alias CachedConceptGraphClient uses (#234). Points at the shared DB-backed
+# 'concept_graph' cache in deployed envs (see exact/cache_config.py); the client falls
+# back to 'default' if the alias is absent (e.g. tests). Deployed envs must run
+# `python manage.py createcachetable --database=default` to create the cache table.
+CONCEPT_GRAPH_CACHE_ALIAS = os.environ.get('CONCEPT_GRAPH_CACHE_ALIAS', 'concept_graph')
+
 
 # ---------------------------------------------------------------------------
 # OMOP therapy matching (epic #4447 cutover).

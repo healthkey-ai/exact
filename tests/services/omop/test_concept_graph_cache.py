@@ -207,3 +207,49 @@ class TestCachedExpand:
         r2 = cached.descendants([1], release='r')
         assert r1.groups == {1: []} == r2.groups
         client.expand.assert_called_once()  # empty result served from cache
+
+    def test_cache_read_error_degrades_to_miss(self):
+        # A broken cache backend (e.g. missing DatabaseCache table) must not raise —
+        # degrade to a miss and call the client.
+        client = _mock_client()
+        client.expand.return_value = _res({1: [10]})
+        cached = CachedConceptGraphClient(client=client)
+        cached.cache = MagicMock()
+        cached.cache.get.side_effect = Exception('cache backend down')
+        r = cached.descendants([1], release='r')
+        assert r.groups == {1: [10]}
+        client.expand.assert_called_once()
+
+    def test_cache_write_error_is_swallowed(self):
+        client = _mock_client()
+        client.expand.return_value = _res({1: [10]})
+        cached = CachedConceptGraphClient(client=client)
+        cached.cache = MagicMock()
+        cached.cache.get.return_value = None
+        cached.cache.set.side_effect = Exception('cache backend down')
+        r = cached.descendants([1], release='r')   # must not raise on the failed set
+        assert r.groups == {1: [10]}
+
+
+@pytest.mark.django_db
+def test_cache_works_over_a_database_cache_backend(settings):
+    """Exercise the real production backend — a DatabaseCache (pickle round-trip via
+    the DB), not just LocMem — using the client's cache_alias param to target it."""
+    from django.core.management import call_command
+    settings.CACHES = {
+        **settings.CACHES,
+        'cg_db': {
+            'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+            'LOCATION': 'test_concept_graph_cache',
+        },
+    }
+    call_command('createcachetable', 'test_concept_graph_cache')
+
+    client = _mock_client()
+    client.expand.return_value = _res({1: [10, 11]})
+    cached = CachedConceptGraphClient(client=client, cache_alias='cg_db')
+
+    r1 = cached.descendants([1], release='r')
+    r2 = cached.descendants([1], release='r')
+    assert r1.groups == {1: [10, 11]} == r2.groups
+    client.expand.assert_called_once()  # second call served from the DB-backed cache
