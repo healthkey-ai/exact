@@ -8,6 +8,12 @@ case "${RUN_MIGRATIONS:-true}" in
     *)
         echo "Running migrations..."
         python manage.py migrate --run-syncdb
+        # Concept-graph cache table (#234) — idempotent. Tolerate a concurrent-start
+        # race (two containers both passing the exists-check, one losing the CREATE):
+        # migrate above already proved the DB reachable, so the only failure left here
+        # is a harmless duplicate-table, which must not abort startup under `set -e`.
+        python manage.py createcachetable --database=default \
+            || echo "createcachetable: table already exists or concurrent start; continuing"
         ;;
 esac
 
