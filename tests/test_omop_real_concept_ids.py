@@ -107,44 +107,29 @@ PI_CAT_DEX  = 'corticosteroid'
 PI_CAT_DARA = 'monoclonal_antibody_(anti_cd38)'
 
 
-# ── component/type derivation from real vocab ────────────────────────────────
+# ── Phase P: components are consumer-supplied (promop pre-expanded), not derived ──
+# Regimen → its component concept_ids, i.e. what promop pre-expands onto the patient.
+REGIMEN_COMPONENTS = {
+    VRD:       [BORT, LEN, DEX],
+    KRD:       [CARF, LEN, DEX],
+    DARA_VRD:  [BORT, LEN, DEX, DARA],
+    DARA_MONO: [DARA],
+    BORT_MONO: [BORT],
+    LEN_MONO:  [LEN],
+    CARF_MONO: [CARF],
+}
 
-def test_vrd_derives_correct_components():
-    comps, types = derive_component_and_type_values([VRD])
+
+def test_derive_uses_supplied_components_and_maps_types():
+    comps, types = derive_component_and_type_values([VRD], REGIMEN_COMPONENTS[VRD])
     assert sorted(comps) == sorted([BORT, LEN, DEX])
     assert PI_CAT_BORT in types
     assert PI_CAT_LEN in types
     assert PI_CAT_DEX in types
 
 
-def test_krd_derives_correct_components():
-    comps, types = derive_component_and_type_values([KRD])
-    assert sorted(comps) == sorted([CARF, LEN, DEX])
-    assert PI_CAT_BORT in types   # carfilzomib is also a proteasome inhibitor
-    assert PI_CAT_LEN in types
-    assert PI_CAT_DEX in types
-
-
-def test_dara_vrd_derives_correct_components():
-    comps, types = derive_component_and_type_values([DARA_VRD])
-    assert BORT in comps
-    assert LEN in comps
-    assert DEX in comps
-    assert DARA in comps
-    assert PI_CAT_DARA in types
-
-
-def test_multiple_lines_derive_union_of_components():
-    # Patient had VRd 1st line, KRd 2nd line → union of all components
-    comps, types = derive_component_and_type_values([VRD, KRD])
-    assert BORT in comps
-    assert CARF in comps
-    assert LEN in comps
-    assert DEX in comps
-
-
-def test_unknown_concept_id_returns_none():
-    assert derive_component_and_type_values(['99999999']) == (None, None)
+def test_derive_none_component_ids_is_unknown():
+    assert derive_component_and_type_values([VRD], None) == (None, None)
 
 
 # ── regimen-level exclusion / requirement (omop_therapies_* columns) ─────────
@@ -158,6 +143,9 @@ def _mm_pi(*therapy_concept_ids):
         pi.second_line_therapy = lines[1]
     if len(lines) > 2:
         pi.later_therapies = [{'therapy': c} for c in lines[2:]]
+    # Phase P (#234): the consumer (promop) pre-expands the patient's regimens to
+    # component concept_ids. Simulate that so component/type matching has its input.
+    pi.therapy_component_ids = sorted({c for r in lines for c in REGIMEN_COMPONENTS.get(r, [])})
     return pi
 
 
@@ -241,22 +229,22 @@ def test_daratumumab_naive_trial_excludes_dara_vrd_patient():
 # path so a vocab-load error is caught at this level, not only end-to-end.
 
 def test_bortezomib_component_concept_id_maps_to_proteasome_inhibitor():
-    _, types = derive_component_and_type_values([BORT_MONO])
+    _, types = derive_component_and_type_values([BORT_MONO], [BORT])
     assert PI_CAT_BORT in types
 
 
 def test_carfilzomib_component_concept_id_also_maps_to_proteasome_inhibitor():
-    _, types = derive_component_and_type_values([CARF_MONO])
+    _, types = derive_component_and_type_values([CARF_MONO], [CARF])
     assert PI_CAT_BORT in types
 
 
 def test_lenalidomide_component_concept_id_maps_to_imid():
-    _, types = derive_component_and_type_values([LEN_MONO])
+    _, types = derive_component_and_type_values([LEN_MONO], [LEN])
     assert PI_CAT_LEN in types
 
 
 def test_daratumumab_component_concept_id_maps_to_anti_cd38():
-    _, types = derive_component_and_type_values([DARA_MONO])
+    _, types = derive_component_and_type_values([DARA_MONO], [DARA])
     assert PI_CAT_DARA in types
 
 
