@@ -1089,10 +1089,16 @@ class TrialQuerySet(models.QuerySet):
                 f'{THERAPY_MATCH_PROFILE.therapy_types_required}__exact': [],
             })
 
-        if therapy_codes is None or therapy_codes == []:
+        # The regimen (from-lines) filter needs therapy_codes, but OMOP component-only
+        # patients (#224) have none while still carrying consumer-supplied components —
+        # apply the component/type filter for them. Legacy always has
+        # patient_component_ids=None, so an empty therapy_codes still short-circuits
+        # here, byte-identical to before.
+        scope = self
+        if therapy_codes:
+            scope = self.eligible_for_therapy_from_lines(therapy_codes)
+        elif not patient_component_ids:
             return self
-
-        scope = self.eligible_for_therapy_from_lines(therapy_codes)
 
         # Component + type values (shared with the matcher). OMOP mode (Phase P, #234):
         # components are the consumer-supplied pre-expanded concept_ids
@@ -1573,4 +1579,18 @@ class TrialQuerySet(models.QuerySet):
                     'dropped': count-new_count
                 })
                 count = new_count
+
+        # OMOP component-only (#224): a patient who supplied therapy_component_ids but no
+        # regimen therapy lines never triggers the therapy-line dispatch above (those attrs
+        # are blank and skipped), so the component/type prefilter would be missed. Apply it
+        # once here. Legacy is unaffected (flag off → skipped).
+        if omop_therapy_enabled() and not is_therapies_filter_applied and not has_no_prior_therapy:
+            component_ids = patient_info_attr.get_user_therapy_component_ids()
+            if component_ids:
+                # Pass [] for the regimen codes, not user_therapies: this is the
+                # component-only path (no regimen lines), and user_therapies also folds
+                # in supportive codes — running the regimen filter on those would be wrong.
+                scope = scope.eligible_for_therapy_related_things_from_lines(
+                    [], has_no_prior_therapy, patient_component_ids=component_ids)
+                is_therapies_filter_applied = True
         return scope, traces
