@@ -378,6 +378,17 @@ ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') =
 CTOMOP_BASE = os.environ.get('CTOMOP_BASE', '')
 CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
 
+# OAuth2 client_credentials for the v1 patient endpoint (#237). When client id +
+# secret are set, CtomopClient reads /api/v1/patient-records/ with an OAuth bearer
+# (scope patient/*.read) minted at {CTOMOP_BASE}/o/token/ — replacing the static
+# CTOMOP_SERVICE_TOKEN + legacy /api/patient-info/ endpoint (sunsets 2026-09-01).
+# Register the client in promop with `manage.py create_service_client`.
+CTOMOP_OAUTH_CLIENT_ID = os.environ.get('CTOMOP_OAUTH_CLIENT_ID', '')
+CTOMOP_OAUTH_CLIENT_SECRET = os.environ.get('CTOMOP_OAUTH_CLIENT_SECRET', '')
+CTOMOP_OAUTH_SCOPE = os.environ.get('CTOMOP_OAUTH_SCOPE', 'patient/*.read')
+# Defaults to {CTOMOP_BASE}/o/token/ when unset.
+CTOMOP_OAUTH_TOKEN_URL = os.environ.get('CTOMOP_OAUTH_TOKEN_URL', '')
+
 # promop concept-graph API (#234; promop ADR 0001 / promop#279) — API + cache
 # source of truth for vocabulary/concept-graph data. Falls back to the CTOMOP_*
 # settings (same promop host) until the dedicated OAuth2 path (#237) lands.
