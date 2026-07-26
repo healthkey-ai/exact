@@ -28,18 +28,18 @@ function devHarnessRedirect(): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiProxyTarget = env.VITE_EXACT_API_PROXY_TARGET || "http://localhost:8000";
-  // Two named CTOMOP backends, each behind its own proxy path so the dev
+  // Two named PROMOP backends, each behind its own proxy path so the dev
   // harness can flip between them via a tab without losing the staging
   // session when local is running. Mirror SoC's naming so the harness
   // ports cleanly.
-  const ctomopLocalTarget =
-    env.VITE_CTOMOP_LOCAL_TARGET || "http://localhost:8001";
-  const ctomopStagingTarget =
-    env.VITE_CTOMOP_STAGING_TARGET || "https://ctomop.onrender.com";
+  const promopLocalTarget =
+    env.VITE_PROMOP_LOCAL_TARGET || "http://localhost:8001";
+  const promopStagingTarget =
+    env.VITE_PROMOP_STAGING_TARGET || "https://ctomop.onrender.com";
 
   // Shared http-proxy cookie-rewrite. Strips Secure/SameSite=None and
   // rescopes Path=/ to the proxy mount point so plain-http localhost dev
-  // keeps a working session cookie AND CTOMOP cookies don't leak to every
+  // keeps a working session cookie AND PROMOP cookies don't leak to every
   // other localhost service.
   const makeCookieRewriter = (mountPath: string): ProxyOptions["configure"] => {
     const rewriteCookie = (raw: string): string =>
@@ -126,24 +126,24 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: (p) => p.replace(/^\/api/, ""),
         },
-        // CTOMOP proxies for the dev harness:
-        //   /ctomop-local/api/...   → http://localhost:8001
-        //   /ctomop-staging/api/... → https://ctomop.onrender.com
-        // Going same-origin via the proxy is the only path where CTOMOP's
+        // PROMOP proxies for the dev harness:
+        //   /promop-local/api/...   → http://localhost:8001
+        //   /promop-staging/api/... → https://ctomop.onrender.com
+        // Going same-origin via the proxy is the only path where PROMOP's
         // SESSION_COOKIE_SECURE = True cookie survives a plain-http dev
         // loop. Set-Cookie is rewritten so the cookie scopes to the
         // proxy mount (sessions don't collide between local + staging).
-        "/ctomop-local": {
-          target: ctomopLocalTarget,
+        "/promop-local": {
+          target: promopLocalTarget,
           changeOrigin: true,
-          rewrite: (p) => p.replace(/^\/ctomop-local/, ""),
-          configure: makeCookieRewriter("/ctomop-local"),
+          rewrite: (p) => p.replace(/^\/promop-local/, ""),
+          configure: makeCookieRewriter("/promop-local"),
         },
-        "/ctomop-staging": {
-          target: ctomopStagingTarget,
+        "/promop-staging": {
+          target: promopStagingTarget,
           changeOrigin: true,
-          rewrite: (p) => p.replace(/^\/ctomop-staging/, ""),
-          configure: makeCookieRewriter("/ctomop-staging"),
+          rewrite: (p) => p.replace(/^\/promop-staging/, ""),
+          configure: makeCookieRewriter("/promop-staging"),
         },
       },
     },

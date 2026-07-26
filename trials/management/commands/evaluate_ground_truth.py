@@ -7,7 +7,7 @@ Compare two CSVs in ground truth format — no database, no live matching.
   --results   EXACT output CSV (e.g. produced by trials4patients_results.csv)
 
 Both files use the same format:
-    CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+    PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
 
 TOP_N is inferred automatically as the maximum number of results rows for any
 single patient in the results CSV.  PENALTY_RANK = TOP_N + 1.
@@ -39,7 +39,10 @@ def _read_csv(path):
         for lineno, row in enumerate(reader, start=2):
             rows.append({
                 '_line':      lineno,
-                'person_id':  (row.get('CTOMOP Patient ID') or '').strip(),
+                # Accept the legacy 'CTOMOP Patient ID' header too, so ground-truth
+                # CSVs written before the promop rename still load.
+                'person_id':  (row.get('PROMOP Patient ID')
+                               or row.get('CTOMOP Patient ID') or '').strip(),
                 'code':       (row.get('Trial') or '').strip(),
                 'match_type': (row.get('Eligible/Potential') or '').strip().lower(),
                 'score':      (row.get('Suitability Score') or '').strip(),

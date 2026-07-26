@@ -154,7 +154,7 @@ With the test trials seeded (step 5 above), run the CLI matching command:
 
 ```bash
 python manage.py search_trials_for_patients \
-  --patient-id <ctomop_person_id>
+  --patient-id <promop_person_id>
 ```
 
 To search for multiple patients and save results to CSV:
@@ -340,7 +340,7 @@ environment variables — never commit secret values to git.
   (`*serviceAccount*.json`, `*-firebase-adminsdk-*.json`, `*-sa-key.json`,
   `firebase-sa-key.json`), and private keys (`*.pem`, `*.key`).
 - **Production/staging:** secrets such as `SECRET_KEY`, database credentials,
-  `TRIALS_DATABASE_URL`, and `CTOMOP_SERVICE_TOKEN` come from the host
+  `TRIALS_DATABASE_URL`, and `PROMOP_SERVICE_TOKEN` come from the host
   platform's secret store (e.g. GCP Secret Manager) and are injected as
   environment variables at runtime — never from files in this repo.
 - **When CI deployment is added**, it should authenticate to the cloud

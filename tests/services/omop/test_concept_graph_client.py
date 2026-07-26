@@ -2,7 +2,7 @@
 
 Contract under test: `expand`/`descendants`/`ancestors` return a `ConceptGraphResult`
 (groups de-duped + sorted, truncation surfaced, versions collected) on success, and
-**raise** `ConceptGraphUnavailable` on any hard failure — unlike CtomopClient, which
+**raise** `ConceptGraphUnavailable` on any hard failure — unlike PromopClient, which
 returns None. Raising is deliberate: the graph feeds a persisted eligibility projection,
 so a silent empty expansion would fail open.
 """
@@ -156,11 +156,11 @@ class TestExpand:
             client.descendants([1])
         assert 'Authorization' not in m.call_args.kwargs['headers']
 
-    def test_settings_fallback_to_ctomop(self, settings):
+    def test_settings_fallback_to_promop_base(self, settings):
+        # PROMOP_API_BASE unset → fall back to the shared PROMOP_BASE (same host).
         settings.PROMOP_API_BASE = ''
-        settings.CTOMOP_BASE = 'https://fallback.example.com'
-        settings.PROMOP_SERVICE_TOKEN = ''
-        settings.CTOMOP_SERVICE_TOKEN = 'ctok'
+        settings.PROMOP_BASE = 'https://fallback.example.com'
+        settings.PROMOP_SERVICE_TOKEN = 'ctok'
         client = ConceptGraphClient()
         with patch(PATCH, return_value=_resp({'results': {}, 'truncated': []})) as m:
             client.descendants([1])

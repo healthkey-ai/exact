@@ -8,7 +8,7 @@ cached (Django cache, keyed by ``SHA256(token)[:32]``) for up to
 ``AUTH_TOKEN_CACHE_TTL`` seconds so repeated requests with the same Bearer
 token skip ``provider.verify()`` and the DB lookup.
 
-Unlike ctomop, EXACT does **not** own OMOP Person/PatientInfo, so the
+Unlike promop, EXACT does **not** own OMOP Person/PatientInfo, so the
 identity is resolved (get-or-create) but no patient row is provisioned.
 """
 from __future__ import annotations

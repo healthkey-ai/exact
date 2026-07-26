@@ -3,11 +3,11 @@ Management command: explain_trial_match
 
 For a specific patient+trial pair, shows the per-attribute match status from
 two sources side-by-side:
-  - CTOMOP  — patient data read from the external patient DB (EXACT's view)
+  - PROMOP  — patient data read from the external patient DB (EXACT's view)
   - CB      — patient data read from reference_patients_data.json (reference system's view)
 
 This makes it easy to see EXACTLY which attribute causes:
-  - eligible (EXACT) vs potential (CB)  — attribute is known in CTOMOP, unknown in CB
+  - eligible (EXACT) vs potential (CB)  — attribute is known in PROMOP, unknown in CB
   - eligible (EXACT) vs not_eligible (CB)  — attribute differs between the two sources
   - ranking differences  — score component breakdown per trial
 
@@ -74,7 +74,7 @@ def _get_trial_requirement(trial, attr, meta):
 
 
 class Command(BaseCommand):
-    help = 'Show per-attribute match status (CTOMOP vs CB) for a patient+trial pair.'
+    help = 'Show per-attribute match status (PROMOP vs CB) for a patient+trial pair.'
 
     def add_arguments(self, parser):
         parser.add_argument('--person-id', type=int, required=True)
@@ -110,7 +110,7 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f'Trial {trial_id} not found in trials DB.'))
             return
 
-        # ── Fetch CTOMOP patient row ──────────────────────────────────────
+        # ── Fetch PROMOP patient row ──────────────────────────────────────
         row = _psql_query_one(db_url, f'''
             SELECT pi.*, p.given_name, p.family_name,
                    p.gender_source_value, p.gender_concept_id
@@ -123,18 +123,18 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f'person_id={person_id} not found in patient DB.'))
             return
 
-        ctomop_name = f"{row.get('given_name', '')} {row.get('family_name', '')}".strip()
-        patient_name = options['name'] or ctomop_name
+        promop_name = f"{row.get('given_name', '')} {row.get('family_name', '')}".strip()
+        patient_name = options['name'] or promop_name
 
-        ctomop_pi = _build_patient_info(dict(row))
+        promop_pi = _build_patient_info(dict(row))
 
         self.stdout.write(
             f'\n=== {patient_name} (person_id={person_id}) → Trial {trial_id} '
             f'[{trial.disease}] ===\n'
         )
         self.stdout.write(
-            f'  CTOMOP: zip={row.get("postal_code")}  stage={getattr(ctomop_pi, "stage", None)!r}  '
-            f'prior_therapy={getattr(ctomop_pi, "prior_therapy", None)!r}'
+            f'  PROMOP: zip={row.get("postal_code")}  stage={getattr(promop_pi, "stage", None)!r}  '
+            f'prior_therapy={getattr(promop_pi, "prior_therapy", None)!r}'
         )
 
         # ── Fetch CB PatientInfo ──────────────────────────────────────────
@@ -167,12 +167,12 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f'  CB data file not found: {cb_data_path}'))
 
         # ── Compute per-attribute statuses ────────────────────────────────
-        ctomop_statuses = _get_attr_statuses(trial, ctomop_pi)
+        promop_statuses = _get_attr_statuses(trial, promop_pi)
         cb_statuses = _get_attr_statuses(trial, cb_pi) if cb_pi else {}
 
-        ctomop_overall = (
-            'not_eligible' if 'not_matched' in ctomop_statuses.values()
-            else 'potential' if 'unknown' in ctomop_statuses.values()
+        promop_overall = (
+            'not_eligible' if 'not_matched' in promop_statuses.values()
+            else 'potential' if 'unknown' in promop_statuses.values()
             else 'eligible'
         )
         cb_overall = (
@@ -181,7 +181,7 @@ class Command(BaseCommand):
             else 'eligible'
         ) if cb_pi else '—'
 
-        self.stdout.write(f'\n  Overall  CTOMOP: {ctomop_overall}   CB: {cb_overall}\n')
+        self.stdout.write(f'\n  Overall  PROMOP: {promop_overall}   CB: {cb_overall}\n')
 
         # ── Print attribute table ─────────────────────────────────────────
         STATUS_COLOR = {
@@ -193,15 +193,15 @@ class Command(BaseCommand):
         # Collect rows
         rows = []
         for attr, meta in USER_TO_TRIAL_ATTRS_MAPPING.items():
-            ctomop_s = ctomop_statuses.get(attr)
-            if ctomop_s is None:
+            promop_s = promop_statuses.get(attr)
+            if promop_s is None:
                 continue  # not applicable for this disease
             cb_s = cb_statuses.get(attr) if cb_pi else None
 
-            ctomop_val = _get_patient_value(ctomop_pi, attr)
+            promop_val = _get_patient_value(promop_pi, attr)
             cb_val = _get_patient_value(cb_pi, attr) if cb_pi else None
 
-            rows.append((attr, ctomop_s, cb_s, ctomop_val, cb_val))
+            rows.append((attr, promop_s, cb_s, promop_val, cb_val))
 
         # Group by whether they differ
         differs = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in rows if cs != cbs]
@@ -210,16 +210,16 @@ class Command(BaseCommand):
 
         col_a = max((len(a) for a, *_ in rows), default=20) + 2
 
-        def _row_line(attr, ctomop_s, cb_s, ctomop_val, cb_val, highlight=False):
-            ctomop_col = STATUS_COLOR.get(ctomop_s or '', lambda x: x)(f'{ctomop_s or "—":12}')
+        def _row_line(attr, promop_s, cb_s, promop_val, cb_val, highlight=False):
+            promop_col = STATUS_COLOR.get(promop_s or '', lambda x: x)(f'{promop_s or "—":12}')
             cb_col = STATUS_COLOR.get(cb_s or '', lambda x: x)(f'{cb_s or "—":12}') if cb_pi else ''
-            val_col = f'ctomop={str(ctomop_val)[:30]:<32}'
+            val_col = f'promop={str(promop_val)[:30]:<32}'
             cb_val_col = f'cb={str(cb_val)[:30]:<32}' if cb_pi else ''
             diff_marker = ' ◄ DIFFERS' if highlight else ''
-            return f'  {attr:<{col_a}} {ctomop_col} {cb_col}  {val_col}{cb_val_col}{diff_marker}'
+            return f'  {attr:<{col_a}} {promop_col} {cb_col}  {val_col}{cb_val_col}{diff_marker}'
 
         if differs:
-            self.stdout.write(self.style.MIGRATE_HEADING('── Attributes where CTOMOP ≠ CB ──'))
+            self.stdout.write(self.style.MIGRATE_HEADING('── Attributes where PROMOP ≠ CB ──'))
             for row in differs:
                 self.stdout.write(_row_line(*row, highlight=True))
 
@@ -235,39 +235,39 @@ class Command(BaseCommand):
         # ── Summary of key differences ────────────────────────────────────
         if differs:
             self.stdout.write('\n')
-            ctomop_to_potential = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in differs
+            promop_to_potential = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in differs
                                    if cs == 'matched' and cbs == 'unknown']
-            ctomop_to_not_eligible = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in differs
+            promop_to_not_eligible = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in differs
                                       if cs == 'matched' and cbs == 'not_matched']
             cb_to_potential = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in differs
                                if cbs == 'matched' and cs == 'unknown']
             cb_to_not_eligible = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in differs
                                   if cbs == 'matched' and cs == 'not_matched']
 
-            if ctomop_to_potential:
+            if promop_to_potential:
                 self.stdout.write(self.style.WARNING(
-                    f'  CTOMOP has data that CB lacks (causes eligible→potential in CB):'
+                    f'  PROMOP has data that CB lacks (causes eligible→potential in CB):'
                 ))
-                for a, cs, cbs, cv, cbv in ctomop_to_potential:
-                    self.stdout.write(f'    {a}: ctomop={cv!r}  cb={cbv!r}')
+                for a, cs, cbs, cv, cbv in promop_to_potential:
+                    self.stdout.write(f'    {a}: promop={cv!r}  cb={cbv!r}')
 
-            if ctomop_to_not_eligible:
+            if promop_to_not_eligible:
                 self.stdout.write(self.style.ERROR(
-                    f'  CTOMOP match that CB does NOT match (causes eligible→not_eligible in CB):'
+                    f'  PROMOP match that CB does NOT match (causes eligible→not_eligible in CB):'
                 ))
-                for a, cs, cbs, cv, cbv in ctomop_to_not_eligible:
-                    self.stdout.write(f'    {a}: ctomop={cv!r}  cb={cbv!r}')
+                for a, cs, cbs, cv, cbv in promop_to_not_eligible:
+                    self.stdout.write(f'    {a}: promop={cv!r}  cb={cbv!r}')
 
             if cb_to_potential:
                 self.stdout.write(self.style.WARNING(
-                    f'  CB has data that CTOMOP lacks (causes eligible→potential in CTOMOP):'
+                    f'  CB has data that PROMOP lacks (causes eligible→potential in PROMOP):'
                 ))
                 for a, cs, cbs, cv, cbv in cb_to_potential:
-                    self.stdout.write(f'    {a}: ctomop={cv!r}  cb={cbv!r}')
+                    self.stdout.write(f'    {a}: promop={cv!r}  cb={cbv!r}')
 
             if cb_to_not_eligible:
                 self.stdout.write(self.style.ERROR(
-                    f'  CB mismatch that CTOMOP does NOT see:'
+                    f'  CB mismatch that PROMOP does NOT see:'
                 ))
                 for a, cs, cbs, cv, cbv in cb_to_not_eligible:
-                    self.stdout.write(f'    {a}: ctomop={cv!r}  cb={cbv!r}')
+                    self.stdout.write(f'    {a}: promop={cv!r}  cb={cbv!r}')

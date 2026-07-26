@@ -1,14 +1,14 @@
-"""Integration tests for `POST /normalize-ctomop-row/`.
+"""Integration tests for `POST /normalize-promop-row/`.
 
 The view is a thin authenticated wrapper around
-`normalize_ctomop_row` from `trials.services.patient_info.ctomop_adapter`.
+`normalize_promop_row` from `trials.services.patient_info.promop_adapter`.
 The adapter itself has exhaustive coverage in
-`tests/management/test_normalize_ctomop_row.py`; the tests here exist
+`tests/management/test_normalize_promop_row.py`; the tests here exist
 to lock the HTTP surface — auth, payload shape, response shape — so
 the federation harness (added in #117) can rely on it.
 
 The first class drives the view via direct `.post(MagicMock(...))` for
-fast per-branch behaviour. `TestNormalizeCtomopRowHttp` at the bottom
+fast per-branch behaviour. `TestNormalizePromopRowHttp` at the bottom
 uses DRF's `APIClient` to verify the full pipeline (URL routing, token
 auth, JSON parsing).
 """
@@ -20,12 +20,12 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
 from accounts.models import Identity
-from trials.api.trials_views import NormalizeCtomopRowView
+from trials.api.trials_views import NormalizePromopRowView
 
 
 def _post(body):
-    """Drive `NormalizeCtomopRowView.post` directly with a mock request."""
-    view = NormalizeCtomopRowView()
+    """Drive `NormalizePromopRowView.post` directly with a mock request."""
+    view = NormalizePromopRowView()
     mock_request = MagicMock()
     mock_request.data = body
     return view.post(mock_request)
@@ -59,10 +59,10 @@ _MOCK_LOOKUP = {
 
 
 @patch(
-    'trials.services.patient_info.ctomop_adapter._build_code_lookup',
+    'trials.services.patient_info.promop_adapter._build_code_lookup',
     return_value=_MOCK_LOOKUP,
 )
-class TestNormalizeCtomopRowView:
+class TestNormalizePromopRowView:
     def test_returns_normalized_payload(self, _mock_lookup):
         """Headline case: receptor display string is resolved to a code."""
         response = _post({
@@ -83,7 +83,7 @@ class TestNormalizeCtomopRowView:
         assert response.data['stage'] == 'III'
 
     def test_tumor_grade_int_to_code(self, _mock_lookup):
-        """CTOMOP grade 1/2/3 → EXACT '10'/'20'/'30'."""
+        """PROMOP grade 1/2/3 → EXACT '10'/'20'/'30'."""
         response = _post({'tumor_grade': 2})
         assert response.data['tumor_grade'] == '20'
 
@@ -118,7 +118,7 @@ class TestNormalizeCtomopRowView:
 
 
 @pytest.mark.django_db
-class TestNormalizeCtomopRowHttp:
+class TestNormalizePromopRowHttp:
     """HTTP-pipeline coverage via DRF `APIClient` — locks routing, token
     auth, and JSON parsing. The class above already covers branching;
     here we only need a smoke test and the 401 path."""
@@ -133,12 +133,12 @@ class TestNormalizeCtomopRowHttp:
 
     def test_unauthenticated_returns_401(self):
         client = APIClient()
-        response = client.post('/normalize-ctomop-row/', {}, format='json')
+        response = client.post('/normalize-promop-row/', {}, format='json')
         assert response.status_code == 401
 
     def test_authed_post_normalizes_and_returns_200(self, authed_client):
         response = authed_client.post(
-            '/normalize-ctomop-row/',
+            '/normalize-promop-row/',
             {'stage': 'IIIB', 'tumor_grade': 2},
             format='json',
         )
@@ -149,7 +149,7 @@ class TestNormalizeCtomopRowHttp:
 
     def test_non_dict_body_returns_400(self, authed_client):
         response = authed_client.post(
-            '/normalize-ctomop-row/',
+            '/normalize-promop-row/',
             [1, 2, 3],
             format='json',
         )

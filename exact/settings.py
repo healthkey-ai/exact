@@ -153,7 +153,7 @@ WSGI_APPLICATION = 'exact.wsgi.application'
 # ---------------------------------------------------------------------------
 
 # A single DATABASE_URL (postgis:// or postgres://) is the deploy convention on
-# the shared Cloud SQL instance (hk-labs / ctomop / soc all consume it). The
+# the shared Cloud SQL instance (hk-labs / promop / soc all consume it). The
 # engine is forced to the PostGIS backend regardless of scheme, since EXACT's
 # models always need GeoDjango. Discrete DATABASE_* vars remain the local-dev
 # path.
@@ -266,14 +266,14 @@ ENABLE_DRF_TOKEN_AUTH = os.environ.get(
     'ENABLE_DRF_TOKEN_AUTH', _token_auth_default
 ).lower() in ('1', 'true')
 
-# The server-side `?person_id=` resolver fetches a patient from CTOMOP using a
-# STATIC service token with no binding to the authenticated caller, and CTOMOP
+# The server-side `?person_id=` resolver fetches a patient from PROMOP using a
+# STATIC service token with no binding to the authenticated caller, and PROMOP
 # does not enforce row-level authz for that token — so any authenticated caller
 # can enumerate person_ids and read other patients' PHI (IDOR, #150/#108).
 # No production caller uses this path (the federation host fetches the patient
-# via CTOMOP `/patient-info/me/` under the end-user's own token and forwards it
+# via PROMOP `/patient-info/me/` under the end-user's own token and forwards it
 # inline), so gate it off by default outside local/DEBUG. Re-enable only once
-# caller-identity is forwarded to CTOMOP and CTOMOP enforces per-user authz.
+# caller-identity is forwarded to PROMOP and PROMOP enforces per-user authz.
 # Same fail-closed shape as ENABLE_DRF_TOKEN_AUTH: an unset ENVIRONMENT in a
 # deploy yields OFF, not ON.
 _person_id_lookup_default = (
@@ -371,31 +371,30 @@ if _geos := os.environ.get('GEOS_LIBRARY_PATH'):
 ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') == 'true'
 
 # ---------------------------------------------------------------------------
-# CTOMOP patient-info source (#102 — server-side `?person_id=` resolver)
-# Empty default is intentional — when unset, the resolver's CTOMOP path is
+# PROMOP patient-info source (#102 — server-side `?person_id=` resolver)
+# Empty default is intentional — when unset, the resolver's PROMOP path is
 # disabled and the inline `patient_info` payload path stays the only option.
 # ---------------------------------------------------------------------------
-CTOMOP_BASE = os.environ.get('CTOMOP_BASE', '')
-CTOMOP_SERVICE_TOKEN = os.environ.get('CTOMOP_SERVICE_TOKEN', '')
+PROMOP_BASE = os.environ.get('PROMOP_BASE', '')
+PROMOP_SERVICE_TOKEN = os.environ.get('PROMOP_SERVICE_TOKEN', '')
 
 # OAuth2 client_credentials for the v1 patient endpoint (#237). When client id +
-# secret are set, CtomopClient reads /api/v1/patient-records/ with an OAuth bearer
-# (scope patient/*.read) minted at {CTOMOP_BASE}/o/token/ — replacing the static
-# CTOMOP_SERVICE_TOKEN + legacy /api/patient-info/ endpoint (sunsets 2026-09-01).
+# secret are set, PromopClient reads /api/v1/patient-records/ with an OAuth bearer
+# (scope patient/*.read) minted at {PROMOP_BASE}/o/token/ — replacing the static
+# PROMOP_SERVICE_TOKEN + legacy /api/patient-info/ endpoint (sunsets 2026-09-01).
 # Register the client in promop with `manage.py create_service_client`.
-CTOMOP_OAUTH_CLIENT_ID = os.environ.get('CTOMOP_OAUTH_CLIENT_ID', '')
-CTOMOP_OAUTH_CLIENT_SECRET = os.environ.get('CTOMOP_OAUTH_CLIENT_SECRET', '')
-CTOMOP_OAUTH_SCOPE = os.environ.get('CTOMOP_OAUTH_SCOPE', 'patient/*.read')
-# Defaults to {CTOMOP_BASE}/o/token/ when unset.
-CTOMOP_OAUTH_TOKEN_URL = os.environ.get('CTOMOP_OAUTH_TOKEN_URL', '')
+PROMOP_OAUTH_CLIENT_ID = os.environ.get('PROMOP_OAUTH_CLIENT_ID', '')
+PROMOP_OAUTH_CLIENT_SECRET = os.environ.get('PROMOP_OAUTH_CLIENT_SECRET', '')
+PROMOP_OAUTH_SCOPE = os.environ.get('PROMOP_OAUTH_SCOPE', 'patient/*.read')
+# Defaults to {PROMOP_BASE}/o/token/ when unset.
+PROMOP_OAUTH_TOKEN_URL = os.environ.get('PROMOP_OAUTH_TOKEN_URL', '')
 
 # promop concept-graph API (#234; promop ADR 0001 / promop#279) — API + cache
-# source of truth for vocabulary/concept-graph data. Falls back to the CTOMOP_*
-# settings (same promop host) until the dedicated OAuth2 path (#237) lands.
-# Empty default keeps ConceptGraphClient unconfigured (callers get
-# ConceptGraphUnavailable) so nothing silently no-ops.
+# source of truth for vocabulary/concept-graph data. PROMOP_API_BASE falls back
+# to PROMOP_BASE (same promop host); the static token is the shared
+# PROMOP_SERVICE_TOKEN declared above. Empty default keeps ConceptGraphClient
+# unconfigured (callers get ConceptGraphUnavailable) so nothing silently no-ops.
 PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
-PROMOP_SERVICE_TOKEN = os.environ.get('PROMOP_SERVICE_TOKEN', '')
 
 # Cache alias CachedConceptGraphClient uses (#234). Points at the shared DB-backed
 # 'concept_graph' cache in deployed envs (see exact/cache_config.py); the client falls
@@ -408,7 +407,7 @@ CONCEPT_GRAPH_CACHE_ALIAS = os.environ.get('CONCEPT_GRAPH_CACHE_ALIAS', 'concept
 # OMOP therapy matching (epic #4447 cutover).
 # When True, trial therapy matching reads the omop_* concept_id columns instead
 # of the legacy internal-code columns. Matching is a direct concept_id overlap:
-# patient therapies are supplied as concept_ids by the consumer (CTOMOP), with no
+# patient therapies are supplied as concept_ids by the consumer (PROMOP), with no
 # EXACT-side translation. OFF by default — capability-gated: only
 # flip once the vocab omop_concept_id mappings are loaded and the trial omop_*
 # columns are backfilled (see trials/services/omop/ + the shadow-compare report).

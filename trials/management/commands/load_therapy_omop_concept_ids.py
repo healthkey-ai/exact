@@ -1,7 +1,7 @@
 """Load OMOP concept_ids onto the therapy vocab models from the curated mapping.
 
 Reads docs/omop/mapping/therapy_omop_mapping.csv (CB code -> OMOP concept_id,
-produced + curated against CTOMOP, see that dir) and:
+produced + curated against PROMOP, see that dir) and:
 - sets omop_concept_id on Therapy / TherapyComponent (#4451; the category level
   is not OMOP-mapped — decision A, #4502);
 - upserts OmopConcept(concept_id -> concept_name, vocabulary_id) so the API can
@@ -46,7 +46,7 @@ LEVEL_MODEL = {
     'component': TherapyComponent,
 }
 DEFAULT_CSV = os.path.join(settings.BASE_DIR, 'docs', 'omop', 'mapping', 'therapy_omop_mapping.csv')
-# match types that carry a CTOMOP-verified concept_id loaded as a runtime vocab mapping
+# match types that carry a PROMOP-verified concept_id loaded as a runtime vocab mapping
 ACCEPTED = {'auto', 'curated', 'llm'}
 # Recorded in the crosswalk for audit but NOT runtime-applicable (#4580): they carry a
 # concept_id in the CSV, but any vocab omop_concept_id for the code must be cleared so it

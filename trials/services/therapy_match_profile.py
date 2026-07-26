@@ -13,7 +13,7 @@ upstream seam. EXACT is the downstream that flips to the OMOP profile at cutover
 
 Scope: this profile owns ONLY the trial-side column *names* read by matching. The
 PATIENT side is NOT translated by EXACT — EXACT is stateless and owns no patient
-crosswalk: when the flag is on, the consumer (CTOMOP) supplies the patient's
+crosswalk: when the flag is on, the consumer (PROMOP) supplies the patient's
 therapies already as OMOP concept_ids (pre-expanded), and matching is a direct
 concept_id overlap against these columns. The flag therefore only swaps which
 trial columns are read; both sides must speak the same vocabulary, which is the

@@ -1,7 +1,7 @@
 """Set omop_concept_id on the Ethnicity vocab model from the curated mapping.
 
 Loads ETHNICITY_OMOP_CONCEPT_ID (CB code -> OMOP race concept_id, verified in
-CTOMOP) onto Ethnicity.omop_concept_id. Codes not in the mapping (e.g. 'other')
+PROMOP) onto Ethnicity.omop_concept_id. Codes not in the mapping (e.g. 'other')
 are left unmapped. Gender is a fixed enum, not a vocab table, so it has no
 loader — its mapping is consumed directly by the trial-side backfill.
 

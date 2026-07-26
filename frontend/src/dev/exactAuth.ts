@@ -4,8 +4,8 @@
 // `{username, password}` returns `{token}`. The harness stashes the
 // token in localStorage so a refresh keeps the session, and injects it
 // as `Authorization: Token <…>` on a separate axios instance from the
-// CTOMOP one (cookie + token must NOT mix on the same client — the
-// browser will happily send both, but CTOMOP's `withCredentials` would
+// PROMOP one (cookie + token must NOT mix on the same client — the
+// browser will happily send both, but PROMOP's `withCredentials` would
 // also drag along EXACT's cross-site CSRF cookie if we shared
 // instances).
 import axios, { AxiosError, type AxiosInstance } from "axios";

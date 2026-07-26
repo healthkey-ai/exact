@@ -4,9 +4,9 @@ PatientInfo resolver — supports two contract shapes.
 1. Inline payload: `{"patient_info": {...}}` in the request body. No DB
    lookup; PatientInfo is never persisted by this path. CancerBot
    depends on this contract — do not change.
-2. CTOMOP fetch: `?person_id=` query param or `person_id` in the body.
-   Looks up the patient from CTOMOP via `CtomopClient` and feeds the
-   row through `build_patient_info_from_ctomop_row` (#102). Gated behind
+2. PROMOP fetch: `?person_id=` query param or `person_id` in the body.
+   Looks up the patient from PROMOP via `PromopClient` and feeds the
+   row through `build_patient_info_from_promop_row` (#102). Gated behind
    `EXACT_ALLOW_PERSON_ID_LOOKUP` (off by default outside local/DEBUG) —
    see the authorization boundary below.
 
@@ -16,9 +16,9 @@ the migration without breaking).
 
 ## Authorization boundary
 
-The CTOMOP `person_id` path calls CTOMOP with a static service token
-(`CTOMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
-and CTOMOP does not enforce row-level authz for that token — so honoring
+The PROMOP `person_id` path calls PROMOP with a static service token
+(`PROMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
+and PROMOP does not enforce row-level authz for that token — so honoring
 an arbitrary `person_id` lets any authenticated caller enumerate other
 patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
 patients (it's stateless for patient data — see project memory
@@ -26,15 +26,15 @@ patients (it's stateless for patient data — see project memory
 against.
 
 Because no production caller uses this path (the federation host fetches
-the patient from CTOMOP `/patient-info/me/` under the end-user's own token
+the patient from PROMOP `/patient-info/me/` under the end-user's own token
 and forwards it inline), the path is gated OFF by default outside
 local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
 `person_id` while the gate is off gets a 403.
 
 Re-enabling it in production requires BOTH:
-- forwarding the caller's identity to CTOMOP (token exchange / pass-through
-  bearer or actor_iss/actor_sub — see hk-labs `ctomop_client.py`), AND
-- CTOMOP enforcing per-user authz (its `PatientUser`/consent models), or
+- forwarding the caller's identity to PROMOP (token exchange / pass-through
+  bearer or actor_iss/actor_sub — see hk-labs `promop_client.py`), AND
+- PROMOP enforcing per-user authz (its `PatientUser`/consent models), or
   using the self-scoped `/patient-info/me/` route.
 
 Tracked as #150/#108.
@@ -59,7 +59,7 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     Resolution order:
       1. Inline `patient_info` payload (existing contract — unchanged).
-      2. `person_id` query param or body field — fetch from CTOMOP.
+      2. `person_id` query param or body field — fetch from PROMOP.
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
@@ -69,8 +69,8 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     person_id = _extract_person_id(request)
     if person_id:
-        # IDOR gate (#150/#108): the CTOMOP fetch uses a static service token
-        # not bound to the caller, and CTOMOP doesn't enforce row-level authz
+        # IDOR gate (#150/#108): the PROMOP fetch uses a static service token
+        # not bound to the caller, and PROMOP doesn't enforce row-level authz
         # for it — so honoring an arbitrary person_id leaks other patients'
         # PHI. Off by default outside local/DEBUG; reject rather than silently
         # ignore so the disabled path can't masquerade as a no-patient search.
@@ -81,7 +81,7 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
                 'person_id lookup is disabled. Provide an inline patient_info '
                 'payload instead.'
             )
-        return _resolve_from_ctomop(person_id)
+        return _resolve_from_promop(person_id)
 
     return None
 
@@ -99,7 +99,7 @@ def _extract_person_id(request) -> Optional[Any]:
 
     The return is `Any` (not `str`) because the body path can carry a JSON
     integer (e.g. `{"person_id": 9003}`) while the query-string path always
-    yields `str`. `CtomopClient.fetch_patient` coerces both to int before
+    yields `str`. `PromopClient.fetch_patient` coerces both to int before
     constructing the URL.
     """
     query_params = getattr(request, 'query_params', None)
@@ -112,17 +112,17 @@ def _extract_person_id(request) -> Optional[Any]:
     return body_pid or None
 
 
-def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
-    """Fetch the CTOMOP row and adapt it to a PatientInfo. None on any error."""
-    from trials.services.patient_info.ctomop_adapter import (
-        build_patient_info_from_ctomop_row,
+def _resolve_from_promop(person_id: Any) -> Optional['PatientInfo']:
+    """Fetch the PROMOP row and adapt it to a PatientInfo. None on any error."""
+    from trials.services.patient_info.promop_adapter import (
+        build_patient_info_from_promop_row,
     )
-    from trials.services.patient_info.ctomop_client import CtomopClient
+    from trials.services.patient_info.promop_client import PromopClient
 
-    row = CtomopClient().fetch_patient(person_id)
+    row = PromopClient().fetch_patient(person_id)
     if not row:
         return None
-    return build_patient_info_from_ctomop_row(row)
+    return build_patient_info_from_promop_row(row)
 
 
 def _build_in_memory(data: dict) -> 'PatientInfo':
@@ -207,7 +207,7 @@ def _coerce_numerics(data: dict, model_cls):
 def _normalize_structured_json_fields(data: dict):
     """Enforce list-of-dicts shape on JSON fields whose consumers call `.get(...)` per item.
 
-    Bare-string items (legacy rows, malformed CTOMOP input) would otherwise crash
+    Bare-string items (legacy rows, malformed PROMOP input) would otherwise crash
     the matcher and trial-details renderer with `'str' object has no attribute 'get'`.
     """
     for key in ('later_therapies', 'supportive_therapies'):
