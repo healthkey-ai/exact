@@ -934,7 +934,7 @@ class TrialQuerySet(models.QuerySet):
         if stage is None or stage == '':
             return self
         # Also match parent stage in case patient has a sub-stage (e.g. IIIB → III).
-        # Normalization in _normalize_ctomop_row strips sub-stages at load time, but
+        # Normalization in _normalize_promop_row strips sub-stages at load time, but
         # this makes the filter robust for any remaining sub-stage values.
         parent_stage = re.sub(r'[A-C]$', '', stage)
         q = Q(stages__contains=stage) | Q(stages=[])

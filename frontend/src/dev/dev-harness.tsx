@@ -3,10 +3,10 @@
 //
 //   EXACT token login (POST /api-token-auth/)
 //     ↓
-//   CTOMOP patient picker (session-authed against /ctomop-local or
-//   /ctomop-staging via the Vite proxy with Set-Cookie rewriting)
+//   PROMOP patient picker (session-authed against /promop-local or
+//   /promop-staging via the Vite proxy with Set-Cookie rewriting)
 //     ↓
-//   Browser fetches the full patient profile from CTOMOP
+//   Browser fetches the full patient profile from PROMOP
 //   (session cookie is in the browser already — same axios instance
 //   as the picker uses)
 //     ↓
@@ -14,16 +14,16 @@
 //   `patientInfo` payload (NOT `personId` — see "Why inline" below)
 //
 // The two backends use mutually-exclusive auth schemes (DRF Token for
-// EXACT, Django session cookie for CTOMOP), so the harness keeps two
+// EXACT, Django session cookie for PROMOP), so the harness keeps two
 // separate axios instances — never share, never mix. The TrialMatches
 // component only ever sees the token instance.
 //
 // Why inline patientInfo (not `personId`):
 // EXACT's server-side `?person_id=` resolver (added in #102) fetches
-// the patient from CTOMOP using a static `CTOMOP_SERVICE_TOKEN`
-// (`CtomopClient.fetch_patient` in EXACT). That path is fine for
-// deployments where EXACT has a credentialed identity at CTOMOP, but
-// in the dev harness the browser already holds the user's CTOMOP
+// the patient from PROMOP using a static `PROMOP_SERVICE_TOKEN`
+// (`PromopClient.fetch_patient` in EXACT). That path is fine for
+// deployments where EXACT has a credentialed identity at PROMOP, but
+// in the dev harness the browser already holds the user's PROMOP
 // session cookie — so it's faster, more correct (matches the picker's
 // authz scope), and free of the IDOR concern tracked in #108 to do
 // the fetch client-side here and forward the resolved payload inline.
@@ -35,24 +35,24 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
-import { normalizeCtomopRow } from "../federation/api";
+import { normalizePromopRow } from "../federation/api";
 import { TrialMatches } from "../federation/TrialMatches";
 import type { PatientInfo } from "../federation/types";
-import { CtomopClient } from "./ctomopClient";
-import { CtomopPicker } from "./CtomopPicker";
+import { PromopClient } from "./promopClient";
+import { PromopPicker } from "./PromopPicker";
 import { ExactLoginForm } from "./ExactLoginForm";
 import { makeExactClient, readStoredToken, writeStoredToken } from "./exactAuth";
 
-const CTOMOP_SOURCE_STORAGE_KEY = "exact-harness-source";
+const PROMOP_SOURCE_STORAGE_KEY = "exact-harness-source";
 
-function currentCtomopBase(): string {
+function currentPromopBase(): string {
   try {
-    const v = localStorage.getItem(CTOMOP_SOURCE_STORAGE_KEY);
-    if (v === "ctomop-staging") return "/ctomop-staging";
+    const v = localStorage.getItem(PROMOP_SOURCE_STORAGE_KEY);
+    if (v === "promop-staging") return "/promop-staging";
   } catch {
     /* ignore */
   }
-  return "/ctomop-local";
+  return "/promop-local";
 }
 
 const queryClient = new QueryClient();
@@ -81,19 +81,19 @@ function Harness() {
     setPersonId(null);
     setPatientInfo(null);
     setResolveError(null);
-    // Best-effort CTOMOP session cleanup so the user isn't left logged
+    // Best-effort PROMOP session cleanup so the user isn't left logged
     // into the wrong account on the staging host after switching dev
     // identities. `logout()` tolerates 401/403 internally.
-    void new CtomopClient(currentCtomopBase()).logout();
+    void new PromopClient(currentPromopBase()).logout();
   }, []);
 
   // When a patient is picked, fetch the full patient profile from
-  // CTOMOP using the user's session cookie, then pipe it through
-  // EXACT's `POST /normalize-ctomop-row/` so the matcher sees
+  // PROMOP using the user's session cookie, then pipe it through
+  // EXACT's `POST /normalize-promop-row/` so the matcher sees
   // EXACT-shaped values (receptor statuses → codes, TNM stripping,
   // therapy-outcome label → ID, etc.) — mirroring what the server-side
   // `?person_id=` resolver does. Without this chain step a meaningful
-  // subset of fields silently reads as "unknown" for CTOMOP-resolved
+  // subset of fields silently reads as "unknown" for PROMOP-resolved
   // patients.
   //
   // The previous resolved payload is cleared first so a stale profile
@@ -113,14 +113,14 @@ function Harness() {
     setPatientInfo(null);
     (async () => {
       try {
-        const detail = await new CtomopClient(currentCtomopBase()).getPatient(personId);
+        const detail = await new PromopClient(currentPromopBase()).getPatient(personId);
         if (cancelled) return;
         const raw = (detail.patient_info ?? null) as PatientInfo | null;
         if (!raw) {
           setPatientInfo(null);
           return;
         }
-        const normalized = await normalizeCtomopRow(apiClient, raw);
+        const normalized = await normalizePromopRow(apiClient, raw);
         if (cancelled) return;
         setPatientInfo(normalized);
       } catch (e) {
@@ -168,7 +168,7 @@ function Harness() {
         <h1 style={{ margin: 0, fontSize: "1.25rem" }}>EXACT Federation Dev Harness</h1>
         <p style={{ color: "#6b7280", margin: 0, maxWidth: "32rem" }}>
           Sign in to EXACT to load the harness. The token is stored locally;
-          sign out to clear it. CTOMOP login is requested separately when
+          sign out to clear it. PROMOP login is requested separately when
           the patient list endpoint returns 401.
         </p>
         <ExactLoginForm onTokenObtained={handleTokenObtained} />
@@ -189,7 +189,7 @@ function Harness() {
         <div>
           <h1 style={{ margin: 0, fontSize: "1.25rem" }}>EXACT Federation Dev Harness</h1>
           <p style={{ color: "#6b7280", marginTop: "0.25rem", marginBottom: 0 }}>
-            Pick a CTOMOP patient → harness fetches the profile (browser-side
+            Pick a PROMOP patient → harness fetches the profile (browser-side
             session cookie) → TrialMatches mounts with inline
             <code style={{ marginLeft: "0.25rem" }}>patientInfo</code>.
           </p>
@@ -218,15 +218,15 @@ function Harness() {
           gap: "1.5rem",
         }}
       >
-        <CtomopPicker onSelect={setPersonId} selectedPersonId={personId} />
+        <PromopPicker onSelect={setPersonId} selectedPersonId={personId} />
         <div>
           {personId == null ? (
             <p style={{ color: "#6b7280" }}>
-              Pick a CTOMOP patient to load their trial matches.
+              Pick a PROMOP patient to load their trial matches.
             </p>
           ) : resolving ? (
             <p style={{ color: "#6b7280" }}>
-              Fetching patient profile from CTOMOP…
+              Fetching patient profile from PROMOP…
             </p>
           ) : resolveError ? (
             <div
@@ -239,7 +239,7 @@ function Harness() {
                 fontSize: "0.875rem",
               }}
             >
-              Failed to fetch CTOMOP patient profile: {resolveError}
+              Failed to fetch PROMOP patient profile: {resolveError}
             </div>
           ) : patientInfo != null ? (
             <TrialMatches
@@ -249,7 +249,7 @@ function Harness() {
             />
           ) : (
             <p style={{ color: "#6b7280" }}>
-              CTOMOP returned an empty patient profile.
+              PROMOP returned an empty patient profile.
             </p>
           )}
         </div>

@@ -1,15 +1,15 @@
-"""CTOMOP → EXACT PatientInfo adapter.
+"""PROMOP → EXACT PatientInfo adapter.
 
-Maps a flat CTOMOP `patient_info` row (whether fetched via the management
+Maps a flat PROMOP `patient_info` row (whether fetched via the management
 command's psql path or the HTTP `/api/patient-info/{id}/` endpoint) onto
 the stateless `PatientInfo` Python class EXACT uses for matching.
 
 Two-stage pipeline:
 
-1. `normalize_ctomop_row(row)` — normalizes raw CTOMOP display strings
+1. `normalize_promop_row(row)` — normalizes raw PROMOP display strings
    into EXACT's internal code values (receptor status aliases, TNM
    stripping, therapy line outcomes, lab unit fallbacks, etc.). Idempotent.
-2. `build_patient_info_from_ctomop_row(row)` — strips source-only columns,
+2. `build_patient_info_from_promop_row(row)` — strips source-only columns,
    delegates to `_build_in_memory` for the snake_case→PatientInfo
    construction + `normalize_patient_info()` derived-field computation.
 
@@ -43,8 +43,8 @@ def _build_code_lookup():
     the full eligibility chain (Therapy → components → categories) fires
     correctly from a single therapy code.
 
-    CTOMOP-specific aliases are injected for models whose canonical titles
-    differ from the display strings that CTOMOP stores in patient_info.
+    PROMOP-specific aliases are injected for models whose canonical titles
+    differ from the display strings that PROMOP stores in patient_info.
     """
     from trials.models import (
         Therapy, TherapyComponent,
@@ -86,11 +86,11 @@ def _build_code_lookup():
     therapy_map = {**lookup['TherapyComponent'], **lookup['Therapy']}
     lookup['_therapy'] = therapy_map
 
-    # ── CTOMOP-specific aliases ──────────────────────────────────────────
-    # CTOMOP stores display strings that differ from EXACT's canonical titles.
+    # ── PROMOP-specific aliases ──────────────────────────────────────────
+    # PROMOP stores display strings that differ from EXACT's canonical titles.
     # Add aliases so the resolver can map them without touching the DB data.
 
-    # Her2Status: CTOMOP sends "Negative" / "Positive" / "Equivocal";
+    # Her2Status: PROMOP sends "Negative" / "Positive" / "Equivocal";
     # titles in DB are "HER2-" / "HER2+" / "HER2 low".
     lookup['Her2Status'].update({
         'negative':  'her2_minus',
@@ -98,7 +98,7 @@ def _build_code_lookup():
         'equivocal': 'her2_low',   # IHC 2+ / equivocal → low expression
     })
 
-    # EstrogenReceptorStatus: CTOMOP sends "Positive" / "Negative" / "Borderline".
+    # EstrogenReceptorStatus: PROMOP sends "Positive" / "Negative" / "Borderline".
     # Business rule: Positive → hi_exp subtype, Borderline → low_exp subtype.
     lookup['EstrogenReceptorStatus'].update({
         'positive':   'er_plus_with_hi_exp',
@@ -117,7 +117,7 @@ def _build_code_lookup():
     lookup['HrStatus'].update({'positive': 'hr_plus', 'negative': 'hr_minus'})
     lookup['HrdStatus'].update({'positive': 'hrd_positive', 'negative': 'hrd_negative'})
 
-    # Ethnicity: CTOMOP sends US-style census labels; Hispanic/Latino has no
+    # Ethnicity: PROMOP sends US-style census labels; Hispanic/Latino has no
     # direct EXACT equivalent — map to 'other'.
     lookup['Ethnicity'].update({
         'caucasian/white':           'caucasian_or_european',
@@ -132,10 +132,10 @@ def _build_code_lookup():
 
 
 def resolve_code(display: str, model_name: str) -> str | None:
-    """Resolve a CTOMOP display string to an EXACT code for the given model.
+    """Resolve a PROMOP display string to an EXACT code for the given model.
 
     Tries an exact (case-insensitive) title match first, then strips trailing
-    parenthetical groups one-by-one (CTOMOP format: "Title (brand) (generic)").
+    parenthetical groups one-by-one (PROMOP format: "Title (brand) (generic)").
     Returns None if no match is found — the field is then treated as unknown
     (potential) by the matcher rather than silently skipping eligibility checks.
     """
@@ -156,10 +156,10 @@ def resolve_code(display: str, model_name: str) -> str | None:
 
 
 def resolve_therapy_code(display: str) -> str | None:
-    """Map a CTOMOP therapy display string to an EXACT Therapy (or TherapyComponent) code.
+    """Map a PROMOP therapy display string to an EXACT Therapy (or TherapyComponent) code.
 
     Uses the combined Therapy+TherapyComponent title map so that both regimen-level
-    and component-level CTOMOP values resolve correctly. Therapy codes take
+    and component-level PROMOP values resolve correctly. Therapy codes take
     priority over component codes when titles collide.
     """
     if not display or not display.strip():
@@ -178,7 +178,7 @@ def resolve_therapy_code(display: str) -> str | None:
 
 
 def resolve_code_csv(display: str, model_name: str) -> str | None:
-    """Resolve a comma-separated CTOMOP display string to a comma-joined list of codes.
+    """Resolve a comma-separated PROMOP display string to a comma-joined list of codes.
 
     Used for multi-value patient fields (cytogenic_markers, molecular_markers,
     planned_therapies, concomitant_medications). Items that cannot be resolved
@@ -214,7 +214,7 @@ SKIP_COLUMNS = frozenset({
     'liver_enzyme_levels', 'serum_bilirubin_level',
     # Legacy viral flags (EXACT uses no_hiv_status / no_hepatitis_*_status)
     'hiv_status', 'hepatitis_b_status', 'hepatitis_c_status',
-    # CTOMOP-only fields with no direct PatientInfo equivalent
+    # PROMOP-only fields with no direct PatientInfo equivalent
     # (metastatic_status is derived by normalize.py from stage; lymph_node and
     #  androgen_receptor have no EXACT matching criteria)
     'metastasis_status', 'lymph_node_status', 'androgen_receptor_status',
@@ -236,12 +236,12 @@ JSON_FIELDS = frozenset({
 REFRACTORY_MAP = {
     'Responsive': 'notRefractory',
     'Stable': 'notRefractory',
-    # CTOMOP doesn't distinguish primary/secondary/multi-refractory — best-guess mapping.
+    # PROMOP doesn't distinguish primary/secondary/multi-refractory — best-guess mapping.
     'Refractory': 'primaryRefractory',
     'Unknown': None,
 }
 
-# CTOMOP stores full-text labels; EXACT's _normalize_treatment_refractory_status
+# PROMOP stores full-text labels; EXACT's _normalize_treatment_refractory_status
 # compares against abbreviated IDs ('PD', 'SD', 'MRD', …).
 OUTCOME_MAP = {
     'Complete Response': 'CR',
@@ -258,15 +258,15 @@ OUTCOME_MAP = {
 }
 
 
-def normalize_ctomop_row(row: dict) -> dict:
-    """Normalize a raw CTOMOP patient_info row to EXACT's internal value format.
+def normalize_promop_row(row: dict) -> dict:
+    """Normalize a raw PROMOP patient_info row to EXACT's internal value format.
 
     Called before _build_in_memory so all downstream filtering sees the right
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
     # ── Receptor statuses ──────────────────────────────────────────────
-    # Resolved via DB-backed LRU map; aliases handle CTOMOP-specific labels
+    # Resolved via DB-backed LRU map; aliases handle PROMOP-specific labels
     # (e.g. "Equivocal" → her2_low, "Borderline" → er_plus_with_low_exp).
     # Unknown / empty strings resolve to None → treated as unknown by matcher.
     for _field, _model in [
@@ -280,7 +280,7 @@ def normalize_ctomop_row(row: dict) -> dict:
         if isinstance(val, str):
             row[_field] = resolve_code(val, _model)
 
-    # ── TNM staging — CTOMOP stores full concept names, EXACT expects short codes ──
+    # ── TNM staging — PROMOP stores full concept names, EXACT expects short codes ──
     # e.g. 'T1: Invasive Tumor ≤ 2 cm' → 't1', 'M0(i+): ...' → 'm0(i_plus)'
     for _tnm in ('tumor_stage', 'nodes_stage', 'distant_metastasis_stage'):
         val = row.get(_tnm)
@@ -293,13 +293,13 @@ def normalize_ctomop_row(row: dict) -> dict:
     if isinstance(val, str):
         row['histologic_type'] = resolve_code(val, 'HistologicType')
 
-    # ── Ethnicity — CTOMOP labels → EXACT codes ────────────────────────
+    # ── Ethnicity — PROMOP labels → EXACT codes ────────────────────────
     val = row.get('ethnicity')
     if isinstance(val, str):
         row['ethnicity'] = resolve_code(val, 'Ethnicity')
 
     # ── Multi-value code fields — resolve CSV display names to codes ───
-    # These fields store comma-separated display names in CTOMOP but EXACT
+    # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     for _field, _model in [
         ('cytogenic_markers',     'Marker'),
@@ -311,13 +311,13 @@ def normalize_ctomop_row(row: dict) -> dict:
         if isinstance(val, str) and val.strip():
             row[_field] = resolve_code_csv(val, _model)
 
-    # ── Staging modality — CTOMOP stores title ('c → Clinical'), EXACT expects code ('c') ─
+    # ── Staging modality — PROMOP stores title ('c → Clinical'), EXACT expects code ('c') ─
     sm = row.get('staging_modalities')
     if isinstance(sm, str) and ' → ' in sm:
         row['staging_modalities'] = sm.split(' → ')[0].strip()
 
-    # ── Tumor grade: CTOMOP IntegerField (1,2,3) → EXACT code ('10','20','30') ─
-    # Sub-grades 3A/3B (codes '31','32') cannot be derived from CTOMOP — map 3 → '30'.
+    # ── Tumor grade: PROMOP IntegerField (1,2,3) → EXACT code ('10','20','30') ─
+    # Sub-grades 3A/3B (codes '31','32') cannot be derived from PROMOP — map 3 → '30'.
     # Grade 4 is clinically invalid for FL (WHO grades are 1/2/3A/3B only — see #56
     # / CB a8fd82c2 and #69) so we drop it to None rather than produce an orphan
     # '40' code that has no matching dropdown label.
@@ -325,7 +325,7 @@ def normalize_ctomop_row(row: dict) -> dict:
     if isinstance(tg, int):
         row['tumor_grade'] = {1: '10', 2: '20', 3: '30'}.get(tg)
 
-    # ── Biopsy grade: CTOMOP IntegerField (1,2,3) → EXACT code ('1','2','3') ──────────
+    # ── Biopsy grade: PROMOP IntegerField (1,2,3) → EXACT code ('1','2','3') ──────────
     bg = row.get('biopsy_grade')
     if isinstance(bg, int):
         row['biopsy_grade'] = str(bg)
@@ -348,7 +348,7 @@ def normalize_ctomop_row(row: dict) -> dict:
         row['treatment_refractory_status'] = REFRACTORY_MAP[row['treatment_refractory_status']]
 
     # ── Genetic mutations — normalize casing / format ──────────────────
-    # CTOMOP uses key 'mutation' for the variant; EXACT expects 'variant'.
+    # PROMOP uses key 'mutation' for the variant; EXACT expects 'variant'.
     # Variant value also needs code-format normalization (GeneticMutations loader uses
     # value_to_code: str.replace('>','_').replace(' ','_').lower()).
     mutations = row.get('genetic_mutations')
@@ -376,7 +376,7 @@ def normalize_ctomop_row(row: dict) -> dict:
             normalized.append(m)
         row['genetic_mutations'] = normalized
 
-    # ── Lab value fallbacks (CTOMOP uses renamed columns) ─────────────
+    # ── Lab value fallbacks (PROMOP uses renamed columns) ─────────────
     if not row.get('hemoglobin_level') and row.get('hemoglobin_g_dl') is not None:
         row['hemoglobin_level'] = row['hemoglobin_g_dl']
 
@@ -394,7 +394,7 @@ def normalize_ctomop_row(row: dict) -> dict:
     if omop_therapy_enabled():
         # OMOP mode: the patient speaks OMOP concept_ids (EXACT does no crosswalk).
         # The therapy-LINE fields map to the trial omop_* columns, so source them
-        # from CTOMOP's resolved concept_ids: the scalar lines from *_therapy_id,
+        # from PROMOP's resolved concept_ids: the scalar lines from *_therapy_id,
         # and the later_therapies list from later_therapy_ids (get_user_therapies
         # folds that list into the same code set the omop_* overlap reads, so raw
         # internal codes there would silently never match). A line with no concept
@@ -407,7 +407,7 @@ def normalize_ctomop_row(row: dict) -> dict:
             {'therapy': str(c)} for c in later_ids if c not in _EMPTY_CID
         ]
     else:
-        # Legacy mode: resolve CTOMOP display strings (e.g. "Anastrozole (Arimidex)")
+        # Legacy mode: resolve PROMOP display strings (e.g. "Anastrozole (Arimidex)")
         # to EXACT normalized codes (e.g. "anastrozole") via the LRU-cached
         # Therapy/TherapyComponent title→code map. Unresolvable values → None so the
         # matcher treats them as unknown (potential), not a skipped exclusion check.
@@ -416,7 +416,7 @@ def normalize_ctomop_row(row: dict) -> dict:
             if isinstance(val, str) and val.strip():
                 row[_tf] = resolve_therapy_code(val)
 
-    # JSON list fields expect [{therapy: code, ...}] objects — clear if CTOMOP sent
+    # JSON list fields expect [{therapy: code, ...}] objects — clear if PROMOP sent
     # raw text. supportive_therapies is NOT concept-remapped above because promop
     # does not emit supportive concept_ids yet (promop#230) — NOT because the profile
     # keeps it legacy: the OMOP profile DOES flip supportive to the omop column, but
@@ -427,10 +427,10 @@ def normalize_ctomop_row(row: dict) -> dict:
         if isinstance(val, str) and not val.strip().startswith('['):
             row[_tf] = None
 
-    # ── Behaviour fields — CTOMOP stores presence-of-condition (True = HAS condition)
+    # ── Behaviour fields — PROMOP stores presence-of-condition (True = HAS condition)
     # but EXACT/CB use absence-of-condition (True = FREE of condition).  Invert the
-    # four fields that have no explicit correct mapping in CTOMOP's populate pipeline.
-    # no_tobacco_use_status and no_pregnancy_or_lactation_status are excluded: CTOMOP
+    # four fields that have no explicit correct mapping in PROMOP's populate pipeline.
+    # no_tobacco_use_status and no_pregnancy_or_lactation_status are excluded: PROMOP
     # already populates them in the correct direction.
     for _bfield in (
         'no_mental_health_disorder_status',
@@ -442,8 +442,8 @@ def normalize_ctomop_row(row: dict) -> dict:
         if isinstance(val, bool):
             row[_bfield] = not val
 
-    # ── Metastatic status — CTOMOP column name differs from EXACT's ─────
-    # CTOMOP: metastasis_status (text) → EXACT: metastatic_status (bool)
+    # ── Metastatic status — PROMOP column name differs from EXACT's ─────
+    # PROMOP: metastasis_status (text) → EXACT: metastatic_status (bool)
     ms = row.get('metastasis_status')
     if ms == 'Positive':
         row['metastatic_status'] = True
@@ -452,7 +452,7 @@ def normalize_ctomop_row(row: dict) -> dict:
     # 'Unknown' → leave unset (PatientInfo default is False, so we don't set it)
 
     # ── Prior therapy — derive from therapy_lines_count ───────────────
-    # CTOMOP prior_therapy is binary Yes/No; therapy_lines_count has the detail.
+    # PROMOP prior_therapy is binary Yes/No; therapy_lines_count has the detail.
     lines = row.get('therapy_lines_count')
     if lines is not None:
         _lines_map = {0: 'None', 1: 'One line', 2: 'Two lines'}
@@ -465,7 +465,7 @@ def normalize_ctomop_row(row: dict) -> dict:
             row['patient_age'] = (date.today() - dob).days // 365
 
     # ── Gender — OMOP concept name / id → EXACT code ───────────────────
-    # The CTOMOP HTTP path sends the OMOP-standard gender as the concept
+    # The PROMOP HTTP path sends the OMOP-standard gender as the concept
     # name ('Female'=8532, 'Male'=8507); EXACT expects 'F'/'M'. Translate
     # unconditionally — the value is already populated, so the empty-gender
     # fallback below never sees it. Also accept a bare concept id arriving in
@@ -517,8 +517,8 @@ def normalize_ctomop_row(row: dict) -> dict:
     return row
 
 
-def build_patient_info_from_ctomop_row(row: dict):
-    """Convert a CTOMOP patient_info row into an in-memory PatientInfo.
+def build_patient_info_from_promop_row(row: dict):
+    """Convert a PROMOP patient_info row into an in-memory PatientInfo.
 
     Uses the same normalization pipeline as the web service
     (`normalize_patient_info`) so all derived fields (BMI, geo_point,
@@ -527,7 +527,7 @@ def build_patient_info_from_ctomop_row(row: dict):
     """
     from trials.services.patient_info.resolve import _build_in_memory
 
-    row = normalize_ctomop_row(row)
+    row = normalize_promop_row(row)
 
     # Strip source-only columns; decode any JSON-as-string fields
     cleaned = {}

@@ -1,9 +1,9 @@
-"""Tests for resolve_patient_info's CTOMOP `?person_id=` path (#102).
+"""Tests for resolve_patient_info's PROMOP `?person_id=` path (#102).
 
 Resolution order under test:
 1. Inline `patient_info` payload wins if both are present (lets callers
    stage the migration without breaking CB).
-2. `person_id` (query param or body) → CtomopClient fetch → adapter.
+2. `person_id` (query param or body) → PromopClient fetch → adapter.
 3. Neither → None.
 """
 from unittest.mock import MagicMock, patch
@@ -36,12 +36,12 @@ class TestResolvePatientInfoDispatch:
         req.query_params = {}
         assert resolve_patient_info(req) is None
 
-    def test_query_param_person_id_routes_to_ctomop(self):
+    def test_query_param_person_id_routes_to_promop(self):
         req = _mock_request(query_params={'person_id': '9001'})
         with patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient, patch(
-            'trials.services.patient_info.ctomop_adapter.build_patient_info_from_ctomop_row',
+            'trials.services.patient_info.promop_adapter.build_patient_info_from_promop_row',
         ) as mock_build:
             MockClient.return_value.fetch_patient.return_value = {'person_id': 9001}
             mock_build.return_value = 'pi_object'
@@ -55,21 +55,21 @@ class TestResolvePatientInfoDispatch:
     def test_camelcase_personid_query_param_also_routes(self):
         req = _mock_request(query_params={'personId': '9002'})
         with patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient, patch(
-            'trials.services.patient_info.ctomop_adapter.build_patient_info_from_ctomop_row',
+            'trials.services.patient_info.promop_adapter.build_patient_info_from_promop_row',
         ) as mock_build:
             MockClient.return_value.fetch_patient.return_value = {'person_id': 9002}
             mock_build.return_value = 'pi_object'
             resolve_patient_info(req)
         MockClient.return_value.fetch_patient.assert_called_once_with('9002')
 
-    def test_body_person_id_routes_to_ctomop(self):
+    def test_body_person_id_routes_to_promop(self):
         req = _mock_request(data={'person_id': 9003})
         with patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient, patch(
-            'trials.services.patient_info.ctomop_adapter.build_patient_info_from_ctomop_row',
+            'trials.services.patient_info.promop_adapter.build_patient_info_from_promop_row',
         ) as mock_build:
             MockClient.return_value.fetch_patient.return_value = {'person_id': 9003}
             mock_build.return_value = 'pi'
@@ -86,7 +86,7 @@ class TestResolvePatientInfoDispatch:
         with patch(
             'trials.services.patient_info.resolve._build_in_memory',
         ) as mock_inline, patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient:
             mock_inline.return_value = 'inline_pi'
 
@@ -99,15 +99,15 @@ class TestResolvePatientInfoDispatch:
     @pytest.mark.django_db
     def test_enveloped_fetch_survives_into_patient_info(self):
         """End-to-end regression for #144: an enveloped HTTP body
-        (`{"patient_info": {...}}`) fetched via CtomopClient and run through the
+        (`{"patient_info": {...}}`) fetched via PromopClient and run through the
         adapter must yield a PatientInfo carrying the patient's real disease /
         age / gender — NOT the silent myeloma defaults that result when the
         envelope is left un-unwrapped and every field is filtered away.
         """
         from unittest.mock import MagicMock
-        from trials.services.patient_info.ctomop_client import CtomopClient
-        from trials.services.patient_info.ctomop_adapter import (
-            build_patient_info_from_ctomop_row,
+        from trials.services.patient_info.promop_client import PromopClient
+        from trials.services.patient_info.promop_adapter import (
+            build_patient_info_from_promop_row,
         )
 
         resp = MagicMock()
@@ -122,24 +122,24 @@ class TestResolvePatientInfoDispatch:
                 'gender': 'F',
             },
         }
-        client = CtomopClient(base_url='https://ctomop.example.com', token='tk')
-        with patch('trials.services.patient_info.ctomop_client.requests.get',
+        client = PromopClient(base_url='https://promop.example.com', token='tk')
+        with patch('trials.services.patient_info.promop_client.requests.get',
                    return_value=resp):
             row = client.fetch_patient(9005)
 
-        pi = build_patient_info_from_ctomop_row(row)
+        pi = build_patient_info_from_promop_row(row)
 
         assert pi.disease == 'breast cancer'   # not the 'multiple myeloma' default
         assert pi.patient_age == 51            # not None
         assert pi.gender == 'F'                # not None
 
-    def test_ctomop_client_returns_none_propagates(self):
+    def test_promop_client_returns_none_propagates(self):
         """Client failure (network, 4xx/5xx, malformed JSON) → resolver returns None."""
         req = _mock_request(query_params={'person_id': '9001'})
         with patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient, patch(
-            'trials.services.patient_info.ctomop_adapter.build_patient_info_from_ctomop_row',
+            'trials.services.patient_info.promop_adapter.build_patient_info_from_promop_row',
         ) as mock_build:
             MockClient.return_value.fetch_patient.return_value = None
             assert resolve_patient_info(req) is None
@@ -148,7 +148,7 @@ class TestResolvePatientInfoDispatch:
 
 
 class TestPersonIdLookupGate:
-    """The `?person_id=` path is an IDOR (CTOMOP service token isn't bound to
+    """The `?person_id=` path is an IDOR (PROMOP service token isn't bound to
     the caller). It's gated behind EXACT_ALLOW_PERSON_ID_LOOKUP — off in prod.
     When off, a person_id request is rejected (403) rather than silently
     ignored; the inline path is unaffected. (#150/#108)"""
@@ -157,7 +157,7 @@ class TestPersonIdLookupGate:
     def test_query_param_person_id_rejected_when_gate_off(self):
         req = _mock_request(query_params={'person_id': '9001'})
         with patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient:
             with pytest.raises(PermissionDenied):
                 resolve_patient_info(req)
@@ -184,9 +184,9 @@ class TestPersonIdLookupGate:
     def test_person_id_allowed_when_gate_on(self):
         req = _mock_request(query_params={'person_id': '9001'})
         with patch(
-            'trials.services.patient_info.ctomop_client.CtomopClient', autospec=True,
+            'trials.services.patient_info.promop_client.PromopClient', autospec=True,
         ) as MockClient, patch(
-            'trials.services.patient_info.ctomop_adapter.build_patient_info_from_ctomop_row',
+            'trials.services.patient_info.promop_adapter.build_patient_info_from_promop_row',
         ) as mock_build:
             MockClient.return_value.fetch_patient.return_value = {'person_id': 9001}
             mock_build.return_value = 'pi'

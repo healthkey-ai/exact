@@ -232,7 +232,7 @@ class PatientInfoAttributes:
         return list(set(out))
 
     def get_user_therapy_component_ids(self):
-        """Return the patient's component concept_ids (CTOMOP-supplied, OMOP mode only).
+        """Return the patient's component concept_ids (PROMOP-supplied, OMOP mode only).
 
         Returns None when the field is absent — callers treat None as unknown and
         fail-closed (skip component/type filtering in the queryset; return 'unknown'

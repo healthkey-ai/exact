@@ -1,25 +1,25 @@
-"""HTTP client for CTOMOP/promop's patient endpoint.
+"""HTTP client for PROMOP/promop's patient endpoint.
 
 Used by `resolve_patient_info` when a request carries `?person_id=` (or a body
 field `person_id`) instead of an inline `patient_info` payload.
 
 Two transport modes, chosen by configuration (#237):
-- **v1 + OAuth2** (preferred): when `CTOMOP_OAUTH_CLIENT_ID` / `_SECRET` are set,
+- **v1 + OAuth2** (preferred): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set,
   the client authenticates via OAuth2 `client_credentials` against promop
   `/o/token/` (scope `patient/*.read`) and reads
   `GET /api/v1/patient-records/{person_id}/`.
 - **legacy** (deprecated, sunsets 2026-09-01): otherwise it falls back to the
-  static `CTOMOP_SERVICE_TOKEN` and `GET /api/patient-info/{person_id}/`.
+  static `PROMOP_SERVICE_TOKEN` and `GET /api/patient-info/{person_id}/`.
 
 Either way `fetch_patient(person_id)` returns the flat row dict (the shape
-`normalize_ctomop_row` expects) or `None` on any error path (network failure,
+`normalize_promop_row` expects) or `None` on any error path (network failure,
 4xx/5xx, malformed JSON, missing config, OAuth token failure). Returning `None`
 rather than raising lets the resolver treat the failure like a missing payload —
 the caller can proceed without patient context (e.g. public trial browsing).
 
 Config comes from Django settings (each read from the matching env var, empty
-defaults): `CTOMOP_BASE`, `CTOMOP_SERVICE_TOKEN` (legacy), and
-`CTOMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_SCOPE` / `_TOKEN_URL` (OAuth).
+defaults): `PROMOP_BASE`, `PROMOP_SERVICE_TOKEN` (legacy), and
+`PROMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_SCOPE` / `_TOKEN_URL` (OAuth).
 Uses `requests` (already in requirements) rather than adding `httpx`.
 """
 import logging
@@ -78,21 +78,21 @@ def _get_service_access_token(token_url, client_id, client_secret, scope, timeou
                 allow_redirects=False,
             )
         except requests.RequestException as exc:
-            logger.warning('CtomopClient OAuth token request failed: %s', exc)
+            logger.warning('PromopClient OAuth token request failed: %s', exc)
             return None
         if not resp.ok:
-            logger.warning('CtomopClient OAuth token non-OK response: %s %s',
+            logger.warning('PromopClient OAuth token non-OK response: %s %s',
                            resp.status_code, resp.reason)
             return None
         try:
             data = resp.json()
         except ValueError:
-            logger.warning('CtomopClient OAuth token non-JSON body')
+            logger.warning('PromopClient OAuth token non-JSON body')
             return None
 
         access_token = data.get('access_token') if isinstance(data, dict) else None
         if not access_token:
-            logger.warning('CtomopClient OAuth token response missing access_token')
+            logger.warning('PromopClient OAuth token response missing access_token')
             return None
         try:
             ttl = float(data.get('expires_in') or 3600)
@@ -102,24 +102,24 @@ def _get_service_access_token(token_url, client_id, client_secret, scope, timeou
         return access_token
 
 
-class CtomopClient:
+class PromopClient:
     def __init__(self, base_url: str | None = None, token: str | None = None,
                  timeout: float = DEFAULT_TIMEOUT_SECONDS,
                  oauth_client_id: str | None = None, oauth_client_secret: str | None = None,
                  oauth_scope: str | None = None, oauth_token_url: str | None = None):
         self.base_url = (base_url if base_url is not None
-                         else getattr(settings, 'CTOMOP_BASE', '')).rstrip('/')
-        self.token = token if token is not None else getattr(settings, 'CTOMOP_SERVICE_TOKEN', '')
+                         else getattr(settings, 'PROMOP_BASE', '')).rstrip('/')
+        self.token = token if token is not None else getattr(settings, 'PROMOP_SERVICE_TOKEN', '')
         self.timeout = timeout
         self.oauth_client_id = (oauth_client_id if oauth_client_id is not None
-                                else getattr(settings, 'CTOMOP_OAUTH_CLIENT_ID', ''))
+                                else getattr(settings, 'PROMOP_OAUTH_CLIENT_ID', ''))
         self.oauth_client_secret = (oauth_client_secret if oauth_client_secret is not None
-                                    else getattr(settings, 'CTOMOP_OAUTH_CLIENT_SECRET', ''))
+                                    else getattr(settings, 'PROMOP_OAUTH_CLIENT_SECRET', ''))
         self.oauth_scope = (oauth_scope if oauth_scope is not None
-                            else getattr(settings, 'CTOMOP_OAUTH_SCOPE', 'patient/*.read'))
+                            else getattr(settings, 'PROMOP_OAUTH_SCOPE', 'patient/*.read'))
         self.oauth_token_url = (
             (oauth_token_url if oauth_token_url is not None
-             else getattr(settings, 'CTOMOP_OAUTH_TOKEN_URL', ''))
+             else getattr(settings, 'PROMOP_OAUTH_TOKEN_URL', ''))
             or (f'{self.base_url}/o/token/' if self.base_url else '')
         )
         # A half-configured OAuth setup (exactly one of id/secret) silently
@@ -127,7 +127,7 @@ class CtomopClient:
         # mistaken for a working OAuth deployment.
         if bool(self.oauth_client_id) != bool(self.oauth_client_secret):
             logger.warning(
-                'CtomopClient: partial OAuth config (only %s set); falling back '
+                'PromopClient: partial OAuth config (only %s set); falling back '
                 'to legacy static-token transport.',
                 'client_id' if self.oauth_client_id else 'client_secret',
             )
@@ -159,7 +159,7 @@ class CtomopClient:
         both wrap the row in a `{"patient_info": {...}}` envelope; v1 additionally
         carries a sibling `user` block and drops `patient_info_id`. This method
         unwraps the `patient_info` envelope (ignoring siblings), so callers always
-        receive a flat row matching `normalize_ctomop_row` — without unwrapping,
+        receive a flat row matching `normalize_promop_row` — without unwrapping,
         every real field would be nested one level too deep and silently dropped
         (#144).
 
@@ -167,14 +167,14 @@ class CtomopClient:
         anything else returns None without a network call — a guard against URL
         path injection that would otherwise leak the Bearer token to a crafted path.
 
-        Returns None when: `CTOMOP_BASE` is unset; the OAuth token can't be
+        Returns None when: `PROMOP_BASE` is unset; the OAuth token can't be
         obtained (OAuth mode); the network call fails; the status is non-2xx; or
         the body isn't a JSON object. Logs at WARNING so failures surface without
         short-circuiting the caller.
         """
         if not self.base_url:
             logger.warning(
-                'CtomopClient.fetch_patient called with no CTOMOP_BASE configured; '
+                'PromopClient.fetch_patient called with no PROMOP_BASE configured; '
                 'returning None (person_id=%s)', person_id,
             )
             return None
@@ -183,12 +183,12 @@ class CtomopClient:
             person_id_int = int(person_id)
         except (TypeError, ValueError, OverflowError):
             logger.warning(
-                'CtomopClient.fetch_patient rejected non-integer person_id %r', person_id,
+                'PromopClient.fetch_patient rejected non-integer person_id %r', person_id,
             )
             return None
         if person_id_int <= 0:
             logger.warning(
-                'CtomopClient.fetch_patient rejected non-positive person_id %r', person_id,
+                'PromopClient.fetch_patient rejected non-positive person_id %r', person_id,
             )
             return None
 
@@ -196,7 +196,7 @@ class CtomopClient:
         authorization = self._authorization()
         if self.use_oauth and authorization is None:
             logger.warning(
-                'CtomopClient could not obtain an OAuth token; returning None (person_id=%s)',
+                'PromopClient could not obtain an OAuth token; returning None (person_id=%s)',
                 person_id,
             )
             return None
@@ -207,12 +207,12 @@ class CtomopClient:
         try:
             response = requests.get(url, headers=headers, timeout=self.timeout)
         except requests.RequestException as exc:
-            logger.warning('CtomopClient network error for person_id=%s: %s', person_id, exc)
+            logger.warning('PromopClient network error for person_id=%s: %s', person_id, exc)
             return None
 
         if not response.ok:
             logger.warning(
-                'CtomopClient non-OK response for person_id=%s: %s %s',
+                'PromopClient non-OK response for person_id=%s: %s %s',
                 person_id, response.status_code, response.reason,
             )
             return None
@@ -220,12 +220,12 @@ class CtomopClient:
         try:
             data = response.json()
         except ValueError:
-            logger.warning('CtomopClient non-JSON body for person_id=%s', person_id)
+            logger.warning('PromopClient non-JSON body for person_id=%s', person_id)
             return None
 
         if not isinstance(data, dict):
             logger.warning(
-                'CtomopClient response for person_id=%s is %s, expected dict',
+                'PromopClient response for person_id=%s is %s, expected dict',
                 person_id, type(data).__name__,
             )
             return None
@@ -239,7 +239,7 @@ class CtomopClient:
         inner = data.get('patient_info')
         if isinstance(inner, dict):
             logger.debug(
-                'CtomopClient unwrapped patient_info envelope for person_id=%s', person_id,
+                'PromopClient unwrapped patient_info envelope for person_id=%s', person_id,
             )
             return inner
 

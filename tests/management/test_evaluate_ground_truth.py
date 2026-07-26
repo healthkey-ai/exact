@@ -44,7 +44,7 @@ def _ground_truth_rows(*entries):
 class TestLoadResults:
     def test_basic_parsing(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT00000001,eligible,85
             1001,NCT00000002,potential,70
         """)
@@ -57,7 +57,7 @@ class TestLoadResults:
 
     def test_ranks_assigned_per_patient_in_order(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT00000001,eligible,85
             1001,NCT00000002,potential,70
             1001,NCT00000003,potential,60
@@ -68,7 +68,7 @@ class TestLoadResults:
 
     def test_ranks_reset_per_patient(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT00000001,eligible,85
             1001,NCT00000002,potential,70
             1002,NCT00000003,eligible,90
@@ -80,7 +80,7 @@ class TestLoadResults:
 
     def test_code_and_study_id_both_set_to_trial_column(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT03452774,potential,81
         """)
         r = _load_results(path)
@@ -90,7 +90,7 @@ class TestLoadResults:
 
     def test_multiple_patients(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT00000001,eligible,85
             1002,NCT00000002,potential,70
             1003,NCT00000003,eligible,65
@@ -106,7 +106,7 @@ class TestLoadResults:
 class TestTopNInference:
     def test_top_n_is_max_rows_per_patient(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT00000001,eligible,85
             1001,NCT00000002,potential,70
             1001,NCT00000003,potential,60
@@ -119,7 +119,7 @@ class TestTopNInference:
 
     def test_single_result_per_patient(self, tmp_path):
         path = _write_csv(tmp_path, """\
-            CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+            PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
             1001,NCT00000001,eligible,85
             1002,NCT00000002,potential,70
         """)

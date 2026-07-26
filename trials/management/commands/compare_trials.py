@@ -590,7 +590,7 @@ class Command(BaseCommand):
                 })
                 continue
 
-            # Warn when JSON zip differs from CTOMOP postal_code so the override is visible.
+            # Warn when JSON zip differs from PROMOP postal_code so the override is visible.
             db_zip = row.get('postal_code')
             if use_zip and db_zip and str(use_zip).strip() != str(db_zip).strip():
                 self.stdout.write(

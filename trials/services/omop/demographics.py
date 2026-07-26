@@ -1,8 +1,8 @@
 """CB demographics (gender, ethnicity) -> OMOP concept_id.
 
 Part of the OMOP migration (epic #4447). concept_ids are verified present in the
-CTOMOP release (LOINC 'Answer' concepts, ``Meas Value`` domain — the gender/race
-concepts loaded in this CTOMOP).
+PROMOP release (LOINC 'Answer' concepts, ``Meas Value`` domain — the gender/race
+concepts loaded in this PROMOP).
 
 CB has NO separate race field; its ``ethnicity`` field holds race categories, so
 ethnicity maps to OMOP RACE concepts. ``other`` has no clean OMOP race concept and

@@ -68,11 +68,11 @@ def test_detail_no_explain_leaves_matchreasons_none():
 @override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN)
 def test_retrieve_endpoint_reports_match_via_view():
     """End-to-end through the DRF view: ?person_id resolves the patient (mocked
-    CTOMOP fetch), and the detail response carries the match fields."""
+    PROMOP fetch), and the detail response carries the match fields."""
     trial = TrialFactory(disease='multiple myeloma')
     client = APIClient()
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {SERVICE_TOKEN}")
-    with patch('trials.services.patient_info.ctomop_client.CtomopClient') as MockClient:
+    with patch('trials.services.patient_info.promop_client.PromopClient') as MockClient:
         MockClient.return_value.fetch_patient.return_value = {
             'person_id': 9001, 'disease': 'multiple myeloma',
         }

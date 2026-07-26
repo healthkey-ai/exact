@@ -48,13 +48,13 @@ class TestPatientResolveErrors:
         assert mock_resolve.call_count == 1
 
     def test_non_inline_resolve_error_is_not_masked_as_400(self, authed_client):
-        # When no inline payload was supplied (e.g. the person_id/CTOMOP path),
+        # When no inline payload was supplied (e.g. the person_id/PROMOP path),
         # an unexpected build error is a real server/upstream bug and must NOT
         # be relabeled as a client 400 — it should surface as a 500 (#156).
         authed_client.raise_request_exception = False
         with patch(
             'trials.api.trials_views.resolve_patient_info',
-            side_effect=RuntimeError('ctomop adapter blew up'),
+            side_effect=RuntimeError('promop adapter blew up'),
         ):
             resp = authed_client.get('/trials/')
         assert resp.status_code == 500

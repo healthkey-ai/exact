@@ -5,7 +5,7 @@ concept-graph data; EXACT keeps no local copy. This module is slice 1 — the th
 client. The cache layer (DB-backed, release-pinned) and the matcher/backfill wiring
 land in follow-up slices of #234.
 
-**Failure contract differs deliberately from `CtomopClient`.** `CtomopClient.fetch_patient`
+**Failure contract differs deliberately from `PromopClient`.** `PromopClient.fetch_patient`
 returns ``None`` on any failure because a missing patient payload is benign (public trial
 browsing still works). The concept graph instead feeds a PERSISTED eligibility projection
 (trial-side backfill) and per-trial matching; silently returning an empty expansion would
@@ -18,7 +18,7 @@ fail-closed policy explicitly:
   run and preserve existing column values (never persist a partial projection);
 - request-time: catch → treat as ``unknown`` (never fail-open to matched).
 
-Config falls back to the ``CTOMOP_*`` settings (same promop host) until the dedicated
+Config falls back to the ``PROMOP_*`` settings (same promop host) until the dedicated
 OAuth2 path (#237) lands. Cache identity must eventually key on a promop **release id**
 (promop#279); until promop emits one, callers can only observe per-vocabulary
 ``versions`` — see the ``ConceptGraphResult.versions`` TODO.
@@ -98,12 +98,11 @@ class ConceptGraphClient:
         self.base_url = (
             base_url if base_url is not None
             else (getattr(settings, 'PROMOP_API_BASE', '')
-                  or getattr(settings, 'CTOMOP_BASE', ''))
+                  or getattr(settings, 'PROMOP_BASE', ''))
         ).rstrip('/')
         self.token = (
             token if token is not None
-            else (getattr(settings, 'PROMOP_SERVICE_TOKEN', '')
-                  or getattr(settings, 'CTOMOP_SERVICE_TOKEN', ''))
+            else getattr(settings, 'PROMOP_SERVICE_TOKEN', '')
         )
         self.timeout = timeout
 
@@ -134,7 +133,7 @@ class ConceptGraphClient:
         if not source_ids:
             return ConceptGraphResult(groups={}, truncated=[], versions=frozenset())
         if not self.base_url:
-            raise ConceptGraphUnavailable('PROMOP_API_BASE / CTOMOP_BASE is not configured')
+            raise ConceptGraphUnavailable('PROMOP_API_BASE / PROMOP_BASE is not configured')
 
         groups: dict[int, set[int]] = {cid: set() for cid in source_ids}
         truncated: set[int] = set()
