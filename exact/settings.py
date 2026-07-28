@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     'drf_yasg',
     'accounts',
     'trials',
+    'vocab_mirror',
 ]
 
 # House OIDC shared-Identity model (issuer, sub). Must be set before the first
