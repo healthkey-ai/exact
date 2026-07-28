@@ -15,7 +15,13 @@ from vocab_mirror.activation import (
     active_release_id,
     register_release_match_check,
 )
-from vocab_mirror.models import MirrorConcept, MirrorRelease
+from vocab_mirror.models import (
+    MirrorConcept,
+    MirrorConceptAncestor,
+    MirrorConceptRelationship,
+    MirrorRelease,
+    MirrorVocabulary,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -32,9 +38,19 @@ def _restore_release_checks():
 def _ready_release(rid, with_data=True):
     rel = MirrorRelease.objects.create(release_id=rid, state=MirrorRelease.READY)
     if with_data:
+        # A complete generation: one row in every required mirror table, or the
+        # populated-generation gate refuses to activate it.
         MirrorConcept.objects.create(
             release_id=rid, concept_id=1, concept_name='x', domain_id='Drug',
             vocabulary_id='RxNorm', concept_class_id='Ingredient', concept_code='c')
+        MirrorVocabulary.objects.create(
+            release_id=rid, vocabulary_id='RxNorm', vocabulary_name='RxNorm',
+            vocabulary_concept_id=1)
+        MirrorConceptRelationship.objects.create(
+            release_id=rid, concept_id_1=1, concept_id_2=2, relationship_id='Subsumes')
+        MirrorConceptAncestor.objects.create(
+            release_id=rid, ancestor_concept_id=1, descendant_concept_id=2,
+            min_levels_of_separation=1, max_levels_of_separation=1)
     return rel
 
 

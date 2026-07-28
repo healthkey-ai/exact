@@ -397,6 +397,20 @@ PROMOP_OAUTH_TOKEN_URL = os.environ.get('PROMOP_OAUTH_TOKEN_URL', '')
 # unconfigured (callers get ConceptGraphUnavailable) so nothing silently no-ops.
 PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
 
+# promop vocabulary MIRROR sync (#250; ADR 0002 / promop#334). EXACT keeps a
+# release-pinned local mirror of the OMOP vocab tables and syncs it from promop's
+# vocab-releases snapshot API. This needs its OWN OAuth client + scope: the
+# snapshot endpoints are vocabulary-scoped, distinct from the patient client's
+# PROMOP_OAUTH_* (scope patient/*.read). Base falls back to PROMOP_API_BASE /
+# PROMOP_BASE (same promop host); token_url defaults to {base}/o/token/.
+PROMOP_VOCAB_BASE = os.environ.get('PROMOP_VOCAB_BASE', '')
+PROMOP_VOCAB_OAUTH_CLIENT_ID = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_ID', '')
+PROMOP_VOCAB_OAUTH_CLIENT_SECRET = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_SECRET', '')
+# Scope required by promop's vocab-releases endpoints (confirm with promop; the
+# snapshot views use ScopedTokenPermission).
+PROMOP_VOCAB_OAUTH_SCOPE = os.environ.get('PROMOP_VOCAB_OAUTH_SCOPE', 'system/*.read')
+PROMOP_VOCAB_OAUTH_TOKEN_URL = os.environ.get('PROMOP_VOCAB_OAUTH_TOKEN_URL', '')
+
 # Cache alias CachedConceptGraphClient uses (#234). Points at the shared DB-backed
 # 'concept_graph' cache in deployed envs (see exact/cache_config.py); the client falls
 # back to 'default' if the alias is absent (e.g. tests). Deployed envs must run
