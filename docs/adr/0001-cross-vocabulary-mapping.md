@@ -1,10 +1,52 @@
 # ADR 0001: Cross-vocabulary mapping between EXACT, PROMOP, and CancerBot
 
-- **Status:** Proposed
-- **Date:** 2026-06-18
+- **Status:** **Superseded** by [promop ADR 0001 — *promop is the vocabulary source of truth*](https://github.com/healthkey-ai/promop/blob/dev/docs/adr/0001-vocabulary-source-of-truth.md) (currently *Proposed*; formal ratification tracked in promop#254 — EXACT's code already implements it, #234).
+- **Date:** 2026-06-18 (superseded 2026-07-27)
 - **Deciders:** EXACT team (pending review by CancerBot + PROMOP terminology owners)
 - **Reviews:** Codex (consult) on architecture options + the ETL re-keying idea; gstack `/plan-eng-review` (eng-manager pass) — substrate decision (OMOP `concept_relationship` upstream + compiled EXACT table), governance-as-Phase-0, per-domain kill switch, resolver test matrix, and outbound-annotation caching folded in.
-- **Related:** #172 (HemOnc therapy concept_ids — first domain instance), PROMOP PR #168 / issue #165
+- **Related:** #172 (HemOnc therapy concept_ids — first domain instance), PROMOP PR #168 / issue #165; supersession tracked in #235.
+
+## Superseded by promop ADR 0001
+
+This ADR chose a **consumer-vendored** substrate: promop would publish only a
+`source → standard anchor` mapping, and EXACT would compile a **version-pinned
+artifact into its own EXACT table** and do per-consumer target resolution
+consumer-side (Decision §1–2, "compile a denormalized lookup table into EXACT").
+
+That substrate decision is **superseded**. The superseding decision ([promop ADR
+0001](https://github.com/healthkey-ai/promop/blob/dev/docs/adr/0001-vocabulary-source-of-truth.md)
+— currently *Proposed*, ratification tracked in promop#254) makes **promop the
+single vocabulary source of truth**, accessed by consumers **via API + cache —
+not** a bulk export, replica, or locally-compiled artifact. EXACT implemented
+this in #234: `ConceptGraphClient` + `CachedConceptGraphClient` (DB-backed,
+release-pinned, fail-closed) — so EXACT no longer keeps a local copy of the OMOP
+**concept graph / `concept_relationship` tables**. (EXACT still persists
+`OmopConcept` titles, the `omop_concept_id` columns on its vocab models, the trial
+`omop_*` projections, and the two curated mapping tables — the last of these is
+the documented exception below, not a promop vocabulary copy.)
+
+**Reconciled language.** Wherever the body below says "compiled/vendored
+artifact into an EXACT table", "consumer-side target resolution", or "do not
+stand up a live network terminology service", read it as **historical**: the
+live model is promop-owned data pulled through the release-pinned concept-graph
+cache. What still holds from this ADR: **direction** (map patient → CB/EXACT
+vocabulary, preserve source values, never let a lossy/unmapped fact strengthen
+eligibility — the [Invariant](#invariant)), the **relationship-typed** crosswalk
+shape, **shadow mode / per-domain kill switch**, and the **resolver test
+matrix**.
+
+**Surviving consumer-side artifact — one documented exception.** The only
+mapping EXACT still holds locally is the `cb_code ↔ concept_id` bridge
+(`TherapyOmopMapping`, keyed by `(level, cb_code)`), because EXACT reverse-maps
+component `concept_id`s → CB **category** codes at runtime — a policy promop must
+not encode. It is scoped, owned, and given an explicit retirement gate in
+[docs/omop/cb-code-concept-id-exception.md](../omop/cb-code-concept-id-exception.md)
+(#236).
+
+---
+
+*The remainder of this document is preserved verbatim as the historical record
+of the superseded decision.*
 
 ## Context
 
