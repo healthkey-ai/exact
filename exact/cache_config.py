@@ -17,9 +17,6 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 LOCMEM_BACKEND = "django.core.cache.backends.locmem.LocMemCache"
 REDIS_BACKEND = "django.core.cache.backends.redis.RedisCache"
-DB_CACHE_BACKEND = "django.core.cache.backends.db.DatabaseCache"
-# Table for the concept-graph cache (#234); created by `createcachetable`.
-CONCEPT_GRAPH_CACHE_TABLE = "concept_graph_cache"
 
 # redis-py's ConnectionPool.from_url() lets querystring args OVERRIDE kwargs
 # passed via OPTIONS ("querystring arguments always win"). So a deployed
@@ -65,19 +62,8 @@ def build_caches(*, redis_url, debug, environment, force_redis=False, redis_ca_c
     redis_url = (redis_url or "").strip()
     local = (debug or environment == "local") and not force_redis
 
-    # Concept-graph cache (#234): a SHARED, DB-backed cache in deployed envs so the
-    # per-source promop expansion cache survives across Redis-less Cloud Run workers /
-    # instances (a per-process LocMemCache there defeats cross-instance reuse). Local /
-    # test stays on LocMem (no cache table needed). Deployed envs MUST run
-    #     python manage.py createcachetable --database=default
-    # (alongside migrate) to create CONCEPT_GRAPH_CACHE_TABLE.
-    concept_graph = (
-        {"BACKEND": LOCMEM_BACKEND} if local
-        else {"BACKEND": DB_CACHE_BACKEND, "LOCATION": CONCEPT_GRAPH_CACHE_TABLE}
-    )
-
     if not redis_url or local:
-        return {"default": {"BACKEND": LOCMEM_BACKEND}, "concept_graph": concept_graph}
+        return {"default": {"BACKEND": LOCMEM_BACKEND}}
 
     options = {}
     if redis_url.startswith("rediss://"):
@@ -102,4 +88,4 @@ def build_caches(*, redis_url, debug, environment, force_redis=False, redis_ca_c
     }
     if options:
         default["OPTIONS"] = options
-    return {"default": default, "concept_graph": concept_graph}
+    return {"default": default}

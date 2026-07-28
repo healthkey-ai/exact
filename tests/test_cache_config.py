@@ -119,26 +119,16 @@ class TestSettingsDoesNotHardcodeLocmem:
             'settings.py must resolve CACHES through build_caches().'
 
 
-class TestConceptGraphCache:
-    """The concept-graph cache (#234) must be a SHARED, DB-backed cache in deployed
-    envs so the per-source promop expansion cache survives across Redis-less Cloud
-    Run workers/instances; local/test stays on LocMem (no cache table needed)."""
+class TestConceptGraphCacheRetired:
+    """The concept-graph DB cache (#234/#240) was retired with the API+cache
+    surface (#251, replaced by the local vocab mirror). build_caches must no
+    longer emit the alias — a regression guard so the retired DB-cache /
+    createcachetable path can't quietly return."""
 
-    def test_deployed_no_redis_uses_db_backed_shared_cache(self):
-        from exact.cache_config import DB_CACHE_BACKEND, CONCEPT_GRAPH_CACHE_TABLE
-        caches = build_caches(redis_url='', debug=False, environment='staging')
-        assert caches['concept_graph']['BACKEND'] == DB_CACHE_BACKEND
-        assert caches['concept_graph']['LOCATION'] == CONCEPT_GRAPH_CACHE_TABLE
-
-    def test_deployed_with_redis_still_db_backed_concept_graph(self):
-        from exact.cache_config import DB_CACHE_BACKEND
-        caches = build_caches(redis_url='rediss://h:6379', debug=False,
-                              environment='production')
-        assert caches['default']['BACKEND'] == REDIS_BACKEND     # default is Redis
-        assert caches['concept_graph']['BACKEND'] == DB_CACHE_BACKEND  # graph is DB
-
-    def test_local_concept_graph_is_locmem(self):
-        for local in (dict(debug=True, environment='dev'),
-                      dict(debug=False, environment='local')):
-            caches = build_caches(redis_url='redis://localhost:6379', **local)
-            assert caches['concept_graph']['BACKEND'] == LOCMEM_BACKEND
+    @pytest.mark.parametrize('kwargs', [
+        dict(redis_url='', debug=False, environment='staging'),
+        dict(redis_url='rediss://h:6379', debug=False, environment='production'),
+        dict(redis_url='redis://localhost:6379', debug=True, environment='dev'),
+    ])
+    def test_no_concept_graph_alias(self, kwargs):
+        assert 'concept_graph' not in build_caches(**kwargs)

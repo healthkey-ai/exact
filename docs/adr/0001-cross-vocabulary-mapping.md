@@ -25,6 +25,14 @@ release-pinned, fail-closed) — so EXACT no longer keeps a local copy of the OM
 `omop_*` projections, and the two curated mapping tables — the last of these is
 the documented exception below, not a promop vocabulary copy.)
 
+> **Update (#251).** The "API + cache" access mechanism described in this note
+> was itself an interim step: promop ADR 0001 is being revised (promop#337), and
+> EXACT now consumes a **release-pinned local vocabulary mirror** ([ADR
+> 0002](0002-vocab-mirror-consumer-consistency.md)). The `ConceptGraphClient` /
+> `CachedConceptGraphClient` named above are **retired** (#251), replaced by
+> `vocab_mirror` + local traversal. (Full reconciliation of this note is tracked
+> in #247, gated on the promop ADR revision.)
+
 **Reconciled language.** Wherever the body below says "compiled/vendored
 artifact into an EXACT table", "consumer-side target resolution", or "do not
 stand up a live network terminology service", read it as **historical**: the

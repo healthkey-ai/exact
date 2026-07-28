@@ -390,11 +390,9 @@ PROMOP_OAUTH_SCOPE = os.environ.get('PROMOP_OAUTH_SCOPE', 'patient/*.read')
 # Defaults to {PROMOP_BASE}/o/token/ when unset.
 PROMOP_OAUTH_TOKEN_URL = os.environ.get('PROMOP_OAUTH_TOKEN_URL', '')
 
-# promop concept-graph API (#234; promop ADR 0001 / promop#279) — API + cache
-# source of truth for vocabulary/concept-graph data. PROMOP_API_BASE falls back
-# to PROMOP_BASE (same promop host); the static token is the shared
-# PROMOP_SERVICE_TOKEN declared above. Empty default keeps ConceptGraphClient
-# unconfigured (callers get ConceptGraphUnavailable) so nothing silently no-ops.
+# promop API base (same promop host as PROMOP_BASE). Was the concept-graph
+# API+cache base (#234, retired in #251 for the local vocab mirror); still the
+# fallback base for the vocab-mirror sync client (PROMOP_VOCAB_BASE, above).
 PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
 
 # promop vocabulary MIRROR sync (#250; ADR 0002 / promop#334). EXACT keeps a
@@ -410,12 +408,6 @@ PROMOP_VOCAB_OAUTH_CLIENT_SECRET = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_SEC
 # snapshot views use ScopedTokenPermission).
 PROMOP_VOCAB_OAUTH_SCOPE = os.environ.get('PROMOP_VOCAB_OAUTH_SCOPE', 'system/*.read')
 PROMOP_VOCAB_OAUTH_TOKEN_URL = os.environ.get('PROMOP_VOCAB_OAUTH_TOKEN_URL', '')
-
-# Cache alias CachedConceptGraphClient uses (#234). Points at the shared DB-backed
-# 'concept_graph' cache in deployed envs (see exact/cache_config.py); the client falls
-# back to 'default' if the alias is absent (e.g. tests). Deployed envs must run
-# `python manage.py createcachetable --database=default` to create the cache table.
-CONCEPT_GRAPH_CACHE_ALIAS = os.environ.get('CONCEPT_GRAPH_CACHE_ALIAS', 'concept_graph')
 
 
 # ---------------------------------------------------------------------------
