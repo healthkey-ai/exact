@@ -61,6 +61,24 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['brief_title', 'official_title']
     pagination_class = TrialsPagination
 
+    def dispatch(self, request, *args, **kwargs):
+        # Pin one vocab-mirror release for the whole request (OMOP mode only), so
+        # every mirror read (title resolution) sees one generation and can never
+        # straddle an activation mid-request (#252 / ADR 0002). finalize_response
+        # runs inside this block, so the header sees the same context.
+        from vocab_mirror.release_context import MatchingReleaseContext
+        with MatchingReleaseContext() as ctx:
+            self._release_ctx = ctx
+            return super().dispatch(request, *args, **kwargs)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        ctx = getattr(self, '_release_ctx', None)
+        if ctx is not None and ctx.header:
+            from vocab_mirror.release_context import RELEASE_HEADER
+            response[RELEASE_HEADER] = ctx.header
+        return response
+
     def _resolve_patient_info(self) -> Optional['PatientInfo']:
         # Resolve at most once per request: get_queryset and
         # get_serializer_context both call this, and `search` can hit it

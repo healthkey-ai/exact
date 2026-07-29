@@ -109,6 +109,10 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_ALL_ORIGINS = (
     os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'false').lower() == 'true'
 )
+# Custom response headers a browser client is allowed to READ cross-origin.
+# X-Exact-OMOP-Release names the vocab-mirror release a response's OMOP titles
+# were resolved from (#252); without exposing it, cross-origin JS can't see it.
+CORS_EXPOSE_HEADERS = ['X-Exact-OMOP-Release']
 
 # ---------------------------------------------------------------------------
 # Security headers (deployed environments)
