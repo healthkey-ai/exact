@@ -51,6 +51,12 @@ def derive_component_and_type_values(therapy_identifiers, patient_component_ids=
     """
     if omop_therapy_enabled():
         if patient_component_ids is None:
+            # A regimen with no consumer-supplied components is the Phase-T gating
+            # case (#263): today it stays "unknown" (no local expansion). Record it
+            # for the measured flip decision — observation only, no behavior change.
+            if therapy_identifiers:
+                from trials.services.omop.phase_t_metrics import record_regimen_unresolved
+                record_regimen_unresolved(therapy_identifiers)
             return None, None
         component_values = [str(cid) for cid in patient_component_ids]
         from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
