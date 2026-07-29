@@ -178,15 +178,25 @@ class TestFailClosed:
 
 
 class TestSubsetNotActivated:
-    def test_subset_load_stages_but_does_not_activate(self):
-        # Loading only `concept` (a subset) must NOT go live — the other tables
-        # would be empty and traversal would silently return nothing.
+    def test_subset_load_stays_staging_not_ready(self):
+        # A subset load is an incomplete generation: it must stay STAGING (never
+        # READY), so it is neither activated nor wedged — a later full sync can
+        # restage it.
         outcome = sync_vocab_mirror(client=FakeVocabClient(), tables=['concept'])
-        assert outcome.status == 'synced'
-        assert MirrorRelease.objects.get(release_id=7).state == MirrorRelease.READY
-        assert active_release_id() is None  # not activated
+        assert outcome.status == 'partial'
+        assert MirrorRelease.objects.get(release_id=7).state == MirrorRelease.STAGING
+        assert active_release_id() is None
         assert MirrorConcept.objects.filter(release_id=7).exists()
         assert not MirrorConceptRelationship.objects.filter(release_id=7).exists()
+
+    def test_subset_then_full_sync_recovers_and_activates(self):
+        # The wedge regression: a subset (STAGING) followed by a full sync must
+        # restage + fully load + activate — never get stuck on an incomplete READY.
+        sync_vocab_mirror(client=FakeVocabClient(), tables=['concept'])
+        outcome = sync_vocab_mirror(client=FakeVocabClient())  # full
+        assert outcome.status == 'synced'
+        assert active_release_id() == 7
+        assert MirrorConceptRelationship.objects.filter(release_id=7).exists()
 
 
 class TestIdempotentRestage:

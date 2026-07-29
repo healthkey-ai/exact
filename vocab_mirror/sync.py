@@ -37,7 +37,7 @@ from datetime import date
 from django.db import connections
 from django.utils import timezone
 
-from vocab_mirror.activation import activate_release
+from vocab_mirror.activation import ReleaseMatchFailed, activate_release
 from vocab_mirror.models import (
     MirrorConcept,
     MirrorConceptAncestor,
@@ -66,7 +66,12 @@ DEFAULT_TABLES = ['vocabulary', 'concept', 'concept_relationship', 'concept_ance
 
 @dataclass
 class SyncOutcome:
-    status: str  # 'unchanged' | 'already_synced' | 'synced' | 'locked'
+    # 'unchanged' (304) | 'already_synced' (release already ACTIVE) |
+    # 'synced' (loaded + activated) | 'activated' (recovered a stranded READY) |
+    # 'partial' (subset load, left STAGING, not activated) |
+    # 'loaded_not_activated' (READY but the release-match gate rejected it) |
+    # 'locked' (another sync holds the advisory lock)
+    status: str
     release_id: int | None = None
     counts: dict = field(default_factory=dict)
 
@@ -198,7 +203,15 @@ def _do_sync(client, tables, activate):
             # Already loaded + verified. If a prior run's activation was stranded,
             # recover by (re)activating without re-downloading; else leave READY.
             if may_activate:
-                activate_release(release_id)
+                try:
+                    activate_release(release_id)
+                except ReleaseMatchFailed as exc:
+                    # e.g. a required table is legitimately empty in this release.
+                    # Don't crash-loop the job every run — log and exit non-fatal;
+                    # the old ACTIVE generation keeps serving (or readers 503).
+                    logger.error('vocab sync: READY release %s not activatable: %s',
+                                 release_id, exc)
+                    return SyncOutcome(status='loaded_not_activated', release_id=release_id)
                 logger.info('vocab sync: recovered + activated READY release %s', release_id)
                 return SyncOutcome(status='activated', release_id=release_id)
             return SyncOutcome(status='already_synced', release_id=release_id)
@@ -226,17 +239,29 @@ def _do_sync(client, tables, activate):
         logger.error('vocab sync: release %s FAILED, rolled back: %s', release_id, exc)
         raise
 
+    if not is_full_sync:
+        # A subset load is an incomplete generation — leave it STAGING (never
+        # READY), so a later full sync RESTAGES it rather than finding a READY
+        # release it can neither activate (the gate needs all tables) nor
+        # restage. READY means "complete + activatable".
+        logger.warning(
+            'vocab sync: subset load %s left release %s STAGING (partial; a full '
+            'sync will restage it)', tables, release_id)
+        return SyncOutcome(status='partial', release_id=release_id, counts=counts)
+
     rel.state = MirrorRelease.READY
     rel.loaded_at = timezone.now()
     rel.save(using=_DB, update_fields=['state', 'loaded_at', 'updated_at'])
     logger.info('vocab sync: release %s READY (%s)', release_id, counts)
 
     if may_activate:
-        activate_release(release_id)
-    elif activate and not is_full_sync:
-        logger.warning(
-            'vocab sync: subset load %s left release %s READY, not activated '
-            '(an incomplete generation must not go live)', tables, release_id)
+        try:
+            activate_release(release_id)
+        except ReleaseMatchFailed as exc:
+            logger.error('vocab sync: release %s loaded but not activatable: %s',
+                         release_id, exc)
+            return SyncOutcome(status='loaded_not_activated', release_id=release_id,
+                               counts=counts)
     return SyncOutcome(status='synced', release_id=release_id, counts=counts)
 
 
