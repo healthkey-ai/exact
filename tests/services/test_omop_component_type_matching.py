@@ -204,6 +204,10 @@ def _activate_mirror(release_id, concepts):
                                      domain_id='Drug', vocabulary_id=vocab,
                                      concept_class_id='Ingredient', concept_code=str(cid))
     MirrorRelease.objects.create(release_id=release_id, state=MirrorRelease.READY)
+    # Production activates via the sync flow, which rebuilds + stamps the component
+    # lookup for the release before activating (#262), so the cross-artifact gate is
+    # satisfied. Mirror that here.
+    sync_component_category_lookup(release_id=release_id)
     activate_release(release_id)
 
 

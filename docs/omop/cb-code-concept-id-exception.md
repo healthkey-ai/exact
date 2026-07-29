@@ -37,7 +37,8 @@ The exception is the **`cb_code ↔ concept_id` bridge**, which exists in two fo
     applied.
 - **Runtime-applied form:** the `omop_concept_id` columns written onto the vocab
   models **and** the flat `component concept_id → CB category codes` reverse-map
-  `trials.models.ComponentCategoryOmopLookup`, read on the match path by
+  `vocab_mirror.models.ComponentCategoryOmopLookup` (moved from `trials` in #262 so
+  it is writable on `default` and release-gated), read on the match path by
   `trials/services/omop/therapy_graph.py`. This runtime lookup — not the curated
   record — is what the retirement gate must observe as quiescent.
 - **Version (policy intent, not yet enforced):** the concept_ids are curated against
