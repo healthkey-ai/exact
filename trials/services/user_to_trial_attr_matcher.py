@@ -129,7 +129,11 @@ def _resolve_omop_concepts(concept_id_values, release_id=None):
     """
     if not concept_id_values:
         return []
-    from django.db import DatabaseError
+    # django.db.Error is the base of the whole DB-API exception tree, incl.
+    # InterfaceError ("connection already closed"), which is a sibling of
+    # DatabaseError — not a subclass — so it must be caught here too, else a
+    # dropped mirror connection would 500 instead of degrading to code-only.
+    from django.db import Error as DBError
 
     from vocab_mirror.models import MirrorConcept
     from vocab_mirror.release_context import active_pinned_release
@@ -144,7 +148,7 @@ def _resolve_omop_concepts(concept_id_values, release_id=None):
                 for c in MirrorConcept.objects.filter(release_id=rid, concept_id__in=cids)
                 .values('concept_id', 'concept_name', 'vocabulary_id')
             }
-        except DatabaseError:
+        except DBError:
             # Presentation must never break the response — a mirror DB hiccup
             # degrades to code-only titles, not a 500.
             logger.warning('vocab mirror title lookup failed; returning code-only',

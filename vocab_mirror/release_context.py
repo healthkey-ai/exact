@@ -55,7 +55,8 @@ class MatchingReleaseContext:
         self._token = None
 
     def __enter__(self):
-        self._token = _pinned_release.set(self.release_id if self.omop_active else None)
+        # release_id is already None whenever omop is off (see __init__).
+        self._token = _pinned_release.set(self.release_id)
         return self
 
     def __exit__(self, *exc):
