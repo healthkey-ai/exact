@@ -1,8 +1,9 @@
 """Local concept-graph traversal tests (#251 / ADR 0002).
 
-Verifies release-pinned traversal over the mirror: fail-closed with no active
-release, relationship BFS (levels, filter, cycle guard, direction), the
-concept_ancestor closure, and that a traversal never crosses release generations.
+Traversal reads only the ACTIVE generation, pinned once per instance. Covers:
+fail-closed (no active release; a non-active release id refused), relationship
+BFS (levels, filter, cycle guard, direction, diamond dedup), node filtering, the
+concept_ancestor closure, and single-active-generation isolation.
 """
 import pytest
 
@@ -32,88 +33,100 @@ def _anc(release_id, anc, desc):
         min_levels_of_separation=1, max_levels_of_separation=1)
 
 
-def _seed_full_and_activate(release_id=1):
-    """Populate all four tables for a release and activate it (gate needs all)."""
-    MirrorVocabulary.objects.create(release_id=release_id, vocabulary_id='HemOnc',
-                                    vocabulary_name='HemOnc', vocabulary_version='2026',
-                                    vocabulary_concept_id=1)
-    MirrorConcept.objects.create(release_id=release_id, concept_id=10, concept_name='VRd',
-                                 domain_id='Drug', vocabulary_id='HemOnc',
-                                 concept_class_id='Regimen', concept_code='r')
-    _rel(release_id, 10, 100)
-    _anc(release_id, 10, 100)
+def _activate(release_id=1):
+    """Seed the gate minimum in all four tables (isolated concept_ids that don't
+    collide with test graph data) + activate the release, so ACTIVE-only
+    traversal can run against it. Tests then add their own edges to it."""
+    MirrorVocabulary.objects.create(release_id=release_id, vocabulary_id='V',
+                                    vocabulary_name='V', vocabulary_concept_id=1)
+    MirrorConcept.objects.create(release_id=release_id, concept_id=900001, concept_name='g',
+                                 domain_id='D', vocabulary_id='V', concept_class_id='C',
+                                 concept_code='g')
+    _rel(release_id, 900001, 900002, relationship_id='seed')
+    _anc(release_id, 900001, 900002)
     MirrorRelease.objects.create(release_id=release_id, state=MirrorRelease.READY)
     activate_release(release_id)
 
 
 class TestFailClosed:
     def test_no_active_release_raises(self):
+        _rel(1, 10, 100)  # data exists, but no release is ACTIVE
         with pytest.raises(ConceptGraphUnavailable):
             LocalConceptGraph().descendants([10], relationship_ids=[REL])
 
+    def test_pinning_a_non_active_release_is_refused(self):
+        _rel(1, 10, 100)  # release 1 has rows but was never activated
+        with pytest.raises(ConceptGraphUnavailable):
+            LocalConceptGraph().descendants([10], relationship_ids=[REL], release_id=1)
+
     def test_empty_sources_is_empty_without_a_release(self):
-        # No sources -> no traversal -> no release needed.
-        result = LocalConceptGraph().descendants([], relationship_ids=[REL])
-        assert result.groups == {}
+        assert LocalConceptGraph().descendants([], relationship_ids=[REL]).groups == {}
+
+    def test_closure_fails_closed_with_no_active_release(self):
+        with pytest.raises(ConceptGraphUnavailable):
+            LocalConceptGraph().closure_descendants(10)
 
 
 class TestRelationshipBFS:
     def test_descendants_one_level(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 10, 101)
-        result = LocalConceptGraph().descendants([10], relationship_ids=[REL], release_id=1)
+        result = LocalConceptGraph().descendants([10], relationship_ids=[REL])
         assert result.groups == {10: [100, 101]}
         assert result.truncated == []
 
     def test_descendants_multi_level_bfs(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 100, 1000)
-        assert LocalConceptGraph().descendants([10], relationship_ids=[REL],
-                                               release_id=1).groups == {10: [100, 1000]}
+        assert LocalConceptGraph().descendants([10], relationship_ids=[REL]).groups == {10: [100, 1000]}
 
     def test_max_levels_bounds_the_walk(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 100, 1000)
-        assert LocalConceptGraph().descendants([10], relationship_ids=[REL], max_levels=1,
-                                               release_id=1).groups == {10: [100]}
+        assert LocalConceptGraph().descendants([10], relationship_ids=[REL],
+                                               max_levels=1).groups == {10: [100]}
 
     def test_ancestors_walk_the_reverse_edge(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 20, 100)
-        assert LocalConceptGraph().ancestors([100], relationship_ids=[REL],
-                                             release_id=1).groups == {100: [10, 20]}
+        assert LocalConceptGraph().ancestors([100], relationship_ids=[REL]).groups == {100: [10, 20]}
 
     def test_relationship_filter(self):
+        _activate(1)
         _rel(1, 10, 100, REL)
         _rel(1, 10, 200, 'Other rel')
-        assert LocalConceptGraph().descendants([10], relationship_ids=[REL],
-                                               release_id=1).groups == {10: [100]}
-        # no filter -> all relationships
-        assert LocalConceptGraph().descendants([10], release_id=1).groups == {10: [100, 200]}
+        assert LocalConceptGraph().descendants([10], relationship_ids=[REL]).groups == {10: [100]}
+        assert LocalConceptGraph().descendants([10]).groups == {10: [100, 200]}  # no filter
 
     def test_cycle_guard_terminates_and_excludes_source(self):
+        _activate(1)
         _rel(1, 10, 20)
         _rel(1, 20, 10)  # cycle back to the source
-        assert LocalConceptGraph().descendants([10], relationship_ids=[REL],
-                                               release_id=1).groups == {10: [20]}
+        assert LocalConceptGraph().descendants([10], relationship_ids=[REL]).groups == {10: [20]}
 
     def test_diamond_is_deduplicated(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 10, 200)
         _rel(1, 100, 300)
-        _rel(1, 200, 300)  # diamond: both paths reach 300
-        assert LocalConceptGraph().descendants([10], relationship_ids=[REL],
-                                               release_id=1).groups == {10: [100, 200, 300]}
+        _rel(1, 200, 300)  # both paths reach 300
+        assert LocalConceptGraph().descendants([10], relationship_ids=[REL]).groups == {10: [100, 200, 300]}
 
     def test_multi_source_gives_per_source_groups(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 20, 200)
-        assert LocalConceptGraph().descendants([10, 20], relationship_ids=[REL],
-                                               release_id=1).groups == {10: [100], 20: [200]}
+        assert LocalConceptGraph().descendants([10, 20], relationship_ids=[REL]).groups == {
+            10: [100], 20: [200]}
 
 
 class TestNodeFilter:
     def test_vocabulary_and_class_filter(self):
+        _activate(1)
         _rel(1, 10, 100)
         _rel(1, 10, 200)
         MirrorConcept.objects.create(release_id=1, concept_id=100, concept_name='a',
@@ -122,44 +135,35 @@ class TestNodeFilter:
         MirrorConcept.objects.create(release_id=1, concept_id=200, concept_name='b',
                                      domain_id='Drug', vocabulary_id='HemOnc',
                                      concept_class_id='Regimen', concept_code='d')
-        g = LocalConceptGraph()
-        assert g.descendants([10], vocabulary_ids=['RxNorm'], release_id=1).groups == {10: [100]}
-        assert g.descendants([10], concept_class_ids=['Regimen'], release_id=1).groups == {10: [200]}
+        assert LocalConceptGraph().descendants([10], vocabulary_ids=['RxNorm']).groups == {10: [100]}
+        assert LocalConceptGraph().descendants([10], concept_class_ids=['Regimen']).groups == {10: [200]}
         # a filter that matches nothing -> empty group (not unfiltered)
-        assert g.descendants([10], vocabulary_ids=['SNOMED'], release_id=1).groups == {10: []}
+        assert LocalConceptGraph().descendants([10], vocabulary_ids=['SNOMED']).groups == {10: []}
 
 
-class TestPinPrecedence:
-    def test_explicit_release_overrides_instance_release(self):
+class TestActiveGenerationIsolation:
+    def test_traversal_only_sees_the_active_generation(self):
+        _activate(1)
         _rel(1, 10, 100)
-        _rel(2, 10, 999)
-        g = LocalConceptGraph(release_id=1)
-        assert g.descendants([10], release_id=1).groups == {10: [100]}
-        assert g.descendants([10], release_id=2).groups == {10: [999]}  # explicit wins
-
-    def test_closure_fails_closed_with_no_active_release(self):
+        _rel(2, 10, 999)  # a different, non-active release
+        assert LocalConceptGraph().descendants([10]).groups == {10: [100]}
         with pytest.raises(ConceptGraphUnavailable):
-            LocalConceptGraph().closure_descendants(10)
+            LocalConceptGraph().descendants([10], release_id=2)  # non-active refused
 
-
-class TestReleasePinning:
-    def test_traversal_does_not_cross_releases(self):
+    def test_pinned_instance_rejects_a_conflicting_per_call_release(self):
+        _activate(1)
         _rel(1, 10, 100)
-        _rel(2, 10, 999)
-        assert LocalConceptGraph().descendants([10], release_id=1).groups == {10: [100]}
-        assert LocalConceptGraph().descendants([10], release_id=2).groups == {10: [999]}
-
-    def test_resolves_active_release_when_unpinned(self):
-        _seed_full_and_activate(1)
-        _rel(1, 10, 101)  # extra edge in the active release
-        # no release_id -> uses active release 1
-        assert LocalConceptGraph().descendants([10], relationship_ids=[REL]).groups == {10: [100, 101]}
+        g = LocalConceptGraph()  # pins the active release (1) on first use
+        assert g.descendants([10]).groups == {10: [100]}
+        with pytest.raises(ValueError):
+            g.descendants([10], release_id=2)  # conflicts with the pinned release
 
 
 class TestClosure:
     def test_closure_descendants_and_ancestors(self):
+        _activate(1)
         _anc(1, 10, 100)
         _anc(1, 10, 1000)
         g = LocalConceptGraph()
-        assert g.closure_descendants(10, release_id=1) == {100, 1000}
-        assert g.closure_ancestors(100, release_id=1) == {10}
+        assert g.closure_descendants(10) == {100, 1000}
+        assert LocalConceptGraph().closure_ancestors(100) == {10}

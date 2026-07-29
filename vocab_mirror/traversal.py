@@ -27,6 +27,7 @@ from vocab_mirror.models import (
     MirrorConcept,
     MirrorConceptAncestor,
     MirrorConceptRelationship,
+    MirrorRelease,
     MirrorVocabulary,
 )
 
@@ -72,16 +73,31 @@ class LocalConceptGraph:
     """Traverse the mirror's concept graph, pinned to one release."""
 
     def __init__(self, release_id=None):
-        # None -> resolve the active release per call (so a long-lived instance
-        # tracks activations); pass an explicit id to pin a whole request.
         self._release_id = release_id
+        # Pin resolved lazily on first use and cached for the instance's lifetime,
+        # so a multi-call request can never straddle an activation (all traversals
+        # on one instance see one generation). #252 constructs one per request.
+        self._pinned = None
 
-    def _pin(self, release_id):
-        rid = release_id if release_id is not None else (
-            self._release_id if self._release_id is not None else active_release_id())
-        if rid is None:
-            raise ConceptGraphUnavailable('no active vocab mirror release; refusing to traverse')
-        return rid
+    def _pin(self, release_id=None):
+        if self._pinned is None:
+            rid = (release_id if release_id is not None
+                   else self._release_id if self._release_id is not None
+                   else active_release_id())
+            if rid is None:
+                raise ConceptGraphUnavailable(
+                    'no active vocab mirror release; refusing to traverse')
+            # Uphold the reader invariant: only ever traverse the ACTIVE
+            # generation — never a STAGING/partial (fail-open) or SUPERSEDED one.
+            if not MirrorRelease.objects.using(_DB).filter(
+                    release_id=rid, state=MirrorRelease.ACTIVE).exists():
+                raise ConceptGraphUnavailable(
+                    f'release {rid} is not the ACTIVE generation; refusing to traverse')
+            self._pinned = rid
+        elif release_id is not None and release_id != self._pinned:
+            raise ValueError(
+                f'release_id {release_id} conflicts with the pinned release {self._pinned}')
+        return self._pinned
 
     def _versions(self, release_id):
         return frozenset(
