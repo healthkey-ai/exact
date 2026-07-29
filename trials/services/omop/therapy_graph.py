@@ -37,7 +37,8 @@ def resolve_regimens(therapy_identifiers):
     return Therapy.objects.filter(code__in=therapy_identifiers)
 
 
-def derive_component_and_type_values(therapy_identifiers, patient_component_ids=None):
+def derive_component_and_type_values(therapy_identifiers, patient_component_ids=None,
+                                     measure=False):
     """Return ``(component_values, type_values)`` for the patient's therapies.
 
     OMOP mode (Phase P, #234): components are the consumer-supplied pre-expanded
@@ -48,9 +49,18 @@ def derive_component_and_type_values(therapy_identifiers, patient_component_ids=
     only by the legacy path.
 
     Legacy mode (flag OFF): the internal CB-graph expansion — byte-identical to CB.
+
+    ``measure=True`` records the Phase-T gating metric (#263) when this call is the
+    per-search derivation (the search queryset passes it) — a regimen present under
+    OMOP with no consumer-supplied components. The matcher leaves it ``False`` so the
+    signal is emitted once per search, not once per trial scored. Observation only —
+    the return value is identical either way.
     """
     if omop_therapy_enabled():
         if patient_component_ids is None:
+            if measure and therapy_identifiers:
+                from trials.services.omop.phase_t_metrics import record_regimen_unresolved
+                record_regimen_unresolved(therapy_identifiers)
             return None, None
         component_values = [str(cid) for cid in patient_component_ids]
         from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
