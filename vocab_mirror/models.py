@@ -51,8 +51,11 @@ class MirrorRelease(models.Model):
     writer of ``state`` — direct ORM writes bypass the state machine.
 
     The manifest fields (``row_counts`` / ``checksums`` / ``manifest``) are the
-    promop release manifest (promop#334) recorded for verification and audit; the
-    loader (#250) fills them and moves STAGING → READY.
+    promop release manifest (promop#334); the loader (#250) fills them and moves
+    STAGING → READY. Completeness is enforced at load by the ``__done`` sentinel
+    + ``row_counts`` cross-check; the ``checksums`` are recorded for provenance —
+    byte-integrity verification against them is a tracked follow-up (#256), not
+    yet enforced.
     """
 
     STAGING = 'staging'
