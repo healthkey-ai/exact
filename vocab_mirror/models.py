@@ -1,0 +1,140 @@
+"""Local mirror of promop's OMOP vocabulary tables (ADR 0002; epic #246, #248).
+
+EXACT keeps a **release-pinned local mirror** of the OMOP vocabulary tables it
+needs and traverses the concept graph locally, instead of querying promop's
+concept-graph API per request (the API+cache approach of #234 is retired in
+#251). Rows are synced from promop's snapshot protocol (promop#334) — see #250.
+
+Design (see docs/adr/0002-vocab-mirror-consumer-consistency.md):
+
+- **Generation-tagged, not mutated in place.** Every row carries a
+  ``release_id`` (the promop VocabularyRelease id). A new release loads into new
+  rows; the active generation is chosen by a separate pointer (the release
+  contract + atomic activation land in #249). Readers pin one ``release_id`` for
+  a whole request, so a mid-sync swap never yields a torn or mixed-release read.
+- **Flat copies, no ForeignKeys.** These tables are bulk-loaded from a snapshot
+  (NDJSON with keys = OMOP column names); cross-row/cross-release referential
+  integrity is neither loadable mid-stream nor wanted. Traversal is by plain
+  concept_id columns, filtered by the pinned release.
+- **This app is NOT the ``trials`` app** — the DB router sends ``trials`` models
+  to the optional read-only ``trials`` DB (migrations disallowed by default),
+  whereas a mirror we own must be writable. A non-``trials`` app routes to
+  ``default`` (see ``exact/db_router.py``), which is where the mirror belongs.
+
+Indexes are ``release_id``-leading and match the traversal access patterns
+(descendants/ancestors of a source concept, filtered by relationship) so a
+pinned-release query never scans across generations. List-partitioning by
+``release_id`` is a deferred (v2) optimization — see the ADR.
+"""
+from django.db import models
+
+
+class MirrorVocabulary(models.Model):
+    """One OMOP ``vocabulary`` row, tagged to a mirror release generation."""
+
+    # No standalone index on release_id — the unique (release_id, vocabulary_id)
+    # constraint's B-tree already serves release_id-prefix lookups.
+    release_id = models.BigIntegerField()
+    vocabulary_id = models.CharField(max_length=20)
+    vocabulary_name = models.CharField(max_length=255)
+    vocabulary_reference = models.CharField(max_length=255, null=True, blank=True)
+    vocabulary_version = models.CharField(max_length=255, null=True, blank=True)
+    vocabulary_concept_id = models.IntegerField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['release_id', 'vocabulary_id'], name='uq_mvocab_rel_vocab',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.vocabulary_id}@{self.release_id}'
+
+
+class MirrorConcept(models.Model):
+    """One OMOP ``concept`` row, tagged to a mirror release generation.
+
+    Uniquely keyed by ``(release_id, concept_id)`` so several generations can
+    coexist during a swap + retention window. Powers title resolution (the
+    ``OmopConcept`` replacement, #251) and is the node table for traversal.
+    """
+
+    release_id = models.BigIntegerField()
+    concept_id = models.IntegerField()
+    concept_name = models.CharField(max_length=255)
+    domain_id = models.CharField(max_length=20)
+    vocabulary_id = models.CharField(max_length=20)
+    concept_class_id = models.CharField(max_length=20)
+    standard_concept = models.CharField(max_length=1, null=True, blank=True)
+    concept_code = models.CharField(max_length=50)
+    valid_start_date = models.DateField(null=True, blank=True)
+    valid_end_date = models.DateField(null=True, blank=True)
+    invalid_reason = models.CharField(max_length=1, null=True, blank=True)
+    # promop's snapshot exposes `source` (HealthKey vs Athena-loaded); kept for
+    # provenance and the concept-table `?source=` filter (promop#334).
+    source = models.CharField(max_length=50, null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['release_id', 'concept_id'], name='uq_mconcept_rel_cid',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['release_id', 'vocabulary_id'], name='ix_mconcept_rel_vocab'),
+        ]
+
+    def __str__(self):
+        return f'{self.concept_id}:{self.concept_name}@{self.release_id}'
+
+
+class MirrorConceptRelationship(models.Model):
+    """One OMOP ``concept_relationship`` row, tagged to a release generation.
+
+    The forward index (``release_id, concept_id_1, relationship_id``) serves
+    downstream traversal (e.g. a regimen concept to its component concepts via a
+    given relationship); the reverse index serves the upstream direction. No
+    uniqueness constraint on ~18M rows — the snapshot is authoritative and its
+    completeness is verified at load (row_counts + checksums, promop#334 / #250).
+    """
+
+    release_id = models.BigIntegerField()
+    concept_id_1 = models.IntegerField()
+    concept_id_2 = models.IntegerField()
+    relationship_id = models.CharField(max_length=20)
+    valid_start_date = models.DateField(null=True, blank=True)
+    valid_end_date = models.DateField(null=True, blank=True)
+    invalid_reason = models.CharField(max_length=1, null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['release_id', 'concept_id_1', 'relationship_id'], name='ix_mcr_rel_c1_rid'),
+            models.Index(fields=['release_id', 'concept_id_2', 'relationship_id'], name='ix_mcr_rel_c2_rid'),
+        ]
+
+    def __str__(self):
+        return f'{self.concept_id_1}-[{self.relationship_id}]->{self.concept_id_2}@{self.release_id}'
+
+
+class MirrorConceptAncestor(models.Model):
+    """One OMOP ``concept_ancestor`` row, tagged to a release generation.
+
+    The ancestor index answers "descendants of X" and the descendant index
+    answers "ancestors of X", both scoped to one release.
+    """
+
+    release_id = models.BigIntegerField()
+    ancestor_concept_id = models.IntegerField()
+    descendant_concept_id = models.IntegerField()
+    min_levels_of_separation = models.IntegerField()
+    max_levels_of_separation = models.IntegerField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['release_id', 'ancestor_concept_id'], name='ix_mca_rel_anc'),
+            models.Index(fields=['release_id', 'descendant_concept_id'], name='ix_mca_rel_desc'),
+        ]
+
+    def __str__(self):
+        return f'{self.ancestor_concept_id}=>{self.descendant_concept_id}@{self.release_id}'
