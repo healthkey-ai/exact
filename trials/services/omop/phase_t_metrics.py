@@ -10,15 +10,14 @@ type criteria as *unknown* (it does NOT expand the regimen locally). If that
 fail-closed 503s; if it is common, it justifies the flip.
 
 This module is **pure observation** — no behavior change, no eligibility impact. It
-emits a structured, greppable log event (aggregated downstream, where per-request
-context is available) plus a process-local counter for tests/introspection.
+emits a structured, greppable log event plus a process-local counter for tests.
 
-Granularity note: the signal fires at the shared derivation chokepoint
-(:func:`~trials.services.omop.therapy_graph.derive_component_and_type_values`), so it
-counts **per derivation call** — once per search (queryset build), once per trial
-scored (matcher), once per detail/backfill row. It is a rate proxy, not a distinct
-patient count; dedup by request id in the log aggregator if a per-request rate is
-needed.
+Granularity: the signal is recorded **once per search** — the search queryset passes
+``measure=True`` to the shared derivation, while the per-trial matcher leaves it off —
+so one regimen-unresolved patient search emits one log line, not one per trial scored
+(which would flood logs precisely when the metric matters most). It counts identifiers
+**as they arrive** (not resolvable-only), a slight over-count that is fine for a
+"did a regimen arrive without components" proxy.
 """
 import logging
 

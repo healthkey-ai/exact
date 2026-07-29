@@ -43,37 +43,49 @@ def test_record_tolerates_none():
     assert regimen_unresolved_count() == 1
 
 
-# ── fired via the derivation chokepoint ──────────────────────────────────────
+# ── fired via the derivation chokepoint (only when measure=True) ─────────────
 
 @override_settings(EXACT_OMOP_THERAPY=True)
-def test_counts_when_regimen_present_and_no_components():
-    result = derive_component_and_type_values([str(REGIMEN_CID)], None)
+def test_counts_when_regimen_present_and_no_components(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger='omop.phase_t'):
+        result = derive_component_and_type_values([str(REGIMEN_CID)], None, measure=True)
     assert result == (None, None)          # behavior unchanged
     assert regimen_unresolved_count() == 1
+    # the durable signal is the log event — assert it actually fired
+    assert any('regimen_unresolved' in r.message for r in caplog.records)
+
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_no_count_when_measure_off_matcher_path():
+    # The matcher path leaves measure=False → per-trial calls never record, so the
+    # signal stays once-per-search (no log flood).
+    derive_component_and_type_values([str(REGIMEN_CID)], None)  # measure defaults False
+    assert regimen_unresolved_count() == 0
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_no_count_when_components_supplied():
-    derive_component_and_type_values([str(REGIMEN_CID)], [str(COMP_CID)])
+    derive_component_and_type_values([str(REGIMEN_CID)], [str(COMP_CID)], measure=True)
     assert regimen_unresolved_count() == 0
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_no_count_when_components_known_empty():
     # [] is a known-empty component set (the consumer answered), not unresolved.
-    derive_component_and_type_values([str(REGIMEN_CID)], [])
+    derive_component_and_type_values([str(REGIMEN_CID)], [], measure=True)
     assert regimen_unresolved_count() == 0
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_no_count_when_no_regimen():
     # Nothing to resolve → not a Phase-T-relevant miss.
-    derive_component_and_type_values([], None)
+    derive_component_and_type_values([], None, measure=True)
     assert regimen_unresolved_count() == 0
 
 
 @override_settings(EXACT_OMOP_THERAPY=False)
 def test_no_count_when_flag_off():
     # Legacy path never involves consumer components; not a Phase-T signal.
-    derive_component_and_type_values([str(REGIMEN_CID)], None)
+    derive_component_and_type_values([str(REGIMEN_CID)], None, measure=True)
     assert regimen_unresolved_count() == 0

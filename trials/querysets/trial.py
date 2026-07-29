@@ -1105,7 +1105,10 @@ class TrialQuerySet(models.QuerySet):
         # (patient_component_ids); types are CB category codes via the flat lookup.
         # Legacy: derived from the regimen via the CB graph. See omop/therapy_graph.
         from trials.services.omop.therapy_graph import derive_component_and_type_values
-        component_codes, therapy_types = derive_component_and_type_values(therapy_codes, patient_component_ids)
+        # measure=True: this is the once-per-search derivation, so the Phase-T
+        # gating metric (#263) is recorded here, not per-trial in the matcher.
+        component_codes, therapy_types = derive_component_and_type_values(
+            therapy_codes, patient_component_ids, measure=True)
 
         if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
