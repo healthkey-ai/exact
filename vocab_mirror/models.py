@@ -204,3 +204,57 @@ class MirrorConceptAncestor(models.Model):
 
     def __str__(self):
         return f'{self.ancestor_concept_id}=>{self.descendant_concept_id}@{self.release_id}'
+
+
+class ComponentCategoryOmopLookup(models.Model):
+    """Flat ``component concept_id → CB category codes`` lookup (#4503; moved #262).
+
+    CB generates this from its internal TherapyComponent → TherapyComponentCategory
+    M2M graph; EXACT reads it to resolve drug-class "types" in OMOP mode WITHOUT the
+    full internal graph. One row per component ``omop_concept_id`` (RxNorm
+    ingredient); ``category_codes`` is the sorted, de-duplicated union of CB category
+    codes. Populated by ``rebuild_component_category_omop_lookup`` /
+    ``sync_component_category_lookup``.
+
+    **Why it lives here, not in ``trials`` (#262 / ADR 0002 B′).** It is a
+    release-gated derived artifact now, so it must be writable on ``default`` — the
+    ``trials`` app routes to the (optional) read-only ``trials`` DB. Its *content* is
+    CB-authored and promop-release-**independent** (EXACT ADR 0001 decision A —
+    component→type is deliberately NOT OMOP-mapped); the only tie to a mirror release
+    is that its keys are concept_ids that must exist in the pinned release.
+    Consistency is therefore enforced at activation by the release-match gate
+    (``activation._component_lookup_matches_release``) against a single, atomically
+    published payload — **not** by per-row release tagging (which, for a
+    release-independent artifact, would be fake generations).
+    """
+
+    component_concept_id = models.BigIntegerField(primary_key=True)
+    category_codes = models.JSONField(blank=True, null=False, default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.component_concept_id} -> {self.category_codes}'
+
+
+class ComponentLookupStamp(models.Model):
+    """Singleton provenance stamp for :class:`ComponentCategoryOmopLookup` (#262 / B′).
+
+    Records which mirror ``release_id`` the current lookup payload was last rebuilt
+    and validated against. Written **atomically in the same transaction** as the
+    payload rebuild (``sync_component_category_lookup``), so a reader never sees a
+    payload/stamp mismatch. Read by the activation release-match gate, which refuses
+    to activate a release R unless the lookup is stamped for R (proof the publish
+    pipeline ran for R) and every lookup concept_id exists in R's mirror concepts
+    (referential coverage).
+
+    Enforced-singleton: ``singleton`` is a constant ``True`` with a unique index, so
+    at most one row ever exists (upserted, never duplicated).
+    """
+
+    singleton = models.BooleanField(default=True, unique=True)
+    release_id = models.BigIntegerField()
+    built_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'component-lookup stamped @ release {self.release_id}'

@@ -5,7 +5,7 @@ Two responsibilities:
 1. **Consumer API** — ``component_concept_ids_to_type_codes(concept_ids)``: maps the
    patient's component concept_ids (RxNorm ingredients) to CB category codes (CB
    hierarchy, not OMOP — EXACT ADR 0001 decision A / #4502).  Reads from the flat
-   :class:`~trials.models.ComponentCategoryOmopLookup` table; no graph traversal.
+   :class:`~vocab_mirror.models.ComponentCategoryOmopLookup` table; no graph traversal.
 
 2. **Maintenance** — ``sync_component_category_lookup()``: reconciles the flat table
    from the local M2M graph (TherapyComponent → TherapyComponentCategory).  Run after
@@ -16,7 +16,9 @@ import functools
 
 from django.db import transaction
 
-from trials.models import ComponentCategoryOmopLookup, TherapyComponentCategoryConnection
+from trials.models import TherapyComponentCategoryConnection
+from vocab_mirror.activation import active_release_id
+from vocab_mirror.models import ComponentCategoryOmopLookup, ComponentLookupStamp
 
 
 # ── consumer API ────────────────────────────────────────────────────────────
@@ -78,14 +80,25 @@ def build_component_category_lookup():
     return {cid: sorted(codes) for cid, codes in lookup.items()}
 
 
-def sync_component_category_lookup(dry_run=False):
-    """Reconcile :class:`ComponentCategoryOmopLookup` to the computed lookup.
+def sync_component_category_lookup(release_id=None, dry_run=False):
+    """Reconcile :class:`ComponentCategoryOmopLookup` and stamp it to a release.
 
     Full-table reconcile (the component vocab is small): upsert new/changed rows,
-    delete stale ones. Returns ``{'added','updated','removed','unchanged','total'}``.
+    delete stale ones, and — in the **same transaction** — write the
+    :class:`ComponentLookupStamp` recording the mirror ``release_id`` this payload
+    was validated against, so a reader never sees a payload/stamp mismatch (#262 /
+    ADR 0002 B′). ``release_id`` defaults to the currently active mirror release
+    (``active_release_id()``); pass it explicitly from the sync flow when
+    publishing for a not-yet-active generation. If neither yields a release (no
+    active generation, none passed) the payload is still reconciled but no stamp is
+    written — there is no release to bind it to yet.
+
+    Returns ``{'added','updated','removed','unchanged','total','stamped_release'}``.
     With ``dry_run=True`` nothing is written and counts reflect drift.
     """
-    with transaction.atomic():
+    if release_id is None:
+        release_id = active_release_id()
+    with transaction.atomic(using='default'):
         computed = build_component_category_lookup()
         existing = {
             row.component_concept_id: row.category_codes
@@ -113,6 +126,12 @@ def sync_component_category_lookup(dry_run=False):
         if stale and not dry_run:
             ComponentCategoryOmopLookup.objects.filter(component_concept_id__in=stale).delete()
 
+        # Stamp the freshly published payload to the release, in the same txn.
+        if not dry_run and release_id is not None:
+            ComponentLookupStamp.objects.update_or_create(
+                singleton=True, defaults={'release_id': release_id},
+            )
+
     if not dry_run:
         # Flush the in-process LRU cache so subsequent calls see the updated table.
         clear_lookup_cache()
@@ -123,4 +142,5 @@ def sync_component_category_lookup(dry_run=False):
         'removed': len(stale),
         'unchanged': unchanged,
         'total': len(computed),
+        'stamped_release': release_id if not dry_run else None,
     }

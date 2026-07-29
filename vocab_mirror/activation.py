@@ -16,10 +16,12 @@ Guarantees (ADR 0002):
   back to a live API or a different release.
 - **Release-match gate** — a release is activated only when it is READY and
   every registered cross-artifact check agrees on the release id (see
-  :func:`register_release_match_check`). v1 ships the mirror-side check (the
-  generation actually has data); the crosswalk / component-lookup / trial
-  projection checks are registered when those artifacts become release-tagged
-  (deferred, Phase-T — see the ADR).
+  :func:`register_release_match_check`). Ships the mirror-side check (the
+  generation actually has data) and the component-category lookup cross-artifact
+  check (#262: the lookup is stamped for this release and every lookup concept_id
+  exists in it). The trial ``omop_*`` projection check is still deferred — it has
+  no release provenance today and, living on the read-only ``trials`` DB, cannot
+  be made atomic with this ``default``-DB gate (tracked separately, Phase-T).
 """
 import logging
 
@@ -27,6 +29,8 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from vocab_mirror.models import (
+    ComponentCategoryOmopLookup,
+    ComponentLookupStamp,
     MirrorConcept,
     MirrorConceptAncestor,
     MirrorConceptRelationship,
@@ -96,6 +100,51 @@ def _mirror_generation_populated(release_id):
             raise ReleaseMatchFailed(
                 f'mirror release {release_id} has no rows in {model.__name__}; '
                 'refusing to activate an incomplete generation')
+
+
+@register_release_match_check
+def _component_lookup_matches_release(release_id):
+    """Cross-artifact gate for the component→category lookup (#262 / ADR 0002 B′).
+
+    The lookup content is CB-authored and release-independent, but its keys are
+    concept_ids that must stay valid against the vocabulary. Refuse to activate a
+    release R unless BOTH hold:
+
+    - **Provenance** — the lookup is stamped for R (proof its payload was rebuilt +
+      validated for this release, not left stale from an older one). A missing
+      stamp is treated as "matching" *only* when the lookup is empty (a fresh
+      deploy that has not populated the lookup yet); a populated-but-unstamped
+      lookup fails closed.
+    - **Referential coverage** — every ``component_concept_id`` in the lookup
+      exists as a concept in R's mirror. A component that vanished from R would
+      silently stop resolving its type, so we block activation instead.
+    """
+    lookup_ids = set(
+        ComponentCategoryOmopLookup.objects.using(_ACTIVATION_DB)
+        .values_list('component_concept_id', flat=True))
+    if not lookup_ids:
+        # Nothing to validate/pair yet (e.g. lookup not populated on a fresh
+        # deploy). Don't block the first activation on an empty derived artifact.
+        return
+
+    stamp = (ComponentLookupStamp.objects.using(_ACTIVATION_DB)
+             .values_list('release_id', flat=True).first())
+    if stamp != release_id:
+        raise ReleaseMatchFailed(
+            f'component-category lookup is stamped for release {stamp}, not {release_id}; '
+            'rebuild the lookup for this release before activating')
+
+    present = set(
+        MirrorConcept.objects.using(_ACTIVATION_DB)
+        .filter(release_id=release_id, concept_id__in=lookup_ids)
+        .values_list('concept_id', flat=True))
+    missing = lookup_ids - present
+    if missing:
+        sample = sorted(missing)[:10]
+        raise ReleaseMatchFailed(
+            f'component-category lookup references {len(missing)} concept_id(s) absent '
+            f'from release {release_id} mirror concepts (e.g. {sample}); '
+            'refusing to activate an inconsistent generation')
 
 
 def _run_release_match_gate(release_id):

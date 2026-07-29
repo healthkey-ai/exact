@@ -316,23 +316,6 @@ class TherapyOmopMapping(TimeStampMixin):
         return f"{self.level}:{self.cb_code} -> {self.omop_concept_id or '(none)'} [{self.match}]"
 
 
-class ComponentCategoryOmopLookup(TimeStampMixin):
-    """Flat ``component concept_id → CB category codes`` lookup (#4503).
-
-    CB generates this table from its internal TherapyComponent → TherapyComponentCategory
-    M2M graph; EXACT reads it to resolve drug-class "types" in OMOP mode WITHOUT
-    needing the full internal graph. One row per component ``omop_concept_id``
-    (RxNorm ingredient); ``category_codes`` is the sorted, de-duplicated union of
-    the CB category codes the component belongs to. Ported from CB; populated by
-    ``rebuild_component_category_omop_lookup``.
-    """
-    component_concept_id = models.BigIntegerField(primary_key=True)
-    category_codes = models.JSONField(blank=True, null=False, default=list)
-
-    def __str__(self):
-        return f"{self.component_concept_id} -> {self.category_codes}"
-
-
 class TherapyDisease(TimeStampMixin):
     therapy = models.ForeignKey(Therapy, models.CASCADE, blank=True, null=True)
     disease = models.ForeignKey(Disease, models.CASCADE, blank=True, null=True)

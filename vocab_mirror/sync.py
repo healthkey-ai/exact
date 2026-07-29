@@ -124,6 +124,24 @@ def _delete_release_rows(release_id):
         model.objects.using(_DB).filter(release_id=release_id).delete()
 
 
+def _prepare_cross_artifacts(release_id):
+    """Rebuild + stamp the release-gated derived artifacts for ``release_id`` so the
+    release-match gate (``activation.py``) can verify them at activation.
+
+    Runs under the sync advisory lock (single writer). v1: the component→category
+    lookup (#262) — rebuilt from the local M2M and stamped for this release in one
+    atomic txn. Imported lazily to keep ``vocab_mirror`` free of a load-time
+    dependency on ``trials.services``. Any failure propagates and fails the sync
+    (the release is not activated), same as a load failure.
+    """
+    from trials.services.omop.component_category_lookup import sync_component_category_lookup
+    result = sync_component_category_lookup(release_id=release_id)
+    logger.info(
+        'vocab sync: component-category lookup rebuilt + stamped for release %s (%s)',
+        release_id,
+        {k: result[k] for k in ('total', 'added', 'updated', 'removed')})
+
+
 def _load_table(client, release_id, table, expected_count):
     """Stream + bulk-load one table into the (fresh) staging generation.
 
@@ -203,6 +221,7 @@ def _do_sync(client, tables, activate):
             # Already loaded + verified. If a prior run's activation was stranded,
             # recover by (re)activating without re-downloading; else leave READY.
             if may_activate:
+                _prepare_cross_artifacts(release_id)
                 try:
                     activate_release(release_id)
                 except ReleaseMatchFailed as exc:
@@ -255,6 +274,7 @@ def _do_sync(client, tables, activate):
     logger.info('vocab sync: release %s READY (%s)', release_id, counts)
 
     if may_activate:
+        _prepare_cross_artifacts(release_id)
         try:
             activate_release(release_id)
         except ReleaseMatchFailed as exc:

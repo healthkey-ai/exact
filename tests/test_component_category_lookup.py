@@ -5,7 +5,6 @@ import pytest
 from django.core.management import call_command
 
 from trials.models import (
-    ComponentCategoryOmopLookup,
     TherapyComponent,
     TherapyComponentCategory,
     TherapyComponentCategoryConnection,
@@ -15,6 +14,7 @@ from trials.services.omop.component_category_lookup import (
     component_concept_ids_to_type_codes,
     sync_component_category_lookup,
 )
+from vocab_mirror.models import ComponentCategoryOmopLookup
 
 pytestmark = pytest.mark.django_db
 
@@ -127,6 +127,53 @@ def test_sync_unchanged_rows_not_touched():
 
     r = sync_component_category_lookup()
     assert r['unchanged'] >= 1
+
+
+# ── release stamp (#262 / ADR 0002 B′) ───────────────────────────────────────
+
+def test_sync_stamps_explicit_release():
+    from vocab_mirror.models import ComponentLookupStamp
+    _link(_make_component('zz_stamp1', concept_id=606001), _make_category('zz_stamp_cat'))
+
+    r = sync_component_category_lookup(release_id=42)
+    assert ComponentLookupStamp.objects.get().release_id == 42
+    assert r['stamped_release'] == 42
+
+
+def test_sync_defaults_stamp_to_active_release():
+    from vocab_mirror.models import ComponentLookupStamp, MirrorRelease
+    MirrorRelease.objects.create(release_id=7, state=MirrorRelease.ACTIVE)
+    _link(_make_component('zz_stamp2', concept_id=606002), _make_category('zz_stamp_cat2'))
+
+    sync_component_category_lookup()  # release_id=None → active_release_id() == 7
+    assert ComponentLookupStamp.objects.get().release_id == 7
+
+
+def test_sync_without_active_release_writes_no_stamp():
+    from vocab_mirror.models import ComponentLookupStamp
+    _link(_make_component('zz_stamp3', concept_id=606003), _make_category('zz_stamp_cat3'))
+
+    r = sync_component_category_lookup()  # no active release, none passed
+    assert not ComponentLookupStamp.objects.exists()
+    assert r['stamped_release'] is None
+
+
+def test_stamp_is_singleton_latest_wins():
+    from vocab_mirror.models import ComponentLookupStamp
+    _link(_make_component('zz_stamp4', concept_id=606004), _make_category('zz_stamp_cat4'))
+
+    sync_component_category_lookup(release_id=1)
+    sync_component_category_lookup(release_id=2)
+    assert ComponentLookupStamp.objects.count() == 1
+    assert ComponentLookupStamp.objects.get().release_id == 2
+
+
+def test_dry_run_writes_no_stamp():
+    from vocab_mirror.models import ComponentLookupStamp
+    _link(_make_component('zz_stamp5', concept_id=606005), _make_category('zz_stamp_cat5'))
+
+    sync_component_category_lookup(release_id=5, dry_run=True)
+    assert not ComponentLookupStamp.objects.exists()
 
 
 def test_sync_dry_run_does_not_write():

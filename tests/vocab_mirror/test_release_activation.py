@@ -119,6 +119,56 @@ class TestReleaseMatchGate:
         assert active_release_id() == 1  # unchanged; previous generation preserved
 
 
+class TestComponentLookupGate:
+    """The component→category lookup cross-artifact gate (#262 / ADR 0002 B′)."""
+
+    def _lookup(self, concept_id, codes=('zz_pi',)):
+        from vocab_mirror.models import ComponentCategoryOmopLookup
+        ComponentCategoryOmopLookup.objects.create(
+            component_concept_id=concept_id, category_codes=list(codes))
+
+    def _stamp(self, rid):
+        from vocab_mirror.models import ComponentLookupStamp
+        ComponentLookupStamp.objects.update_or_create(
+            singleton=True, defaults={'release_id': rid})
+
+    def test_empty_lookup_does_not_block_activation(self):
+        # A fresh deploy with no lookup rows must not be blocked by this gate.
+        _ready_release(1)
+        activate_release(1)
+        assert active_release_id() == 1
+
+    def test_stamped_and_covered_activates(self):
+        _ready_release(1)          # seeds MirrorConcept concept_id=1
+        self._lookup(1)            # lookup references concept_id 1, present in release 1
+        self._stamp(1)
+        activate_release(1)
+        assert active_release_id() == 1
+
+    def test_populated_but_unstamped_blocks(self):
+        _ready_release(1)
+        self._lookup(1)            # populated, but no stamp
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(1)
+        assert active_release_id() is None
+
+    def test_stamp_for_other_release_blocks(self):
+        _ready_release(2)
+        self._lookup(1)
+        self._stamp(999)           # stamped for a different release
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(2)
+        assert active_release_id() is None
+
+    def test_missing_concept_coverage_blocks(self):
+        _ready_release(1)          # seeds concept_id=1 only
+        self._lookup(424242)       # a concept_id absent from release 1
+        self._stamp(1)
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(1)
+        assert active_release_id() is None
+
+
 class TestSingleActiveInvariant:
     def test_db_rejects_two_active_releases(self):
         MirrorRelease.objects.create(release_id=1, state=MirrorRelease.ACTIVE)
