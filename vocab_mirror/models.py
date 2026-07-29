@@ -27,6 +27,69 @@ pinned-release query never scans across generations. List-partitioning by
 ``release_id`` is a deferred (v2) optimization — see the ADR.
 """
 from django.db import models
+from django.db.models import Q
+
+
+class MirrorRelease(models.Model):
+    """A synced vocabulary release generation and its lifecycle state (#249).
+
+    One row per promop ``VocabularyRelease`` that EXACT has (partially or fully)
+    synced. The ``state`` machine gates what readers may pin::
+
+        STAGING  (loading, #250)
+          → READY      (downloaded + row_counts/checksums verified)
+          → ACTIVE     (the single generation readers pin)
+          → SUPERSEDED (kept for the retention window so in-flight reads finish)
+        (any → FAILED  on a verification/load failure; never activated)
+
+    A **partial-unique constraint** guarantees at most one ``ACTIVE`` release, so
+    the atomic activation flip (see ``activation.activate_release``) cannot leave
+    two live generations. Readers bind ``active_release_id()`` once per request
+    and fail closed when it is ``None``. The DB enforces only the *one-active*
+    invariant; the STAGING→READY→ACTIVE transitions themselves are enforced by
+    the activation service (``activation.py``), which is the only supported
+    writer of ``state`` — direct ORM writes bypass the state machine.
+
+    The manifest fields (``row_counts`` / ``checksums`` / ``manifest``) are the
+    promop release manifest (promop#334) recorded for verification and audit; the
+    loader (#250) fills them and moves STAGING → READY.
+    """
+
+    STAGING = 'staging'
+    READY = 'ready'
+    ACTIVE = 'active'
+    SUPERSEDED = 'superseded'
+    FAILED = 'failed'
+    STATE_CHOICES = [
+        (STAGING, STAGING), (READY, READY), (ACTIVE, ACTIVE),
+        (SUPERSEDED, SUPERSEDED), (FAILED, FAILED),
+    ]
+
+    release_id = models.BigIntegerField(unique=True)
+    etag = models.CharField(max_length=255, null=True, blank=True)
+    state = models.CharField(max_length=16, choices=STATE_CHOICES, default=STAGING, db_index=True)
+    # Per-table expected counts + sha256 from the release manifest (promop#334).
+    row_counts = models.JSONField(default=dict, blank=True)
+    checksums = models.JSONField(default=dict, blank=True)
+    # Full release manifest blob, kept for provenance/audit.
+    manifest = models.JSONField(default=dict, blank=True)
+    loaded_at = models.DateTimeField(null=True, blank=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # At most one ACTIVE generation, enforced by the DB (a partial unique
+            # index over the constant ACTIVE state).
+            models.UniqueConstraint(
+                fields=['state'], condition=Q(state='active'),
+                name='uq_one_active_mirror_release',
+            ),
+        ]
+
+    def __str__(self):
+        return f'release {self.release_id} [{self.state}]'
 
 
 class MirrorVocabulary(models.Model):
