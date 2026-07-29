@@ -1,9 +1,12 @@
 import itertools
 import datetime as dt
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from trials.models import Trial
@@ -113,22 +116,52 @@ def min_max_match(
         return 'matched'
 
 
-def _resolve_omop_concepts(concept_id_values):
-    """Resolve a list of OMOP concept_id strings to [{code, title, vocab}] via
-    OmopConcept. Unresolved concept_ids still return their code (title/vocab None)."""
+def _resolve_omop_concepts(concept_id_values, release_id=None):
+    """Resolve OMOP concept_id strings to ``[{code, title, vocab}]`` from the
+    release-pinned local vocab mirror (#252 / ADR 0002).
+
+    Reads the mirror ``concept`` table for the pinned release — explicit
+    ``release_id`` overrides the request pin, which falls back to the active
+    release. This is **presentation** (the trial detail ``omopConcepts`` block),
+    so it fails **soft**: an unresolved concept_id (or no active release at all)
+    still returns its ``code`` with ``title``/``vocab`` = ``None``, exactly as
+    before — a missing title never affects eligibility.
+    """
     if not concept_id_values:
         return []
-    from trials.models import OmopConcept
-    cids = [int(v) for v in concept_id_values if str(v).isdigit()]
-    by_id = {c.concept_id: c for c in OmopConcept.objects.filter(concept_id__in=cids)}
+    # django.db.Error is the base of the whole DB-API exception tree, incl.
+    # InterfaceError ("connection already closed"), which is a sibling of
+    # DatabaseError — not a subclass — so it must be caught here too, else a
+    # dropped mirror connection would 500 instead of degrading to code-only.
+    from django.db import Error as DBError
+
+    from vocab_mirror.models import MirrorConcept
+    from vocab_mirror.release_context import active_pinned_release
+
+    rid = release_id if release_id is not None else active_pinned_release()
+    by_id = {}
+    if rid is not None:
+        cids = [int(v) for v in concept_id_values if str(v).isdigit()]
+        try:
+            by_id = {
+                c['concept_id']: c
+                for c in MirrorConcept.objects.filter(release_id=rid, concept_id__in=cids)
+                .values('concept_id', 'concept_name', 'vocabulary_id')
+            }
+        except DBError:
+            # Presentation must never break the response — a mirror DB hiccup
+            # degrades to code-only titles, not a 500.
+            logger.warning('vocab mirror title lookup failed; returning code-only',
+                           exc_info=True)
+            by_id = {}
     out = []
     for v in concept_id_values:
         code = int(v) if str(v).isdigit() else v
         c = by_id.get(code) if isinstance(code, int) else None
         out.append({
             'code': code,
-            'title': c.concept_name if c else None,
-            'vocab': c.vocabulary_id if c else None,
+            'title': c['concept_name'] if c else None,
+            'vocab': c['vocabulary_id'] if c else None,
         })
     return out
 

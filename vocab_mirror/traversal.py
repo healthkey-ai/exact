@@ -81,6 +81,11 @@ class LocalConceptGraph:
 
     def _pin(self, release_id=None):
         if self._pinned is None:
+            # Phase-T note (#252 review): when this traversal is wired onto the
+            # eligibility path, resolve via `release_context.active_pinned_release()`
+            # (or an explicitly threaded release_id) so it honors the per-request
+            # pin, not the live active release — else a graph expansion could
+            # straddle an activation mid-request despite the request pin.
             rid = (release_id if release_id is not None
                    else self._release_id if self._release_id is not None
                    else active_release_id())

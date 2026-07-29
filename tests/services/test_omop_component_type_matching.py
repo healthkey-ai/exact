@@ -184,10 +184,33 @@ def test_display_component_title_falls_back_to_concept_id_when_not_local():
 
 # ── detail response: OMOP code + title (omopConcepts) ────────────────
 
+def _activate_mirror(release_id, concepts):
+    """Seed a minimal complete generation (concepts + one gate row per other
+    table) and activate it, so title resolution reads it (#252)."""
+    from vocab_mirror.activation import activate_release
+    from vocab_mirror.models import (
+        MirrorConcept, MirrorConceptAncestor, MirrorConceptRelationship,
+        MirrorRelease, MirrorVocabulary,
+    )
+    MirrorVocabulary.objects.create(release_id=release_id, vocabulary_id='V',
+                                    vocabulary_name='V', vocabulary_concept_id=1)
+    MirrorConceptRelationship.objects.create(release_id=release_id, concept_id_1=1,
+                                             concept_id_2=2, relationship_id='seed')
+    MirrorConceptAncestor.objects.create(release_id=release_id, ancestor_concept_id=1,
+                                         descendant_concept_id=2,
+                                         min_levels_of_separation=1, max_levels_of_separation=1)
+    for cid, name, vocab in concepts:
+        MirrorConcept.objects.create(release_id=release_id, concept_id=cid, concept_name=name,
+                                     domain_id='Drug', vocabulary_id=vocab,
+                                     concept_class_id='Ingredient', concept_code=str(cid))
+    MirrorRelease.objects.create(release_id=release_id, state=MirrorRelease.READY)
+    activate_release(release_id)
+
+
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_display_includes_omop_concepts_code_and_title():
     _graph()
-    OmopConcept.objects.create(concept_id=BORT_CID, concept_name='bortezomib', vocabulary_id='RxNorm')
+    _activate_mirror(1, [(BORT_CID, 'bortezomib', 'RxNorm')])  # titles come from the mirror now
     pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID),
                      prior_therapy='One line', therapy_component_ids=[BORT_CID])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_required=[str(BORT_CID)])
