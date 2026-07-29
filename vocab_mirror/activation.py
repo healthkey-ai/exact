@@ -26,7 +26,13 @@ import logging
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from vocab_mirror.models import MirrorConcept, MirrorRelease
+from vocab_mirror.models import (
+    MirrorConcept,
+    MirrorConceptAncestor,
+    MirrorConceptRelationship,
+    MirrorRelease,
+    MirrorVocabulary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +79,23 @@ def register_release_match_check(func):
     return func
 
 
+# Every mirror table EXACT syncs must be populated for a generation to be
+# activatable — otherwise a partial (e.g. concept-only) load would fail *open*:
+# traversal over an empty relationship/ancestor table silently returns nothing.
+_REQUIRED_MIRROR_MODELS = (
+    MirrorVocabulary, MirrorConcept, MirrorConceptRelationship, MirrorConceptAncestor,
+)
+
+
 @register_release_match_check
-def _mirror_has_data(release_id):
-    """Mirror-side gate: refuse to activate a generation with no concept rows —
-    an empty mirror would fail *open* (every expansion returns nothing)."""
-    if not MirrorConcept.objects.using(_ACTIVATION_DB).filter(release_id=release_id).exists():
-        raise ReleaseMatchFailed(
-            f'mirror release {release_id} has no concept rows; refusing to activate')
+def _mirror_generation_populated(release_id):
+    """Mirror-side gate: refuse to activate a generation that is missing rows in
+    any required mirror table (an incomplete/partial load must not go live)."""
+    for model in _REQUIRED_MIRROR_MODELS:
+        if not model.objects.using(_ACTIVATION_DB).filter(release_id=release_id).exists():
+            raise ReleaseMatchFailed(
+                f'mirror release {release_id} has no rows in {model.__name__}; '
+                'refusing to activate an incomplete generation')
 
 
 def _run_release_match_gate(release_id):
