@@ -22,7 +22,7 @@ AttrMatchStatus = Literal['matched', 'not_matched', 'unknown']
 TrialMatchStatus = Literal['eligible', 'potential', 'not_eligible']
 
 from exact_matching.enums import PriorTherapyLines
-from trials.services.patient_info.configs import (
+from exact_matching.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
     THERAPY_LINES_ATTRS_UNDERSCORED,
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
