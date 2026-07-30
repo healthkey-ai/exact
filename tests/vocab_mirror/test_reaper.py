@@ -101,3 +101,64 @@ def test_dry_run_reports_without_deleting():
     assert reaped[0]['rows']['MirrorConcept'] == 1  # reports real counts
     assert MirrorRelease.objects.filter(release_id=2).exists()  # nothing deleted
     assert _rows(2) == 4
+
+
+def test_keep_two_protects_two_most_recent():
+    _gen(1, MirrorRelease.ACTIVE)
+    _gen(2, MirrorRelease.SUPERSEDED)   # oldest non-active
+    _gen(3, MirrorRelease.SUPERSEDED)
+    _gen(4, MirrorRelease.SUPERSEDED)   # newest (release_id tiebreak under updated_at ties)
+
+    reaped = reap_old_generations(keep=2, min_age=timedelta(hours=6), now=_past_window())
+
+    # ACTIVE(1) + the 2 most-recent non-active (4, 3) protected → only 2 reaped.
+    assert {r['release_id'] for r in reaped} == {2}
+
+
+def test_end_to_end_activate_supersede_reap():
+    # Exercise the REAL activation → SUPERSEDED path (updated_at bumped on supersede)
+    # that the keep/recency ordering actually protects.
+    from vocab_mirror.activation import activate_release
+    _gen(1, MirrorRelease.READY)
+    _gen(2, MirrorRelease.READY)
+    activate_release(1)
+    activate_release(2)  # supersedes release 1
+    assert MirrorRelease.objects.get(release_id=1).state == MirrorRelease.SUPERSEDED
+
+    reaped = reap_old_generations(keep=0, min_age=timedelta(0), now=_past_window())
+
+    assert {r['release_id'] for r in reaped} == {1}
+    assert MirrorRelease.objects.get(release_id=2).state == MirrorRelease.ACTIVE
+    assert _rows(1) == 0 and _rows(2) == 4
+
+
+def test_reap_under_lock_runs_when_uncontended():
+    from vocab_mirror.reaper import reap_under_lock
+    _gen(1, MirrorRelease.ACTIVE)
+    _gen(2, MirrorRelease.FAILED)
+
+    result = reap_under_lock(keep=0, min_age=timedelta(0), now=_past_window())
+
+    assert result is not None  # acquired the lock and ran
+    assert {r['release_id'] for r in result} == {2}
+    assert not MirrorRelease.objects.filter(release_id=2).exists()
+
+
+def test_reap_best_effort_swallows_reaper_errors(monkeypatch):
+    # A reaper failure must never fail the sync.
+    import vocab_mirror.reaper as reaper_mod
+    from vocab_mirror.sync import _reap_best_effort
+
+    def boom(*a, **k):
+        raise RuntimeError('reaper blew up')
+
+    monkeypatch.setattr(reaper_mod, 'reap_old_generations', boom)
+    _reap_best_effort()  # must not raise
+
+
+def test_command_rejects_negative_options():
+    from django.core.management import CommandError, call_command
+    with pytest.raises(CommandError):
+        call_command('reap_vocab_mirror', min_age_hours=-6)  # cutoff in the future
+    with pytest.raises(CommandError):
+        call_command('reap_vocab_mirror', keep=-1)  # slice semantics, not a count

@@ -8,7 +8,7 @@ races a sync/activation.
 
     python manage.py reap_vocab_mirror [--keep N] [--min-age-hours H] [--dry-run]
 """
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from vocab_mirror.reaper import DEFAULT_KEEP, reap_under_lock
 
@@ -27,6 +27,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         from datetime import timedelta
+        # Guard the destructive path against typos that would defeat retention:
+        # a negative age puts the cutoff in the future (reap everything), and a
+        # negative keep would hit Python slice semantics instead of a count.
+        if opts['keep'] < 0:
+            raise CommandError('--keep must be >= 0')
+        if opts['min_age_hours'] < 0:
+            raise CommandError('--min-age-hours must be >= 0')
         result = reap_under_lock(
             keep=opts['keep'],
             min_age=timedelta(hours=opts['min_age_hours']),

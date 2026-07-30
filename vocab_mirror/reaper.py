@@ -63,6 +63,13 @@ def reap_old_generations(keep=DEFAULT_KEEP, min_age=DEFAULT_MIN_AGE, now=None,
         MirrorRelease.objects.using(_DB)
         .filter(state=MirrorRelease.ACTIVE).values_list('release_id', flat=True))
     # Most-recently-touched first, so `keep` protects the freshest non-active ones.
+    # NOTE: `keep` protects the most-recently-*touched* non-active generations,
+    # which is not strictly the previously-active one — a later STAGING→FAILED
+    # restage bumps a different generation's updated_at and can steal the slot.
+    # Reader safety therefore rests on the time-based `min_age` retention window,
+    # not on `keep`; `keep` is a belt-and-braces buffer for the common no-churn
+    # case (on supersession activation bumps the old-active row's updated_at, so it
+    # is the freshest non-active row and keep>=1 covers it).
     non_active = list(
         MirrorRelease.objects.using(_DB).exclude(state=MirrorRelease.ACTIVE)
         .order_by('-updated_at', '-release_id'))
@@ -76,15 +83,24 @@ def reap_old_generations(keep=DEFAULT_KEEP, min_age=DEFAULT_MIN_AGE, now=None,
         if ts is not None and ts > cutoff:
             continue  # inside the retention window
         rows = {}
-        for model in _REAP_MODELS:
-            if dry_run:
+        if dry_run:
+            for model in _REAP_MODELS:
                 rows[model.__name__] = (
                     model.objects.using(_DB).filter(release_id=rel.release_id).count())
-            else:
+        else:
+            # Deliberately NOT one big transaction: a generation's
+            # concept_relationship alone can be ~18M rows, and wrapping all four
+            # tables in a single txn holds a long-running transaction (WAL bloat,
+            # blocks vacuum, holds the advisory lock longer). Safety instead comes
+            # from (a) the retention window — `min_age` guarantees no live reader is
+            # still on a reaped generation, so a partial delete is never observed —
+            # and (b) deleting the data tables first and the `MirrorRelease` pointer
+            # LAST, so an interrupted reap leaves recoverable data+pointer (never
+            # orphan data) that the next run re-selects and finishes idempotently.
+            for model in _REAP_MODELS:
                 deleted, _ = (
                     model.objects.using(_DB).filter(release_id=rel.release_id).delete())
                 rows[model.__name__] = deleted
-        if not dry_run:
             rel.delete(using=_DB)
         reaped.append({'release_id': rel.release_id, 'state': rel.state, 'rows': rows})
         logger.info('vocab reaper: %s generation %s (%s)',
