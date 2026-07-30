@@ -29,7 +29,7 @@ from exact_matching.patient_info.configs import (
     sct_value_is_none,
 )
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
-from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from exact_matching.utils import disease_attr_applies, get_overlap
 
