@@ -74,6 +74,10 @@ class component_lookup_request_cache:
     Enter once per request (the trials view does, in ``dispatch``) so repeated
     per-trial lookups dedup to one query; the memo resets on exit, so nothing
     persists across requests or workers.
+
+    Offline batch matchers (management commands that loop the matcher over many
+    trials for one patient) should also enter this to keep the old cross-trial
+    dedup — tracked as a follow-up (#266 note); without it each trial re-queries.
     """
 
     def __enter__(self):
@@ -175,7 +179,9 @@ def sync_component_category_lookup(release_id=None, dry_run=False):
             )
 
     if not dry_run:
-        # Flush the in-process LRU cache so subsequent calls see the updated table.
+        # Drop any request-scoped memo so a subsequent read in THIS process sees the
+        # rebuilt table (no-op in the sync job, which holds no request context). Web
+        # workers never cache across requests, so no cross-process flush is needed.
         clear_lookup_cache()
 
     return {

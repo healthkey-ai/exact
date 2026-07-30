@@ -243,9 +243,10 @@ def test_no_memo_outside_request_context(django_assert_num_queries):
 
 
 def test_memo_does_not_persist_across_requests():
-    # Simulates a table rebuild between two requests: the second request (a fresh
-    # cache context) must see the new data, never a stale memo — the exact
-    # cross-request/worker staleness a process-global cache had (ADR #8 / #266).
+    # A rebuild between two request contexts: the second context must see the new
+    # data, never a stale memo. (This is a same-process behavior guard; the actual
+    # #266 bug was cross-PROCESS — a sync job's flush never reaching a separate web
+    # worker — which a single-process test can't exercise. See the PR for that.)
     comp = _make_component('zz_r2', concept_id=770002)
     _link(comp, _make_category('zz_before'))
     sync_component_category_lookup()
