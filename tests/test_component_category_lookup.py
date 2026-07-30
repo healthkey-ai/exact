@@ -9,9 +9,11 @@ from trials.models import (
     TherapyComponentCategory,
     TherapyComponentCategoryConnection,
 )
+from trials.models import TherapyComponentCategoryConnection as _Conn
 from trials.services.omop.component_category_lookup import (
     build_component_category_lookup,
     component_concept_ids_to_type_codes,
+    component_lookup_request_cache,
     sync_component_category_lookup,
 )
 from vocab_mirror.models import ComponentCategoryOmopLookup
@@ -217,6 +219,44 @@ def test_consumer_api_resolves_via_table():
 def test_consumer_api_returns_empty_for_unknown_concept_id():
     result = component_concept_ids_to_type_codes(['9999999'])
     assert result == []
+
+
+# ── request-scoped memo (#266 / ADR 0002 guard #8) ───────────────────────────
+
+def test_request_cache_dedups_repeated_lookups(django_assert_num_queries):
+    _link(_make_component('zz_r1', concept_id=770001), _make_category('zz_rcat'))
+    sync_component_category_lookup()
+    with component_lookup_request_cache():
+        with django_assert_num_queries(1):  # second call served from the memo
+            a = component_concept_ids_to_type_codes(['770001'])
+            b = component_concept_ids_to_type_codes(['770001'])
+    assert a == b == ['zz_rcat']
+
+
+def test_no_memo_outside_request_context(django_assert_num_queries):
+    _link(_make_component('zz_r3', concept_id=770003), _make_category('zz_r3cat'))
+    sync_component_category_lookup()
+    # No request cache active → each call reads the table (no cross-call memo).
+    with django_assert_num_queries(2):
+        component_concept_ids_to_type_codes(['770003'])
+        component_concept_ids_to_type_codes(['770003'])
+
+
+def test_memo_does_not_persist_across_requests():
+    # Simulates a table rebuild between two requests: the second request (a fresh
+    # cache context) must see the new data, never a stale memo — the exact
+    # cross-request/worker staleness a process-global cache had (ADR #8 / #266).
+    comp = _make_component('zz_r2', concept_id=770002)
+    _link(comp, _make_category('zz_before'))
+    sync_component_category_lookup()
+    with component_lookup_request_cache():
+        assert component_concept_ids_to_type_codes(['770002']) == ['zz_before']
+    # rebuild the mapping (as the sync job would, out of band)
+    _Conn.objects.all().delete()
+    _link(comp, _make_category('zz_after'))
+    sync_component_category_lookup()
+    with component_lookup_request_cache():
+        assert component_concept_ids_to_type_codes(['770002']) == ['zz_after']
 
 
 # ── management command ────────────────────────────────────────────────────────
