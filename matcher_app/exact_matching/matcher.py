@@ -21,17 +21,17 @@ AttrMatchStatus = Literal['matched', 'not_matched', 'unknown']
 # Aggregate per-trial outcomes (`trial_match_status` returns one).
 TrialMatchStatus = Literal['eligible', 'potential', 'not_eligible']
 
-from trials.enums import PriorTherapyLines
+from exact_matching.enums import PriorTherapyLines
 from trials.services.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
     THERAPY_LINES_ATTRS_UNDERSCORED,
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
     sct_value_is_none,
 )
-from trials.services.patient_info.genetic_mutations import GeneticMutations
+from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
-from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
-from trials.services.utils import disease_attr_applies, get_overlap
+from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
+from exact_matching.utils import disease_attr_applies, get_overlap
 
 
 @dataclass
