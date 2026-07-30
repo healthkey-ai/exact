@@ -167,12 +167,19 @@ def _resolve_omop_concepts(concept_id_values, release_id=None):
 
 
 class UserToTrialAttrMatcher:
-    def __init__(self, trial: 'Trial', patient_info: 'PatientInfo') -> None:
+    def __init__(self, trial: 'Trial', patient_info: 'PatientInfo', data=None) -> None:
         self.trial = trial
         self.patient_info = patient_info
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
         self.patient_info_attr = PatientInfoAttributes(patient_info)
         self.disease_code: Optional[str] = self.get_disease_code_from_trial(trial)
+        # Matcher data-access port (E1.2b): therapy regimen/component/category
+        # reads go through this. Default = EXACT's Django models (1:1); a host
+        # like CB injects its own. See exact_matching.data_port.
+        if data is None:
+            from exact_matching.data_port import DjangoMatcherData
+            data = DjangoMatcherData()
+        self._data = data
 
     def get_disease_code_from_trial(self, trial: 'Trial') -> Optional[str]:
         disease = str(trial.disease).lower()
@@ -289,11 +296,7 @@ class UserToTrialAttrMatcher:
 
     def therapy_related_things_match_status(self):
         from exact_matching.therapy_match_profile import omop_therapy_enabled
-        from trials.services.omop.therapy_graph import resolve_regimens
 
-        therapies = {}                       # regimen match-value -> title
-        therapy_components_to_therapy = {}   # component match-value -> title
-        therapy_types_to_therapy = {}        # CB category code -> title (types not OMOP-mapped)
         therapy_codes = self.patient_info_attr.get_user_therapies()
 
         mismatch_status = self.therapy_related_things_mismatch_status()
@@ -303,47 +306,13 @@ class UserToTrialAttrMatcher:
         # keys: concept_ids under OMOP, codes legacy. Component/type keys: OMOP (Phase P,
         # #234) — components are consumer-supplied concept_ids (get_user_therapy_component_ids),
         # types are CB category codes via the flat lookup; legacy — the CB graph walk.
+        # The regimen/component/category data access lives behind the data port
+        # (E1.2b); DjangoMatcherData reproduces the previous inline logic 1:1.
         omop = omop_therapy_enabled()
-        if therapy_codes:
-            for therapy in resolve_regimens(therapy_codes).prefetch_related('components__categories'):
-                if omop:
-                    if therapy.omop_concept_id is not None:
-                        therapies[str(therapy.omop_concept_id)] = therapy.title
-                else:
-                    therapies[therapy.code] = therapy.title
-                    for component in sorted(therapy.components.all(), key=lambda c: c.id):
-                        therapy_components_to_therapy.setdefault(component.code, component.title)
-                        for category in component.categories.all():
-                            therapy_types_to_therapy.setdefault(category.code, category.title)
-
-        if omop:
-            # OMOP component/type display maps from the consumer-supplied concept_ids
-            # (no regimen->component graph walk). Titles resolved from the local
-            # TherapyComponent / category tables (transitional, while they still exist).
-            component_ids = self.patient_info_attr.get_user_therapy_component_ids() or []
-            if component_ids:
-                from trials.models import TherapyComponent, TherapyComponentCategory
-                from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
-                keys = [str(c) for c in component_ids]
-                int_cids = [int(k) for k in keys if k.isdigit()]
-                title_by_cid = dict(
-                    TherapyComponent.objects.filter(omop_concept_id__in=int_cids)
-                    .values_list('omop_concept_id', 'title')
-                )
-                for key in keys:
-                    # Fall back to the concept_id string when EXACT has no local title
-                    # (promop may supply concepts EXACT holds no local row for) — a None
-                    # value here later TypeErrors in match_required's sorted(set(values)).
-                    title = title_by_cid.get(int(key)) if key.isdigit() else None
-                    therapy_components_to_therapy.setdefault(key, title or key)
-                type_codes = component_concept_ids_to_type_codes(keys) or []
-                if type_codes:
-                    title_by_code = dict(
-                        TherapyComponentCategory.objects.filter(code__in=type_codes)
-                        .values_list('code', 'title')
-                    )
-                    for code in type_codes:
-                        therapy_types_to_therapy.setdefault(code, title_by_code.get(code) or code)
+        therapies, therapy_components_to_therapy, therapy_types_to_therapy = (
+            self._data.build_therapy_display_maps(
+                therapy_codes, self.patient_info_attr.get_user_therapy_component_ids, omop)
+        )
 
         def match_required(trial_values, matching_values, mismatch_status):
             overlap = get_overlap(trial_values, matching_values.keys())
@@ -480,13 +449,13 @@ class UserToTrialAttrMatcher:
         # consumer-supplied pre-expanded concept_ids (get_user_therapy_component_ids); types
         # are CB category codes via the flat lookup (types are not OMOP-mapped). Legacy:
         # derived from the regimen via the CB graph. See #197 / therapy_graph.
-        from trials.services.omop.therapy_graph import derive_component_and_type_values
         from exact_matching.therapy_match_profile import omop_therapy_enabled
         # OMOP only: read the consumer-supplied components. Gated so the legacy path
-        # does no OMOP-specific work (byte-identical to CB).
+        # does no OMOP-specific work (byte-identical to CB). Class derivation lives
+        # behind the data port (E1.2b).
         patient_component_ids = (self.patient_info_attr.get_user_therapy_component_ids()
                                  if omop_therapy_enabled() else None)
-        component_codes, therapy_types = derive_component_and_type_values(values, patient_component_ids)
+        component_codes, therapy_types = self._data.derive_component_and_type_values(values, patient_component_ids)
 
         res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':
