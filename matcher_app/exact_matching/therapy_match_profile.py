@@ -44,7 +44,7 @@ the trial-side flip is a safe no-op. When promop#230 lands, matching works
 end-to-end with no EXACT change; the #221 gate validates coverage before the prod
 flip. See #231.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from django.conf import settings
 
@@ -90,6 +90,17 @@ OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
     supportive_therapies_excluded='omop_supportive_therapies_excluded',
 )
 
+# OMOP + drug-class TYPES profile (promop ADR 0002, #285): additionally flips
+# therapy_types_* to the omop_therapy_types_* class-concept_id columns. Only
+# active when BOTH EXACT_OMOP_THERAPY and EXACT_OMOP_THERAPY_TYPES are on — types
+# ride on top of the OMOP profile. Reverses "types stay legacy" (decision A/#4502)
+# now that the patient carries pre-expanded class concept_ids (promop#370).
+OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE = replace(
+    OMOP_THERAPY_MATCH_PROFILE,
+    therapy_types_required='omop_therapy_types_required',
+    therapy_types_excluded='omop_therapy_types_excluded',
+)
+
 
 def omop_therapy_enabled() -> bool:
     """Whether trial therapy matching reads the OMOP concept_id columns.
@@ -101,9 +112,26 @@ def omop_therapy_enabled() -> bool:
     return bool(getattr(settings, 'EXACT_OMOP_THERAPY', False))
 
 
+def omop_therapy_types_enabled() -> bool:
+    """Whether trial drug-class TYPE matching reads the OMOP class-concept_id
+    columns (``omop_therapy_types_*``) instead of legacy CB category codes.
+
+    Off by default; gated by ``EXACT_OMOP_THERAPY_TYPES`` (promop ADR 0002, #285).
+    Requires ``EXACT_OMOP_THERAPY`` too — types ride on the OMOP profile, and the
+    patient's class concept_ids only flow in OMOP mode. Returns False (legacy types)
+    whenever OMOP therapy is off, so the flag alone can never divert the queryset /
+    matcher onto the OMOP-types path while the profile still names legacy columns.
+    """
+    return omop_therapy_enabled() and bool(getattr(settings, 'EXACT_OMOP_THERAPY_TYPES', False))
+
+
 def get_therapy_match_profile() -> TherapyMatchProfile:
-    """Return the active profile for the current ``EXACT_OMOP_THERAPY`` setting."""
-    return OMOP_THERAPY_MATCH_PROFILE if omop_therapy_enabled() else LEGACY_THERAPY_MATCH_PROFILE
+    """Return the active profile for the current OMOP therapy settings."""
+    if not omop_therapy_enabled():
+        return LEGACY_THERAPY_MATCH_PROFILE
+    if omop_therapy_types_enabled():
+        return OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE
+    return OMOP_THERAPY_MATCH_PROFILE
 
 
 class _ActiveTherapyMatchProfile:

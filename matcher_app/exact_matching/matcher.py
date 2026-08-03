@@ -295,7 +295,7 @@ class UserToTrialAttrMatcher:
         return 'not_matched'
 
     def therapy_related_things_match_status(self):
-        from exact_matching.therapy_match_profile import omop_therapy_enabled
+        from exact_matching.therapy_match_profile import omop_therapy_enabled, omop_therapy_types_enabled
 
         therapy_codes = self.patient_info_attr.get_user_therapies()
 
@@ -311,7 +311,9 @@ class UserToTrialAttrMatcher:
         omop = omop_therapy_enabled()
         therapies, therapy_components_to_therapy, therapy_types_to_therapy = (
             self._data.build_therapy_display_maps(
-                therapy_codes, self.patient_info_attr.get_user_therapy_component_ids, omop)
+                therapy_codes, self.patient_info_attr.get_user_therapy_component_ids, omop,
+                get_class_ids=self.patient_info_attr.get_user_therapy_component_class_ids,
+                omop_types=omop_therapy_types_enabled())
         )
 
         def match_required(trial_values, matching_values, mismatch_status):
@@ -352,10 +354,18 @@ class UserToTrialAttrMatcher:
                 "values": sorted(list(set(values)))
             }
 
+        # FAIL-CLOSED types (#285): under OMOP-types, unknown patient class ids
+        # (getter None) against a required type is a hard not_matched — the rendered
+        # status must agree with the _match_therapy_related_things verdict even when
+        # the therapy-line mismatch_status is 'unknown' (e.g. a blank first line).
+        type_mismatch_status = mismatch_status
+        if omop_therapy_types_enabled() and self.patient_info_attr.get_user_therapy_component_class_ids() is None:
+            type_mismatch_status = 'not_matched'
+
         out = {
             "therapiesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), therapies, mismatch_status),
             "therapiesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), therapies),
-            "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), therapy_types_to_therapy, mismatch_status),
+            "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), therapy_types_to_therapy, type_mismatch_status),
             "therapyTypesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), therapy_types_to_therapy),
             "therapyComponentsRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), therapy_components_to_therapy, mismatch_status),
             "therapyComponentsExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), therapy_components_to_therapy),
@@ -449,20 +459,31 @@ class UserToTrialAttrMatcher:
         # consumer-supplied pre-expanded concept_ids (get_user_therapy_component_ids); types
         # are CB category codes via the flat lookup (types are not OMOP-mapped). Legacy:
         # derived from the regimen via the CB graph. See #197 / therapy_graph.
-        from exact_matching.therapy_match_profile import omop_therapy_enabled
+        from exact_matching.therapy_match_profile import omop_therapy_enabled, omop_therapy_types_enabled
         # OMOP only: read the consumer-supplied components. Gated so the legacy path
-        # does no OMOP-specific work (byte-identical to CB). Class derivation lives
-        # behind the data port (E1.2b).
+        # does no OMOP-specific work (byte-identical to CB). Under EXACT_OMOP_THERAPY_TYPES
+        # (#285) also read the consumer's pre-expanded drug-class concept_ids for types.
         patient_component_ids = (self.patient_info_attr.get_user_therapy_component_ids()
                                  if omop_therapy_enabled() else None)
-        component_codes, therapy_types = self._data.derive_component_and_type_values(values, patient_component_ids)
+        patient_class_ids = (self.patient_info_attr.get_user_therapy_component_class_ids()
+                             if omop_therapy_types_enabled() else None)
+        component_codes, therapy_types = self._data.derive_component_and_type_values(
+            values, patient_component_ids, patient_class_ids)
 
         res = self._match_therapy_things(component_codes, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
 
-        res = self._match_therapy_things(therapy_types, getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), has_no_prior_therapy)
+        type_required = getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required)
+        type_excluded = getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded)
+        # FAIL-CLOSED types (#285): under EXACT_OMOP_THERAPY_TYPES, unknown patient
+        # class ids (therapy_types is None) against a trial that REQUIRES a type must
+        # be a hard not_matched — never fall through to 'unknown'/matched. (A
+        # known-empty [] already resolves to not_matched via the overlap check.)
+        if omop_therapy_types_enabled() and therapy_types is None and type_required:
+            return 'not_matched'
+        res = self._match_therapy_things(therapy_types, type_required, type_excluded, has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)

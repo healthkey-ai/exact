@@ -20,7 +20,7 @@ Returns ``(component_values, type_values)``. ``(None, None)`` means unknown
 ``therapy_component_ids`` (``patient_component_ids is None``); legacy → the patient
 has no resolvable regimens. An empty list is a known-empty component set.
 """
-from trials.services.therapy_match_profile import omop_therapy_enabled
+from trials.services.therapy_match_profile import omop_therapy_enabled, omop_therapy_types_enabled
 
 
 def resolve_regimens(therapy_identifiers):
@@ -38,17 +38,27 @@ def resolve_regimens(therapy_identifiers):
 
 
 def derive_component_and_type_values(therapy_identifiers, patient_component_ids=None,
-                                     measure=False):
+                                     measure=False, patient_class_ids=None):
     """Return ``(component_values, type_values)`` for the patient's therapies.
 
     OMOP mode (Phase P, #234): components are the consumer-supplied pre-expanded
     ``patient_component_ids`` (no local CB-graph walk). ``None`` = unknown (consumer
     sent nothing) → ``(None, None)``; ``[]`` = known-empty; a list → those component
-    concept_ids, with types via the flat category lookup (CB category codes; types are
-    NOT OMOP-mapped — ADR 0001 decision A / #4502). ``therapy_identifiers`` is used
-    only by the legacy path.
+    concept_ids.
 
-    Legacy mode (flag OFF): the internal CB-graph expansion — byte-identical to CB.
+    Types (drug-class):
+    - OMOP-types mode (``EXACT_OMOP_THERAPY_TYPES`` on, promop ADR 0002 / #285):
+      types are the consumer-supplied pre-expanded class concept_ids
+      ``patient_class_ids`` — ``None`` = unknown (fail-closed downstream), ``[]`` =
+      known-empty, a list → those class concept_ids. Matched by overlap against
+      ``omop_therapy_types_*``.
+    - OMOP-types OFF: legacy — CB category codes from the components via the flat
+      category lookup (overlapped against legacy ``therapy_types_*``; #4502).
+
+    ``therapy_identifiers`` is used only by the legacy path.
+
+    Legacy mode (OMOP therapy flag OFF): the internal CB-graph expansion —
+    byte-identical to CB.
 
     ``measure=True`` records the Phase-T gating metric (#263) when this call is the
     per-search derivation (the search queryset passes it) — a regimen present under
@@ -57,14 +67,26 @@ def derive_component_and_type_values(therapy_identifiers, patient_component_ids=
     the return value is identical either way.
     """
     if omop_therapy_enabled():
+        types_on = omop_therapy_types_enabled()
         if patient_component_ids is None:
             if measure and therapy_identifiers:
                 from trials.services.omop.phase_t_metrics import record_regimen_unresolved
                 record_regimen_unresolved(therapy_identifiers)
+            # Components unknown -> component_values None. Types are independent under
+            # OMOP-types mode: a class-only patient (class ids but no components — and
+            # the #224 fold routes such patients here) still derives its types from the
+            # supplied class ids, so a required-class trial isn't false-negatived.
+            if types_on and patient_class_ids is not None:
+                return None, [str(cid) for cid in patient_class_ids]
             return None, None
         component_values = [str(cid) for cid in patient_component_ids]
-        from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
-        type_values = component_concept_ids_to_type_codes(component_values) or []
+        if types_on:
+            # Types = the patient's pre-expanded class concept_ids as-is. Preserve
+            # None (consumer sent no class ids -> unknown -> fail-closed) vs [].
+            type_values = None if patient_class_ids is None else [str(cid) for cid in patient_class_ids]
+        else:
+            from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
+            type_values = component_concept_ids_to_type_codes(component_values) or []
         return component_values, type_values
 
     # ── legacy (flag OFF): internal CB-graph expansion — byte-identical to CB ──

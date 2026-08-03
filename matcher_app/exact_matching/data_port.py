@@ -20,25 +20,32 @@ from typing import Protocol
 
 
 class MatcherDataPort(Protocol):
-    def build_therapy_display_maps(self, therapy_codes, get_component_ids, omop) -> tuple[dict, dict, dict]:
+    def build_therapy_display_maps(self, therapy_codes, get_component_ids, omop,
+                                   get_class_ids=None, omop_types=False) -> tuple[dict, dict, dict]:
         """Return (therapies, therapy_components_to_therapy, therapy_types_to_therapy)
         display maps keyed per the active therapy profile.
 
-        `get_component_ids` is a zero-arg callable returning the patient's
-        component concept_ids; it is invoked lazily (only in OMOP mode, after the
-        regimen query) to preserve the original DB-query emission order.
+        `get_component_ids` / `get_class_ids` are zero-arg callables returning the
+        patient's component / drug-class concept_ids; invoked lazily (only in OMOP
+        mode) to preserve the original DB-query emission order. Under `omop_types`
+        (#285) the type map is keyed by the patient's class concept_ids.
         """
         ...
 
-    def derive_component_and_type_values(self, values, patient_component_ids) -> tuple:
-        """Return (component_codes, therapy_types) for the patient's therapies."""
+    def derive_component_and_type_values(self, values, patient_component_ids, patient_class_ids=None) -> tuple:
+        """Return (component_codes, therapy_types) for the patient's therapies.
+
+        ``patient_class_ids`` supplies the patient's pre-expanded drug-class "type"
+        concept_ids (used as type_values under EXACT_OMOP_THERAPY_TYPES / #285).
+        """
         ...
 
 
 class DjangoMatcherData:
     """Default EXACT implementation — 1:1 with the matcher's previous inline code."""
 
-    def build_therapy_display_maps(self, therapy_codes, get_component_ids, omop):
+    def build_therapy_display_maps(self, therapy_codes, get_component_ids, omop,
+                                   get_class_ids=None, omop_types=False):
         from trials.services.omop.therapy_graph import resolve_regimens
 
         therapies = {}                       # regimen match-value -> title
@@ -79,17 +86,35 @@ class DjangoMatcherData:
                     # value here later TypeErrors in match_required's sorted(set(values)).
                     title = title_by_cid.get(int(key)) if key.isdigit() else None
                     therapy_components_to_therapy.setdefault(key, title or key)
-                type_codes = component_concept_ids_to_type_codes(keys) or []
-                if type_codes:
-                    title_by_code = dict(
-                        TherapyComponentCategory.objects.filter(code__in=type_codes)
-                        .values_list('code', 'title')
-                    )
-                    for code in type_codes:
-                        therapy_types_to_therapy.setdefault(code, title_by_code.get(code) or code)
+                if not omop_types:
+                    # Legacy types: component concept_ids -> CB category codes (#4502).
+                    type_codes = component_concept_ids_to_type_codes(keys) or []
+                    if type_codes:
+                        title_by_code = dict(
+                            TherapyComponentCategory.objects.filter(code__in=type_codes)
+                            .values_list('code', 'title')
+                        )
+                        for code in type_codes:
+                            therapy_types_to_therapy.setdefault(code, title_by_code.get(code) or code)
+
+            if omop_types:
+                # OMOP types (#285): keys are the patient's class concept_ids as-is
+                # (matched against omop_therapy_types_*). Titles from OmopConcept when
+                # present, else the raw id — never None (match_required sorts values).
+                from trials.models import OmopConcept
+                class_ids = (get_class_ids() if get_class_ids else None) or []
+                class_keys = [str(c) for c in class_ids]
+                int_cids = [int(k) for k in class_keys if k.isdigit()]
+                title_by_cid = dict(
+                    OmopConcept.objects.filter(concept_id__in=int_cids)
+                    .values_list('concept_id', 'concept_name')
+                )
+                for key in class_keys:
+                    title = title_by_cid.get(int(key)) if key.isdigit() else None
+                    therapy_types_to_therapy.setdefault(key, title or key)
 
         return therapies, therapy_components_to_therapy, therapy_types_to_therapy
 
-    def derive_component_and_type_values(self, values, patient_component_ids):
+    def derive_component_and_type_values(self, values, patient_component_ids, patient_class_ids=None):
         from trials.services.omop.therapy_graph import derive_component_and_type_values as _derive
-        return _derive(values, patient_component_ids)
+        return _derive(values, patient_component_ids, patient_class_ids=patient_class_ids)
