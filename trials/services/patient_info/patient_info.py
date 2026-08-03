@@ -96,7 +96,7 @@ _FIELDS = [
     # Drug-class "type" concept_ids pre-expanded by PROMOP (promop#370, ADR 0002).
     # None when the consumer has not sent them; consumed as the patient's type
     # match-values once EXACT_OMOP_THERAPY_TYPES is on (#285). Inert until then.
-    _f(JSONField, 'therapy_component_class_ids', default=None),
+    _f(JSONField, 'therapy_type_ids', default=None),
     _f(DateField, 'later_date'),
     _f(TextField, 'later_outcome'),
     _f(TextField, 'old_supportive_therapies'),
