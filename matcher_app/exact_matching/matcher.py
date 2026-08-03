@@ -312,7 +312,7 @@ class UserToTrialAttrMatcher:
         therapies, therapy_components_to_therapy, therapy_types_to_therapy = (
             self._data.build_therapy_display_maps(
                 therapy_codes, self.patient_info_attr.get_user_therapy_component_ids, omop,
-                get_class_ids=self.patient_info_attr.get_user_therapy_component_class_ids,
+                get_class_ids=self.patient_info_attr.get_user_therapy_type_ids,
                 omop_types=omop_therapy_types_enabled())
         )
 
@@ -359,7 +359,7 @@ class UserToTrialAttrMatcher:
         # status must agree with the _match_therapy_related_things verdict even when
         # the therapy-line mismatch_status is 'unknown' (e.g. a blank first line).
         type_mismatch_status = mismatch_status
-        if omop_therapy_types_enabled() and self.patient_info_attr.get_user_therapy_component_class_ids() is None:
+        if omop_therapy_types_enabled() and self.patient_info_attr.get_user_therapy_type_ids() is None:
             type_mismatch_status = 'not_matched'
 
         out = {
@@ -465,7 +465,7 @@ class UserToTrialAttrMatcher:
         # (#285) also read the consumer's pre-expanded drug-class concept_ids for types.
         patient_component_ids = (self.patient_info_attr.get_user_therapy_component_ids()
                                  if omop_therapy_enabled() else None)
-        patient_class_ids = (self.patient_info_attr.get_user_therapy_component_class_ids()
+        patient_class_ids = (self.patient_info_attr.get_user_therapy_type_ids()
                              if omop_therapy_types_enabled() else None)
         component_codes, therapy_types = self._data.derive_component_and_type_values(
             values, patient_component_ids, patient_class_ids)

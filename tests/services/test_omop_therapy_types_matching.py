@@ -1,7 +1,7 @@
 """OMOP-native drug-class TYPE matching under EXACT_OMOP_THERAPY_TYPES (#285).
 
 promop ADR 0002 reverses "types are not OMOP-mapped": the patient now carries
-pre-expanded drug-class concept_ids (PatientInfo.therapy_component_class_ids,
+pre-expanded drug-class concept_ids (PatientInfo.therapy_type_ids,
 promop#370). With EXACT_OMOP_THERAPY + EXACT_OMOP_THERAPY_TYPES on:
 - the profile flips therapy_types_* -> omop_therapy_types_* (class concept_id columns);
 - derive returns the consumer's class concept_ids as type_values (no category lookup);
@@ -113,7 +113,7 @@ def _match(trial, pi):
 @override_settings(**OMOP_TYPES)
 def test_type_required_overlap_matches():
     pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
-                     therapy_component_class_ids=[int(PI_CLASS)])
+                     therapy_type_ids=[int(PI_CLASS)])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
     assert _match(trial, pi) == 'matched'
 
@@ -121,7 +121,7 @@ def test_type_required_overlap_matches():
 @override_settings(**OMOP_TYPES)
 def test_type_required_miss_not_matched():
     pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
-                     therapy_component_class_ids=[int(IMID_CLASS)])
+                     therapy_type_ids=[int(IMID_CLASS)])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
     assert _match(trial, pi) == 'not_matched'
 
@@ -138,7 +138,7 @@ def test_type_required_unknown_patient_classes_fail_closed():
 @override_settings(**OMOP_TYPES)
 def test_type_excluded_hit_not_matched():
     pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
-                     therapy_component_class_ids=[int(PI_CLASS)])
+                     therapy_type_ids=[int(PI_CLASS)])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[PI_CLASS])
     assert _match(trial, pi) == 'not_matched'
 
@@ -146,7 +146,7 @@ def test_type_excluded_hit_not_matched():
 @override_settings(**OMOP_TYPES)
 def test_no_required_type_matches():
     pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
-                     therapy_component_class_ids=[])
+                     therapy_type_ids=[])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
     assert _match(trial, pi) == 'matched'
 
@@ -168,7 +168,7 @@ def test_queryset_unknown_classes_keeps_only_no_required_type_trials():
 @override_settings(**OMOP_TYPES)
 def test_display_type_required_matched_uses_class_ids():
     pi = PatientInfo(disease='multiple myeloma', first_line_therapy=REG, prior_therapy='One line',
-                     therapy_component_ids=[int(BORT_CID)], therapy_component_class_ids=[int(PI_CLASS)])
+                     therapy_component_ids=[int(BORT_CID)], therapy_type_ids=[int(PI_CLASS)])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesRequired']['status'] == 'matched'
@@ -177,7 +177,7 @@ def test_display_type_required_matched_uses_class_ids():
 @override_settings(**OMOP_TYPES)
 def test_display_type_required_miss_not_matched():
     pi = PatientInfo(disease='multiple myeloma', first_line_therapy=REG, prior_therapy='One line',
-                     therapy_component_ids=[int(BORT_CID)], therapy_component_class_ids=[int(IMID_CLASS)])
+                     therapy_component_ids=[int(BORT_CID)], therapy_type_ids=[int(IMID_CLASS)])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesRequired']['status'] == 'not_matched'
@@ -186,7 +186,7 @@ def test_display_type_required_miss_not_matched():
 @override_settings(**OMOP_TYPES)
 def test_display_type_excluded_hit_not_matched():
     pi = PatientInfo(disease='multiple myeloma', first_line_therapy=REG, prior_therapy='One line',
-                     therapy_component_ids=[int(BORT_CID)], therapy_component_class_ids=[int(PI_CLASS)])
+                     therapy_component_ids=[int(BORT_CID)], therapy_type_ids=[int(PI_CLASS)])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[PI_CLASS])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesExcluded']['status'] == 'not_matched'
@@ -199,7 +199,7 @@ def test_queryset_matcher_parity_on_same_patient_trial():
     match = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
     miss = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[IMID_CLASS])
     pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
-                     therapy_component_class_ids=[int(PI_CLASS)])
+                     therapy_type_ids=[int(PI_CLASS)])
     qs_ids = set(
         Trial.objects.filter(id__in=[match.id, miss.id])
         .eligible_for_omop_therapy_types([PI_CLASS]).values_list('id', flat=True)

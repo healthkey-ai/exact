@@ -116,7 +116,7 @@ def _filter_prior_therapy(scope, value, ctx):
             ctx['user_therapies'], ctx['has_no_prior_therapy'],
             patient_component_ids=(ctx['patient_info_attr'].get_user_therapy_component_ids()
                                    if ctx.get('omop_therapy') else None),
-            patient_class_ids=(ctx['patient_info_attr'].get_user_therapy_component_class_ids()
+            patient_class_ids=(ctx['patient_info_attr'].get_user_therapy_type_ids()
                                if ctx.get('omop_therapy') else None),
         )
         ctx['is_therapies_filter_applied'] = True
@@ -144,7 +144,7 @@ def _filter_therapy_lines_once(scope, _value, ctx):
             ctx['user_therapies'], ctx['has_no_prior_therapy'],
             patient_component_ids=(ctx['patient_info_attr'].get_user_therapy_component_ids()
                                    if ctx.get('omop_therapy') else None),
-            patient_class_ids=(ctx['patient_info_attr'].get_user_therapy_component_class_ids()
+            patient_class_ids=(ctx['patient_info_attr'].get_user_therapy_type_ids()
                                if ctx.get('omop_therapy') else None),
         )
         ctx['is_therapies_filter_applied'] = True
@@ -1619,7 +1619,7 @@ class TrialQuerySet(models.QuerySet):
         # once here. Legacy is unaffected (flag off → skipped).
         if omop_therapy_enabled() and not is_therapies_filter_applied and not has_no_prior_therapy:
             component_ids = patient_info_attr.get_user_therapy_component_ids()
-            class_ids = (patient_info_attr.get_user_therapy_component_class_ids()
+            class_ids = (patient_info_attr.get_user_therapy_type_ids()
                          if omop_therapy_types_enabled() else None)
             if component_ids or class_ids:
                 # Pass [] for the regimen codes, not user_therapies: this is the
