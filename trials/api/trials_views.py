@@ -68,10 +68,13 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # runs inside this block, so the header sees the same context.
         from vocab_mirror.release_context import MatchingReleaseContext
         from trials.services.omop.component_category_lookup import component_lookup_request_cache
+        from trials.services.omop.type_release_gate import type_validation_request_cache
         # component_lookup_request_cache: dedup the per-trial component→type lookups
         # within this request without a process-global cache that could go stale in
         # web workers after a sync-job rebuild (ADR 0002 guard #8, #266).
-        with MatchingReleaseContext() as ctx, component_lookup_request_cache():
+        # type_validation_request_cache: same, for the #286 per-concept class-id
+        # release validation (one mirror query per class-id set per request).
+        with MatchingReleaseContext() as ctx, component_lookup_request_cache(), type_validation_request_cache():
             self._release_ctx = ctx
             return super().dispatch(request, *args, **kwargs)
 
