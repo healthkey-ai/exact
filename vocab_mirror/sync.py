@@ -191,6 +191,24 @@ def _load_table(client, release_id, table, expected_count):
     return count
 
 
+def _reap_best_effort():
+    """Prune old generations after a successful activation — best-effort, non-fatal.
+
+    Runs inside the sync advisory lock, so it calls ``reap_old_generations``
+    directly (not the self-locking wrapper). A reaper failure must never fail the
+    sync, so it is logged and swallowed. Lazy import keeps ``sync`` free of a
+    load-time reaper dependency (#259).
+    """
+    try:
+        from vocab_mirror.reaper import reap_old_generations
+        reaped = reap_old_generations()
+        if reaped:
+            logger.info('vocab sync: reaped %d old generation(s): %s',
+                        len(reaped), [r['release_id'] for r in reaped])
+    except Exception as exc:
+        logger.warning('vocab sync: reaper failed (non-fatal): %s', exc)
+
+
 def _do_sync(client, tables, activate):
     # Only a full-table load may be activated — activating a subset would put an
     # incomplete generation live (empty relationship/ancestor tables → traversal
@@ -232,6 +250,7 @@ def _do_sync(client, tables, activate):
                                  release_id, exc)
                     return SyncOutcome(status='loaded_not_activated', release_id=release_id)
                 logger.info('vocab sync: recovered + activated READY release %s', release_id)
+                _reap_best_effort()
                 return SyncOutcome(status='activated', release_id=release_id)
             return SyncOutcome(status='already_synced', release_id=release_id)
         # STAGING / FAILED — fall through to restage below.
@@ -282,6 +301,7 @@ def _do_sync(client, tables, activate):
                          release_id, exc)
             return SyncOutcome(status='loaded_not_activated', release_id=release_id,
                                counts=counts)
+        _reap_best_effort()
     return SyncOutcome(status='synced', release_id=release_id, counts=counts)
 
 
