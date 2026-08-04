@@ -99,6 +99,20 @@ def _csv_stripped(value):
     return [x.strip() for x in _csv(value)]
 
 
+def _as_list_stripped(value):
+    """Coerce a patient multi-select to a clean list, accepting EITHER a list
+    (EXACT's `extranodal_sites` is a JSONField) OR a CSV string (CB's is a
+    comma-separated TextField). A bare string must be split — passing it raw to
+    `eligible_for_required_lists` iterates CHARACTERS. A list flows through with
+    each element stripped. Empty/None -> []. This is the str-or-list seam that
+    lets CB drain its orchestrator onto this dispatch without a contract change."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [x.strip() for x in value.split(",")]
+    return [str(x).strip() for x in value]
+
+
 def _filter_disease(scope, value, _ctx):
     return scope.filter(disease__iexact=value.lower())
 
@@ -214,7 +228,11 @@ _CUSTOM_SEARCH_DISPATCH = {
     'disease_subtype': lambda s, v, _c: s.eligible_for_disease_subtypes(_csv_stripped(v)),
     'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv_stripped(v)),
     'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv_stripped(v)),
-    'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(v),
+    # extranodal_sites is the ONLY list-valued patient attr: EXACT's PatientInfo has it
+    # as a JSONField (list), CB's as a comma-separated TextField (string). _as_list_stripped
+    # accepts both — a list flows through (EXACT, unchanged), a string is split (CB-safe at
+    # drain). Passing a raw string would char-iterate downstream in eligible_for_required_lists.
+    'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(_as_list_stripped(v)),
     'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv_stripped(v)),
     'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv_stripped(v)),
 }
@@ -1611,7 +1629,11 @@ class TrialQuerySet(models.QuerySet):
                     attr_max_name = trial_attr_meta["attr_max"]
                 else:
                     attr_max_name = f'{trial_attr_meta["attr"]}_max'
-                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value, skip_blank=not allow_blank_values)
+                # Forward sane_range so an out-of-band stored threshold self-heals instead of
+                # excluding on the wrong scale (WBC guard, cb#4559). The helper has accepted it
+                # since #282; CB's retained orchestrator already passes it (QR4a/L1). ULN call
+                # takes no sane_range, matching CB.
+                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value, skip_blank=not allow_blank_values, sane_range=trial_attr_meta.get("sane_range"))
 
                 user_attr_value_uln = patient_info_attr.get_uln_value(user_attr)
                 if user_attr_value_uln:

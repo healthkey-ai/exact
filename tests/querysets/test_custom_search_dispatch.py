@@ -108,6 +108,42 @@ class TestDispatchTableExhaustive:
         )
 
 
+class TestExtranodalSitesSplit:
+    """QR4a/L2 regression: `extranodal_sites` must reach `eligible_for_extranodal_sites`
+    as a clean LIST, accepting either input shape. EXACT's PatientInfo has it as a
+    JSONField (list); CB's as a comma-separated TextField (string). A raw STRING would
+    char-iterate downstream ('spleen,liver' -> ['s','p','l',...]); a `_csv`-style split
+    would crash on EXACT's list (`list.split` AttributeError). `_as_list_stripped` handles
+    both — this pins both directions so neither the string nor the list path regresses.
+    """
+
+    def test_list_input_flows_through_stripped(self):
+        # EXACT contract: extranodal_sites arrives as a list. Must NOT crash (the
+        # _csv_stripped mistake did) and must stay a stripped list.
+        handler = _CUSTOM_SEARCH_DISPATCH['extranodal_sites']
+        scope = MagicMock(spec=TrialQuerySet)
+        handler(scope, ['bone_marrow', '  gi_tract  '], {})
+        (arg,), _kwargs = scope.eligible_for_extranodal_sites.call_args
+        assert arg == ['bone_marrow', 'gi_tract']
+
+    def test_string_input_is_split_not_char_iterated(self):
+        # CB contract at drain: a CSV string must be split, never passed raw.
+        handler = _CUSTOM_SEARCH_DISPATCH['extranodal_sites']
+        scope = MagicMock(spec=TrialQuerySet)
+        handler(scope, 'spleen, liver', {})
+        (arg,), _kwargs = scope.eligible_for_extranodal_sites.call_args
+        assert arg == ['spleen', 'liver']
+        assert not isinstance(arg, str)
+
+    def test_empty_value_is_empty_list(self):
+        handler = _CUSTOM_SEARCH_DISPATCH['extranodal_sites']
+        for blank in ('', None, []):
+            scope = MagicMock(spec=TrialQuerySet)
+            handler(scope, blank, {})
+            (arg,), _kwargs = scope.eligible_for_extranodal_sites.call_args
+            assert arg == []
+
+
 class TestCsvHelpers:
     def test_csv_splits_comma(self):
         assert _csv('a,b,c') == ['a', 'b', 'c']
