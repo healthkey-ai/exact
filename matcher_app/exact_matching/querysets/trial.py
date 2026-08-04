@@ -863,21 +863,35 @@ class TrialQuerySet(models.QuerySet):
             goodness_score=score_expr,
         )
 
-    def eligible_for_min_max_value(self, attr_min_name, attr_max_name, value, skip_blank=True):
+    def eligible_for_min_max_value(self, attr_min_name, attr_max_name, value, skip_blank=True, sane_range=None):
         if value is None:
             return self
         if skip_blank and value == 0:
             return self
 
+        # sane_range=(low, high): a stored threshold outside this band is not in the
+        # attribute's canonical unit yet (e.g. WBC thresholds mid-migration, cb#4559/
+        # #4561), so treat it as "no constraint" rather than comparing on a wrong scale
+        # and wrongly excluding the patient. Self-heals once the threshold is
+        # re-normalized into the band. Ported from CB to keep the two querysets
+        # convergent: CB's retained orchestrator already passes sane_range, and the
+        # package orchestrator (filter_by_patient_info) will pass it at the QR4 cutover.
+        # Default None = exact no-op, so EXACT's current behaviour is unchanged.
+        def out_of_band(attr_name):
+            low, high = sane_range
+            return Q(**{f'{attr_name}__lt': low}) | Q(**{f'{attr_name}__gt': high})
+
         scope = self
         if attr_min_name is not None:
-            scope = scope.filter(
-                Q(**{f'{attr_min_name}__lte': value}) | Q(**{f'{attr_min_name}__isnull': True})
-            )
+            cond = Q(**{f'{attr_min_name}__lte': value}) | Q(**{f'{attr_min_name}__isnull': True})
+            if sane_range is not None:
+                cond |= out_of_band(attr_min_name)
+            scope = scope.filter(cond)
         if attr_max_name is not None:
-            scope = scope.filter(
-                Q(**{f'{attr_max_name}__gte': value}) | Q(**{f'{attr_max_name}__isnull': True})
-            )
+            cond = Q(**{f'{attr_max_name}__gte': value}) | Q(**{f'{attr_max_name}__isnull': True})
+            if sane_range is not None:
+                cond |= out_of_band(attr_max_name)
+            scope = scope.filter(cond)
 
         return scope
 
