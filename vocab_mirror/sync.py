@@ -20,16 +20,20 @@ Flow (one run of :func:`sync_vocab_mirror`):
    via the #249 control plane.
 
 Enforced completeness is the ``__done`` sentinel count plus the manifest
-``row_counts`` cross-check. Two follow-ups (recorded, not blocking):
-- **Checksum verification** of the manifest ``checksums`` — needs promop's exact
-  per-table row canonicalization pinned before it can enforce without false
-  mismatches; until then the sentinel + row-count gate rejects truncated/partial
-  loads and the checksums are recorded for provenance only.
-- **COPY for the large tables** — ``concept_relationship`` (~18M rows) currently
-  loads via batched ``bulk_create`` into a table with live indexes; a
-  ``psycopg.copy`` path (optionally dropping/rebuilding indexes per generation)
-  will be much faster.
+``row_counts`` cross-check. Each table streams into ``COPY … FROM STDIN`` (#256),
+so ``concept_relationship`` (~18M rows in prod RxNorm) loads without materializing
+millions of ORM objects. Indexes stay live during the load — dropping the shared
+release_id-leading indexes would degrade the concurrently-ACTIVE generation's reads.
+
+Remaining follow-up (blocked, not a blocker): **byte-level checksum verification**
+of the manifest ``checksums``. It would catch *silent corruption* (same count,
+altered bytes) beyond the sentinel + row-count gate, but promop's ``checksums`` are
+currently ``{count, min_ctid, max_ctid}`` — physical ctids are meaningless to a
+consumer (EXACT's copy has different ctids), so only ``count`` is verifiable (and
+already is). Real verification needs promop to emit a content hash over a pinned
+per-table row canonicalization; tracked cross-repo.
 """
+import io
 import logging
 from dataclasses import dataclass, field
 from datetime import date
@@ -52,7 +56,6 @@ logger = logging.getLogger(__name__)
 _DB = 'default'  # the mirror lives on `default` (db_router / ADR §Placement)
 # Fixed 64-bit key for the sync singleton advisory lock.
 _SYNC_ADVISORY_LOCK_KEY = 8234502250
-_BATCH_SIZE = 5000
 
 # promop#334 table slug -> mirror model. EXACT syncs exactly the tables it needs.
 TABLE_MODELS = {
@@ -76,28 +79,62 @@ class SyncOutcome:
     counts: dict = field(default_factory=dict)
 
 
-def _row_projector(model):
-    """Build a fast row → model-kwargs projector for a mirror model.
-
-    Keeps only the model's own columns (promop may send extra columns; unknown
-    keys are dropped) and coerces ISO date strings to ``date`` for DateFields.
+def _copy_columns(model):
+    """COPY target columns (``release_id`` first, then the model's own columns
+    minus the surrogate ``id``) plus a ``(row_key, is_date)`` list for projecting
+    each snapshot row's values in that same order. ``field.name == field.column``
+    for the mirror models (no ``db_column`` overrides), and the snapshot keys are
+    the OMOP column names = the field names, so one name serves both.
     """
+    columns = ['release_id']
     fields = []
     for f in model._meta.concrete_fields:
         if f.name in ('id', 'release_id'):
             continue
+        columns.append(f.column)
         fields.append((f.name, f.get_internal_type() == 'DateField'))
+    return columns, fields
 
-    def project(row):
-        out = {}
-        for name, is_date in fields:
-            v = row.get(name)
-            if is_date:
-                v = date.fromisoformat(v) if isinstance(v, str) and v else None
-            out[name] = v
-        return out
 
-    return project
+def _copy_escape(v):
+    """Escape one value for the COPY TEXT format.
+
+    TEXT (not CSV) so ``None`` → ``\\N`` (SQL NULL) stays distinct from an empty
+    string → empty field; backslash / tab / newline / CR are escaped.
+    """
+    if v is None:
+        return r'\N'
+    if v is True:
+        return 't'
+    if v is False:
+        return 'f'
+    s = v if isinstance(v, str) else str(v)
+    return (s.replace('\\', '\\\\').replace('\t', '\\t')
+            .replace('\n', '\\n').replace('\r', '\\r'))
+
+
+class _CopyStream(io.RawIOBase):
+    """Readable stream that pulls encoded COPY lines from a row iterator on demand,
+    so an ~18M-row snapshot streams into ``COPY … FROM STDIN`` without ever
+    materializing in memory (#256)."""
+
+    def __init__(self, line_iter):
+        self._iter = line_iter
+        self._buf = b''
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        while not self._buf:
+            try:
+                self._buf = next(self._iter)
+            except StopIteration:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        return n
 
 
 def _last_processed_etag():
@@ -143,43 +180,65 @@ def _prepare_cross_artifacts(release_id):
 
 
 def _load_table(client, release_id, table, expected_count):
-    """Stream + bulk-load one table into the (fresh) staging generation.
+    """Stream one table's snapshot into the (fresh) staging generation via
+    ``COPY … FROM STDIN`` (#256).
 
-    Returns the loaded row count. Raises ``VocabSyncError`` on a truncated
+    COPY replaces per-batch ORM ``bulk_create`` — for ``concept_relationship``
+    (~18M rows in prod RxNorm) it avoids materializing millions of model objects
+    and streams straight into Postgres, a large speedup on the periodic sync.
+    Indexes are deliberately kept live (dropping the shared release_id-leading
+    indexes around a load would degrade the concurrently-ACTIVE generation's
+    reads). Returns the loaded row count; raises ``VocabSyncError`` on a truncated
     stream (no sentinel) or a count that disagrees with the sentinel / manifest.
     """
     model = TABLE_MODELS[table]
-    project = _row_projector(model)
+    columns, fields = _copy_columns(model)
     model.objects.using(_DB).filter(release_id=release_id).delete()  # idempotent restage
 
-    count = 0
-    batch = []
-    sentinel = None
+    state = {'count': 0, 'sentinel': None, 'saw_done': False}
     gen = client.stream_snapshot(release_id, table)
-    try:
+    rid = _copy_escape(release_id)
+
+    def _lines():
         for row in gen:
             if row.get('__done'):
-                sentinel = row.get('rows')
-                break
-            batch.append(model(release_id=release_id, **project(row)))
-            if len(batch) >= _BATCH_SIZE:
-                model.objects.using(_DB).bulk_create(batch)
-                count += len(batch)
-                batch = []
-        else:
-            # Stream ended without the sentinel line -> truncated download.
-            raise VocabSyncError(f'{table}: stream ended without a __done sentinel (truncated)')
+                state['sentinel'] = row.get('rows')
+                state['saw_done'] = True
+                return  # stop before the sentinel; COPY sees EOF here
+            parts = [rid]
+            for name, is_date in fields:
+                v = row.get(name)
+                if is_date:
+                    v = date.fromisoformat(v) if isinstance(v, str) and v else None
+                parts.append(_copy_escape(v))
+            state['count'] += 1
+            yield ('\t'.join(parts) + '\n').encode('utf-8')
+
+    col_sql = ', '.join(f'"{c}"' for c in columns)
+    sql = f'COPY "{model._meta.db_table}" ({col_sql}) FROM STDIN'
+    conn = connections[_DB]
+    conn.ensure_connection()
+    try:
+        with conn.connection.cursor() as cur:
+            cur.copy_expert(sql, _CopyStream(_lines()))
+    except Exception as exc:
+        # A COPY parse/DB error (malformed row, constraint) — surface as the sync's
+        # own error type so _do_sync fails the release closed (rolls back its rows).
+        if isinstance(exc, VocabSyncError):
+            raise
+        raise VocabSyncError(f'{table}: COPY failed: {exc}') from exc
     finally:
         # Close the generator (and its underlying streamed response) even when we
-        # break early at the sentinel or raise mid-stream.
+        # stop early at the sentinel or raise mid-stream.
         close = getattr(gen, 'close', None)
         if close is not None:
             close()
 
-    if batch:
-        model.objects.using(_DB).bulk_create(batch)
-        count += len(batch)
+    if not state['saw_done']:
+        # Stream ended without the sentinel line -> truncated download.
+        raise VocabSyncError(f'{table}: stream ended without a __done sentinel (truncated)')
 
+    sentinel, count = state['sentinel'], state['count']
     # The sentinel is the always-present per-#334 completeness signal; require an
     # integer count (a `{"__done": true}` with no `rows` is malformed, not a pass).
     if not isinstance(sentinel, int) or isinstance(sentinel, bool):
