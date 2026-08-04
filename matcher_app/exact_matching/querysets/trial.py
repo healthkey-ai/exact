@@ -26,7 +26,7 @@ from exact_matching.patient_info.configs import (
     sct_value_is_none,
 )
 from exact_matching.receptor_hierarchy import expand_values as expand_receptor_values
-from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_enabled
+from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled
 from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PROFILE
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
@@ -116,6 +116,8 @@ def _filter_prior_therapy(scope, value, ctx):
             ctx['user_therapies'], ctx['has_no_prior_therapy'],
             patient_component_ids=(ctx['patient_info_attr'].get_user_therapy_component_ids()
                                    if ctx.get('omop_therapy') else None),
+            patient_class_ids=(ctx['patient_info_attr'].get_user_therapy_type_ids()
+                               if ctx.get('omop_therapy') else None),
         )
         ctx['is_therapies_filter_applied'] = True
     return scope
@@ -142,6 +144,8 @@ def _filter_therapy_lines_once(scope, _value, ctx):
             ctx['user_therapies'], ctx['has_no_prior_therapy'],
             patient_component_ids=(ctx['patient_info_attr'].get_user_therapy_component_ids()
                                    if ctx.get('omop_therapy') else None),
+            patient_class_ids=(ctx['patient_info_attr'].get_user_therapy_type_ids()
+                               if ctx.get('omop_therapy') else None),
         )
         ctx['is_therapies_filter_applied'] = True
     return scope
@@ -1095,7 +1099,7 @@ class TrialQuerySet(models.QuerySet):
             Q(**{f'{excluded_attr_name}__has_any_keys': values})
         )
 
-    def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False, patient_component_ids: list[str] | None = None) -> models.QuerySet:
+    def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False, patient_component_ids: list[str] | None = None, patient_class_ids: list[str] | None = None) -> models.QuerySet:
         if has_no_prior_therapy:
             return self.filter(**{
                 f'{THERAPY_MATCH_PROFILE.therapies_required}__exact': [],
@@ -1104,29 +1108,35 @@ class TrialQuerySet(models.QuerySet):
             })
 
         # The regimen (from-lines) filter needs therapy_codes, but OMOP component-only
-        # patients (#224) have none while still carrying consumer-supplied components —
-        # apply the component/type filter for them. Legacy always has
-        # patient_component_ids=None, so an empty therapy_codes still short-circuits
-        # here, byte-identical to before.
+        # patients (#224) have none while still carrying consumer-supplied components /
+        # class ids — apply the component/type filter for them. Legacy always has
+        # patient_component_ids=None and patient_class_ids=None, so an empty
+        # therapy_codes still short-circuits here, byte-identical to before.
         scope = self
         if therapy_codes:
             scope = self.eligible_for_therapy_from_lines(therapy_codes)
-        elif not patient_component_ids:
+        elif not patient_component_ids and not patient_class_ids:
             return self
 
         # Component + type values (shared with the matcher). OMOP mode (Phase P, #234):
         # components are the consumer-supplied pre-expanded concept_ids
-        # (patient_component_ids); types are CB category codes via the flat lookup.
-        # Legacy: derived from the regimen via the CB graph. See omop/therapy_graph.
+        # (patient_component_ids). Types: OMOP-types mode (#285) uses the consumer's
+        # class concept_ids (patient_class_ids); else CB category codes via the flat
+        # lookup. Legacy: derived from the regimen via the CB graph. See therapy_graph.
         from trials.services.omop.therapy_graph import derive_component_and_type_values
         # measure=True: this is the once-per-search derivation, so the Phase-T
         # gating metric (#263) is recorded here, not per-trial in the matcher.
         component_codes, therapy_types = derive_component_and_type_values(
-            therapy_codes, patient_component_ids, measure=True)
+            therapy_codes, patient_component_ids, measure=True, patient_class_ids=patient_class_ids)
 
         if component_codes:
             scope = scope.eligible_for_therapy_components(component_codes)
-        if therapy_types:
+        if omop_therapy_types_enabled():
+            # FAIL-CLOSED (#285): unknown (None) or known-empty ([]) patient class ids
+            # must NOT fail-open — keep only trials that require no types. The generic
+            # helper returns self for empty values, so gate types explicitly here.
+            scope = scope.eligible_for_omop_therapy_types(therapy_types)
+        elif therapy_types:
             scope = scope.eligible_for_therapy_types(therapy_types)
         return scope
 
@@ -1149,6 +1159,26 @@ class TrialQuerySet(models.QuerySet):
             values=therapy_type_codes,
             required_attr_name=THERAPY_MATCH_PROFILE.therapy_types_required,
             excluded_attr_name=THERAPY_MATCH_PROFILE.therapy_types_excluded
+        )
+
+    def eligible_for_omop_therapy_types(self, type_values) -> models.QuerySet:
+        """Fail-closed OMOP drug-class "type" filter (#285, promop ADR 0002).
+
+        Unlike the generic required/excluded helper (which fail-OPENS — returns
+        ``self`` — on empty patient values), an unknown (``None``) or known-empty
+        (``[]``) patient class set keeps ONLY trials that require no types: a trial
+        with a required type is NOT eligible for a patient carrying no / unknown
+        class ids. Excluded never rejects an empty patient set.
+        """
+        req = THERAPY_MATCH_PROFILE.therapy_types_required   # omop_therapy_types_required under the flag
+        exc = THERAPY_MATCH_PROFILE.therapy_types_excluded
+        if not type_values:                                  # None (unknown) or [] (known-empty)
+            return self.filter(**{f'{req}__exact': []})
+        values = [str(x).strip() for x in type_values]
+        return self.filter(
+            Q(**{f'{req}__has_any_keys': values}) | Q(**{f'{req}__exact': []})
+        ).exclude(
+            Q(**{f'{exc}__has_any_keys': values})
         )
 
     def eligible_for_pre_existing_condition(self, pre_existing_conditions: list[str]) -> models.QuerySet:
@@ -1603,11 +1633,15 @@ class TrialQuerySet(models.QuerySet):
         # once here. Legacy is unaffected (flag off → skipped).
         if omop_therapy_enabled() and not is_therapies_filter_applied and not has_no_prior_therapy:
             component_ids = patient_info_attr.get_user_therapy_component_ids()
-            if component_ids:
+            class_ids = (patient_info_attr.get_user_therapy_type_ids()
+                         if omop_therapy_types_enabled() else None)
+            if component_ids or class_ids:
                 # Pass [] for the regimen codes, not user_therapies: this is the
-                # component-only path (no regimen lines), and user_therapies also folds
-                # in supportive codes — running the regimen filter on those would be wrong.
+                # component/class-only path (no regimen lines), and user_therapies also
+                # folds in supportive codes — running the regimen filter on those would
+                # be wrong. class_ids included so a type-carrying patient with no regimen
+                # lines still gets the fail-closed type filter (not silently bypassed).
                 scope = scope.eligible_for_therapy_related_things_from_lines(
-                    [], has_no_prior_therapy, patient_component_ids=component_ids)
+                    [], has_no_prior_therapy, patient_component_ids=component_ids, patient_class_ids=class_ids)
                 is_therapies_filter_applied = True
         return scope, traces

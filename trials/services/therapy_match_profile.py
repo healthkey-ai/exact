@@ -9,7 +9,9 @@ from exact_matching.therapy_match_profile import (  # noqa: F401
     TherapyMatchProfile,
     LEGACY_THERAPY_MATCH_PROFILE,
     OMOP_THERAPY_MATCH_PROFILE,
+    OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE,
     omop_therapy_enabled,
+    omop_therapy_types_enabled,
     get_therapy_match_profile,
     THERAPY_MATCH_PROFILE,
 )
