@@ -107,8 +107,14 @@ class PromopVocabClient:
             raise VocabSyncError('PROMOP_VOCAB_BASE / PROMOP_API_BASE is not configured')
         url = f'{self.base_url}/api/v1/vocab-releases/{int(release_id)}/snapshot/{table}/'
         try:
+            # Accept ndjson but also `*/*`: the client parses the NDJSON stream
+            # itself regardless of the response media type, and promop's snapshot
+            # view streams `application/x-ndjson` without registering a matching
+            # DRF renderer — a bare `application/x-ndjson` Accept fails content
+            # negotiation there with 406. Offering `*/*` keeps the client robust
+            # to the server's renderer config.
             resp = requests.get(
-                url, headers=self._headers(accept='application/x-ndjson'),
+                url, headers=self._headers(accept='application/x-ndjson, */*'),
                 stream=True, timeout=STREAM_TIMEOUT_SECONDS,
             )
         except requests.RequestException as exc:
