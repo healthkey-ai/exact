@@ -12,7 +12,7 @@ Two responsibilities:
    ``load_therapy_omop_concept_ids`` or any vocab change that bypasses post_save.
    Ported from CancerBot (CB owns the upstream; EXACT rebuilds from its local copy).
 """
-import functools
+import contextvars
 
 from django.db import transaction
 
@@ -23,6 +23,17 @@ from vocab_mirror.models import ComponentCategoryOmopLookup, ComponentLookupStam
 
 # ── consumer API ────────────────────────────────────────────────────────────
 
+# Request-scoped memo. The matcher calls the lookup once PER TRIAL scored with the
+# SAME patient component set, so within a request we dedup those to one query. It
+# is deliberately NOT a process-global cache: the table is rebuilt by a separate
+# sync job, and a process-global cache would leave web workers serving stale
+# type-codes until restart (ADR 0002 guard #8, #266). Scoped to a request → a
+# rebuild between requests is always picked up; outside a request (backfill/sync)
+# the memo is unset and every call reads the table directly.
+_request_memo: contextvars.ContextVar = contextvars.ContextVar(
+    'component_lookup_request_memo', default=None)
+
+
 def component_concept_ids_to_type_codes(concept_ids):
     """Patient component concept_ids → list of CB category codes for type matching.
 
@@ -30,17 +41,22 @@ def component_concept_ids_to_type_codes(concept_ids):
     unknown semantics in the matcher). Returns ``[]`` when the lookup yields
     nothing (known-empty → no types to match).
 
-    Input order is ignored; the same concept_id set always hits the same cache
-    entry across N trials on the same request.
+    Input order is ignored. Inside a :class:`component_lookup_request_cache`
+    block the same concept_id set is resolved once and reused for the request.
     """
     if concept_ids is None:
         return None
-    return _lookup(tuple(sorted(concept_ids, key=str)))
+    key = tuple(sorted(concept_ids, key=str))
+    memo = _request_memo.get()
+    if memo is None:
+        return _lookup(key)
+    if key not in memo:
+        memo[key] = _lookup(key)
+    return memo[key]
 
 
-@functools.lru_cache(maxsize=256)
 def _lookup(concept_ids_tuple):
-    """Cached read from ComponentCategoryOmopLookup — keyed on sorted concept_id tuple."""
+    """Read CB category codes for a set of component concept_ids (single query)."""
     if not concept_ids_tuple:
         return []
     cids = [int(v) for v in concept_ids_tuple if str(v).isdigit()]
@@ -52,9 +68,39 @@ def _lookup(concept_ids_tuple):
     return sorted(codes)
 
 
+class component_lookup_request_cache:
+    """Enable the request-scoped lookup memo for a ``with`` block.
+
+    Enter once per request (the trials view does, in ``dispatch``) so repeated
+    per-trial lookups dedup to one query; the memo resets on exit, so nothing
+    persists across requests or workers.
+
+    Offline batch matchers (management commands that loop the matcher over many
+    trials for one patient) should also enter this to keep the old cross-trial
+    dedup — tracked as a follow-up (#266 note); without it each trial re-queries.
+    """
+
+    def __enter__(self):
+        self._token = _request_memo.set({})
+        return self
+
+    def __exit__(self, *exc):
+        _request_memo.reset(self._token)
+        return False
+
+
 def clear_lookup_cache():
-    """Invalidate the per-process LRU cache after a table rebuild."""
-    _lookup.cache_clear()
+    """Clear the request-scoped memo if one is active.
+
+    There is no longer a process-global cache to flush across workers — the memo
+    is request-scoped (#266), so a table rebuild in the sync job can never strand
+    stale entries in a web worker. Retained (a) so the rebuild path and existing
+    callers/tests need no change, and (b) to drop any memo within the current
+    request after an in-request rebuild.
+    """
+    memo = _request_memo.get()
+    if memo is not None:
+        memo.clear()
 
 
 # ── maintenance (rebuild from local M2M graph) ──────────────────────────────
@@ -133,7 +179,9 @@ def sync_component_category_lookup(release_id=None, dry_run=False):
             )
 
     if not dry_run:
-        # Flush the in-process LRU cache so subsequent calls see the updated table.
+        # Drop any request-scoped memo so a subsequent read in THIS process sees the
+        # rebuilt table (no-op in the sync job, which holds no request context). Web
+        # workers never cache across requests, so no cross-process flush is needed.
         clear_lookup_cache()
 
     return {

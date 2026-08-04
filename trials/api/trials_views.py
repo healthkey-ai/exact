@@ -67,7 +67,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # straddle an activation mid-request (#252 / ADR 0002). finalize_response
         # runs inside this block, so the header sees the same context.
         from vocab_mirror.release_context import MatchingReleaseContext
-        with MatchingReleaseContext() as ctx:
+        from trials.services.omop.component_category_lookup import component_lookup_request_cache
+        # component_lookup_request_cache: dedup the per-trial component→type lookups
+        # within this request without a process-global cache that could go stale in
+        # web workers after a sync-job rebuild (ADR 0002 guard #8, #266).
+        with MatchingReleaseContext() as ctx, component_lookup_request_cache():
             self._release_ctx = ctx
             return super().dispatch(request, *args, **kwargs)
 
