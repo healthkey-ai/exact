@@ -243,6 +243,19 @@ class PatientInfoAttributes:
             return None
         return [str(v) for v in val if v is not None and str(v).strip().isdigit()]
 
+    def get_user_therapy_type_ids(self):
+        """Return the patient's drug-class "type" concept_ids (PROMOP-supplied,
+        OMOP mode only; promop#370, ADR 0002). Mirror of
+        get_user_therapy_component_ids: None when the field is absent (unknown ->
+        callers fail-closed), else a normalized (stringified digit) list or [].
+        Consumed as the patient's type match-values once EXACT_OMOP_THERAPY_TYPES
+        is on (#285); inert before that.
+        """
+        val = self.get_value('therapy_type_ids')
+        if val is None:
+            return None
+        return [str(v) for v in val if v is not None and str(v).strip().isdigit()]
+
     @cached_property
     def disease_code(self):
         disease = str(self.patient_info.disease).lower()
