@@ -27,9 +27,32 @@ PI_CLASS = '35807295'    # proteasome inhibitor
 IMID_CLASS = '35807403'  # IMiD
 BORT_CID = '900825'      # a component concept_id (only needs to be non-empty)
 REG = '900260'           # a regimen concept_id
+STALE_CLASS = '35800001'    # a class concept_id ABSENT from the mirror (stale)
+INVALID_CLASS = '35800002'  # present in the mirror but invalidated (invalid_reason)
+_RID = 1                    # the seeded active mirror release_id
 
 
 OMOP_TYPES = dict(EXACT_OMOP_THERAPY=True, EXACT_OMOP_THERAPY_TYPES=True)
+
+
+def _mirror_concept(concept_id, invalid_reason=None):
+    from vocab_mirror.models import MirrorConcept
+    MirrorConcept.objects.create(
+        release_id=_RID, concept_id=int(concept_id), concept_name=f'c{concept_id}',
+        domain_id='Drug', vocabulary_id='HemOnc', concept_class_id='Component Class',
+        concept_code=str(concept_id), invalid_reason=invalid_reason)
+
+
+@pytest.fixture(autouse=True)
+def _active_mirror(db):
+    """Seed an ACTIVE vocab-mirror release with the test class ids present + valid,
+    so #286 per-concept validation admits them (an absent/invalidated id is stale).
+    The derive-only tests don't read the mirror; the extra rows are harmless."""
+    from vocab_mirror.models import MirrorRelease
+    MirrorRelease.objects.create(release_id=_RID, state=MirrorRelease.ACTIVE)
+    _mirror_concept(PI_CLASS)
+    _mirror_concept(IMID_CLASS)
+    _mirror_concept(INVALID_CLASS, invalid_reason='D')
 
 
 # ── profile selection ────────────────────────────────────────────────
@@ -227,3 +250,129 @@ def test_queryset_overlap_and_exclusion():
     assert match.id in ids           # required overlap
     assert other.id not in ids       # required miss
     assert excl.id not in ids        # excluded hit rejects
+
+
+# ── #286 Gate 2: per-concept release validation (asymmetric) ─────────
+
+@override_settings(**OMOP_TYPES)
+def test_type_required_stale_class_dropped_not_matched():
+    # An absent (stale) class id is DROPPED → a required-type trial for it is
+    # not_matched, even though the patient carries it on the wire.
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(STALE_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[STALE_CLASS])
+    assert _match(trial, pi) == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_type_required_invalidated_class_dropped_not_matched():
+    # Present but invalidated (invalid_reason set) is stale too → dropped.
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(INVALID_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[INVALID_CLASS])
+    assert _match(trial, pi) == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_type_required_partial_stale_valid_id_still_matches():
+    # A stale sibling must NOT sink an otherwise-valid required match.
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(PI_CLASS), int(STALE_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    assert _match(trial, pi) == 'matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_type_excluded_unvalidated_is_conservative_not_matched():
+    # FAIL-OPEN guard: the patient carries a stale id and the trial excludes SOME
+    # type — we cannot prove the stale id doesn't hit the exclusion, so not_matched,
+    # even though the excluded id differs from the validated one.
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(PI_CLASS), int(STALE_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[IMID_CLASS])
+    assert _match(trial, pi) == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_no_active_release_fails_closed_required_and_excluded():
+    # No active mirror release → validate fails closed: required drops to empty
+    # (not_matched) and any excluded constraint is conservatively rejected.
+    from vocab_mirror.models import MirrorRelease
+    MirrorRelease.objects.filter(state=MirrorRelease.ACTIVE).update(state=MirrorRelease.SUPERSEDED)
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(PI_CLASS)])
+    req = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    exc = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[IMID_CLASS])
+    assert _match(req, pi) == 'not_matched'
+    assert _match(exc, pi) == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_queryset_stale_class_parity_with_matcher():
+    # Queryset prefilter and matcher verdict agree under a stale patient id.
+    needs_stale = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[STALE_CLASS])
+    needs_valid = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    excl_other = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[IMID_CLASS])
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(PI_CLASS), int(STALE_CLASS)])
+    qs = set(
+        Trial.objects.filter(id__in=[needs_stale.id, needs_valid.id, excl_other.id])
+        .eligible_for_omop_therapy_types([PI_CLASS, STALE_CLASS]).values_list('id', flat=True)
+    )
+    assert qs == {needs_valid.id}                    # stale-required dropped; excluded-trial rejected
+    assert _match(needs_valid, pi) == 'matched'
+    assert _match(needs_stale, pi) == 'not_matched'
+    assert _match(excl_other, pi) == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_display_type_required_stale_dropped_not_matched():
+    # Detail parity with the verdict: a stale required class id must NOT render
+    # 'matched' in the criterion breakdown (was the display/verdict divergence).
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=REG, prior_therapy='One line',
+                     therapy_component_ids=[int(BORT_CID)], therapy_type_ids=[int(STALE_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[STALE_CLASS])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyTypesRequired']['status'] == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_display_type_excluded_unvalidated_conservative_not_matched():
+    # Detail parity: patient carries a stale id + the trial excludes some type →
+    # conservative not_matched (never render an unvalidated exclusion as matched).
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=REG, prior_therapy='One line',
+                     therapy_component_ids=[int(BORT_CID)], therapy_type_ids=[int(PI_CLASS), int(STALE_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[IMID_CLASS])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyTypesExcluded']['status'] == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_queryset_no_active_release_fails_closed():
+    # Queryset-side parity with the matcher no-release case: no active mirror →
+    # required dropped + excluded-type trials rejected → only the no-constraint trial.
+    from vocab_mirror.models import MirrorRelease
+    MirrorRelease.objects.filter(state=MirrorRelease.ACTIVE).update(state=MirrorRelease.SUPERSEDED)
+    needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    open_ = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
+    excl = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[IMID_CLASS])
+    qs = set(
+        Trial.objects.filter(id__in=[needs.id, open_.id, excl.id])
+        .eligible_for_omop_therapy_types([PI_CLASS]).values_list('id', flat=True)
+    )
+    assert qs == {open_.id}
+
+
+@override_settings(**OMOP_TYPES)
+def test_memo_dedups_validation_to_one_query(django_assert_num_queries):
+    # The per-request memo collapses repeated per-trial validation of the same
+    # class-id set to a single mirror query (order-independent key).
+    from vocab_mirror.release_context import MatchingReleaseContext
+    from trials.services.omop.type_release_gate import (
+        resolve_type_validation, type_validation_request_cache)
+    with MatchingReleaseContext(), type_validation_request_cache():
+        with django_assert_num_queries(1):
+            v1, u1 = resolve_type_validation([PI_CLASS, IMID_CLASS])
+            v2, u2 = resolve_type_validation([IMID_CLASS, PI_CLASS])  # same set, different order
+    assert v1 == v2 == {PI_CLASS, IMID_CLASS}
+    assert u1 is False and u2 is False

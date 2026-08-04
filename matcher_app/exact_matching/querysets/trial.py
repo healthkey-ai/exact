@@ -1174,17 +1174,35 @@ class TrialQuerySet(models.QuerySet):
         (``[]``) patient class set keeps ONLY trials that require no types: a trial
         with a required type is NOT eligible for a patient carrying no / unknown
         class ids. Excluded never rejects an empty patient set.
+
+        #286: the patient's class ids are validated against the pinned vocab-mirror
+        release and applied ASYMMETRICALLY (parity with the matcher verdict) —
+        required overlaps only VALIDATED ids (stale dropped → fail-closed); if the
+        patient carries ANY unvalidated id, trials that exclude types are rejected
+        (never drop an unvalidated exclusion = fail-OPEN). See type_release_gate.
         """
         req = THERAPY_MATCH_PROFILE.therapy_types_required   # omop_therapy_types_required under the flag
         exc = THERAPY_MATCH_PROFILE.therapy_types_excluded
         if not type_values:                                  # None (unknown) or [] (known-empty)
             return self.filter(**{f'{req}__exact': []})
-        values = [str(x).strip() for x in type_values]
-        return self.filter(
-            Q(**{f'{req}__has_any_keys': values}) | Q(**{f'{req}__exact': []})
-        ).exclude(
-            Q(**{f'{exc}__has_any_keys': values})
-        )
+        from trials.services.omop.type_release_gate import resolve_type_validation
+        validated, has_unvalidated = resolve_type_validation(type_values)
+        values = sorted(validated)
+        # required: overlap validated ids, or trials that require no types. All ids
+        # stale (validated empty) → keep only no-required-type trials (fail-closed).
+        if values:
+            scope = self.filter(
+                Q(**{f'{req}__has_any_keys': values}) | Q(**{f'{req}__exact': []})
+            )
+        else:
+            scope = self.filter(**{f'{req}__exact': []})
+        # excluded: never drop an unvalidated id → if the patient carries any, keep
+        # only trials that exclude no types; else reject overlap on validated ids.
+        if has_unvalidated:
+            scope = scope.filter(**{f'{exc}__exact': []})
+        elif values:
+            scope = scope.exclude(Q(**{f'{exc}__has_any_keys': values}))
+        return scope
 
     def eligible_for_pre_existing_condition(self, pre_existing_conditions: list[str]) -> models.QuerySet:
         if pre_existing_conditions is None or pre_existing_conditions == []:

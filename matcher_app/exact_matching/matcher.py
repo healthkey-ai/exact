@@ -354,22 +354,36 @@ class UserToTrialAttrMatcher:
                 "values": sorted(list(set(values)))
             }
 
-        # FAIL-CLOSED types (#285): under OMOP-types, unknown patient class ids
-        # (getter None) against a required type is a hard not_matched — the rendered
-        # status must agree with the _match_therapy_related_things verdict even when
-        # the therapy-line mismatch_status is 'unknown' (e.g. a blank first line).
+        # FAIL-CLOSED types (#285/#286): under OMOP-types a required-type miss is a
+        # hard not_matched (never 'unknown'), and the patient's class ids are
+        # release-validated so the rendered status agrees with the verdict. Stale /
+        # invalid keys are dropped from the required/excluded type map (so a stale
+        # required id can't render 'matched'); if the patient carries any unvalidated
+        # id, an excluded-type constraint renders not_matched (conservative, parity
+        # with _match_omop_type_things). See type_release_gate.
         type_mismatch_status = mismatch_status
-        if omop_therapy_types_enabled() and self.patient_info_attr.get_user_therapy_type_ids() is None:
+        types_map = therapy_types_to_therapy
+        types_excluded_conservative = False
+        if omop_therapy_types_enabled():
             type_mismatch_status = 'not_matched'
+            raw_class_ids = self.patient_info_attr.get_user_therapy_type_ids()
+            if raw_class_ids is not None:
+                from trials.services.omop.type_release_gate import resolve_type_validation
+                validated, has_unvalidated = resolve_type_validation(raw_class_ids)
+                types_map = {k: v for k, v in therapy_types_to_therapy.items() if k in validated}
+                types_excluded_conservative = has_unvalidated
 
         out = {
             "therapiesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), therapies, mismatch_status),
             "therapiesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), therapies),
-            "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), therapy_types_to_therapy, type_mismatch_status),
-            "therapyTypesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), therapy_types_to_therapy),
+            "therapyTypesRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required), types_map, type_mismatch_status),
+            "therapyTypesExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded), types_map),
             "therapyComponentsRequired": match_required(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_required), therapy_components_to_therapy, mismatch_status),
             "therapyComponentsExcluded": match_excluded(getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_components_excluded), therapy_components_to_therapy),
         }
+        # excluded: never drop an unvalidated id → conservative not_matched (parity).
+        if types_excluded_conservative and getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded):
+            out['therapyTypesExcluded']['status'] = 'not_matched'
 
         # OMOP code + title per criterion (additive). Only the OMOP-mapped levels
         # (regimen + component) hold concept_ids; resolve the TRIAL's required/excluded
@@ -448,6 +462,41 @@ class UserToTrialAttrMatcher:
 
         return 'matched'
 
+    def _match_omop_type_things(self, type_values, required_list, excluded_list, has_no_prior_therapy):
+        """OMOP drug-class TYPE overlap under EXACT_OMOP_THERAPY_TYPES (#285) with
+        #286 per-concept release validation applied ASYMMETRICALLY.
+
+        ``type_values`` is the patient's RAW class concept_ids: ``None`` = unknown,
+        ``[]`` = known-empty, a list = the ids. Required uses only ids validated at
+        the pinned vocab-mirror release (stale dropped → fail-closed); excluded never
+        drops an unvalidated id (dropping would re-open the exclusion = fail-OPEN), so
+        a trial that excludes types is not_matched when the patient carries any
+        unvalidated id. See trials.services.omop.type_release_gate.
+        """
+        if required_list == [] and excluded_list == []:
+            return 'matched'
+        # #285: unknown patient class ids (None). A required type is a hard
+        # not_matched; otherwise preserve the prior 'unknown' vs (no-prior →)
+        # 'matched' semantics — there are no concrete ids to validate.
+        if type_values is None:
+            if required_list:
+                return 'not_matched'
+            if not has_no_prior_therapy:
+                return 'unknown'
+            return 'matched'
+        # Concrete patient class ids ([] or a list) → #286 per-concept validation.
+        from trials.services.omop.type_release_gate import resolve_type_validation
+        validated, has_unvalidated = resolve_type_validation(type_values)
+        # excluded: never drop an unvalidated id → conservatively reject.
+        if excluded_list and has_unvalidated:
+            return 'not_matched'
+        if len(get_overlap(sorted(validated), excluded_list)) > 0:
+            return 'not_matched'
+        # required: only validated ids count (stale dropped → fail-closed).
+        if len(required_list) > 0 and len(get_overlap(sorted(validated), required_list)) == 0:
+            return 'not_matched'
+        return 'matched'
+
     def _match_therapy_related_things(self, values, has_no_prior_therapy):
         results = []
         res = self._match_therapy_things(values, getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_required), getattr(self.trial, THERAPY_MATCH_PROFILE.therapies_excluded), has_no_prior_therapy)
@@ -477,13 +526,13 @@ class UserToTrialAttrMatcher:
 
         type_required = getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_required)
         type_excluded = getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded)
-        # FAIL-CLOSED types (#285): under EXACT_OMOP_THERAPY_TYPES, unknown patient
-        # class ids (therapy_types is None) against a trial that REQUIRES a type must
-        # be a hard not_matched — never fall through to 'unknown'/matched. (A
-        # known-empty [] already resolves to not_matched via the overlap check.)
-        if omop_therapy_types_enabled() and therapy_types is None and type_required:
-            return 'not_matched'
-        res = self._match_therapy_things(therapy_types, type_required, type_excluded, has_no_prior_therapy)
+        # OMOP-types (#285/#286): class-concept_id overlap, FAIL-CLOSED on unknown
+        # patient classes, with per-concept release validation applied asymmetrically
+        # (see _match_omop_type_things). Legacy path is byte-identical to before.
+        if omop_therapy_types_enabled():
+            res = self._match_omop_type_things(therapy_types, type_required, type_excluded, has_no_prior_therapy)
+        else:
+            res = self._match_therapy_things(therapy_types, type_required, type_excluded, has_no_prior_therapy)
         if res == 'not_matched':
             return res
         results.append(res)
