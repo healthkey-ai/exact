@@ -54,8 +54,10 @@ class MirrorRelease(models.Model):
     promop release manifest (promop#334); the loader (#250) fills them and moves
     STAGING → READY. Completeness is enforced at load by the ``__done`` sentinel
     + ``row_counts`` cross-check; the ``checksums`` are recorded for provenance —
-    byte-integrity verification against them is a tracked follow-up (#256), not
-    yet enforced.
+    byte-integrity verification against them is blocked cross-repo (promop's
+    ``checksums`` are ``{count, min_ctid, max_ctid}``, and ctids are meaningless to
+    a consumer, so real verification needs promop to emit a content hash; see the
+    ``sync`` module docstring), not yet enforced.
     """
 
     STAGING = 'staging'

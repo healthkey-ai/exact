@@ -219,6 +219,8 @@ def _load_table(client, release_id, table, expected_count):
     conn = connections[_DB]
     conn.ensure_connection()
     try:
+        # copy_expert is psycopg2-specific (the pinned driver); a psycopg3 move
+        # would use `cursor.copy(...)` instead.
         with conn.connection.cursor() as cur:
             cur.copy_expert(sql, _CopyStream(_lines()))
     except Exception as exc:
