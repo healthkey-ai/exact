@@ -541,12 +541,17 @@ class TrialQuerySet(models.QuerySet):
             return self
 
         # https://docs.djangoproject.com/en/5.1/ref/contrib/postgres/search/#full-text-search
+        # Also match the NCT / study_id so the search box finds a trial by its
+        # identifier, not only by title text (cb#3547). Dropped during the E1
+        # extraction; re-added to keep the two querysets convergent so CB can drain
+        # its by_titles override (QR3).
         return self.annotate(
             search=SearchVector("brief_title", "official_title"),
         ).filter(
             Q(search=SearchQuery(search_title, search_type="plain")) |
             Q(brief_title__icontains=search_title) |
-            Q(official_title__icontains=search_title)
+            Q(official_title__icontains=search_title) |
+            Q(study_id__icontains=search_title)
         )
 
     def by_therapy_id(self, therapy_ids: list[int]) -> models.QuerySet:
