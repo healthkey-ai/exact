@@ -44,6 +44,15 @@ def _mirror_concept(concept_id, invalid_reason=None):
 
 
 @pytest.fixture(autouse=True)
+def _reset_type_metrics():
+    """Zero the process-local #286 shadow counters before each test, so a metric
+    assertion can never inherit accumulated state from an earlier measure=True
+    queryset test (the counters are process-global)."""
+    from trials.services.omop import type_release_metrics as m
+    m.reset()
+
+
+@pytest.fixture(autouse=True)
 def _active_mirror(db):
     """Seed an ACTIVE vocab-mirror release with the test class ids present + valid,
     so #286 per-concept validation admits them (an absent/invalidated id is stale).
@@ -361,6 +370,40 @@ def test_queryset_no_active_release_fails_closed():
         .eligible_for_omop_therapy_types([PI_CLASS]).values_list('id', flat=True)
     )
     assert qs == {open_.id}
+
+
+@override_settings(**OMOP_TYPES)
+def test_shadow_metric_records_stale_ids_once_per_search():
+    # The queryset records the #286 shadow signal ONCE per search — not per trial —
+    # so a multi-trial candidate set still records a single stale-search event.
+    from trials.services.omop import type_release_metrics as m
+    a = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    b = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[IMID_CLASS])
+    Trial.objects.filter(id__in=[a.id, b.id]).eligible_for_omop_therapy_types([PI_CLASS, STALE_CLASS])
+    assert m.stale_search_count() == 1         # once per search, not once per trial
+    assert m.dropped_ids_total() == 1          # STALE_CLASS dropped; PI_CLASS valid
+
+
+@override_settings(**OMOP_TYPES)
+def test_shadow_metric_quiet_when_all_valid():
+    from trials.services.omop import type_release_metrics as m
+    m.reset()
+    needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    Trial.objects.filter(id=needs.id).eligible_for_omop_therapy_types([PI_CLASS])
+    assert m.stale_search_count() == 0         # no stale id → no log/record
+    assert m.dropped_ids_total() == 0
+
+
+@override_settings(**OMOP_TYPES)
+def test_shadow_metric_not_recorded_per_trial_in_matcher():
+    # The per-trial matcher leaves measure off → no per-trial flooding.
+    from trials.services.omop import type_release_metrics as m
+    m.reset()
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[int(PI_CLASS), int(STALE_CLASS)])
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    _match(trial, pi)
+    assert m.stale_search_count() == 0
 
 
 @override_settings(**OMOP_TYPES)

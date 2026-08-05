@@ -1204,7 +1204,9 @@ class TrialQuerySet(models.QuerySet):
         if not type_values:                                  # None (unknown) or [] (known-empty)
             return self.filter(**{f'{req}__exact': []})
         from trials.services.omop.type_release_gate import resolve_type_validation
-        validated, has_unvalidated = resolve_type_validation(type_values)
+        # measure=True: the queryset is the once-per-search call, so the #286 shadow
+        # staleness metric is recorded here, not per-trial in the matcher.
+        validated, has_unvalidated = resolve_type_validation(type_values, measure=True)
         values = sorted(validated)
         # required: overlap validated ids, or trials that require no types. All ids
         # stale (validated empty) → keep only no-required-type trials (fail-closed).
