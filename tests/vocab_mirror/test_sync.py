@@ -224,3 +224,36 @@ class TestSingletonLock:
             outcome = sync_vocab_mirror(client=FakeVocabClient())
         assert outcome.status == 'locked'
         assert not MirrorRelease.objects.exists()  # never touched the release table
+
+
+class TestCopyLoad:
+    """COPY-load correctness (#256): escaping + NULL-vs-empty distinction."""
+
+    def test_copy_escapes_special_chars_and_null_vs_empty(self):
+        tricky = [{
+            'concept_id': 200,
+            'concept_name': 'a\tb\nc\\d',       # tab, newline, backslash must survive
+            'domain_id': 'Drug',
+            'vocabulary_id': 'RxNorm',
+            'concept_class_id': '',             # empty string must NOT become NULL
+            'standard_concept': None,           # NULL must stay NULL
+            'concept_code': '2',
+            'valid_start_date': '1970-01-01',   # ISO date -> DateField
+            'valid_end_date': None,             # NULL date
+            'invalid_reason': None,
+            'source': None,
+        }]
+        snapshots = dict(_SNAPSHOTS, concept=tricky)
+        row_counts = {t: len(r) for t, r in snapshots.items()}
+        client = FakeVocabClient(manifest=_manifest(row_counts=row_counts),
+                                 snapshots=snapshots)
+
+        outcome = sync_vocab_mirror(client=client)
+
+        assert outcome.status == 'synced'
+        c = MirrorConcept.objects.get(concept_id=200)
+        assert c.concept_name == 'a\tb\nc\\d'   # special chars round-tripped
+        assert c.concept_class_id == ''          # empty string, not NULL
+        assert c.standard_concept is None        # NULL preserved
+        assert c.valid_start_date == date(1970, 1, 1)
+        assert c.valid_end_date is None          # NULL date preserved
