@@ -29,6 +29,10 @@ HAEMATOLOGICAL_ADEQUACY_ANC_MIN = 1500
 HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN = 100
 HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN = 9
 
+# Fixed LDH ULN used by the MIPI scores when no per-lab ULN is available (mirrors
+# CB's MIPI_LDH_ULN). See _mipi_inputs. EXACT has no per-lab ULN field yet.
+MIPI_LDH_ULN = 250
+
 
 # Per-criterion source fields for derived high-risk MCL criteria. A criterion's
 # absence is only confirmable once every source field it can be derived from is
@@ -61,6 +65,7 @@ HIGH_RISK_MCL_CRITERIA_SOURCES = {
     'ki67_gt_50': ['ki67_proliferation_index'],
     'ki67_gte_50': ['ki67_proliferation_index'],
     'high_mipi': ['_mipi_risk'],
+    'high_mipi_simplified': ['_mipi_simplified_risk'],
     'mipi_c_high': ['_mipi_c_risk'],
     'mipi_c_high_int_high_mipi': ['_mipi_c_risk'],
     'mipi_c_high_int_int_mipi': ['_mipi_c_risk'],
@@ -610,7 +615,8 @@ class PatientInfoAttributes:
         TP53 Disruption = True if patient has:
         - del17p13 in cytogenic_markers OR
         - del17p13 in molecular_markers OR
-        - tp53Mutation in molecular_markers
+        - tp53Mutation in molecular_markers OR
+        - p53_ihc >= 50%
         """
         cytogenic = self.patient_info.cytogenic_markers or ''
         molecular = self.patient_info.molecular_markers or ''
@@ -619,6 +625,10 @@ class PatientInfoAttributes:
         molecular_list = [m.strip() for m in molecular.split(',') if m.strip()]
 
         if 'del17p13' in cytogenic_list or 'del17p13' in molecular_list or 'tp53Mutation' in molecular_list:
+            return True
+
+        # p53 IHC overexpression (>= 50%) is a TP53-disruption surrogate (CB).
+        if self.patient_info.p53_ihc is not None and self.patient_info.p53_ihc >= 50:
             return True
 
         return False
@@ -685,8 +695,19 @@ class PatientInfoAttributes:
     # See follow-up issue for clinical-cutoff verification.
     # ---------------------------------------------------------------------
 
-    @cached_property
-    def mipi_risk(self):
+    def _mipi_inputs(self):
+        """Shared input resolution for the MIPI scores (continuous + simplified).
+
+        Returns (age, ecog, ldh, wbc_per_ul, ldh_uln) with WBC normalised to the
+        absolute count per microliter (cells/uL) via BaseConvertor, or None when an
+        input is missing or non-physiological (WBC and LDH must be > 0; ECOG 0 is a
+        valid performance status and is NOT rejected).
+
+        ldh_uln is fixed at MIPI_LDH_ULN (250) here: EXACT's PatientInfo has no
+        per-lab ULN field, so CB's per-lab path (#4512) converges only when CB's
+        data drains onto this code. The WBC blank-unit fallback stays CELLS/L —
+        EXACT's data contract is per-L (see mipi_risk / CB #4559 host-difference).
+        """
         pi = self.patient_info
         age = pi.patient_age
         ecog = pi.ecog_performance_status
@@ -698,19 +719,25 @@ class PatientInfoAttributes:
         if float(wbc) <= 0 or float(ldh) <= 0:
             return None
 
-        # The MIPI formula takes WBC as the absolute count per microliter (e.g.
-        # 7000 -> log10(7000)), per Hoster et al. 2008. The previous code
-        # converted to cells/L and divided by 1e9, i.e. used the x10^9/L value
-        # (7 -> log10(7)), under-scoring this term by log10(1000) = 3 (~2.82
-        # points) and systematically under-classifying MCL risk (CB #4421).
-        # ULN proxy 250 mirrors CB; revisit if a per-lab ULN becomes available.
+        ldh_uln = MIPI_LDH_ULN
         wbc_per_ul = float(BaseConvertor.call(
             wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/UL'
         ))
+        return age, ecog, ldh, wbc_per_ul, ldh_uln
+
+    @cached_property
+    def mipi_risk(self):
+        # The MIPI formula takes WBC as the absolute count per microliter (e.g.
+        # 7000 -> log10(7000)), per Hoster et al. 2008 (CB #4421). Inputs shared
+        # with mipi_simplified_risk via _mipi_inputs().
+        inputs = self._mipi_inputs()
+        if inputs is None:
+            return None
+        age, ecog, ldh, wbc_per_ul, ldh_uln = inputs
         score = (
             0.03535 * age
             + 0.6978 * (1 if ecog >= 2 else 0)
-            + 1.367 * log10(float(ldh) / 250)
+            + 1.367 * log10(float(ldh) / ldh_uln)
             + 0.9393 * log10(wbc_per_ul)
         )
 
@@ -720,6 +747,51 @@ class PatientInfoAttributes:
         # 5.7-<6.2 / high >=6.2), matching the vocab label "High MIPI Score >=6.2"
         # (CB migration 0370, SME-confirmed #4478).
         elif score < 6.2:
+            return 'intermediate'
+        return 'high'
+
+    @cached_property
+    def mipi_simplified_risk(self):
+        """Simplified MIPI (sMIPI) categorical risk: 'low' | 'intermediate' | 'high'.
+
+        A point-based score distinct from the continuous mipi_risk; the two are
+        NOT interchangeable (a patient can be intermediate by one and high by the
+        other), so trials citing the simplified index match on this, not on
+        mipi_risk (see CB #4421). Points per the Hoster simplified MIPI:
+
+            Age (yrs):     <50=0, 50-59=1, 60-69=2, >=70=3
+            ECOG:          0-1=0, >=2=2
+            LDH/ULN ratio: <0.67=0, 0.67-<1.0=1, 1.0-<1.5=2, >=1.5=3
+            WBC (x10^9/L): <6.7=0, 6.7-<10=1, 10-<15=2, >=15=3
+            Total:         0-3 low, 4-5 intermediate, >=6 high
+
+        Bands are half-open: the published table's 0.99 / 9.9 / 14.9 upper bounds
+        are display forms of the 1.0 / 10 / 15 cutpoints.
+        """
+        inputs = self._mipi_inputs()
+        if inputs is None:
+            return None
+        age, ecog, ldh, wbc_per_ul, ldh_uln = inputs
+
+        def _band(value, thresholds):
+            # thresholds ascending; returns the count of thresholds the value
+            # meets or exceeds (0..len). With 3 thresholds this is the 0..3 scale.
+            points = 0
+            for t in thresholds:
+                if value >= t:
+                    points += 1
+            return points
+
+        score = (
+            _band(age, [50, 60, 70])
+            + (2 if ecog >= 2 else 0)
+            + _band(float(ldh) / ldh_uln, [0.67, 1.0, 1.5])
+            + _band(wbc_per_ul / 1000, [6.7, 10, 15])
+        )
+
+        if score <= 3:
+            return 'low'
+        elif score <= 5:
             return 'intermediate'
         return 'high'
 
@@ -854,6 +926,12 @@ class PatientInfoAttributes:
         if mipi == 'high':
             criteria.append('high_mipi')
 
+        # Simplified MIPI is a distinct index from the continuous score: a patient
+        # can be high by one and not the other, so it is emitted independently
+        # (CB #4421). Trials phrased "high MIPI (or simplified)" carry both.
+        if self.mipi_simplified_risk == 'high':
+            criteria.append('high_mipi_simplified')
+
         if mipi_c == 'high':
             criteria.append('mipi_c_high')
         elif mipi_c == 'high_intermediate':
@@ -901,6 +979,8 @@ class PatientInfoAttributes:
             return self.mipi_risk is None
         if source == '_mipi_c_risk':
             return self.mipi_c_risk is None
+        if source == '_mipi_simplified_risk':
+            return self.mipi_simplified_risk is None
         if source == '_notch_specific':
             # NOTCH1/NOTCH2 cannot be disambiguated while the combined option is
             # selected, so a gene-specific code stays undeterminable then.

@@ -348,3 +348,71 @@ class TestHighRiskMclUnknownCodes:
         all_unknown = attrs.high_risk_mcl_criteria_all_unknown_codes()
         assert 'tp53_mutation' in all_unknown
         assert 'del17p' in all_unknown
+
+class TestSimplifiedMipiRisk:
+    """Simplified MIPI (sMIPI) point score — distinct from the continuous MIPI
+    (CB #4421). Points: age <50=0/50-59=1/60-69=2/>=70=3; ecog >=2=+2;
+    LDH/ULN <0.67=0/..<1=1/..<1.5=2/>=1.5=3; WBC(x10^9/L) <6.7=0/..<10=1/..<15=2/>=15=3.
+    Total 0-3 low, 4-5 intermediate, >=6 high."""
+
+    def test_low(self):
+        # age 45(0)+ecog0(0)+ldh 100/250=0.4(0)+wbc 5000=>5(0) = 0
+        pi = _mcl_patient(patient_age=45, ecog_performance_status=0,
+                          white_blood_cell_count=5000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=100)
+        assert PatientInfoAttributes(pi).mipi_simplified_risk == 'low'
+
+    def test_intermediate(self):
+        # age 65(2)+ecog0(0)+ldh 250/250=1.0(2)+wbc 5000=>5(0) = 4
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=5000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
+        assert PatientInfoAttributes(pi).mipi_simplified_risk == 'intermediate'
+
+    def test_high(self):
+        # age 75(3)+ecog2(2)+ldh 500/250=2.0(3)+wbc 20000=>20(3) = 11
+        pi = _mcl_patient(patient_age=75, ecog_performance_status=2,
+                          white_blood_cell_count=20000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=500)
+        assert PatientInfoAttributes(pi).mipi_simplified_risk == 'high'
+
+    def test_distinct_from_continuous_mipi(self):
+        # The two indices are NOT interchangeable (CB #4421): age 70, ecog 0,
+        # ldh 250, wbc 7000/uL is continuous 'intermediate' (~6.09) but simplified
+        # 'high' (3+0+2+1 = 6).
+        pi = _mcl_patient(patient_age=70, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
+        attrs = PatientInfoAttributes(pi)
+        assert attrs.mipi_risk == 'intermediate'
+        assert attrs.mipi_simplified_risk == 'high'
+
+    @pytest.mark.parametrize('missing', [
+        {'patient_age': None}, {'ecog_performance_status': None},
+        {'white_blood_cell_count': None}, {'lactate_dehydrogenase_level': None},
+    ])
+    def test_none_when_input_missing(self, missing):
+        assert PatientInfoAttributes(_mcl_patient(**missing)).mipi_simplified_risk is None
+
+    def test_high_mipi_simplified_emitted_independently(self):
+        # A patient high by simplified but not continuous still carries the
+        # high_mipi_simplified criterion (and NOT high_mipi).
+        pi = _mcl_patient(patient_age=70, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
+        codes = (PatientInfoAttributes(pi).high_risk_mcl_criteria or '').split(',')
+        assert 'high_mipi_simplified' in codes
+        assert 'high_mipi' not in codes
+
+
+class TestTp53DisruptionP53Ihc:
+    def test_p53_ihc_gte_50_triggers_disruption(self):
+        # CB catch-up: p53 IHC overexpression (>=50%) is a TP53-disruption surrogate.
+        assert PatientInfoAttributes(_mcl_patient(p53_ihc=60)).tp53_disruption is True
+        assert PatientInfoAttributes(_mcl_patient(p53_ihc=50)).tp53_disruption is True
+
+    def test_p53_ihc_below_50_without_markers_is_not_disruption(self):
+        assert PatientInfoAttributes(_mcl_patient(p53_ihc=40)).tp53_disruption is False
+
+    def test_p53_ihc_none_without_markers_is_not_disruption(self):
+        assert PatientInfoAttributes(_mcl_patient(p53_ihc=None)).tp53_disruption is False
