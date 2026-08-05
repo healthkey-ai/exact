@@ -46,7 +46,7 @@ def _normalized(type_ids):
     return tuple(sorted((str(x).strip() for x in type_ids), key=str))
 
 
-def resolve_type_validation(type_ids):
+def resolve_type_validation(type_ids, measure=False):
     """Validate the patient's raw class ``type_ids`` at the pinned release.
 
     Returns ``(validated, has_unvalidated)`` where ``validated`` is the set (of
@@ -55,6 +55,11 @@ def resolve_type_validation(type_ids):
 
     ``type_ids`` None/``[]`` → ``(set(), False)``: nothing to validate here; the
     existing #285 unknown/empty fail-closed handles those patient sets upstream.
+
+    ``measure=True`` records the #286 shadow staleness metric — once per search (the
+    queryset passes it; the per-trial matcher / detail display leave it False so the
+    signal is emitted once per search, not once per trial). Observation only: the
+    return value is identical either way.
     """
     if not type_ids:
         return set(), False
@@ -69,6 +74,12 @@ def resolve_type_validation(type_ids):
             memo[cache_key] = _validate(key, release_id)
         validated = memo[cache_key]
     has_unvalidated = any(cid not in validated for cid in key)
+    if measure:
+        from trials.services.omop.type_release_metrics import record_type_staleness
+        # Set-diff (not a per-element sum) so a duplicated wire id isn't over-counted —
+        # consistent with the set semantics used for matching.
+        dropped = len(set(key) - validated)
+        record_type_staleness(dropped, has_unvalidated)
     return validated, has_unvalidated
 
 
