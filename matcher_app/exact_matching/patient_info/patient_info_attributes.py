@@ -746,7 +746,10 @@ class PatientInfoAttributes:
 
         if score < 5.7:
             return 'low'
-        elif score < 6.5:
+        # High cutoff is >= 6.2 per Hoster et al. 2008 (low <5.7 / intermediate
+        # 5.7-<6.2 / high >=6.2), matching the vocab label "High MIPI Score >=6.2"
+        # (CB migration 0370, SME-confirmed #4478).
+        elif score < 6.2:
             return 'intermediate'
         return 'high'
 
