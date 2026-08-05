@@ -42,6 +42,7 @@ HIGH_RISK_MCL_CRITERIA_DATA = [
     {'code': 'ki67_gt_50', 'title': 'Ki67 >50%'},
     {'code': 'ki67_gte_50', 'title': 'Ki67 ≥50%'},
     {'code': 'high_mipi', 'title': 'High MIPI Score ≥6.2'},
+    {'code': 'high_mipi_simplified', 'title': 'High Simplified MIPI (sMIPI) Score ≥6'},
     {'code': 'mipi_c_high', 'title': 'MIPI-c High (High MIPI + Ki67 ≥30%)'},
     {'code': 'mipi_c_high_int_high_mipi', 'title': 'MIPI-c High-Intermediate (High MIPI + Ki67 <30%)'},
     {'code': 'mipi_c_high_int_int_mipi', 'title': 'MIPI-c High-Intermediate (Intermediate MIPI + Ki67 ≥30%)'},
