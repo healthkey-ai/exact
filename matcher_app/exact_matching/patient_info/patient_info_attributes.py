@@ -263,7 +263,11 @@ class PatientInfoAttributes:
 
     @cached_property
     def disease_code(self):
-        disease = str(self.patient_info.disease).lower()
+        # Tolerate surrounding whitespace + None/empty (CB #4323): a bare
+        # str(None).lower() would be 'none'. Kept consistent with the MCL disease
+        # gate in normalize._normalize_mcl_derivations so a padded title can't
+        # resolve here to a code but skip derivation there.
+        disease = (self.patient_info.disease or '').strip().lower()
         if disease == 'multiple myeloma':
             return 'MM'
         elif disease == 'follicular lymphoma':
