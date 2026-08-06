@@ -85,5 +85,59 @@ def test_retrieve_endpoint_reports_match_via_view():
     assert isinstance(body['matchReasons'], list)
 
 
-# NOTE: GET /trials/<id>/ with NO patient is a pre-existing 500 (TrialTemplates
-# renders patient-relative attribute values) — unrelated to this change.
+@pytest.mark.parametrize('trial_kwargs', [
+    {'age_low_limit': 18},                                    # demographic conflict
+    {'consent_capability_required': True, 'stages': ['I'],    # boolean/general criteria
+     'has_stages': True},
+    {'omop_therapy_components_excluded': [1511646],           # OMOP therapy criteria
+     'omop_therapies_required': [12345]},
+])
+def test_detail_no_patient_renders_without_match(db, trial_kwargs):
+    """#318: with no patient context the detail view renders the trial's criteria
+    but reports NO match (matchScore/matchingType null) — it must neither 500 on a
+    None-patient deref (any criterion family) nor fabricate a favourable match from
+    default patient state. A conflicting criterion must not read as matched."""
+    trial = TrialFactory(disease='multiple myeloma', **trial_kwargs)
+    data = TrialDetailsSerializer(trial, context=_detail_context(None)).data
+
+    assert data['matchScore'] is None
+    assert data['matchingType'] is None
+    # details is a dict of group -> list[field dict]; flatten to field dicts.
+    fields = [f for v in data['details'].values() if isinstance(v, list)
+              for f in v if isinstance(f, dict)]
+    assert fields, 'criteria should still render without a patient'
+    # any patient-relative (ufield) criterion that renders must read 'unknown',
+    # never a fabricated matched/not-matched from default patient state.
+    patient_relative = [f for f in fields if f.get('ufield')]
+    assert all(f.get('matchingType') == 'unknown' for f in patient_relative), \
+        {f['name']: f.get('matchingType') for f in patient_relative}
+
+
+def test_detail_no_patient_therapy_criteria_render_unknown(db):
+    """#318: OMOP therapy criteria (ufield) render without a patient and read
+    'unknown' — the removed therapies() early-return would otherwise hide them."""
+    trial = TrialFactory(disease='multiple myeloma',
+                         omop_therapy_components_excluded=[1511646],
+                         omop_therapies_required=[12345])
+    data = TrialDetailsSerializer(trial, context=_detail_context(None)).data
+    fields = [f for v in data['details'].values() if isinstance(v, list)
+              for f in v if isinstance(f, dict)]
+    therapy = [f for f in fields if f.get('ufield') and 'omopConcepts' not in f
+               and f.get('matchingType')]
+    assert therapy, 'therapy criteria should render without a patient'
+    assert all(f['matchingType'] == 'unknown' for f in therapy), \
+        {f['name']: f['matchingType'] for f in therapy}
+
+
+@override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN)
+def test_retrieve_endpoint_no_patient_returns_200():
+    """End-to-end: GET /trials/<id>/ with auth but NO patient (no person_id, no
+    inline) returns 200 with a null match, not 500 (#318)."""
+    trial = TrialFactory(disease='multiple myeloma')
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {SERVICE_TOKEN}")
+    resp = client.get(f'/trials/{trial.id}/')
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['matchScore'] is None
+    assert body['matchingType'] is None
