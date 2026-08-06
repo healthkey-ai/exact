@@ -451,8 +451,8 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": "absolute_lymphocyte_count",
     },
     "qtcf_value": {
+        # QTcF applies to all diseases, not just CLL (CB #4145, SME-confirmed).
         "type": "max_value",
-        "disease": "CLL",
         "searchable": True,
         "attr": "qtcf_value",
     },

@@ -37,15 +37,20 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      # Pin pip < 24.1: the newer default pip removed
-      # pip._internal.utils.misc.get_runnable_pip, which a build-isolation path
-      # in `pip install -r requirements.txt` still imports -> ImportError.
-      # NOTE: the `pythonLocation` cache above caches the whole interpreter incl.
-      # pip, under a branch-independent key, so a single run that cached a
-      # corrupted pip (resolvelib `RequirementInformation` ImportError) poisoned
-      # every branch until the key was bumped. Removing that cache (keeping only
-      # ~/.cache/pip) is the durable fix — follow-up.
+      # The runner's cached pip is a broken 24.1+ mix: importing pip itself raises
+      # ImportError (get_runnable_pip / resolvelib `RequirementInformation`), so
+      # even `python -m pip install "pip<24.1"` can't run. Two layers of defence:
+      #  1. `ensurepip --upgrade` repairs pip from the stdlib-bundled wheel (it
+      #     unpacks without importing the broken pip);
+      #  2. the `pythonLocation` cache above (bumped v1 -> v2) is the actual root
+      #     cause — it caches the whole interpreter incl. pip under a
+      #     branch-independent key, so one run that cached a corrupted pip poisoned
+      #     every branch until the key was bumped.
+      # Then pin pip < 24.1 (a build-isolation path in `pip install -r
+      # requirements.txt` still imports get_runnable_pip, which 24.1 removed).
+      # Durable follow-up: drop the pythonLocation cache, keep only ~/.cache/pip.
       run: |
+        python -m ensurepip --upgrade
         python -m pip install "pip<24.1"
         pip install -r requirements.txt
 
