@@ -21,6 +21,13 @@ USER app
 WORKDIR /app
 ENV PATH="$PATH:/app/.local/bin"
 
+# requirements.txt installs the converged matcher as an editable local package
+# (`-e ./matcher_app`), so that directory must exist at pip time. Copy it in
+# before the install (cwd is WORKDIR /app, so `./matcher_app` resolves); the
+# later `COPY . /app` still brings the full tree. Without this the build fails
+# with "./matcher_app is not a valid editable requirement" (#313).
+COPY --chown=app:app matcher_app /app/matcher_app
+
 RUN python3 -m pip install --upgrade pip \
     && pip install --no-cache-dir -r /tmp/requirements.txt
 
