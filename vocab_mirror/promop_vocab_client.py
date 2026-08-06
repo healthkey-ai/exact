@@ -150,7 +150,12 @@ class PromopVocabClient:
         # verify it is the one we asked for, else promop served a different
         # release's rows under our label — fail closed.
         served = resp.headers.get('X-Vocab-Release-Id')
-        if served is not None and str(served).strip() != str(int(release_id)):
+        if served is None:
+            # Tolerated for backward-compat with a pre-#373 promop, but logged so a
+            # server that regresses and stops stamping loses the guard visibly.
+            logger.debug('snapshot %s: no X-Vocab-Release-Id header (unverified release)',
+                         table)
+        elif str(served).strip() != str(int(release_id)):
             resp.close()
             raise VocabSyncError(
                 f'snapshot {table}: X-Vocab-Release-Id {served!r} != requested '

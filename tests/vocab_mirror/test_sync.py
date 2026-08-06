@@ -299,15 +299,23 @@ class TestSupersededMidSync:
         assert not MirrorRelease.objects.filter(release_id=10).exists()  # discarded, not FAILED
 
     def test_relentless_supersede_gives_up_gracefully(self):
+        from vocab_mirror.sync import _SUPERSEDE_MAX_RETRIES
+
         class _Client:
+            def __init__(self):
+                self.polls = 0
+
             def get_latest_release(self, if_none_match=None):
+                self.polls += 1
                 return LatestRelease(not_modified=False,
                                      manifest=_manifest(release_id=20), etag='e20')
 
             def stream_snapshot(self, release_id, table):
                 raise VocabReleaseSuperseded('always superseded')
 
-        outcome = sync_vocab_mirror(client=_Client())
+        client = _Client()
+        outcome = sync_vocab_mirror(client=client)
 
         assert outcome.status == 'superseded'
-        assert not MirrorRelease.objects.exists()  # every stale staging discarded
+        assert client.polls == _SUPERSEDE_MAX_RETRIES  # re-resolved exactly the bound
+        assert not MirrorRelease.objects.exists()      # every stale staging discarded
