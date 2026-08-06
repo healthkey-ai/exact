@@ -24,7 +24,7 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
@@ -37,12 +37,15 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      # Pin pip < 24.1: the runner's default pip removed
-      # pip._internal.utils.misc.get_runnable_pip, which a build-isolation path
-      # in `pip install -r requirements.txt` still imports -> ImportError on
-      # install (tests never run). Deterministic fix until the offending build
-      # backend is upgraded.
+      # The runner's cached/toolcache pip is a broken 24.1+ mix: importing pip
+      # itself raises `ImportError: cannot import name 'get_runnable_pip'`, so
+      # even `python -m pip install "pip<24.1"` can't run. Repair pip first with
+      # the stdlib `ensurepip` bootstrap (it unpacks a bundled wheel without
+      # importing the broken pip), THEN pin pip < 24.1 — a build-isolation path
+      # in `pip install -r requirements.txt` still imports get_runnable_pip,
+      # which 24.1 removed. Deterministic fix until the build backend is fixed.
       run: |
+        python -m ensurepip --upgrade
         python -m pip install "pip<24.1"
         pip install -r requirements.txt
 
@@ -75,7 +78,7 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
