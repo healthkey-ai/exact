@@ -19,9 +19,10 @@ Guarantees (ADR 0002):
   :func:`register_release_match_check`). Ships the mirror-side check (the
   generation actually has data) and the component-category lookup cross-artifact
   check (#262: the lookup is stamped for this release and every lookup concept_id
-  exists in it). The trial ``omop_*`` projection check is still deferred — it has
-  no release provenance today and, living on the read-only ``trials`` DB, cannot
-  be made atomic with this ``default``-DB gate (tracked separately, Phase-T).
+  exists in it). The trial ``omop_*`` projection check (#265) reads CB's local
+  **attestation** (published into this ``default`` DB — never a racy cross-DB read
+  of the CB trials table); it runs **observe-only** until Phase-T (#263) puts the
+  graph on the eligibility path, then enforces (see ``_PROJECTION_GATE_ENFORCE``).
 """
 import logging
 
@@ -145,6 +146,41 @@ def _component_lookup_matches_release(release_id):
             f'component-category lookup references {len(missing)} concept_id(s) absent '
             f'from release {release_id} mirror concepts (e.g. {sample}); '
             'refusing to activate an inconsistent generation')
+
+
+# Enforce the projection gate only once the mirror graph is on the eligibility path
+# (Phase-T, #263). Until then eligibility matches the materialized omop_* columns
+# directly (no mirror read), so a projection/mirror release mismatch cannot yet
+# affect a verdict — the check runs OBSERVE-ONLY (logs, never blocks activation).
+#
+# ORDERING (do not flip early): a REMOTE CB cannot run EXACT's management command,
+# so in prod the only way an attestation gets published is the HTTP publish endpoint
+# (a #265 follow-up). Flipping this to True before that endpoint exists would
+# fail-close EVERY activation permanently (CB could never attest). Land the endpoint
+# first, confirm CB publishes, then enforce with Phase-T.
+_PROJECTION_GATE_ENFORCE = False
+
+
+@register_release_match_check
+def _projection_matches_release(release_id):
+    """Cross-artifact gate for the trial ``omop_*`` projection (#265 / ADR 0002 #4).
+
+    The projection is CB-owned on the trials DB; rather than a racy cross-DB read,
+    the gate checks for CB's **attestation** (published into EXACT's ``default`` DB
+    once CB has validated the projection for R). Missing attestation → the projection
+    is not known-consistent with R. **Observe-only until Phase-T**: log it and
+    activate anyway (eligibility doesn't read the mirror yet); flip
+    ``_PROJECTION_GATE_ENFORCE`` when the graph goes on the eligibility path.
+    """
+    from vocab_mirror.attestation import projection_attested
+    if projection_attested(release_id):
+        return
+    msg = (f'trial omop_* projection has no attestation for release {release_id} '
+           '(CB has not published projection-ready)')
+    if _PROJECTION_GATE_ENFORCE:
+        raise ReleaseMatchFailed(msg)
+    logger.warning('vocab activation (observe-only): %s; activating anyway '
+                   '(Phase-T not live)', msg)
 
 
 def _run_release_match_gate(release_id):
