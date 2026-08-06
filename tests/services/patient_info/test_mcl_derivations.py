@@ -247,10 +247,14 @@ class TestNormalizerWiring:
         'mantle cell lymphoma',
         'Mantle Cell Lymphoma',
         'MANTLE CELL LYMPHOMA',
+        '  Mantle Cell Lymphoma  ',  # #4323: surrounding whitespace tolerated
+        'mantle cell lymphoma ',
     ])
-    def test_disease_gate_is_case_insensitive(self, disease):
-        # str(pi.disease).lower() == 'mantle cell lymphoma' must accept any
-        # casing the API caller sends.
+    def test_disease_gate_is_case_and_whitespace_insensitive(self, disease):
+        # The disease gate must accept any casing AND surrounding whitespace the
+        # API caller sends, staying consistent with disease_code (#4323): a padded
+        # title resolves to MCL, so derivation must run (else MCL is matched on
+        # blank derived values).
         pi = _mcl_patient(disease=disease, largest_lesion_size=6)
         normalize_patient_info(pi)
         assert pi.bulky_disease_criteria == 'bulky_lesion_5cm'
@@ -434,3 +438,23 @@ class TestMclDiseaseScoping:
         from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING as M
         assert 'MCL' in M[attr]['disease'], (attr, M[attr]['disease'])
 
+
+
+class TestDiseaseCodeNormalization:
+    """disease_code (#4323): case + surrounding-whitespace tolerant, None-safe."""
+
+    @pytest.mark.parametrize('disease,expected', [
+        ('  Mantle Cell Lymphoma  ', 'MCL'),
+        ('mantle cell lymphoma', 'MCL'),
+        (' breast cancer ', 'BC'),
+        ('MULTIPLE MYELOMA', 'MM'),
+    ])
+    def test_strips_and_lowercases(self, disease, expected):
+        assert PatientInfoAttributes(_mcl_patient(disease=disease)).disease_code == expected
+
+    def test_none_disease_returns_none_not_crash(self):
+        # (disease or '').strip() avoids str(None).lower() == 'none'
+        assert PatientInfoAttributes(_mcl_patient(disease=None)).disease_code is None
+
+    def test_unknown_disease_returns_none(self):
+        assert PatientInfoAttributes(_mcl_patient(disease='glioblastoma')).disease_code is None
