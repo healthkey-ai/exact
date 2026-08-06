@@ -615,12 +615,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "disease": "BC",
         "attr": "menopausal_status",
     },
-    "metastatic_status": {
-        "type": "bool_restriction",
-        "searchable": True,
-        "disease": "BC",
-        "attr": "metastatic_required",
-    },
+    # metastatic_status removed (#4121) — redundant with stage / distant_metastasis_stage.
     "bone_only_metastasis_status": {
         "type": "bool_restriction",
         "searchable": True,

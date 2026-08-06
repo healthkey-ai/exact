@@ -36,7 +36,6 @@ ATTR_FALSE_VALUE_IS_BLANK = [
     'pulmonaryFunctionTestResultRequired',
     'boneImagingResultRequired',
     'noGeographicExposureRiskRequired',
-    'metastaticRequired',
     'boneOnlyMetastasisRequired',
     'measurableDiseaseByRecistRequired',
     'measurableDiseaseImwgRequired',
@@ -116,7 +115,6 @@ ATTR_DEPS_MAPPING = {
 
     # Computed in pre_save signal
     'flipiScore': ['flipiScoreOptions'],
-    'metastaticStatus': ['disease', 'stage'],
     'measurableDiseaseImwg': ['monoclonalProteinSerum', 'monoclonalProteinUrine', 'kappaFLC', 'lambdaFLC'],
     'lastTreatment': ['laterDate', 'secondLineDate', 'firstLineDate'],
     'geoPoint': ['country', 'postalCode', 'longitude', 'latitude'],
@@ -266,7 +264,6 @@ SUBFORM_ATTRS_MAPPING = {
     'meets_slim': ['clonal_plasma_cells', 'kappa_flc', 'lambda_flc', 'bone_lesions'],
     'hr_statuses_required': ['estrogen_receptor_status', 'progesterone_receptor_status'],
     'tnbc_status': ['estrogen_receptor_status', 'progesterone_receptor_status', 'her2_status'],
-    'metastatic_status': ['stage'],
     'measurable_disease_imwg': ['monoclonal_protein_serum', 'monoclonal_protein_urine', 'kappa_flc', 'lambda_flc'],
 }
 
@@ -400,7 +397,6 @@ ATTR_GROUP_MAPPING = {
     'tumorGradeMax': 'disease',
 
     'menopausalStatus': 'disease',
-    'metastaticRequired': 'disease',
     'toxicityGradeMax': 'disease',
 
     'histologicTypesRequired': 'disease',
