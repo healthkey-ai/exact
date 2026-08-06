@@ -283,6 +283,8 @@ class ProjectionAttestation(models.Model):
     run_id = models.CharField(max_length=255, blank=True, default='')
     trial_count = models.IntegerField(null=True, blank=True)
     checksum = models.CharField(max_length=128, blank=True, default='')
+    # auto_now: this is the LAST-attested time (a re-publish for the same release
+    # refreshes it), not a first-issued timestamp.
     issued_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

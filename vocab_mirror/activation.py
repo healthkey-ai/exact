@@ -152,6 +152,12 @@ def _component_lookup_matches_release(release_id):
 # (Phase-T, #263). Until then eligibility matches the materialized omop_* columns
 # directly (no mirror read), so a projection/mirror release mismatch cannot yet
 # affect a verdict — the check runs OBSERVE-ONLY (logs, never blocks activation).
+#
+# ORDERING (do not flip early): a REMOTE CB cannot run EXACT's management command,
+# so in prod the only way an attestation gets published is the HTTP publish endpoint
+# (a #265 follow-up). Flipping this to True before that endpoint exists would
+# fail-close EVERY activation permanently (CB could never attest). Land the endpoint
+# first, confirm CB publishes, then enforce with Phase-T.
 _PROJECTION_GATE_ENFORCE = False
 
 
