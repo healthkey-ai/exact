@@ -416,3 +416,21 @@ class TestTp53DisruptionP53Ihc:
 
     def test_p53_ihc_none_without_markers_is_not_disruption(self):
         assert PatientInfoAttributes(_mcl_patient(p53_ihc=None)).tp53_disruption is False
+
+
+class TestMclDiseaseScoping:
+    """QR4b structural catch-up (CB 17f4011c / #4232 / #4263 / #4145): shared
+    attrs now apply to MCL patients too, and qtcf_value applies to all diseases."""
+
+    MCL_SCOPED = [
+        'cytogenic_markers', 'molecular_markers', 'protein_expressions',
+        'tp53_disruption', 'hepatomegaly', 'lymphadenopathy',
+        'largest_lymph_node_size', 'splenomegaly', 'spleen_size',
+        'ki67_proliferation_index', 'meets_lugano',
+    ]
+
+    @pytest.mark.parametrize('attr', MCL_SCOPED)
+    def test_attr_is_mcl_scoped(self, attr):
+        from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING as M
+        assert 'MCL' in M[attr]['disease'], (attr, M[attr]['disease'])
+
