@@ -244,7 +244,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "cytogenic_markers": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
-        "disease": ["MM", "CLL"],
+        "disease": ["MM", "CLL", "MCL"],
         "attr": ["cytogenic_markers_required", "cytogenic_markers_excluded"],
         "uvalue_function": {
             "cytogenic_markers_required":
@@ -256,7 +256,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "molecular_markers": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
-        "disease": ["MM", "CLL"],
+        "disease": ["MM", "CLL", "MCL"],
         "attr": ["molecular_markers_required", "molecular_markers_excluded"],
         "uvalue_function": {
             "molecular_markers_required":
@@ -325,7 +325,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "protein_expressions": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "attr": ["protein_expressions_required", "protein_expressions_excluded"],
         "uvalue_function": {
             "protein_expressions_required":
@@ -365,7 +365,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "tp53_disruption": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "attr": ["tp53_disruption_required", "tp53_disruption_excluded"],
         "uvalue_function": {
             "tp53_disruption_required": lambda patient_info: patient_info.tp53_disruption,
@@ -380,7 +380,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     },
     "hepatomegaly": {
         "type": "bool_restriction",
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "hepatomegaly_required",
     },
@@ -392,25 +392,25 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     },
     "lymphadenopathy": {
         "type": "bool_restriction",
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "lymphadenopathy_required",
     },
     "largest_lymph_node_size": {
         "type": "min_value",
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "largest_lymph_node_size",
     },
     "splenomegaly": {
         "type": "bool_restriction",
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "splenomegaly_required",
     },
     "spleen_size": {
         "type": "min_value",
-        "disease": "CLL",
+        "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "spleen_size",
     },
@@ -834,7 +834,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "ki67_proliferation_index": {
         "type": "min_max_value",
         "searchable": True,
-        "disease": "BC",
+        "disease": ["BC", "MCL"],
         "attr": "ki67_proliferation_index",
     },
     # BC-specific END
@@ -1084,7 +1084,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "searchable": True,
         "is_computed_value": True,
         "under_user_control": True,
-        "disease": "FL",
+        "disease": ["FL", "MCL"],
         "attr": "meets_lugano",
     },
     "meets_gelf": {
