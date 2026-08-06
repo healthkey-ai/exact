@@ -212,6 +212,13 @@ class TestMetastaticStatus:
         result = _normalize_promop_row(_row(metastasis_status='Unknown'))
         assert 'metastatic_status' not in result
 
+    def test_not_a_matching_attr(self):
+        # #4121 catch-up: metastatic_status is still a normalized PatientInfo field
+        # (above), but it was removed as a trial-matching attr (redundant with
+        # stage / distant_metastasis_stage) — it must not be in the mapping.
+        from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
+        assert 'metastatic_status' not in USER_TO_TRIAL_ATTRS_MAPPING
+
 
 # ---------------------------------------------------------------------------
 # Staging modality — "c → Clinical" → "c"
