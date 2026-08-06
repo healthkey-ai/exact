@@ -113,9 +113,12 @@ def test_detail_no_patient_renders_without_match(db, trial_kwargs):
         {f['name']: f.get('matchingType') for f in patient_relative}
 
 
+@override_settings(EXACT_OMOP_THERAPY=True)
 def test_detail_no_patient_therapy_criteria_render_unknown(db):
     """#318: OMOP therapy criteria (ufield) render without a patient and read
-    'unknown' — the removed therapies() early-return would otherwise hide them."""
+    'unknown' — the removed therapies() early-return would otherwise hide them.
+    Pins EXACT_OMOP_THERAPY so THERAPY_MATCH_PROFILE reads the omop_* columns set
+    below regardless of the ambient default (CI runs with the flag off)."""
     trial = TrialFactory(disease='multiple myeloma',
                          omop_therapy_components_excluded=[1511646],
                          omop_therapies_required=[12345])
