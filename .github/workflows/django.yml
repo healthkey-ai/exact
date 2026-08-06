@@ -37,22 +37,21 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      # The runner's cached pip is a broken 24.1+ mix: importing pip itself raises
-      # ImportError (get_runnable_pip / resolvelib `RequirementInformation`), so
-      # even `python -m pip install "pip<24.1"` can't run. Two layers of defence:
-      #  1. `ensurepip --upgrade` repairs pip from the stdlib-bundled wheel (it
-      #     unpacks without importing the broken pip);
-      #  2. the `pythonLocation` cache above (bumped v1 -> v2) is the actual root
-      #     cause — it caches the whole interpreter incl. pip under a
-      #     branch-independent key, so one run that cached a corrupted pip poisoned
-      #     every branch until the key was bumped.
-      # Then pin pip < 24.1 (a build-isolation path in `pip install -r
-      # requirements.txt` still imports get_runnable_pip, which 24.1 removed).
-      # Durable follow-up: drop the pythonLocation cache, keep only ~/.cache/pip.
+      # The runner's toolcache pip (26.x) ships a broken vendored resolvelib —
+      # `ImportError: cannot import name 'RequirementInformation' from
+      # pip._vendor.resolvelib.structs` — so ANY `pip`/`python -m pip` command
+      # aborts at import, including `pip install "pip<24.1"` (it can't run to
+      # downgrade itself), and `ensurepip --upgrade` is a no-op because the broken
+      # pip is *newer* than the stdlib-bundled wheel. Bootstrap a clean pip < 24.1
+      # with get-pip.py, which runs its own zip-bundled pip and never imports the
+      # broken one. Pin < 24.1 because a build-isolation path in `pip install -r
+      # requirements.txt` still imports get_runnable_pip, which 24.1 removed.
+      # (The pythonLocation cache above, bumped v1 -> v2, also caches pip, so a
+      # cache hit can mask this; get-pip.py fixes the cache-miss base pip too.)
       run: |
-        python -m ensurepip --upgrade
-        python -m pip install "pip<24.1"
-        pip install -r requirements.txt
+        curl -fsS https://bootstrap.pypa.io/pip/get-pip.py -o /tmp/get-pip.py
+        python /tmp/get-pip.py "pip<24.1"
+        python -m pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
