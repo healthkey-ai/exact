@@ -260,3 +260,30 @@ class ComponentLookupStamp(models.Model):
 
     def __str__(self):
         return f'component-lookup stamped @ release {self.release_id}'
+
+
+class ProjectionAttestation(models.Model):
+    """CB's attestation that the trial ``omop_*`` projection is built + validated for
+    a vocabulary release (#265 / ADR 0002 mechanism #4).
+
+    The projection lives on the CB-owned trials DB; a live cross-DB read at mirror
+    activation is racy. Instead, once CB has run a release-wide backfill and verified
+    every trial is stamped for release R, it **publishes an attestation here** (into
+    EXACT's ``default`` DB, via ``publish_projection_attestation`` / the
+    ``publish_projection_attestation`` command, or a future HTTP endpoint). The
+    activation release-match gate reads only this local row, so the pointer flip and
+    the gate decision stay atomic on one DB.
+
+    One row per ``release_id`` (upserted on re-publish). ``run_id`` / ``trial_count``
+    / ``checksum`` are the CB provenance the gate can audit. The gate is **observe-
+    only** until Phase-T (#263) puts the graph on the eligibility path.
+    """
+
+    release_id = models.BigIntegerField(unique=True)
+    run_id = models.CharField(max_length=255, blank=True, default='')
+    trial_count = models.IntegerField(null=True, blank=True)
+    checksum = models.CharField(max_length=128, blank=True, default='')
+    issued_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'projection attested @ release {self.release_id}'
