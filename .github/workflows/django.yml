@@ -37,7 +37,14 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      run: pip install -r requirements.txt
+      # Pin pip < 24.1: the runner's default pip removed
+      # pip._internal.utils.misc.get_runnable_pip, which a build-isolation path
+      # in `pip install -r requirements.txt` still imports -> ImportError on
+      # install (tests never run). Deterministic fix until the offending build
+      # backend is upgraded.
+      run: |
+        python -m pip install "pip<24.1"
+        pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest

@@ -235,7 +235,10 @@ def _normalize_mcl_derivations(pi) -> None:
     patient_info.py:215). Skips non-MCL patients so other diseases keep
     whatever defaults / inputs they had.
     """
-    if str(pi.disease).lower() != 'mantle cell lymphoma':
+    # Whitespace/None-tolerant, consistent with PatientInfoAttributes.disease_code
+    # (CB #4323): else a padded 'mantle cell lymphoma ' would resolve to disease_code
+    # 'MCL' (MCL attrs matched) yet skip derivation here (MCL matched on blank values).
+    if (pi.disease or '').strip().lower() != 'mantle cell lymphoma':
         return
 
     # Late import: PatientInfoAttributes imports normalize indirectly via
