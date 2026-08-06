@@ -49,13 +49,20 @@ from vocab_mirror.models import (
     MirrorRelease,
     MirrorVocabulary,
 )
-from vocab_mirror.promop_vocab_client import PromopVocabClient, VocabSyncError
+from vocab_mirror.promop_vocab_client import (
+    PromopVocabClient,
+    VocabReleaseSuperseded,
+    VocabSyncError,
+)
 
 logger = logging.getLogger(__name__)
 
 _DB = 'default'  # the mirror lives on `default` (db_router / ADR §Placement)
 # Fixed 64-bit key for the sync singleton advisory lock.
 _SYNC_ADVISORY_LOCK_KEY = 8234502250
+# How many times one run re-resolves /latest after a mid-sync supersede (409)
+# before deferring to the next scheduled run (promop#371/#373).
+_SUPERSEDE_MAX_RETRIES = 3
 
 # promop#334 table slug -> mirror model. EXACT syncs exactly the tables it needs.
 TABLE_MODELS = {
@@ -73,6 +80,7 @@ class SyncOutcome:
     # 'synced' (loaded + activated) | 'activated' (recovered a stranded READY) |
     # 'partial' (subset load, left STAGING, not activated) |
     # 'loaded_not_activated' (READY but the release-match gate rejected it) |
+    # 'superseded' (releases kept publishing mid-sync; deferred to the next run) |
     # 'locked' (another sync holds the advisory lock)
     status: str
     release_id: int | None = None
@@ -271,6 +279,27 @@ def _reap_best_effort():
 
 
 def _do_sync(client, tables, activate):
+    """Run one sync, restarting if the release is superseded mid-stream.
+
+    promop's snapshots are latest-only (promop#371/#373): a newer release
+    published between our ``/latest`` poll and a snapshot stream surfaces as a 409
+    (``VocabReleaseSuperseded``). That is a re-resolve signal, not a failure — poll
+    ``/latest`` again and load the new release, bounded so rapid publishing can't
+    spin forever (the next scheduled run picks up where we left off).
+    """
+    for attempt in range(_SUPERSEDE_MAX_RETRIES):
+        try:
+            return _do_sync_once(client, tables, activate)
+        except VocabReleaseSuperseded as exc:
+            logger.info('vocab sync: %s; re-resolving /latest (attempt %d/%d)',
+                        exc, attempt + 1, _SUPERSEDE_MAX_RETRIES)
+    logger.warning(
+        'vocab sync: releases kept superseding after %d attempts; leaving it for '
+        'the next run', _SUPERSEDE_MAX_RETRIES)
+    return SyncOutcome(status='superseded')
+
+
+def _do_sync_once(client, tables, activate):
     # Only a full-table load may be activated — activating a subset would put an
     # incomplete generation live (empty relationship/ancestor tables → traversal
     # silently returns nothing). Subset loads (e.g. `--tables concept`) stage but
@@ -331,6 +360,15 @@ def _do_sync(client, tables, activate):
     try:
         for table in tables:
             counts[table] = _load_table(client, release_id, table, row_counts.get(table))
+    except VocabReleaseSuperseded as exc:
+        # A newer release published mid-sync (promop snapshots are latest-only).
+        # This release is stale, not corrupt — discard its staging (rows + the
+        # MirrorRelease row) and let the caller re-resolve /latest and restart.
+        _delete_release_rows(release_id)
+        rel.delete(using=_DB)
+        logger.info('vocab sync: release %s superseded mid-sync, discarded: %s',
+                    release_id, exc)
+        raise
     except Exception as exc:
         rel.state = MirrorRelease.FAILED
         rel.save(using=_DB, update_fields=['state', 'updated_at'])

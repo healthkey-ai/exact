@@ -16,7 +16,11 @@ from vocab_mirror.models import (
     MirrorRelease,
     MirrorVocabulary,
 )
-from vocab_mirror.promop_vocab_client import LatestRelease, VocabSyncError
+from vocab_mirror.promop_vocab_client import (
+    LatestRelease,
+    VocabReleaseSuperseded,
+    VocabSyncError,
+)
 from vocab_mirror.sync import sync_vocab_mirror
 
 pytestmark = pytest.mark.django_db
@@ -257,3 +261,61 @@ class TestCopyLoad:
         assert c.standard_concept is None        # NULL preserved
         assert c.valid_start_date == date(1970, 1, 1)
         assert c.valid_end_date is None          # NULL date preserved
+
+
+class TestSupersededMidSync:
+    """promop snapshots are latest-only (#373/#301): a mid-sync 409 must re-resolve
+    /latest and restart, never mark the release FAILED."""
+
+    def test_supersede_reresolves_latest_and_activates_new_release(self):
+        class _Client:
+            def __init__(self):
+                self.polls = 0
+
+            def get_latest_release(self, if_none_match=None):
+                self.polls += 1
+                rid = 10 if self.polls == 1 else 11
+                return LatestRelease(not_modified=False,
+                                     manifest=_manifest(release_id=rid), etag=f'e{rid}')
+
+            def stream_snapshot(self, release_id, table):
+                # Eager (like the real client): raise at call time, not inside the
+                # generator, so a supersede never reaches the COPY.
+                if release_id == 10:            # stale mid-sync
+                    raise VocabReleaseSuperseded('release 10 superseded')
+                return self._rows(table)         # release 11 streams normally
+
+            @staticmethod
+            def _rows(table):
+                rows = _SNAPSHOTS[table]
+                yield from rows
+                yield {'__done': True, 'rows': len(rows)}
+
+        outcome = sync_vocab_mirror(client=_Client())
+
+        assert outcome.status == 'synced'
+        assert outcome.release_id == 11
+        assert active_release_id() == 11
+        assert not MirrorRelease.objects.filter(release_id=10).exists()  # discarded, not FAILED
+
+    def test_relentless_supersede_gives_up_gracefully(self):
+        from vocab_mirror.sync import _SUPERSEDE_MAX_RETRIES
+
+        class _Client:
+            def __init__(self):
+                self.polls = 0
+
+            def get_latest_release(self, if_none_match=None):
+                self.polls += 1
+                return LatestRelease(not_modified=False,
+                                     manifest=_manifest(release_id=20), etag='e20')
+
+            def stream_snapshot(self, release_id, table):
+                raise VocabReleaseSuperseded('always superseded')
+
+        client = _Client()
+        outcome = sync_vocab_mirror(client=client)
+
+        assert outcome.status == 'superseded'
+        assert client.polls == _SUPERSEDE_MAX_RETRIES  # re-resolved exactly the bound
+        assert not MirrorRelease.objects.exists()      # every stale staging discarded

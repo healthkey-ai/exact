@@ -34,6 +34,14 @@ class VocabSyncError(Exception):
     """Any hard failure talking to the vocab-releases API (fail-closed)."""
 
 
+class VocabReleaseSuperseded(Exception):
+    """The requested release is no longer the latest — promop's snapshot endpoint
+    is latest-only and returned 409 (promop#371/#373). NOT a failure: the caller
+    should re-resolve ``/latest`` and restart the sync on the new release. Kept
+    distinct from ``VocabSyncError`` so the sync flow never marks the release
+    FAILED for this."""
+
+
 @dataclass
 class LatestRelease:
     not_modified: bool
@@ -102,7 +110,14 @@ class PromopVocabClient:
         return LatestRelease(not_modified=False, manifest=manifest, etag=resp.headers.get('ETag'))
 
     def stream_snapshot(self, release_id, table):
-        """Yield parsed NDJSON objects for one table snapshot (incl. the sentinel)."""
+        """Return an iterator of parsed NDJSON objects for one table snapshot
+        (incl. the sentinel).
+
+        The request and its **status + header checks are eager** (done here, before
+        the iterator is returned), NOT inside the generator: a supersede (409) or a
+        bad response is raised at call time, so it can never abort a mid-flight COPY
+        on the consumer side. Only the row iteration is lazy.
+        """
         if not self.base_url:
             raise VocabSyncError('PROMOP_VOCAB_BASE / PROMOP_API_BASE is not configured')
         url = f'{self.base_url}/api/v1/vocab-releases/{int(release_id)}/snapshot/{table}/'
@@ -119,12 +134,40 @@ class PromopVocabClient:
             )
         except requests.RequestException as exc:
             raise VocabSyncError(f'snapshot {table} request failed: {exc}') from exc
+
+        if resp.status_code == 409:
+            # Latest-only snapshots (promop#371/#373): a newer release published
+            # since we resolved /latest. Re-resolve + restart, never fail closed.
+            resp.close()
+            raise VocabReleaseSuperseded(
+                f'snapshot {table}: release {int(release_id)} is no longer the '
+                f'latest published release (409)')
+        if not resp.ok:
+            code, reason = resp.status_code, resp.reason
+            resp.close()
+            raise VocabSyncError(f'snapshot {table} -> {code} {reason}')
+        # Every snapshot response stamps the release it reflects (promop#373);
+        # verify it is the one we asked for, else promop served a different
+        # release's rows under our label — fail closed.
+        served = resp.headers.get('X-Vocab-Release-Id')
+        if served is None:
+            # Tolerated for backward-compat with a pre-#373 promop, but logged so a
+            # server that regresses and stops stamping loses the guard visibly.
+            logger.debug('snapshot %s: no X-Vocab-Release-Id header (unverified release)',
+                         table)
+        elif str(served).strip() != str(int(release_id)):
+            resp.close()
+            raise VocabSyncError(
+                f'snapshot {table}: X-Vocab-Release-Id {served!r} != requested '
+                f'release {int(release_id)}')
+        return self._iter_snapshot(resp, table)
+
+    @staticmethod
+    def _iter_snapshot(resp, table):
         # `with resp` closes the connection when the generator finishes OR is
-        # closed early (the loader breaks at the sentinel), so a streamed
-        # response is never left checked out.
+        # closed early (the loader breaks at the sentinel), so a streamed response
+        # is never left checked out.
         with resp:
-            if not resp.ok:
-                raise VocabSyncError(f'snapshot {table} -> {resp.status_code} {resp.reason}')
             try:
                 for line in resp.iter_lines(decode_unicode=True):
                     if not line:

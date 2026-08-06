@@ -8,22 +8,28 @@ renderer). Found by the local vocab-mirror e2e.
 """
 import json
 
+import pytest
+
 from vocab_mirror import promop_vocab_client as pvc
 from vocab_mirror.promop_vocab_client import PromopVocabClient
 
 
 class _FakeStreamResp:
-    def __init__(self, lines, status_code=200):
+    def __init__(self, lines, status_code=200, headers=None):
         self._lines = lines
         self.status_code = status_code
         self.ok = 200 <= status_code < 300
-        self.reason = 'OK'
+        self.reason = 'OK' if self.ok else 'Conflict'
+        self.headers = headers or {}
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
+
+    def close(self):
+        pass
 
     def iter_lines(self, decode_unicode=False):
         yield from self._lines
@@ -60,3 +66,35 @@ def test_stream_snapshot_accept_offers_ndjson_and_wildcard(monkeypatch):
     assert accept.startswith('application/x-ndjson')
     assert '*/*' in accept
     assert captured['headers']['Authorization'] == 'Bearer t'
+
+
+def _run(monkeypatch, resp):
+    monkeypatch.setattr(pvc.requests, 'get', lambda *a, **k: resp)
+    return list(_client().stream_snapshot(2, 'concept'))
+
+
+def test_stream_snapshot_409_raises_release_superseded(monkeypatch):
+    # promop snapshots are latest-only (#373): a 409 means our release is stale →
+    # a re-resolve signal, NOT a hard failure.
+    resp = _FakeStreamResp([], status_code=409)
+    with pytest.raises(pvc.VocabReleaseSuperseded):
+        _run(monkeypatch, resp)
+
+
+def test_stream_snapshot_verifies_release_id_header(monkeypatch):
+    # A matching X-Vocab-Release-Id passes; a mismatch fails closed.
+    ok = _FakeStreamResp(
+        [json.dumps({'concept_id': 1}), json.dumps({'__done': True, 'rows': 1})],
+        headers={'X-Vocab-Release-Id': '2'})
+    assert _run(monkeypatch, ok) == [{'concept_id': 1}, {'__done': True, 'rows': 1}]
+
+    wrong = _FakeStreamResp([json.dumps({'concept_id': 1})],
+                            headers={'X-Vocab-Release-Id': '99'})
+    with pytest.raises(pvc.VocabSyncError):
+        _run(monkeypatch, wrong)
+
+
+def test_stream_snapshot_tolerates_absent_release_id_header(monkeypatch):
+    # An older promop without the header still works (verify only when present).
+    resp = _FakeStreamResp([json.dumps({'__done': True, 'rows': 0})], headers={})
+    assert _run(monkeypatch, resp) == [{'__done': True, 'rows': 0}]
