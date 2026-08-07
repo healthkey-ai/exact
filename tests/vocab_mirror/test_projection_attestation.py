@@ -19,8 +19,22 @@ from vocab_mirror.models import (
     MirrorVocabulary,
     ProjectionAttestation,
 )
+from tests.factories import TrialFactory
 
 pytestmark = pytest.mark.django_db
+
+
+def _trial(code, required):
+    TrialFactory(code=code, omop_therapy_types_required=required,
+                 omop_therapy_types_excluded=[])
+
+
+def _publish_matching_checksum(release_id):
+    """Publish an attestation whose checksum matches EXACT's current trial projection."""
+    from trials.services.omop.projection_checksum import compute_trial_projection_checksum
+    digest, count = compute_trial_projection_checksum()
+    publish_projection_attestation(release_id, checksum=digest, trial_count=count)
+    return digest, count
 
 
 def _ready_release(rid):
@@ -78,12 +92,109 @@ def test_enforcing_blocks_activation_without_attestation(monkeypatch):
     assert active_release_id() is None            # blocked, fail-closed
 
 
-def test_enforcing_allows_activation_with_attestation(monkeypatch):
+def test_enforcing_allows_activation_with_verified_checksum(monkeypatch):
+    # Strengthened gate (gap #1): under enforcement, a mere attestation ROW is no longer
+    # enough — its checksum must VERIFY against EXACT's recomputed projection.
     monkeypatch.setattr(activation, '_PROJECTION_GATE_ENFORCE', True)
     _ready_release(1)
-    publish_projection_attestation(1)
+    _trial('T1', [1])
+    _publish_matching_checksum(1)
     activate_release(1)
     assert active_release_id() == 1
+
+
+# ── gate: checksum verification (ADR 0002 §Gate 1 gap #1) ────────────────────
+
+def test_matching_checksum_activates_clean(caplog):
+    _ready_release(1)
+    _trial('T1', [1]); _trial('T2', [2])
+    _publish_matching_checksum(1)
+    with caplog.at_level(logging.WARNING, logger='vocab_mirror.activation'):
+        activate_release(1)
+    assert active_release_id() == 1
+    assert not any('projection' in r.message for r in caplog.records)  # verified → no warn
+
+
+def test_mismatched_checksum_observe_only_warns(caplog):
+    _ready_release(1)
+    _trial('T1', [1])
+    publish_projection_attestation(1, checksum='deadbeef' * 8, trial_count=1)  # wrong
+    with caplog.at_level(logging.WARNING, logger='vocab_mirror.activation'):
+        activate_release(1)
+    assert active_release_id() == 1                       # observe-only: activates anyway
+    assert any('checksum mismatch' in r.message for r in caplog.records)
+
+
+def test_trial_count_mismatch_warns(caplog):
+    _ready_release(1)
+    _trial('T1', [1])
+    from trials.services.omop.projection_checksum import compute_trial_projection_checksum
+    digest, count = compute_trial_projection_checksum()
+    publish_projection_attestation(1, checksum=digest, trial_count=count + 5)  # right hash, wrong count
+    with caplog.at_level(logging.WARNING, logger='vocab_mirror.activation'):
+        activate_release(1)
+    assert active_release_id() == 1
+    assert any('checksum mismatch' in r.message for r in caplog.records)
+
+
+def test_blank_checksum_is_pending_not_mismatch(caplog):
+    # CB has not published a checksum yet (Option D interim) → log-only, never alarm.
+    _ready_release(1)
+    _trial('T1', [1])
+    publish_projection_attestation(1, trial_count=1)     # attested, no checksum
+    with caplog.at_level(logging.INFO, logger='vocab_mirror.activation'):
+        activate_release(1)
+    assert active_release_id() == 1
+    assert any('verification pending' in r.message for r in caplog.records)
+    assert not any('mismatch' in r.message for r in caplog.records)
+
+
+def test_enforcing_blocks_on_checksum_mismatch(monkeypatch):
+    monkeypatch.setattr(activation, '_PROJECTION_GATE_ENFORCE', True)
+    _ready_release(1)
+    _trial('T1', [1])
+    publish_projection_attestation(1, checksum='deadbeef' * 8, trial_count=1)
+    with pytest.raises(ReleaseMatchFailed):
+        activate_release(1)
+    assert active_release_id() is None                   # blocked, fail-closed
+
+
+def test_enforcing_allows_on_matching_checksum(monkeypatch):
+    monkeypatch.setattr(activation, '_PROJECTION_GATE_ENFORCE', True)
+    _ready_release(1)
+    _trial('T1', [1])
+    _publish_matching_checksum(1)
+    activate_release(1)
+    assert active_release_id() == 1
+
+
+def test_enforcing_blocks_blank_checksum(monkeypatch):
+    # Enforced: a blank checksum cannot be verified → fail-closed (never activate an
+    # unverified projection). Enforcement stays OFF until CB publishes checksums, so this
+    # never blocks activation today; the observe-only path treats blank as pending.
+    monkeypatch.setattr(activation, '_PROJECTION_GATE_ENFORCE', True)
+    _ready_release(1)
+    _trial('T1', [1])
+    publish_projection_attestation(1, trial_count=1)     # attested, no checksum
+    with pytest.raises(ReleaseMatchFailed):
+        activate_release(1)
+    assert active_release_id() is None
+
+
+def test_gate_detects_trial_mutation_after_attestation(caplog):
+    # End-to-end: publish a MATCHING checksum, then mutate a trial's projection → the gate's
+    # recompute now mismatches (guards the closed loop through activate_release, not just the
+    # checksum fn). Observe-only → warns, activates anyway.
+    from trials.models import Trial
+    _ready_release(1)
+    t = TrialFactory(code='T1', omop_therapy_types_required=[1],
+                     omop_therapy_types_excluded=[])
+    _publish_matching_checksum(1)
+    Trial.objects.filter(pk=t.pk).update(omop_therapy_types_required=[1, 99])  # projection drift
+    with caplog.at_level(logging.WARNING, logger='vocab_mirror.activation'):
+        activate_release(1)
+    assert active_release_id() == 1
+    assert any('checksum mismatch' in r.message for r in caplog.records)
 
 
 # ── management command ───────────────────────────────────────────────────────

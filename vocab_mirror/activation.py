@@ -161,26 +161,66 @@ def _component_lookup_matches_release(release_id):
 _PROJECTION_GATE_ENFORCE = False
 
 
-@register_release_match_check
-def _projection_matches_release(release_id):
-    """Cross-artifact gate for the trial ``omop_*`` projection (#265 / ADR 0002 #4).
-
-    The projection is CB-owned on the trials DB; rather than a racy cross-DB read,
-    the gate checks for CB's **attestation** (published into EXACT's ``default`` DB
-    once CB has validated the projection for R). Missing attestation → the projection
-    is not known-consistent with R. **Observe-only until Phase-T**: log it and
-    activate anyway (eligibility doesn't read the mirror yet); flip
-    ``_PROJECTION_GATE_ENFORCE`` when the graph goes on the eligibility path.
-    """
-    from vocab_mirror.attestation import projection_attested
-    if projection_attested(release_id):
-        return
-    msg = (f'trial omop_* projection has no attestation for release {release_id} '
-           '(CB has not published projection-ready)')
+def _projection_gate_fail(msg):
+    """Observe-only until Phase-T: raise (block activation) when enforced, else warn and
+    activate anyway (eligibility doesn't read the mirror yet)."""
     if _PROJECTION_GATE_ENFORCE:
         raise ReleaseMatchFailed(msg)
     logger.warning('vocab activation (observe-only): %s; activating anyway '
                    '(Phase-T not live)', msg)
+
+
+@register_release_match_check
+def _projection_matches_release(release_id):
+    """Cross-artifact gate for the trial ``omop_*`` projection (#265 / ADR 0002 #4 §Gate 1).
+
+    The projection is CB-owned on the trials DB; rather than a racy cross-DB read, the gate
+    reads CB's **attestation** (published into EXACT's ``default`` DB once CB has validated
+    the projection for R) and **VERIFIES its checksum** (ADR 0002 §Gate 1 gap #1) — existence
+    alone is fail-open, since ``checksum`` is a blank-default column. EXACT recomputes the
+    canonical trial-projection checksum from its OWN ``Trial`` rows
+    (:func:`compute_trial_projection_checksum`, the frozen CB↔EXACT contract) and compares:
+
+    - no attestation row → the projection is not known-consistent with R → fail;
+    - attested but ``checksum`` still blank → CB has not published a checksum yet (Option D
+      interim, ADR 0003) → log-only, do NOT alarm (verification pending);
+    - checksum (and ``trial_count``, when published) match the local recompute → pass;
+    - mismatch → the local projection differs from what CB attested for R → fail.
+
+    **Observe-only until Phase-T**: ``_projection_gate_fail`` logs and activates anyway;
+    flip ``_PROJECTION_GATE_ENFORCE`` only once gap #2 (projection immutability/revocation)
+    is closed too.
+    """
+    from vocab_mirror.attestation import get_projection_attestation
+    att = get_projection_attestation(release_id)
+    if att is None:
+        _projection_gate_fail(
+            f'trial omop_* projection has no attestation for release {release_id} '
+            '(CB has not published projection-ready)')
+        return
+    if not att.checksum:
+        # No checksum to verify. ENFORCED: cannot verify the projection → fail-closed
+        # (never activate an unverified projection once the gate is live). Observe-only:
+        # log pending, don't alarm — CB is not publishing checksums yet (Option D interim),
+        # and enforcement stays off until it does, so this never blocks activation today.
+        if _PROJECTION_GATE_ENFORCE:
+            raise ReleaseMatchFailed(
+                f'trial omop_* projection attested for release {release_id} but no checksum '
+                'published — cannot verify (enforced)')
+        logger.info(
+            'vocab activation: projection attested for release %s but no checksum published '
+            'yet (Option D interim; checksum verification pending)', release_id)
+        return
+    from trials.services.omop.projection_checksum import compute_trial_projection_checksum
+    local_digest, local_count = compute_trial_projection_checksum()
+    count_ok = att.trial_count is None or att.trial_count == local_count
+    if att.checksum == local_digest and count_ok:
+        return
+    _projection_gate_fail(
+        f'trial omop_* projection checksum mismatch for release {release_id}: attested '
+        f'{att.checksum[:12]}…/count={att.trial_count} vs local recompute '
+        f'{local_digest[:12]}…/count={local_count} — projection differs from what CB '
+        'attested (stale / partial / mid-reload)')
 
 
 def _run_release_match_gate(release_id):
