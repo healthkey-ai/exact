@@ -397,7 +397,8 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": "lymphadenopathy_required",
     },
     "largest_lymph_node_size": {
-        "type": "min_value",
+        # min_max_value (both bounds) to match CB — needs largest_lymph_node_size_max.
+        "type": "min_max_value",
         "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "largest_lymph_node_size",
@@ -409,7 +410,8 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr": "splenomegaly_required",
     },
     "spleen_size": {
-        "type": "min_value",
+        # min_max_value (both bounds) to match CB — needs spleen_size_max.
+        "type": "min_max_value",
         "disease": ["CLL", "MCL"],
         "searchable": True,
         "attr": "spleen_size",

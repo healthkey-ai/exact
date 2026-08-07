@@ -112,3 +112,15 @@ class TestUserToTrialAttrsMapper:
             res = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info=patient_info)
             assert 'qtcf_value' in res, f'qtcf_value missing for disease={disease!r}'
 
+    @pytest.mark.django_db
+    def test_lymph_node_and_spleen_size_are_min_max(self):
+        # largest_lymph_node_size / spleen_size are min_max_value (both bounds) to
+        # match CB, not min_value — so matching checks the *_max column too.
+        for disease in ('chronic lymphocytic leukemia', 'mantle cell lymphoma'):
+            patient_info = PatientInfo(disease=disease)
+            res = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info=patient_info)
+            for attr in ('largest_lymph_node_size', 'spleen_size'):
+                assert attr in res, f'{attr} missing for disease={disease!r}'
+                assert f'{attr}_min IS NULL AND {attr}_max IS NULL' in res[attr], \
+                    f'{attr} not rendered as min_max for disease={disease!r}: {res[attr]}'
+

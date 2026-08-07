@@ -128,3 +128,15 @@ class TestMclTrialAttributes:
         # Sanity: the MCL outcome set is the 4-value Cheson/Lugano subset.
         codes = {opt['value'] for opt in attrs.all_options['firstLineOutcome']['options']}
         assert codes == {'CR', 'PR', 'SD', 'PD'}
+
+
+def test_lymph_node_and_spleen_max_are_registered_in_trial_detail_config():
+    # largest_lymph_node_size / spleen_size are now min_max_value; the *_max
+    # fields must be registered in the trial-detail config (group + label),
+    # else TrialTemplates drops them to 'ignore' and the upper bound is invisible
+    # in the detail response (parity with CB).
+    from trials.services.trial_details.configs import ATTR_GROUP_MAPPING, ATTR_LABEL_MAPPING
+    for field in ('largestLymphNodeSizeMax', 'spleenSizeMax'):
+        assert ATTR_GROUP_MAPPING.get(field) == 'disease', \
+            f'{field} not grouped (would fall back to ignore)'
+        assert field in ATTR_LABEL_MAPPING, f'{field} has no label'
