@@ -249,6 +249,34 @@ class TestTrialQuerySet:
 
     @pytest.mark.django_db
     @override_settings(EXACT_OMOP_THERAPY=False)
+    def test_supportive_still_feeds_prior_lines_when_therapy_lines_blank(self):
+        """#4449: supportive-therapy codes fold into user_therapies (get_user_therapies)
+        and feed the regimen / prior-lines filter. It historically always fired once
+        because later_therapies ([]) was never blank; is_attr_blank now skips an empty
+        later_therapies, so filter_by_patient_info fires the regimen filter once itself
+        for the legacy path — else a supportive-only patient (prior_therapy != 'None',
+        no explicit lines) silently stops matching on the regimen axis. Mirrors CB's
+        guard; kept in lockstep for the QR4d drain."""
+        from trials.services.loaders.load_therapies import LoadTherapies
+        LoadTherapies().load_all()
+
+        t_open = TrialFactory(therapies_required=[], therapies_excluded=[])
+        t_needs_other = TrialFactory(therapies_required=['val3'], therapies_excluded=[])
+
+        pi = PatientInfo(
+            disease='multiple myeloma',
+            prior_therapy='One line',            # != 'None'
+            supportive_therapies=[{'therapy': 'vrd'}],
+            later_therapies=[],
+        )
+        matched, _ = Trial.objects.filter(
+            id__in=[t_open.id, t_needs_other.id]).filter_by_patient_info(pi)
+        ids = set(matched.values_list('id', flat=True))
+        assert t_open.id in ids               # no therapy requirement → always eligible
+        assert t_needs_other.id not in ids    # requires val3; patient's fed regimen is vrd → excluded
+
+    @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_eligible_for_therapy_related_things_from_lines_treatment_naive(self):
         """
         has_no_prior_therapy=True restricts to trials with all three *_required
@@ -1244,7 +1272,7 @@ class TestTrialQuerySet:
         assert Trial.objects.filter_by_patient_info(patient_info, add_traces=True)[0].count() == 1
 
         # print("\n\n>>>>Trial.objects.filter_by_patient_info(patient_info, add_traces=True)[1]", Trial.objects.filter_by_patient_info(patient_info, add_traces=True)[1])
-        assert Trial.objects.filter_by_patient_info(patient_info, add_traces=True)[1] == [{'attr': 'patient_info.patient_age', 'val': 20, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.gender', 'val': 'M', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.weight', 'val': 70, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.bmi', 'val': 24.221453287197235, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.systolic_blood_pressure', 'val': 90, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.diastolic_blood_pressure', 'val': 110, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.disease', 'val': 'multiple myeloma', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.stage', 'val': 'II', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.karnofsky_performance_score', 'val': 70, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.ecog_performance_status', 'val': 2, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_other_active_malignancies', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.pre_existing_condition_categories', 'val': ['pre_existing_condition_category_0', 'pre_existing_condition_category_1', 'pre_existing_condition_category_2'], 'records': 6, 'dropped': 0}, {'attr': 'patient_info.molecular_markers', 'val': 'KRAS', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.plasma_cell_leukemia', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.progression', 'val': 'active', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.measurable_disease_imwg', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.prior_therapy', 'val': 'One line', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.stem_cell_transplant_history', 'val': ['Autologous'], 'records': 6, 'dropped': 0}, {'attr': 'patient_info.relapse_count', 'val': 2, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.absolute_neutrophile_count', 'val': 3000, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.platelet_count', 'val': 200, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.white_blood_cell_count', 'val': 6, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_calcium_level', 'val': 9.3, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.creatinine_clearance_rate', 'val': 110, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_creatinine_level', 'val': 0.8, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.hemoglobin_level', 'val': 15, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.meets_crab', 'val': False, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.estimated_glomerular_filtration_rate', 'val': 129.93, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.liver_enzyme_levels_ast', 'val': 24, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.liver_enzyme_levels_alt', 'val': 31, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.liver_enzyme_levels_alp', 'val': 100, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.albumin_level', 'val': 1.1, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_bilirubin_level_total', 'val': 0.4, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_bilirubin_level_direct', 'val': 0.2, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.monoclonal_protein_serum', 'val': 45, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.monoclonal_protein_urine', 'val': 14, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.lactate_dehydrogenase_level', 'val': 200, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.ejection_fraction', 'val': 60, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_hiv_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_hepatitis_b_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_hepatitis_c_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.consent_capability', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_pregnancy_or_lactation_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.pregnancy_test_result', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_mental_health_disorder_status', 'val': False, 'records': 1, 'dropped': 5}, {'attr': 'patient_info.no_concomitant_medication_status', 'val': False, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_tobacco_use_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_substance_use_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_geographic_exposure_risk', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_active_infection_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.renal_adequacy_status', 'val': False, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.hepatic_adequacy_status', 'val': False, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.haematological_adequacy_status', 'val': True, 'records': 1, 'dropped': 0}]
+        assert Trial.objects.filter_by_patient_info(patient_info, add_traces=True)[1] == [{'attr': 'patient_info.patient_age', 'val': 20, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.gender', 'val': 'M', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.weight', 'val': 70, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.bmi', 'val': 24.221453287197235, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.systolic_blood_pressure', 'val': 90, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.diastolic_blood_pressure', 'val': 110, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.disease', 'val': 'multiple myeloma', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.stage', 'val': 'II', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.karnofsky_performance_score', 'val': 70, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.ecog_performance_status', 'val': 2, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_other_active_malignancies', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.pre_existing_condition_categories', 'val': ['pre_existing_condition_category_0', 'pre_existing_condition_category_1', 'pre_existing_condition_category_2'], 'records': 6, 'dropped': 0}, {'attr': 'patient_info.molecular_markers', 'val': 'KRAS', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.plasma_cell_leukemia', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.progression', 'val': 'active', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.measurable_disease_imwg', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.prior_therapy', 'val': 'One line', 'records': 6, 'dropped': 0}, {'attr': 'patient_info.stem_cell_transplant_history', 'val': ['Autologous'], 'records': 6, 'dropped': 0}, {'attr': 'patient_info.relapse_count', 'val': 2, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.absolute_neutrophile_count', 'val': 3000, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.platelet_count', 'val': 200, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.white_blood_cell_count', 'val': 6, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_calcium_level', 'val': 9.3, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.creatinine_clearance_rate', 'val': 110, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_creatinine_level', 'val': 0.8, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.hemoglobin_level', 'val': 15, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.meets_crab', 'val': False, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.estimated_glomerular_filtration_rate', 'val': 129.93, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.liver_enzyme_levels_ast', 'val': 24, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.liver_enzyme_levels_alt', 'val': 31, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.liver_enzyme_levels_alp', 'val': 100, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.albumin_level', 'val': 1.1, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_bilirubin_level_total', 'val': 0.4, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.serum_bilirubin_level_direct', 'val': 0.2, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.monoclonal_protein_serum', 'val': 45, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.monoclonal_protein_urine', 'val': 14, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.lactate_dehydrogenase_level', 'val': 200, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.ejection_fraction', 'val': 60, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_hiv_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_hepatitis_b_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_hepatitis_c_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.consent_capability', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_pregnancy_or_lactation_status', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.pregnancy_test_result', 'val': True, 'records': 6, 'dropped': 0}, {'attr': 'patient_info.no_mental_health_disorder_status', 'val': False, 'records': 1, 'dropped': 5}, {'attr': 'patient_info.no_concomitant_medication_status', 'val': False, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_tobacco_use_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_substance_use_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_geographic_exposure_risk', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.no_active_infection_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.renal_adequacy_status', 'val': False, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.hepatic_adequacy_status', 'val': False, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.haematological_adequacy_status', 'val': True, 'records': 1, 'dropped': 0}, {'attr': 'patient_info.later_therapies', 'val': [], 'records': 1, 'dropped': 0}]
 
         # search with ULNs
 
@@ -1515,8 +1543,12 @@ class TestTrialQuerySet:
     @pytest.mark.django_db
     def test_blank_list_attrs_not_in_traces(self):
         """
-        supportive_therapies=[] and later_therapies=[] are blank (JSONField default).
-        filter_by_patient_info must skip them and not emit a trace entry for either.
+        supportive_therapies=[] is blank (JSONField default) → skipped, no trace entry.
+        later_therapies is different: filter_by_patient_info fires the regimen /
+        prior-lines filter once after the loop (the #4449 legacy fold, always-once),
+        traced under 'patient_info.later_therapies' with the attr's own value ([]) — so
+        it DOES appear even when the attr is blank. Here user_therapies is empty, so
+        that fire is a no-op (dropped: 0).
         """
         TrialFactory()
         patient_info = PatientInfo(
@@ -1531,7 +1563,10 @@ class TestTrialQuerySet:
         trace_attrs = {t['attr'] for t in traces}
 
         assert 'patient_info.supportive_therapies' not in trace_attrs
-        assert 'patient_info.later_therapies' not in trace_attrs
+        # later_therapies carries the post-loop regimen fire (no-op here).
+        assert 'patient_info.later_therapies' in trace_attrs
+        later = next(t for t in traces if t['attr'] == 'patient_info.later_therapies')
+        assert later['val'] == [] and later['dropped'] == 0
 
     @pytest.mark.django_db
     def test_estrogen_receptor_status_hierarchy(self):

@@ -1691,4 +1691,26 @@ class TrialQuerySet(models.QuerySet):
                 scope = scope.eligible_for_therapy_related_things_from_lines(
                     [], has_no_prior_therapy, patient_component_ids=component_ids, patient_class_ids=class_ids)
                 is_therapies_filter_applied = True
+
+        # Legacy (#4449): supportive-therapy codes fold into user_therapies
+        # (get_user_therapies) and feed the regimen / prior-lines filter. It
+        # historically always fired once because later_therapies ([]) was never
+        # blank under the pre-is_attr_blank check, so the THERAPY_LINES dispatch
+        # always triggered; is_attr_blank skips an empty later_therapies, so a
+        # supportive-fed patient with prior_therapy != 'None' and no explicit lines
+        # would lose it. Fire once here for the legacy (non-OMOP) path — a no-op on
+        # empty user_therapies. Mirrors CB filter_by_patient_info's post-loop fire,
+        # kept in lockstep for the QR4d drain.
+        if not omop_therapy_enabled() and not is_therapies_filter_applied:
+            scope = scope.eligible_for_therapy_related_things_from_lines(user_therapies, has_no_prior_therapy)
+            is_therapies_filter_applied = True
+            if add_traces:
+                new_count = scope.count()
+                traces.append({
+                    'attr': 'patient_info.later_therapies',
+                    'val': patient_info_attr.get_value('later_therapies'),
+                    'records': new_count,
+                    'dropped': count - new_count,
+                })
+                count = new_count
         return scope, traces
