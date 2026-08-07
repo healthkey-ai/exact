@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatOmopConcepts } from "./TrialDetailPage";
+import { formatOmopConcepts, UNRESOLVED_CONCEPT_LABEL } from "./TrialDetailPage";
 
 // The OMOP therapy regimen/component levels arrive as concept_ids in `value`
 // with no `options` map; the server attaches mirror-resolved `omopConcepts`
@@ -22,10 +22,17 @@ describe("formatOmopConcepts", () => {
     expect(formatOmopConcepts("19026972", concepts)).toBe("lenalidomide");
   });
 
-  it("falls back to the raw id for a concept the server did not resolve", () => {
-    // never hide a criterion just because one code is unmapped
+  it("renders a placeholder (not the raw id) for a concept the server did not resolve", () => {
+    // never hide a criterion just because one code is unmapped (promop#390), but
+    // a raw concept_id is meaningless to a user — show a hint instead
     expect(formatOmopConcepts(["19026972", "999999"], concepts)).toBe(
-      "lenalidomide, 999999",
+      `lenalidomide, ${UNRESOLVED_CONCEPT_LABEL}`,
+    );
+  });
+
+  it("renders the placeholder for an entirely-unresolved value", () => {
+    expect(formatOmopConcepts(["999999", "888888"], concepts)).toBe(
+      `${UNRESOLVED_CONCEPT_LABEL}, ${UNRESOLVED_CONCEPT_LABEL}`,
     );
   });
 
