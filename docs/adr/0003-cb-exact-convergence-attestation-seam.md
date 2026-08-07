@@ -123,11 +123,16 @@ then commit to D (or A/B). Not a final answer — an execution posture.
   delete/update — enforce at DB grants); (iii) the row binds R to the projection
   checksum the gate activates. If all hold, **D wins** and #307 + B/E are closed
   won't-do. If any fails, choose **A or B explicitly** — before enforcement.
-- **De-risk with a spike** (cheap, do before locking): in the local HT stack put a
-  `ProjectionAttestation` table on the `trials` DB, have CB-side write it, and
-  confirm EXACT's activation gate reads it through the `trials` alias. Proves D end
-  to end before any ADR commitment (Team Topologies / reversibility: make being
-  wrong cheap).
+- **De-risk with a spike — DONE (2026-08-07, read path proven).** In the local HT
+  stack a `ProjectionAttestation` table was created on the `trials` DB
+  (`exact_trials`) with a CB-side write for the active release; EXACT read it back
+  through the `trials` alias with the **same `ProjectionAttestation` model and zero
+  `default`-DB schema** — attested release → `True`, unattested → `False`
+  (fail-closed). Confirmed a genuine cross-DB read (`trials`=`exact_trials` vs
+  `default`=`exact`; no row on `default`), and that raw DDL on the trials DB works
+  under the router's `allow_migrate=False` (so CB owns the table, EXACT only reads).
+  The read path is **not** the risk; the remaining D preconditions are policy —
+  release-immutability + insert-only attestations — not code.
 - The **#265 enforce flip stays gated on BOTH** this topology decision *and*
   Phase-T (#263); never flip enforce without a working publish/read path for the
   chosen option (else every activation fail-closes permanently).
@@ -163,10 +168,10 @@ then commit to D (or A/B). Not a final answer — an execution posture.
 
 ## Open questions
 
-1. **D spike** — prove D end-to-end in the local HT stack: a `ProjectionAttestation`
-   table on the `trials` DB, CB-side write, EXACT's activation gate reading it via
-   the `trials` alias. (Note the refined precondition: a lagging replica is
-   acceptable; the real checks are release-immutability + insert-only.)
+1. ~~**D spike** — prove D end-to-end in the local HT stack.~~ **RESOLVED
+   (2026-08-07):** the cross-DB read path is proven (see the spike note under
+   Decision). What remains for D is a policy guarantee (release-immutability +
+   insert-only), not a technical unknown.
 2. Does CB embedding `exact_matching` drag in an EXACT-`default`-DB connection, or
    are the matcher seam and vocab seam independent (making B a separate later bite)?
 3. Governance: this ADR lives in EXACT for now, but the decision binds CB + promop
