@@ -194,3 +194,34 @@ class TestTherapyLinesOnceFlag:
         assert not scope.eligible_for_therapy_related_things_from_lines.called
         # Returns the unchanged scope.
         assert result is scope
+
+
+class TestFilterByPatientInfoLegacyNoReleaseGate:
+    """QR4d orchestrator drain: the `filter_by_patient_info` wrapper binds the #286
+    Gate-1 release scope, which imports `trials.services.omop.patient_release_gate`.
+    In legacy mode (OMOP master flag off) the wrapper must NOT import that module —
+    a host that doesn't ship it (CB, when it delegates to super() at the orchestrator
+    drain) would ImportError. Master-gating the scope (mirrors `_omop_therapy_ids`,
+    #342) is behaviour-preserving because the scope only feeds the OMOP-type prefilter,
+    which is inert when OMOP is off.
+    """
+
+    @pytest.mark.django_db
+    def test_legacy_wrapper_does_not_import_release_gate(self, monkeypatch, settings):
+        import sys
+        from trials.models import Trial
+        from trials.services.patient_info.patient_info import PatientInfo
+        from tests.factories import TrialFactory
+
+        settings.EXACT_OMOP_THERAPY = False  # master off → legacy path
+        # None in sys.modules makes `import ...patient_release_gate` raise ImportError,
+        # simulating a host (CB) that doesn't ship the OMOP release-gate infra.
+        monkeypatch.setitem(sys.modules, 'trials.services.omop.patient_release_gate', None)
+
+        TrialFactory(disease='mantle cell lymphoma')
+        # prior_therapy='None' drives the therapy dispatch too (has_no_prior_therapy),
+        # exercising the _omop_therapy_ids gate on the same call.
+        pi = PatientInfo(disease='mantle cell lymphoma', prior_therapy='None')
+
+        result, _ = Trial.objects.filter_by_patient_info(pi)  # must not ImportError
+        assert result.count() >= 1
