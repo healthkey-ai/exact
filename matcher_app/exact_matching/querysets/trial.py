@@ -121,23 +121,37 @@ def _filter_tumor_grade(scope, value, _ctx):
     return scope.eligible_for_tumor_grade(str(value).lower())
 
 
+def _omop_therapy_ids(ctx):
+    """The patient's OMOP therapy component + class ids for the regimen dispatch, or
+    ``(None, None)`` in legacy mode.
+
+    #286 Gate 1 (observe-only release-skew metric) is imported and run ONLY in OMOP mode
+    (``ctx['omop_therapy']`` — the master flag). ``release_gated_class_ids`` short-circuits
+    to ``None`` without measuring when the TYPES flag is off, so master-gating the whole
+    thing is behaviour-preserving (legacy already resolved to ``None``). It also keeps the
+    ``trials.services.omop.patient_release_gate`` import off the legacy path, so a host
+    without the OMOP release-gate infra (CB, at the QR4d orchestrator drain) can run this
+    dispatch instead of ImportError-ing on a module it doesn't ship.
+    """
+    if not ctx.get('omop_therapy'):
+        return None, None
+    from trials.services.omop.patient_release_gate import release_gated_class_ids
+    component_ids = ctx['patient_info_attr'].get_user_therapy_component_ids()
+    class_ids = release_gated_class_ids(
+        ctx['patient_info_attr'], omop_therapy_types_enabled(), measure=True)
+    return component_ids, class_ids
+
+
 def _filter_prior_therapy(scope, value, ctx):
     scope = scope.eligible_for_prior_therapy(value)
     # Apply the therapy-related-things filter ONLY ONCE per
     # filter_by_patient_info call; ctx tracks the flag.
     if ctx['has_no_prior_therapy'] and not ctx['is_therapies_filter_applied']:
-        # #286 Gate 1 (observe-only, measure once per search): release-gate the class ids.
-        # Gate on the TYPES flag (not the master omop flag): class ids are consumed by
-        # derive/eligible_for_omop_therapy_types only under omop_therapy_types_enabled
-        # (types-off ignores them), so this is behaviour-preserving AND keeps the skew
-        # metric out of the legacy path.
-        from trials.services.omop.patient_release_gate import release_gated_class_ids
+        component_ids, class_ids = _omop_therapy_ids(ctx)
         scope = scope.eligible_for_therapy_related_things_from_lines(
             ctx['user_therapies'], ctx['has_no_prior_therapy'],
-            patient_component_ids=(ctx['patient_info_attr'].get_user_therapy_component_ids()
-                                   if ctx.get('omop_therapy') else None),
-            patient_class_ids=release_gated_class_ids(
-                ctx['patient_info_attr'], omop_therapy_types_enabled(), measure=True),
+            patient_component_ids=component_ids,
+            patient_class_ids=class_ids,
         )
         ctx['is_therapies_filter_applied'] = True
     return scope
@@ -160,15 +174,11 @@ def _filter_therapy_lines_once(scope, _value, ctx):
     # later_therapy, later_therapies) — the actual filter is applied once at
     # most across all of them.
     if not ctx['is_therapies_filter_applied']:
-        # #286 Gate 1 (observe-only, measure once per search): release-gate the class ids.
-        # Gate on the TYPES flag (see _filter_prior_therapy) — behaviour-preserving.
-        from trials.services.omop.patient_release_gate import release_gated_class_ids
+        component_ids, class_ids = _omop_therapy_ids(ctx)
         scope = scope.eligible_for_therapy_related_things_from_lines(
             ctx['user_therapies'], ctx['has_no_prior_therapy'],
-            patient_component_ids=(ctx['patient_info_attr'].get_user_therapy_component_ids()
-                                   if ctx.get('omop_therapy') else None),
-            patient_class_ids=release_gated_class_ids(
-                ctx['patient_info_attr'], omop_therapy_types_enabled(), measure=True),
+            patient_component_ids=component_ids,
+            patient_class_ids=class_ids,
         )
         ctx['is_therapies_filter_applied'] = True
     return scope

@@ -7,4 +7,5 @@ from exact_matching.querysets.trial import (  # noqa: F401
     _csv,
     _csv_stripped,
     _filter_therapy_lines_once,
+    _omop_therapy_ids,
 )
