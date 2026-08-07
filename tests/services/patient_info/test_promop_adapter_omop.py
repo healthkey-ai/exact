@@ -79,3 +79,37 @@ def test_flag_off_leaves_later_therapies_list_untouched():
     lst = [{'therapy': 'pomalidomide'}]
     r = normalize_promop_row(_row(later_therapies=list(lst)))
     assert r['later_therapies'] == lst  # legacy: not concept-remapped
+
+
+# ── #286 Gate 1: the aggregate patient release forwards through the ingest boundary ──
+# ht-phr forwards the whole PROMOP row to EXACT's /normalize-ctomop-row/ untyped, so a
+# new PROMOP field (promop#394 therapy_release_id) reaches the matcher only if it is
+# (1) preserved by normalize_promop_row and (2) a registered PatientInfo field. These
+# pin that end-to-end chain so a future normalize/allowlist change can't silently break
+# Gate 1's patient-release plumbing.
+
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_therapy_release_id_preserved_by_normalize():
+    r = normalize_promop_row(_row(therapy_type_ids=[35807295], therapy_release_id='7'))
+    assert r['therapy_release_id'] == '7'      # pass-through (not rewritten, not dropped)
+    assert r['therapy_type_ids'] == [35807295]
+
+
+@override_settings(EXACT_OMOP_THERAPY=False)
+def test_therapy_release_id_preserved_by_normalize_flag_off():
+    r = normalize_promop_row(_row(therapy_release_id='7'))
+    assert r['therapy_release_id'] == '7'      # untouched regardless of the OMOP flag
+
+
+@override_settings(EXACT_OMOP_THERAPY=True, EXACT_OMOP_THERAPY_TYPES=True)
+def test_therapy_release_id_reaches_getter_end_to_end():
+    # Full forwarding chain: PROMOP row -> normalize -> build PatientInfo -> getter.
+    # (The flags are prod-realistic context; neither normalize nor the getter reads
+    # them for this field — the getter is flag-independent by design.) Only
+    # therapy_release_id is under test here, so nothing else is put on the row.
+    from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
+    from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+    norm = normalize_promop_row(_row(therapy_release_id='7'))
+    pi = build_patient_info_from_promop_row(dict(norm))
+    assert pi.therapy_release_id == '7'                                   # survived SKIP_COLUMNS + field filter
+    assert PatientInfoAttributes(pi).get_user_therapy_release_id() == '7'  # readable by Gate 1
