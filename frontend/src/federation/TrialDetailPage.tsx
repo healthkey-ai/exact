@@ -78,10 +78,28 @@ function formatValue(value: unknown, options?: TrialDetailField["options"]): str
   return labelOf(value, options);
 }
 
+/** Resolve OMOP-mapped therapy `value` concept_ids to their mirror titles (drug
+ *  names). Falls back to the raw id for any concept the server didn't resolve,
+ *  so a partial mapping never hides a criterion. Used for the OMOP therapy
+ *  regimen/component levels, whose `value` is concept_ids with no `options` map. */
+export function formatOmopConcepts(
+  value: unknown,
+  concepts: NonNullable<TrialDetailField["omopConcepts"]>,
+): string {
+  const byCode = new Map(concepts.map((c) => [String(c.code), c.title]));
+  const ids = Array.isArray(value) ? value : value == null || value === "" ? [] : [value];
+  const parts = ids
+    .filter((v) => v != null && v !== "")
+    .map((v) => byCode.get(String(v)) ?? String(v));
+  return parts.length ? parts.join(", ") : "—";
+}
+
 function EligibilityRow({ field }: { field: TrialDetailField }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
-  const required = formatValue(field.value, field.options);
+  const required = field.omopConcepts?.length
+    ? formatOmopConcepts(field.value, field.omopConcepts)
+    : formatValue(field.value, field.options);
   const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
 

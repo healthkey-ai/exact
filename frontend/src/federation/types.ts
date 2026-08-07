@@ -101,6 +101,11 @@ export interface TrialDetailField {
   units?: string;
   /** Unit for the patient's `uvalue` — may differ from `units`. */
   uunits?: string;
+  /** OMOP-mirror-resolved titles for the trial's `value` concept_ids on the
+   *  OMOP-mapped therapy levels (regimen/component). The server resolves these
+   *  from the pinned vocab release so the UI shows drug names, not raw ids.
+   *  Source: `matcher.therapy_related_things_match_status` / `_resolve_omop_concepts`. */
+  omopConcepts?: { code: number | string; title: string; vocab?: string }[];
   [key: string]: unknown;
 }
 
