@@ -120,7 +120,7 @@ from Gate 2 (per-concept validity of the patient's own ids in the mirror). Codex
 
 **Architecture: extend mechanism #4's *role* (gate activation on a projection attestation) — do NOT
 read per-trial release tags for the match-time `patient == trial` decision.** (gap #2's containment
-option A separately mirrors the per-trial tag to *scope the projection*, a different use.) #4's
+option A separately reads the per-trial tag to *scope the projection*, a different use.) #4's
 attestation transport is [ADR 0003](0003-cb-exact-convergence-attestation-seam.md) **Option D —
 RATIFIED (2026-08-07): immutable / insert-only attestation on the CB-owned trials DB, read cross-DB;
 #307 closed won't-do and the interim `publish_projection_attestation(...)` posture retired.** Gate 1
@@ -183,33 +183,42 @@ and Gate 1 keeps trusting R. The required invariant:
   revocation/rollback). CB
   writes `disable(R)` **atomically with any mutation/re-stamp that would alter R's attested tuple set
   or membership**; EXACT reads the revocation for its pinned release **on every request** and
-  **fails closed** (no OMOP-type matching / 503) when disabled. **Read-consistency (load-bearing):**
-  EXACT must read the revocation and the projection in **one MVCC snapshot at `REPEATABLE READ`** (or
-  a single SQL statement that evaluates revocation and projection together). The revocation record
-  MUST live in the same DB as the projection (the CB trials DB), and CB's `disable(R)` write MUST be
-  atomic with the mutation in that same domain. **Co-location alone is NOT enough:** under
-  PostgreSQL's default `READ COMMITTED` each statement takes a fresh snapshot, so EXACT could read
-  `disable(R)` as still-enabled, then CB commits the mutation + disable, then EXACT reads the changed
-  projection in its next statement — the very race this closes. `REPEATABLE READ` (snapshot fixed at
-  txn start) or a single revocation⋈projection statement is required. **And the read MUST hit a
-  commit-current primary, not a lagging replica** (or fail closed when freshness can't be
-  established): `REPEATABLE READ` only makes a replica-local snapshot internally consistent — it does
-  not make a just-committed `disable(R)` visible on a lagging replica → fail-OPEN. Note the asymmetry
-  with ADR 0003's "a lagging replica is acceptable": that holds for the **attestation** (monotonic —
-  a missed attestation only *delays* activation = fail-closed), but a missed **revocation** serves
-  drifted data = fail-OPEN, so revocation reads cannot tolerate replica lag. A "re-check just before returning" is **NOT** a safe substitute: the projection query can
-  observe a CB mutation while a stale / separately-stored / replicated revocation read still shows R
-  enabled → the request serves changed trial data with `disable(R)` unseen (fail-OPEN). **This rules
-  out an EXACT-side / `default`-DB revocation list** (an example earlier ADR 0003 drafts floated, now
-  superseded there): it cannot be read in the projection's snapshot, so it reintroduces exactly this
-  window. b1's correctness is
+  **fails closed** (no OMOP-type matching / 503) when disabled. **Topology + read-consistency.** There is
+  **ONE authoritative, CB-owned trials store** (not an EXACT-side copy), with multiple accessors:
+  EXACT is a **read-only** consumer (the ratified Option-D `trials` alias — a separate cross-DB
+  connection; ADR 0003 rejected embedding the vocab seam, and in-process embedding is a matcher-only,
+  not-yet-decided horizon — open-Q #2 — so correctness does NOT rest on it), while the prompts-admin
+  zone (SME trial-attr edits) and the Airflow extractor are **writers**. The `disable(R)` record is
+  **co-located with the projection on that store** and CB writes it **atomically with the mutation**.
+
+  **Read requirement (unconditional):** the revocation⋈projection read MUST be **one MVCC snapshot
+  that observes a single atomic commit** — either both `disable(R)` and the mutation, or neither
+  (`REPEATABLE READ`, or one joined statement). And it must be **commit-current**: ADR 0003's
+  lagging-replica tolerance is granted to the **monotonic attestation** only (a missed attestation
+  merely *delays* activation = fail-closed); **revocation is non-monotonic**, so a read that misses a
+  just-committed `disable(R)` (a lagging replica / stale connection) serves drifted data =
+  **fail-OPEN**. EXACT's revocation read therefore **cannot use a lagging replica** — it reads
+  commit-current or fails closed. **Deployment consequence:** if the Option-D `trials` alias is itself
+  a lagging replica (which ADR 0003 permits for the attestation), the revocation⋈projection read needs
+  a **distinct commit-current / primary read path** — the single replica-backed alias satisfies the
+  attestation's replica-tolerance but NOT revocation's commit-currency. This also **rules out an
+  EXACT-side / `default`-DB revocation list** (floated in earlier ADR 0003 drafts, superseded there):
+  it cannot share the projection's snapshot.
+
+  **Open (write-side — needs research):** the invariant "any projection-altering mutation atomically
+  writes `disable(R)`" must hold across the **multiple writers** of the one TrialsDB — the
+  prompts-admin zone and Airflow write directly, some bypassing any single app chokepoint. Enforcing
+  atomic-disable-on-every-mutation **writer-agnostically** is unresolved (candidate: a **DB-level
+  trigger** on the projection columns / release tag so the invariant holds at the data layer
+  regardless of writer; vs a single enforced write-chokepoint + rejected direct writes). Tracked as
+  separate research. b1's correctness is
   therefore **contingent on CB's atomic-disable discipline**; *b3* per-request full re-hash is too
   costly for the hot path BUT is the one mechanism that self-checks regardless of that discipline —
   keep it as a **periodic audit backstop** to catch a missed `disable(R)` (drift a missed disable
   would otherwise hide). *b2 polling* leaves a drift window = a clinical **fail-OPEN blocker**.
-- **A — release-scoped read (containment, NOT sufficient alone).** EXACT mirrors CB's per-trial
-  `omop_therapy_release_id` (#4667) read-only and scopes its type projection + the gap-#1 checksum to
-  trials tagged `== active_release`. This stops serving a *re-stamped new tuple as R*, but **A alone
+- **A — release-scoped read (containment, NOT sufficient alone).** EXACT **reads** CB's per-trial
+  `omop_therapy_release_id` (#4667) from the one trials store (no EXACT-side copy) and scopes its type
+  projection + the gap-#1 checksum to trials tagged `== active_release`. This stops serving a *re-stamped new tuple as R*, but **A alone
   is still fail-open**: a **missed re-stamp** leaves changed columns tagged R (served as R), and a
   re-stamp itself **changes R's membership** (the trial leaves the R-set) → silent drift. So A
   contains + validates but does **not** subsume revocation.
@@ -223,7 +232,7 @@ population/checksum semantics + the read-consistency protocol.
 
 **Minimal safe order:** (1) CB: atomic disable-on-projection-change + the revocation record; (2) EXACT:
 per-request revocation enforcement, race-safe read ordering, fail-closed; (3) EXACT: the R-tag
-mirror/filter + gap-#1 checksum over the identical R-scoped population + activation rejects
+read/filter + gap-#1 checksum over the identical R-scoped population + activation rejects
 mismatch/null-tag/revoked-R; (4) exercise mutation / missed-stamp / re-tag / null-tag / concurrent-
 reader; (5) ONLY THEN flip `_PROJECTION_GATE_ENFORCE` + `_PATIENT_RELEASE_GATE_ENFORCE` — and note
 `_PROJECTION_GATE_ENFORCE` is the SAME flag ADR 0003 governs, so its re-homed enforce trigger also
