@@ -275,6 +275,28 @@ class PatientInfoAttributes:
             return None
         return [str(v) for v in val if v is not None and str(v).strip().isdigit()]
 
+    def get_user_therapy_release_id(self):
+        """Return the aggregate therapy-vocab release the patient's class ids were
+        derived against (PROMOP-supplied, promop#394; #286 Gate 1) as a canonical
+        decimal string, or None.
+
+        None when the field is absent OR malformed — anything that is not a
+        non-empty, bounded-length ASCII-digit string (never coerce bool/float/None
+        or an over-length value to a release). The patient-release gate compares
+        this string to ``str(active_pinned_release())``; a None/malformed release
+        is treated as unknown → fail-closed once the gate is enforced. Inert until
+        then.
+        """
+        val = self.get_value('therapy_release_id')
+        # Accept only a real ASCII-decimal string; bool is not str, float is not str,
+        # so both are rejected here (unlike int(...), which would coerce them).
+        # isascii() excludes non-ASCII digits (str.isdigit() accepts superscripts /
+        # Arabic-Indic) — intent is a promop pk. Bound the length so a pathological
+        # digit string can't reach any int() elsewhere.
+        if isinstance(val, str) and val.isascii() and val.isdigit() and 0 < len(val) <= 32:
+            return val
+        return None
+
     @cached_property
     def disease_code(self):
         # Tolerate surrounding whitespace + None/empty (CB #4323): a bare
