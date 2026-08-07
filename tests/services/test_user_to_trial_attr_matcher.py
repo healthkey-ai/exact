@@ -94,17 +94,21 @@ class TestUserToTrialAttrMatcher:
         from trials.models import Trial
         t_excl = TrialFactory(supportive_therapies_excluded=['bisphosphonate'])
         t_req = TrialFactory(supportive_therapies_required=['bisphosphonate'])
-        # Control: EXCLUDES bisphosphonate at the regimen/prior-lines level. A
-        # supportive-only patient must NOT be folded into prior-line filtering, so this
-        # trial stays eligible — proving the drop below is the supportive axis, not the fold.
+        # EXCLUDES bisphosphonate at the regimen/prior-lines level. Legacy #4449:
+        # supportive codes fold into user_therapies (get_user_therapies) and DO feed
+        # the regimen/prior-lines filter, so a supportive-only patient on bisphosphonate
+        # is also dropped here. (The earlier "must not fold" assertion was an is_attr_blank
+        # artifact — the fold silently stopped firing for supportive-only patients — not an
+        # intended behaviour; restored by filter_by_patient_info's post-loop fire.)
         t_line = TrialFactory(therapies_excluded=['bisphosphonate'])
 
-        # patient on bisphosphonate: excluded trial drops, required + regimen-control keep
+        # patient on bisphosphonate: supportive-excluded drops (supportive axis);
+        # supportive-required keeps; regimen-excluded ALSO drops (supportive folds in).
         result, _ = Trial.objects.filter_by_patient_info(
             PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'bisphosphonate'}]))
         assert not result.filter(pk=t_excl.pk).exists()
         assert result.filter(pk=t_req.pk).exists()
-        assert result.filter(pk=t_line.pk).exists()   # regimen-excluded trial NOT folded -> kept
+        assert not result.filter(pk=t_line.pk).exists()   # supportive folds into the regimen axis (#4449 legacy) -> excluded
         # patient on a different code: required trial drops (no overlap), excluded keeps
         result, _ = Trial.objects.filter_by_patient_info(
             PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'epoetin'}]))
