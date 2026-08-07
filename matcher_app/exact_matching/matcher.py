@@ -368,8 +368,12 @@ class UserToTrialAttrMatcher:
             type_mismatch_status = 'not_matched'
             raw_class_ids = self.patient_info_attr.get_user_therapy_type_ids()
             if raw_class_ids is not None:
+                # Gate 1 release passed explicitly (this seam holds the attr), parity
+                # with the verdict; Gate 2 per-concept validation as before.
                 from trials.services.omop.type_release_gate import resolve_type_validation
-                validated, has_unvalidated = resolve_type_validation(raw_class_ids)
+                validated, has_unvalidated = resolve_type_validation(
+                    raw_class_ids,
+                    patient_release_id=self.patient_info_attr.get_user_therapy_release_id())
                 types_map = {k: v for k, v in therapy_types_to_therapy.items() if k in validated}
                 types_excluded_conservative = has_unvalidated
 
@@ -484,9 +488,11 @@ class UserToTrialAttrMatcher:
             if not has_no_prior_therapy:
                 return 'unknown'
             return 'matched'
-        # Concrete patient class ids ([] or a list) → #286 per-concept validation.
+        # Concrete patient class ids ([] or a list) → #286 per-concept validation, plus
+        # Gate 1 release-consistency (release passed explicitly — this seam holds the attr).
         from trials.services.omop.type_release_gate import resolve_type_validation
-        validated, has_unvalidated = resolve_type_validation(type_values)
+        validated, has_unvalidated = resolve_type_validation(
+            type_values, patient_release_id=self.patient_info_attr.get_user_therapy_release_id())
         # excluded: never drop an unvalidated id → conservatively reject.
         if excluded_list and has_unvalidated:
             return 'not_matched'

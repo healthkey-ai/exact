@@ -33,6 +33,9 @@ import logging
 
 from vocab_mirror.release_context import active_pinned_release
 from vocab_mirror.validate import validate_concept_ids
+# Shared sentinel: "no patient release supplied" (Gate 1 not applied) vs a real value
+# (str or None). patient_release_gate does not import this module → no cycle.
+from trials.services.omop.patient_release_gate import _UNSET as _NO_RELEASE
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,7 @@ def _normalized(type_ids):
     return tuple(sorted((str(x).strip() for x in type_ids), key=str))
 
 
-def resolve_type_validation(type_ids, measure=False):
+def resolve_type_validation(type_ids, measure=False, patient_release_id=_NO_RELEASE):
     """Validate the patient's raw class ``type_ids`` at the pinned release.
 
     Returns ``(validated, has_unvalidated)`` where ``validated`` is the set (of
@@ -63,8 +66,26 @@ def resolve_type_validation(type_ids, measure=False):
     """
     if not type_ids:
         return set(), False
-    key = _normalized(type_ids)
+    # Pin the active mirror release ONCE and reuse it for BOTH Gate 1 (release-token
+    # equality) and Gate 2 (per-concept validity below): a non-request caller (mgmt
+    # command / direct) has no MatchingReleaseContext pin, so two separate
+    # active_pinned_release() reads could straddle a concurrent activation and validate
+    # the release token against one generation and the class ids against another.
     release_id = active_pinned_release()
+    # #286 Gate 1: when enforced and the patient's aggregate release is inconsistent with
+    # the pinned mirror, the WHOLE class set is untrusted → every id unvalidated, so all
+    # three seams fail closed via the same machinery as a per-concept stale set. The
+    # release is passed explicitly by the matcher/detail seams, else read from the
+    # queryset patient_release_scope contextvar. Observe-only (toggle off) or no release
+    # context → returns False, so the path below is byte-identical (incl. the `measure`
+    # shadow metric).
+    from trials.services.omop.patient_release_gate import gate1_fail_closed
+    if gate1_fail_closed(patient_release_id, active_release_id=release_id):
+        # Return before the per-concept `measure` block: when the WHOLE set is gated the
+        # per-concept staleness metric is moot; the release-skew is already recorded
+        # upstream (release_gated_class_ids, once per search).
+        return set(), True  # type_ids is truthy here → (set(), bool(type_ids))
+    key = _normalized(type_ids)
     memo = _request_memo.get()
     if memo is None:
         validated = _validate(key, release_id)
