@@ -97,6 +97,13 @@ _FIELDS = [
     # None when the consumer has not sent them; consumed as the patient's type
     # match-values once EXACT_OMOP_THERAPY_TYPES is on (#285). Inert until then.
     _f(JSONField, 'therapy_type_ids', default=None),
+    # Aggregate therapy-vocab release the patient's therapy_type_ids were derived
+    # against (promop VocabularyRelease pk as a decimal string; promop#394). One
+    # value for the whole class set (unanimous-of-lines else null). #286 Gate 1
+    # compares it == active_pinned_release(); inert until the patient-release gate
+    # is enforced (ADR 0002 §Gate 1). TextField (not Decimal) to keep the exact
+    # decimal string — resolve._coerce_numerics would coerce a DecimalField.
+    _f(TextField, 'therapy_release_id', default=None),
     _f(DateField, 'later_date'),
     _f(TextField, 'later_outcome'),
     _f(TextField, 'old_supportive_therapies'),

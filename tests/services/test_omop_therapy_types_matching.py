@@ -49,7 +49,9 @@ def _reset_type_metrics():
     assertion can never inherit accumulated state from an earlier measure=True
     queryset test (the counters are process-global)."""
     from trials.services.omop import type_release_metrics as m
+    from trials.services.omop import patient_release_metrics as prm
     m.reset()
+    prm.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -222,6 +224,46 @@ def test_display_type_excluded_hit_not_matched():
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[PI_CLASS])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyTypesExcluded']['status'] == 'not_matched'
+
+
+# ── #286 Gate 1 (patient-release consistency) — OBSERVE-ONLY (no verdict change) ──
+# active mirror release is _RID (the autouse _active_mirror fixture). This slice only
+# measures release skew; enforcement (fail-closing on a mismatch) is a later slice.
+
+@override_settings(**OMOP_TYPES)
+def test_display_release_mismatch_observe_only_unchanged():
+    # A stale patient release must NOT change the verdict/display in this slice.
+    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=REG, prior_therapy='One line',
+                     therapy_component_ids=[int(BORT_CID)], therapy_type_ids=[int(PI_CLASS)],
+                     therapy_release_id=str(_RID + 1))
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
+    assert out['therapyTypesRequired']['status'] == 'matched'  # unchanged (observe-only)
+
+
+@override_settings(**OMOP_TYPES)
+def test_queryset_release_mismatch_observe_only_records_skew():
+    # A stale-release patient is still matched (observe-only), but the search records
+    # one release-skew shadow event.
+    from trials.services.omop import patient_release_metrics as prm
+    prm.reset()
+    needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_type_ids=[int(PI_CLASS)], therapy_release_id=str(_RID + 1))
+    scope, _ = Trial.objects.filter_by_patient_info(pi)
+    assert needs.id in set(scope.values_list('id', flat=True))  # unchanged (observe-only)
+    assert prm.skew_search_count() == 1                         # skew observed
+
+
+@override_settings(**OMOP_TYPES)
+def test_queryset_release_match_no_skew():
+    from trials.services.omop import patient_release_metrics as prm
+    prm.reset()
+    TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                     therapy_type_ids=[int(PI_CLASS)], therapy_release_id=str(_RID))
+    Trial.objects.filter_by_patient_info(pi)
+    assert prm.skew_search_count() == 0
 
 
 @override_settings(**OMOP_TYPES)
