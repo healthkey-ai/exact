@@ -23,7 +23,19 @@ from trials.querysets.trial import (
     _csv,
     _csv_stripped,
     _filter_therapy_lines_once,
+    _omop_therapy_ids,
 )
+
+
+def test_omop_therapy_ids_legacy_returns_none_without_importing_release_gate(monkeypatch):
+    """QR4d host-agnostic gate: in legacy mode (omop master flag off) the therapy
+    dispatch must NOT import trials.services.omop.patient_release_gate — a host that
+    doesn't ship it (CB, at the orchestrator drain) would ImportError otherwise.
+    Simulate its absence and assert the legacy path still yields (None, None)."""
+    import sys
+    monkeypatch.setitem(sys.modules, 'trials.services.omop.patient_release_gate', None)
+    assert _omop_therapy_ids({'omop_therapy': False}) == (None, None)
+    assert _omop_therapy_ids({}) == (None, None)  # missing key == off
 
 
 # Stateful handlers that take ctx — they call multiple queryset methods or
