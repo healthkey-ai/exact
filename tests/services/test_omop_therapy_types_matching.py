@@ -7,6 +7,8 @@ promop#370). With EXACT_OMOP_THERAPY + EXACT_OMOP_THERAPY_TYPES on:
 - derive returns the consumer's class concept_ids as type_values (no category lookup);
 - matching is class-concept_id overlap, FAIL-CLOSED on unknown/empty patient classes.
 """
+from contextlib import contextmanager
+
 import pytest
 from django.test import override_settings
 
@@ -264,6 +266,197 @@ def test_queryset_release_match_no_skew():
                      therapy_type_ids=[int(PI_CLASS)], therapy_release_id=str(_RID))
     Trial.objects.filter_by_patient_info(pi)
     assert prm.skew_search_count() == 0
+
+
+# ── #286 Gate 1 ENFORCED (toggle on) — fail-closed at every seam, parity ────────
+# The patient carries its release on therapy_release_id; the matcher verdict/detail
+# seams read it via the attr (explicit), the queryset reads it from the scope
+# filter_by_patient_info binds. active mirror release = _RID. `+1` = a stale release.
+
+@contextmanager
+def _enforce_gate1(monkeypatch):
+    from trials.services.omop import patient_release_gate as prg
+    monkeypatch.setattr(prg, '_PATIENT_RELEASE_GATE_ENFORCE', True)
+    yield
+
+
+def _pi(release, **kw):
+    return PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                       therapy_type_ids=[int(PI_CLASS)], therapy_release_id=release, **kw)
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_verdict_required_stale_not_matched(monkeypatch):
+    with _enforce_gate1(monkeypatch):
+        trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        assert _match(trial, _pi(str(_RID + 1))) == 'not_matched'  # raw overlaps, release stale
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_verdict_excluded_stale_not_matched(monkeypatch):
+    with _enforce_gate1(monkeypatch):
+        trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[PI_CLASS])
+        assert _match(trial, _pi(str(_RID + 1))) == 'not_matched'  # conservative excluded
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_consistent_release_matches(monkeypatch):
+    # Patient release == active mirror release → Gate 1 passes; Gate 2 alone governs.
+    with _enforce_gate1(monkeypatch):
+        trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        assert _match(trial, _pi(str(_RID))) == 'matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_display_stale_not_matched(monkeypatch):
+    with _enforce_gate1(monkeypatch):
+        trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        out = UserToTrialAttrMatcher(trial, _pi(str(_RID + 1))).therapy_related_things_match_status()
+        assert out['therapyTypesRequired']['status'] == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_queryset_stale_drops_required_type(monkeypatch):
+    # The queryset reads the release from the scope filter_by_patient_info binds.
+    with _enforce_gate1(monkeypatch):
+        needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        open_ = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
+        pi = _pi(str(_RID + 1), prior_therapy='One line')
+        scope, _ = (Trial.objects.filter(id__in=[needs.id, open_.id])
+                    .filter_by_patient_info(pi))
+        assert set(scope.values_list('id', flat=True)) == {open_.id}  # required dropped
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_queryset_matcher_parity_stale(monkeypatch):
+    # The prefilter and the verdict must AGREE under enforcement (no admit-then-reject).
+    with _enforce_gate1(monkeypatch):
+        match = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        pi = _pi(str(_RID + 1), prior_therapy='One line')
+        scope, _ = Trial.objects.filter(id=match.id).filter_by_patient_info(pi)
+        assert set(scope.values_list('id', flat=True)) == set()  # queryset drops it
+        assert _match(match, pi) == 'not_matched'                 # matcher agrees
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_component_only_stale_fail_closed(monkeypatch):
+    # Component-less stale patient (only type_ids): the compose approach keeps the raw
+    # class ids flowing, so the eligible_for_therapy_related_things_from_lines short-
+    # circuit is NOT hit and the type prefilter fails closed (the step-1 bug that the
+    # class-id-gating approach caused). Parity with the matcher.
+    with _enforce_gate1(monkeypatch):
+        needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                         therapy_type_ids=[int(PI_CLASS)], therapy_release_id=str(_RID + 1))
+        scope, _ = Trial.objects.filter_by_patient_info(pi)
+        assert needs.id not in set(scope.values_list('id', flat=True))
+        assert _match(needs, pi) == 'not_matched'
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_empty_class_set_is_noop(monkeypatch):
+    # Empty patient class set → resolve_type_validation's empty guard returns BEFORE
+    # Gate 1, so enforcement is a no-op; a no-required-type trial stays visible.
+    with _enforce_gate1(monkeypatch):
+        open_ = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
+        pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
+                         therapy_type_ids=[], therapy_release_id=str(_RID + 1))
+        scope, _ = Trial.objects.filter(id=open_.id).filter_by_patient_info(pi)
+        assert set(scope.values_list('id', flat=True)) == {open_.id}
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_embedded_backend_search_stale_drops_required_type(monkeypatch):
+    # The EMBEDDED ExactMatcher backend (CancerBot runs it in-process) must enforce Gate 1
+    # too. Its search() funnels through filter_by_patient_info (for a patient-scoped
+    # search_type — 'all' is the admin/browse path that skips the patient prefilter), so
+    # the scope covers it. Explicitly guards the regression where a view-only set-point
+    # fail-opened for this path.
+    from exact_matching.backend import ExactMatcher
+    from trials.services.study_preferences import StudyPreferences
+    with _enforce_gate1(monkeypatch):
+        needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        open_ = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
+        pi = _pi(str(_RID + 1), prior_therapy='One line')  # stale release
+
+        class _P:
+            geo_point = None
+
+            def as_patient_info(self):
+                return pi
+
+        class _Prefs:
+            query_params = {}
+            study_info = StudyPreferences()
+            search_type = 'standard'  # patient-scoped path → filter_by_patient_info
+            recruitment_status = None
+
+        qs = ExactMatcher().search(
+            Trial.objects.filter(id__in=[needs.id, open_.id]), _P(), _Prefs())
+        ids = set(qs.values_list('id', flat=True))
+        assert needs.id not in ids   # embedded backend enforces → stale required-type dropped
+        assert open_.id in ids
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_embedded_backend_verdict_stale_not_matched(monkeypatch):
+    # For 'all' (admin/browse) searches the queryset skips the patient prefilter, so the
+    # embedded backend enforces per-trial via the verdict (match_status → matching_type),
+    # which reads the release explicitly. A stale-release patient → not_matched.
+    from exact_matching.backend import ExactMatcher
+    with _enforce_gate1(monkeypatch):
+        needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+        pi = _pi(str(_RID + 1))  # stale release
+
+        class _P:
+            def as_patient_info(self):
+                return pi
+
+        # matching_type's vocabulary is 'not_eligible' (vs the internal matcher's
+        # 'not_matched') — Gate 1 fired and the trial is not eligible for the stale patient.
+        assert ExactMatcher().match_status(needs, _P()) == 'not_eligible'
+
+
+def _authed_client():
+    from rest_framework.authtoken.models import Token
+    from rest_framework.test import APIClient
+    from accounts.models import Identity
+    user, _ = Identity.objects.get_or_create(issuer='urn:local', sub='gate1-view')
+    token, _ = Token.objects.get_or_create(user=user)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+    return client
+
+
+def _match_post(client, therapy_release_id):
+    return client.post('/trials/match/', {'patient_info': {
+        'disease': 'multiple myeloma',
+        'therapy_component_ids': [int(BORT_CID)],
+        'therapy_type_ids': [int(PI_CLASS)],
+        'therapy_release_id': therapy_release_id,
+    }}, format='json')
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_view_end_to_end_stale_drops_required_type(monkeypatch):
+    # Full HTTP chain: the view's _resolve_patient_info publishes the patient release
+    # into the request contextvar, so enforcement fail-closes with NO manual set.
+    from trials.services.omop import patient_release_gate as prg
+    monkeypatch.setattr(prg, '_PATIENT_RELEASE_GATE_ENFORCE', True)
+    needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    resp = _match_post(_authed_client(), str(_RID + 1))  # stale release
+    assert resp.status_code == 200
+    assert needs.id not in {t['trialId'] for t in resp.data['results']}
+
+
+@override_settings(**OMOP_TYPES)
+def test_enforce_view_end_to_end_match_keeps_required_type(monkeypatch):
+    from trials.services.omop import patient_release_gate as prg
+    monkeypatch.setattr(prg, '_PATIENT_RELEASE_GATE_ENFORCE', True)
+    needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    resp = _match_post(_authed_client(), str(_RID))  # release == active mirror
+    assert resp.status_code == 200
+    assert needs.id in {t['trialId'] for t in resp.data['results']}
 
 
 @override_settings(**OMOP_TYPES)

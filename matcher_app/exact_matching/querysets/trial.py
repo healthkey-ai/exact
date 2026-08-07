@@ -1545,6 +1545,20 @@ class TrialQuerySet(models.QuerySet):
         return self.filter(researchers_emails__has_any_keys=[email.lower()])
 
     def filter_by_patient_info(self, patient_info, add_traces=False):
+        # #286 Gate 1: bind the patient's aggregate release for the whole eligibility
+        # build so the OMOP-type prefilter (resolve_type_validation) enforces
+        # release-consistency for EVERY caller of this method — the HTTP view (via
+        # filtered_trials), the embedded ExactMatcher backend, mgmt commands, and direct
+        # callers. Reset on exit (no cross-call leak). The matcher verdict / detail-display
+        # seams pass the release explicitly instead (they hold the patient_info_attr).
+        from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
+        from trials.services.omop.patient_release_gate import patient_release_scope
+        release = (PatientInfoAttributes(patient_info).get_user_therapy_release_id()
+                   if patient_info is not None else None)
+        with patient_release_scope(release):
+            return self._filter_by_patient_info(patient_info, add_traces=add_traces)
+
+    def _filter_by_patient_info(self, patient_info, add_traces=False):
         from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 
         traces = []
