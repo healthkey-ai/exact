@@ -151,8 +151,22 @@ class PatientInfoAttributes:
                 return ['none']
             elif hasattr(self.patient_info, '_pre_existing_condition_categories'):
                 return [c.code for c in self.patient_info._pre_existing_condition_categories]
-            else:
-                return []
+            # Host-agnostic seam (CB, QR4d PIA drain): CB's PatientInfo exposes a
+            # Django related manager, not a pre-populated `_pre_existing_condition_
+            # categories` list. Query the codes so a drained CB PatientInfoAttributes
+            # does not silently blank answered conditions via the `return []` fallback
+            # (docs/exact-queryset-reconciliation-qr4.md §3d / L7). Memoized on the
+            # shared patient_info, matching CB's get_value (Sentry
+            # CANCERBOT-BACKEND-N2); values_list bypasses prefetch identically for
+            # prefetched and unprefetched PatientInfo.
+            related = getattr(self.patient_info, 'pre_existing_condition_categories', None)
+            if related is not None and hasattr(related, 'values_list'):
+                codes = getattr(self.patient_info, '_pre_existing_condition_codes_cache', None)
+                if codes is None:
+                    codes = list(related.values_list('category__code', flat=True))
+                    self.patient_info._pre_existing_condition_codes_cache = codes
+                return list(codes)
+            return []
 
         user_attr_value = getattr(self.patient_info, attr_name)
 
