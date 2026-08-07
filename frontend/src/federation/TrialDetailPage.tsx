@@ -78,10 +78,17 @@ function formatValue(value: unknown, options?: TrialDetailField["options"]): str
   return labelOf(value, options);
 }
 
+/** Shown in place of a therapy concept the vocab mirror could not resolve to a
+ *  name (e.g. a concept EXACT's projection references but promop's snapshot does
+ *  not ship yet — see promop#390). A raw concept_id is meaningless to a user, so
+ *  we render a hint instead. The criterion is still shown (never dropped). */
+export const UNRESOLVED_CONCEPT_LABEL = "Unknown";
+
 /** Resolve OMOP-mapped therapy `value` concept_ids to their mirror titles (drug
- *  names). Falls back to the raw id for any concept the server didn't resolve,
- *  so a partial mapping never hides a criterion. Used for the OMOP therapy
- *  regimen/component levels, whose `value` is concept_ids with no `options` map. */
+ *  names). For any concept the server did not resolve, render a placeholder hint
+ *  rather than the raw id — so the criterion is still visible but not shown as a
+ *  meaningless number. Used for the OMOP therapy regimen/component levels, whose
+ *  `value` is concept_ids with no `options` map. */
 export function formatOmopConcepts(
   value: unknown,
   concepts: NonNullable<TrialDetailField["omopConcepts"]>,
@@ -90,7 +97,7 @@ export function formatOmopConcepts(
   const ids = Array.isArray(value) ? value : value == null || value === "" ? [] : [value];
   const parts = ids
     .filter((v) => v != null && v !== "")
-    .map((v) => byCode.get(String(v)) ?? String(v));
+    .map((v) => byCode.get(String(v)) ?? UNRESOLVED_CONCEPT_LABEL);
   return parts.length ? parts.join(", ") : "—";
 }
 
