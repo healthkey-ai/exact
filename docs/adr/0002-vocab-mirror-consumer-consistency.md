@@ -85,7 +85,7 @@ only by the **singleton sync writer** and the **brief pointer-flip** transaction
 | 1 | Torn / half-loaded read during sync | Load into **staging / inactive generation**; never mutate the active data in place (no `TRUNCATE`+reload on live tables). Activate by an **atomic pointer flip**. |
 | 2 | Mixed-release read (table A from R, B from R-1) | Single **`active_release` pointer** + a `release_id` column on every row (immutable per generation); readers **pin `release_id=R`** for all reads. |
 | 3 | Release swaps mid-match | Read the active release **once at run start** and pin **all OMOP-mirror reads** in that run to the chosen `release_id` (wrap the request, not just the graph-expansion call). A **retention window** keeps the previous generation alive so in-flight runs finish on their release. (READ COMMITTED + pin + retention is sufficient; REPEATABLE READ is **not** required.) Binding the *non-mirror* artifacts (crosswalk / projection) to the same release is #4. |
-| 4 | Cross-artifact drift (mirror R vs crosswalk/lookup/projection R-1) | **Release-match gate** at activation. The `default`-DB artifacts are checked in-transaction: the mirror generation is populated, and the `TherapyOmopMapping` crosswalk + `ComponentCategoryOmopLookup` are stamped for R + covered (the component-lookup check ships in #262; the crosswalk follows the same stamp+coverage pattern). The trial **`omop_*` projection lives on the CB-owned trials DB** — a live cross-DB read at activation is inherently racy, so it is gated instead via a **local attestation**: CB stamps every trial with its projection release, validates the whole batch, and **publishes a versioned "projection ready for R" attestation into EXACT's `default` DB**; the activation gate reads only that local attestation, so the flip stays atomic on one DB. Mismatch → do not activate, keep the last consistent bundle, alert. Provenance + attestation are a CB contract (CB `docs/exact-downstream-and-omop.md`; CB epic cancerbot-org/cancerbot#4653); the EXACT attestation model + gate are #265, **observe-only until Phase-T (#263)** puts the graph on the eligibility path. Coverage (projection concept_ids ⊆ R) is defense-in-depth, **not** provenance. |
+| 4 | Cross-artifact drift (mirror R vs crosswalk/lookup/projection R-1) | **Release-match gate** at activation. The `default`-DB artifacts are checked in-transaction: the mirror generation is populated, and the `TherapyOmopMapping` crosswalk + `ComponentCategoryOmopLookup` are stamped for R + covered (the component-lookup check ships in #262; the crosswalk follows the same stamp+coverage pattern). The trial **`omop_*` projection lives on the CB-owned trials DB**, gated via a release-keyed **attestation**: CB stamps every trial with its projection release, validates the whole batch, and publishes a "projection ready for R" attestation the activation gate reads. **Transport ratified by [ADR 0003](0003-cb-exact-convergence-attestation-seam.md) Option D (2026-08-07): the attestation is immutable/insert-only on the CB-owned trials DB and EXACT reads it cross-DB (a monotonic, release-keyed row → a lagging read only ever fail-closes) — superseding this row's original "publish into EXACT's `default` DB" framing (that kept the flip atomic on one DB but is now retired with #307).** The gate VERIFIES the attestation checksum vs a local recompute (§Gate 1 gap #1), not mere existence. Mismatch → do not activate, keep the last consistent bundle, alert. Provenance + attestation are a CB contract (CB `docs/exact-downstream-and-omop.md`; CB epic cancerbot-org/cancerbot#4653); the EXACT attestation model + gate are #265, **observe-only until the ratified enforce trigger is met** (ADR 0003 / §Gate 1 gap #2: Option-D read path live + checksum-verify (gap #1) + revocation safeguards (gap #2) + `type_release_gate` on the verdict path — ADR 0004 retired Phase-T as the trigger). Coverage (projection concept_ids ⊆ R) is defense-in-depth, **not** provenance. |
 | 5 | Silently serving a stale mirror | **Fail-closed + `MAX_MIRROR_AGE`:** serve the active release only up to an age bound; past it return **503 `vocabulary_release_unavailable`**. Never fall back to a live API or a different release. |
 | 6 | Partial / truncated download accepted as complete | Verify #334's completeness signals — **`__done` sentinel + `row_counts` + `checksums`** — before a generation is `READY`; unverified never activates. **Do not advance the retry ETag** on mere observation (else a failed R becomes a `304` and never retries). |
 | 7 | Concurrent / duplicate sync writers | **Singleton writer:** a Postgres **advisory lock** for the whole sync run (no Redis needed); sync runs as a **Cloud Run Job**, never in a request. Lock held → exit "another sync in progress." |
@@ -118,15 +118,15 @@ contributing therapy lines else null — promop [#394](https://github.com/health
 This is EXACT issue [#286](https://github.com/healthkey-ai/exact/issues/286) "Gate 1", distinct
 from Gate 2 (per-concept validity of the patient's own ids in the mirror). Codex-adjudicated.
 
-**Architecture: extend mechanism #4's *role* (gate activation on a projection attestation) —
-do NOT read per-trial release tags.** #4's attestation **transport and mutability are still being
-decided in [ADR 0003](0003-cb-exact-convergence-attestation-seam.md)** (Option D — immutable /
-insert-only attestation on the CB-owned trials DB, read cross-DB — is *proposed subject to proof*;
-the **interim posture keeps** today's `publish_projection_attestation(...)` as the single seam and
-**freezes #307**). Gate 1 does not pick that topology; it only *requires* that whatever seam ADR
-0003 lands provide an **immutable, insert-only** attestation binding R to the projection checksum —
-today's mutable upsert into EXACT's `default` DB does not yet meet that, and hardening it is a
-**precondition to enforcement** (gap #2 below), not a reason to remove the working interim seam now.
+**Architecture: extend mechanism #4's *role* (gate activation on a projection attestation) — do NOT
+read per-trial release tags for the match-time `patient == trial` decision.** (gap #2's containment
+option A separately mirrors the per-trial tag to *scope the projection*, a different use.) #4's
+attestation transport is [ADR 0003](0003-cb-exact-convergence-attestation-seam.md) **Option D —
+RATIFIED (2026-08-07): immutable / insert-only attestation on the CB-owned trials DB, read cross-DB;
+#307 closed won't-do and the interim `publish_projection_attestation(...)` posture retired.** Gate 1
+requires an **immutable, insert-only** attestation binding R to the projection checksum — the
+Option-D relocation (moving the attestation off EXACT's `default` DB to the trials DB) is a
+**precondition to enforcement** (gap #2 below).
 If activating mirror release R requires the trial projection to be *verified complete
 for R*, and the patient release == R, then patient and trial share generation R transitively —
 a direct per-trial `patient == trial` compare adds nothing, and a per-trial `omop_therapy_digest`
@@ -153,28 +153,91 @@ with Gate 2: only a release check catches a changed drug→class `Is a` expansio
 every concept valid but shifts the patient's aggregate class set — and thus the overlap.
 
 **Two fail-OPEN gaps in mechanism #4 as prototyped — close BEFORE enforcing:**
-1. **Existence-only attestation is fail-open.** `projection_attested(R)` proves only that a row
-   was inserted, not that EXACT's trial rows are the complete CB projection for R. Activation
-   must **verify** the attestation `checksum`+`trial_count` against a hash EXACT **recomputes
-   from its own trial projection snapshot** (sorted trial identity + `omop_therapy_types_*`
-   values + complete universe) — needs no CB crosswalk, though the canonical hash
-   domain/algorithm is a CB↔EXACT contract (ADR 0003 §"Any option MUST specify"). (Record-then-
-   alarm-on-drift is monitoring, not the gate.)
-2. **Post-attestation trial mutation is fail-open.** Prefer **immutable/versioned** projections
-   (a mutation is a new version ⇒ a new release; the active R stays self-consistent). Invalidating
-   the attestation **alone is insufficient for an already-active R**: the activation gate is not
-   re-run, so `active_release` stays R and Gate 1 keeps accepting R-stamped patients against the
-   changed projection. So the non-versioned alternative must **atomically revoke/block the active
-   release** (fail-closed → 503, accounting for in-flight pinned reads), not merely invalidate the
-   attestation. Do not flip `_PROJECTION_GATE_ENFORCE` without one of these.
+1. **Existence-only attestation is fail-open — DONE (observe-only, #345).** `projection_attested(R)`
+   proved only that a row was inserted, not that EXACT's trial rows are the complete CB projection
+   for R. Activation now **verifies** the attestation `checksum`+`trial_count` against a hash EXACT
+   **recomputes from its own trial rows** (`compute_trial_projection_checksum`: sha256 over every
+   `Trial`, per-trial `[code, sorted(required), sorted(excluded)]`, `code`=CB-portable identity,
+   tuples sorted in-process by codepoint — the frozen CB↔EXACT contract). Blank checksum → pending
+   observe-only / fail-closed when enforced; mismatch → fail. Still observe-only until gap #2.
+2. **Post-attestation trial mutation is fail-open** — resolution below (**hybrid B(b1) + A**,
+   codex-adjudicated). Do not flip `_PROJECTION_GATE_ENFORCE` / `_PATIENT_RELEASE_GATE_ENFORCE`
+   until it lands.
 
-The attestation **write/read seam** (how the projection attestation reaches the gate) is **not
-decided here** — it is [ADR 0003](0003-cb-exact-convergence-attestation-seam.md) (leading:
-**Option D** — CB writes the immutable, release-keyed attestation into the CB-owned trials DB and
-EXACT reads it via its existing read-only `trials` connection; **#307's HTTP endpoint is frozen**).
-ADR 0003's monotonic invariant ("activation permitted only when a durable, immutable attestation
-binds R to the projection checksum the gate is activating") is exactly what gap #1's checksum
-verification enforces.
+### Gate 1 gap #2 resolution — projection immutability + revocation (codex-adjudicated)
+
+gap #1 verifies the projection at ACTIVATION; but EXACT's `omop_therapy_types_*` columns are
+**mutated in place** (no per-release versioning), so after R is active a projection mutation drifts
+the live projection from R's verified checksum WITHOUT re-running the gate — `active_release` stays R
+and Gate 1 keeps trusting R. The required invariant:
+
+> For every **enabled** active release R, the canonical projection EXACT can read equals
+> `ProjectionAttestation[R].checksum`. Any change to a projected tuple **or that projection's
+> membership** disables R *before* the changed state can be served —
+> `enabled(R) ⇒ sha256({[code, sort(req), sort(exc)] | trial.omop_therapy_release_id = R}) = attestation[R].checksum`.
+
+**Decision: hybrid — B(b1) as the correctness mechanism, A as defense-in-depth. Ship neither alone.**
+
+- **B(b1) — revoke-on-change (the load-bearing gate).** A **mutable, one-way `disable(R)` revocation
+  record**, SEPARATE from the immutable insert-only attestation (ADR 0003 decision-content item #7,
+  revocation/rollback). CB
+  writes `disable(R)` **atomically with any mutation/re-stamp that would alter R's attested tuple set
+  or membership**; EXACT reads the revocation for its pinned release **on every request** and
+  **fails closed** (no OMOP-type matching / 503) when disabled. **Read-consistency (load-bearing):**
+  EXACT must read the revocation and the projection in **one MVCC snapshot at `REPEATABLE READ`** (or
+  a single SQL statement that evaluates revocation and projection together). The revocation record
+  MUST live in the same DB as the projection (the CB trials DB), and CB's `disable(R)` write MUST be
+  atomic with the mutation in that same domain. **Co-location alone is NOT enough:** under
+  PostgreSQL's default `READ COMMITTED` each statement takes a fresh snapshot, so EXACT could read
+  `disable(R)` as still-enabled, then CB commits the mutation + disable, then EXACT reads the changed
+  projection in its next statement — the very race this closes. `REPEATABLE READ` (snapshot fixed at
+  txn start) or a single revocation⋈projection statement is required. **And the read MUST hit a
+  commit-current primary, not a lagging replica** (or fail closed when freshness can't be
+  established): `REPEATABLE READ` only makes a replica-local snapshot internally consistent — it does
+  not make a just-committed `disable(R)` visible on a lagging replica → fail-OPEN. Note the asymmetry
+  with ADR 0003's "a lagging replica is acceptable": that holds for the **attestation** (monotonic —
+  a missed attestation only *delays* activation = fail-closed), but a missed **revocation** serves
+  drifted data = fail-OPEN, so revocation reads cannot tolerate replica lag. A "re-check just before returning" is **NOT** a safe substitute: the projection query can
+  observe a CB mutation while a stale / separately-stored / replicated revocation read still shows R
+  enabled → the request serves changed trial data with `disable(R)` unseen (fail-OPEN). **This rules
+  out an EXACT-side / `default`-DB revocation list** (an example earlier ADR 0003 drafts floated, now
+  superseded there): it cannot be read in the projection's snapshot, so it reintroduces exactly this
+  window. b1's correctness is
+  therefore **contingent on CB's atomic-disable discipline**; *b3* per-request full re-hash is too
+  costly for the hot path BUT is the one mechanism that self-checks regardless of that discipline —
+  keep it as a **periodic audit backstop** to catch a missed `disable(R)` (drift a missed disable
+  would otherwise hide). *b2 polling* leaves a drift window = a clinical **fail-OPEN blocker**.
+- **A — release-scoped read (containment, NOT sufficient alone).** EXACT mirrors CB's per-trial
+  `omop_therapy_release_id` (#4667) read-only and scopes its type projection + the gap-#1 checksum to
+  trials tagged `== active_release`. This stops serving a *re-stamped new tuple as R*, but **A alone
+  is still fail-open**: a **missed re-stamp** leaves changed columns tagged R (served as R), and a
+  re-stamp itself **changes R's membership** (the trial leaves the R-set) → silent drift. So A
+  contains + validates but does **not** subsume revocation.
+
+**Ownership.** CB: owns the projection, a **non-null** per-trial release tag + digest, the immutable
+insert-only attestation, AND the mutable per-release disable record; must atomically disable active R
+on any change to R's tuple set/membership. EXACT: read-only; pins R; (with A) scopes reads + the
+activation checksum to `tag = R`; reads revocation every request and fails closed if disabled;
+activation rejects checksum mismatch / null tag / already-revoked R. Both: define the canonical
+population/checksum semantics + the read-consistency protocol.
+
+**Minimal safe order:** (1) CB: atomic disable-on-projection-change + the revocation record; (2) EXACT:
+per-request revocation enforcement, race-safe read ordering, fail-closed; (3) EXACT: the R-tag
+mirror/filter + gap-#1 checksum over the identical R-scoped population + activation rejects
+mismatch/null-tag/revoked-R; (4) exercise mutation / missed-stamp / re-tag / null-tag / concurrent-
+reader; (5) ONLY THEN flip `_PROJECTION_GATE_ENFORCE` + `_PATIENT_RELEASE_GATE_ENFORCE` — and note
+`_PROJECTION_GATE_ENFORCE` is the SAME flag ADR 0003 governs, so its re-homed enforce trigger also
+applies: (a) the Option-D read path live in the env, (b) the mirror graph on the verdict path
+(`type_release_gate` enabled — ADR 0004 redirected away from the abandoned Phase-T graph-expansion,
+so `type_release_gate` is the remaining verdict-path condition, NOT Phase-T), (c) checksum-verify
+(gap #1) in place.
+
+The attestation **write/read seam** (how the projection attestation reaches the gate) is decided by
+[ADR 0003](0003-cb-exact-convergence-attestation-seam.md): **Option D — RATIFIED (2026-08-07)**: CB
+writes the immutable, release-keyed attestation into the CB-owned trials DB and EXACT reads it via
+its read-only `trials` connection; **#307's HTTP endpoint is closed won't-do**. ADR 0003's monotonic
+invariant ("activation permitted only when a durable, immutable attestation binds R to the projection
+checksum the gate is activating") is exactly what gap #1's checksum verification enforces.
 
 **v1 sequencing (all flag-off):** (1) **carry `therapy_release_id` through EXACT's patient input
 contract first** — register it on the `PatientInfo` field registry + the promop/inline adapters so

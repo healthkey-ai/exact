@@ -195,9 +195,12 @@ items are impl detail for the relocation issue, not re-decisions.
    last consistent bundle; runbook for reconciliation. (Enforce stays observe-only until
    its trigger — see Decision.)
 7. **Revocation/rollback:** an attested release is disabled via **mutable revocation
-   state kept separate** from the immutable attestation (e.g. the mirror
-   generation's own state / an EXACT-side revocation list), so revocation never mutates
-   the insert-only attestation row. Concrete location finalized in the relocation issue.
+   state kept separate** from the immutable attestation, so revocation never mutates the
+   insert-only attestation row. **Location resolved by [ADR 0002](0002-vocab-mirror-consumer-consistency.md)
+   §"Gate 1 gap #2 resolution": the `disable(R)` record MUST be co-located with the projection on the
+   CB-owned `trials` DB and read with it in one `REPEATABLE READ` snapshot** — an EXACT-side /
+   `default`-DB revocation list (floated as an example in earlier drafts) is **fail-open** (it cannot
+   share the projection's snapshot) and is superseded.
 
 ## Consequences
 
