@@ -17,8 +17,6 @@ name: deploy-staging
 #   GCP_SERVICE_ACCOUNT          exact-staging-gh@<project>.iam.gserviceaccount.com
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
