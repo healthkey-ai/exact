@@ -24,7 +24,7 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
@@ -37,7 +37,21 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      run: pip install -r requirements.txt
+      # The runner's toolcache pip (26.x) ships a broken vendored resolvelib —
+      # `ImportError: cannot import name 'RequirementInformation' from
+      # pip._vendor.resolvelib.structs` — so ANY `pip`/`python -m pip` command
+      # aborts at import, including `pip install "pip<24.1"` (it can't run to
+      # downgrade itself), and `ensurepip --upgrade` is a no-op because the broken
+      # pip is *newer* than the stdlib-bundled wheel. Bootstrap a clean pip < 24.1
+      # with get-pip.py, which runs its own zip-bundled pip and never imports the
+      # broken one. Pin < 24.1 because a build-isolation path in `pip install -r
+      # requirements.txt` still imports get_runnable_pip, which 24.1 removed.
+      # (The pythonLocation cache above, bumped v1 -> v2, also caches pip, so a
+      # cache hit can mask this; get-pip.py fixes the cache-miss base pip too.)
+      run: |
+        curl -fsS https://bootstrap.pypa.io/pip/get-pip.py -o /tmp/get-pip.py
+        python /tmp/get-pip.py "pip<24.1"
+        python -m pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
@@ -68,7 +82,7 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
