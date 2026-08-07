@@ -74,7 +74,9 @@ ATTR_LABEL_MAPPING = {
     'measurableDiseaseIwcllRequired': 'Measurable Disease (iwCLL Criteria)',
     'autoimmuneCytopeniasRefractoryToSteroidsRequired': 'Autoimmune Cytopenias Refractory to Steroids',
     'largestLymphNodeSizeMin': 'Largest Lymph Node Size Minimum (cm)',
+    'largestLymphNodeSizeMax': 'Largest Lymph Node Size Maximum (cm)',
     'spleenSizeMin': 'Spleen Size Minimum (cm below costal margin)',
+    'spleenSizeMax': 'Spleen Size Maximum (cm below costal margin)',
     'diseaseActivitiesRequired': 'Disease Activity',
     'btkInhibitorRefractoryRequired': 'BTK Inhibitor Refractory',
     'btkInhibitorRefractoryExcluded': 'BTK Inhibitor Refractory Excluded',
@@ -445,8 +447,10 @@ ATTR_GROUP_MAPPING = {
     'tumorBurdensRequired': 'disease',
     'lymphadenopathyRequired': 'disease',
     'largestLymphNodeSizeMin': 'disease',
+    'largestLymphNodeSizeMax': 'disease',
     'splenomegalyRequired': 'disease',
     'spleenSizeMin': 'disease',
+    'spleenSizeMax': 'disease',
     'hepatomegalyRequired': 'disease',
     'autoimmuneCytopeniasRefractoryToSteroidsRequired': 'disease',
 
@@ -891,9 +895,9 @@ def trial_attr_units_for(attr):
         return options_from_enum_class(SerumCalciumUnits).get(PatientInfo._meta.get_field('serum_calcium_level_units').default)
     elif attr in ('lactate_dehydrogenase_level_min', 'lactate_dehydrogenase_level_max'):
         return 'U/L'
-    elif attr in ('largest_lymph_node_size_min',):
+    elif attr in ('largest_lymph_node_size_min', 'largest_lymph_node_size_max'):
         return 'cm'
-    elif attr in ('spleen_size_min',):
+    elif attr in ('spleen_size_min', 'spleen_size_max'):
         return 'cm'
     elif attr in ('absolute_lymphocyte_count_min', 'absolute_lymphocyte_count_max'):
         return 'cells/UL'
