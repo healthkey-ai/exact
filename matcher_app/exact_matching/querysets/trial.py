@@ -1561,6 +1561,15 @@ class TrialQuerySet(models.QuerySet):
         # filtered_trials), the embedded ExactMatcher backend, mgmt commands, and direct
         # callers. Reset on exit (no cross-call leak). The matcher verdict / detail-display
         # seams pass the release explicitly instead (they hold the patient_info_attr).
+        #
+        # Master-gated on OMOP therapy (same seam as `_omop_therapy_ids` / #342): the
+        # release scope only affects the OMOP-type prefilter, which is itself inert when
+        # OMOP is off, so skipping the binding in legacy mode is behaviour-preserving. It
+        # also keeps the `trials.services.omop.patient_release_gate` import off the legacy
+        # path, so a host without the OMOP release-gate infra (CB, at the QR4d orchestrator
+        # drain) can run this method instead of ImportError-ing on a module it doesn't ship.
+        if not omop_therapy_enabled():
+            return self._filter_by_patient_info(patient_info, add_traces=add_traces)
         from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
         from trials.services.omop.patient_release_gate import patient_release_scope
         release = (PatientInfoAttributes(patient_info).get_user_therapy_release_id()
