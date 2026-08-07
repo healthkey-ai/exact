@@ -569,6 +569,14 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "bulky_disease_criteria": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
+        # Host-agnostic seam (matches CB): CB exposes bulky_disease_criteria as a
+        # computed @property (no model field), so is_attr_blank's fallback
+        # get_field() would raise there. computed_value_type short-circuits that
+        # lookup with the value's type. Inert for EXACT, where it is a TextField —
+        # both resolve to the same str/'' blank check. is_computed_value is inert
+        # metadata (not read by the package) kept for parity.
+        "is_computed_value": True,
+        "computed_value_type": "str",
         "disease": "MCL",
         "attr": ["bulky_disease_criteria_required"],
         "uvalue_function": {
