@@ -3,9 +3,11 @@
 EXACT (EXtracting Attributes from Clinical Trials) is a stateless search and
 matching engine for clinical trials. It connects to an external database that
 holds the trial catalog and reference data — EXACT does not own or manage that
-data. 
+data.
 
-Patient profiles are passed inline with each API request. They can also be retrieved from an external database that has a PatientInfo table in the form implemented by [CTOMOP](https://github.com/healthkey-ai/ctomop), which exposes a flat projection of a patient record from underlying OMOP tables. 
+Patient profiles are passed inline with each API request. They can also be retrieved from an external database that has a PatientInfo table in the form implemented by [CTOMOP](https://github.com/healthkey-ai/ctomop), which exposes a flat projection of a patient record from underlying OMOP tables.
+
+> **[API_SURFACE.md](API_SURFACE.md)** — full REST API reference (endpoints, patient context schema, query params, response shapes).
 
 ## Documentation
 
@@ -15,7 +17,7 @@ Patient profiles are passed inline with each API request. They can also be retri
 | [docs/trials4patients.md](docs/trials4patients.md) | Running trial search for patients |
 | [docs/evaluator.md](docs/evaluator.md) | Evaluating EXACT results against ground truth |
 | [docs/setup.md](docs/setup.md) | Local development setup |
-| [docs/api.md](docs/api.md) | REST API reference |
+| [API_SURFACE.md](API_SURFACE.md) | REST API reference |
 
 ## Running trial search for patients
 
@@ -68,7 +70,14 @@ python manage.py seed_reference_data
 python manage.py runserver
 ```
 
-See [docs/setup.md](docs/setup.md) for full instructions including database
-setup, environment variables, and test configuration.
+Once the server is running, search for trials with curl:
 
-See [docs/setup.md](docs/setup.md) for configuration, secrets management, and environment variable reference.
+```bash
+curl -s -H "Authorization: Token <your-token>" \
+  'http://localhost:8000/trials/?type=eligible' \
+  -H 'Content-Type: application/json' \
+  -d '{"patientInfo": {"disease": "multiple myeloma", "patientAge": 55, "gender": "M"}}' | python -m json.tool
+```
+
+See [docs/setup.md](docs/setup.md) for full setup instructions, environment
+variables, secrets management, and test configuration.
