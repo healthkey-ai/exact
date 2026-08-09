@@ -21,6 +21,23 @@ def _trial(code, required=None, excluded=None):
                         omop_therapy_types_excluded=excluded or [])
 
 
+def test_golden_vector_locks_cb_contract():
+    """The frozen CB↔EXACT byte contract, pinned to a hardcoded hash on BOTH sides.
+
+    CB's publisher (cancerbot #4696) asserts this SAME vector, so neither repo can change
+    the checksum domain (normalization / sort / JSON serialization / universe) without a
+    red test. Self-consistency tests alone would let EXACT drift silently and break the
+    gap-#2 gate (EXACT's recompute would stop matching CB's published manifest_checksum,
+    failing closed on every projection). If this changes, change it in lockstep with CB.
+    """
+    _trial('NCT-A', [35803229, 35803227], [35803228])
+    _trial('NCT-B')
+    digest, count = compute_trial_projection_checksum()
+    assert count == 2
+    assert digest == (
+        'bace8c2843d1ce44f658332e8647927a647563f3b4b1ddb808850a2fad927d12')
+
+
 def test_normalize_sorts_dedups_stringifies():
     assert _normalize([3, 1, 2, 2]) == ['1', '2', '3']
     assert _normalize(None) == []
