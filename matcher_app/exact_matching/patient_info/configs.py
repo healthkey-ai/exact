@@ -1255,6 +1255,26 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     },
 }
 
+
+# Host-data-contract seam: a downstream host whose patient data uses a different
+# unit basis (or migration-window guard) for some attrs than EXACT's own contract
+# injects per-entry field overrides via the ``EXACT_ATTRS_MAPPING_OVERRIDES``
+# setting, so the extracted matcher body honours the host's contract without this
+# config hardcoding a single host. The canonical case is white_blood_cell_count:
+# CancerBot stores it in cells/µL with a ``sane_range`` migration guard (#4559/#4561),
+# EXACT in cells/L. Fields are shallow-merged over the base entry (matching keys
+# win); an unknown attr key is ignored. Default (setting unset) → EXACT unchanged.
+def _apply_attrs_mapping_overrides():
+    from django.conf import settings
+    overrides = getattr(settings, 'EXACT_ATTRS_MAPPING_OVERRIDES', None) or {}
+    for attr_key, field_overrides in overrides.items():
+        base = USER_TO_TRIAL_ATTRS_MAPPING.get(attr_key)
+        if base is not None:
+            USER_TO_TRIAL_ATTRS_MAPPING[attr_key] = {**base, **field_overrides}
+
+
+_apply_attrs_mapping_overrides()
+
 # -------
 # Disease
 # -------
