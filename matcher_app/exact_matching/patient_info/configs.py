@@ -485,16 +485,25 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     # CLL-specific END
 
     # MCL-specific START
-    "morphologic_variant": {
+    # Key order matches CB's USER_TO_TRIAL_ATTRS_MAPPING (source of truth) so
+    # filter_by_patient_info's add_traces trace order is byte-identical across the
+    # CB-orchestrator / package-orchestrator boundary (QR4d.3 drain follow-up).
+    "bulky_disease_criteria": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
+        # Host-agnostic seam (matches CB): CB exposes bulky_disease_criteria as a
+        # computed @property (no model field), so is_attr_blank's fallback
+        # get_field() would raise there. computed_value_type short-circuits that
+        # lookup with the value's type. Inert for EXACT, where it is a TextField —
+        # both resolve to the same str/'' blank check. is_computed_value is inert
+        # metadata (not read by the package) kept for parity.
+        "is_computed_value": True,
+        "computed_value_type": "str",
         "disease": "MCL",
-        "attr": ["morphologic_variants_required", "morphologic_variants_excluded"],
+        "attr": ["bulky_disease_criteria_required"],
         "uvalue_function": {
-            "morphologic_variants_required":
-                lambda patient_info: patient_info.morphologic_variant,
-            "morphologic_variants_excluded":
-                lambda patient_info: patient_info.morphologic_variant,
+            "bulky_disease_criteria_required":
+                lambda patient_info: patient_info.bulky_disease_criteria,
         }
     },
     "largest_lesion_size": {
@@ -516,6 +525,18 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "attr_max": "p53_ihc_max",
         "attr": ["p53_ihc_min", "p53_ihc_max"],
     },
+    "morphologic_variant": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "disease": "MCL",
+        "attr": ["morphologic_variants_required", "morphologic_variants_excluded"],
+        "uvalue_function": {
+            "morphologic_variants_required":
+                lambda patient_info: patient_info.morphologic_variant,
+            "morphologic_variants_excluded":
+                lambda patient_info: patient_info.morphologic_variant,
+        }
+    },
     "disease_behavior": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
@@ -534,16 +555,6 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "uvalue_function": {
             "disease_subtypes_required":
                 lambda patient_info: patient_info.disease_subtype,
-        }
-    },
-    "extranodal_sites": {
-        "type": ATTR_MAPPING_TYPE_COMPUTED,
-        "custom_search": True,
-        "disease": "MCL",
-        "attr": ["extranodal_sites_required"],
-        "uvalue_function": {
-            "extranodal_sites_required":
-                lambda patient_info: patient_info.extranodal_sites,
         }
     },
     "mipi_risk": {
@@ -566,22 +577,14 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
                 lambda patient_info: patient_info.mipi_c_risk,
         }
     },
-    "bulky_disease_criteria": {
+    "extranodal_sites": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
-        # Host-agnostic seam (matches CB): CB exposes bulky_disease_criteria as a
-        # computed @property (no model field), so is_attr_blank's fallback
-        # get_field() would raise there. computed_value_type short-circuits that
-        # lookup with the value's type. Inert for EXACT, where it is a TextField —
-        # both resolve to the same str/'' blank check. is_computed_value is inert
-        # metadata (not read by the package) kept for parity.
-        "is_computed_value": True,
-        "computed_value_type": "str",
         "disease": "MCL",
-        "attr": ["bulky_disease_criteria_required"],
+        "attr": ["extranodal_sites_required"],
         "uvalue_function": {
-            "bulky_disease_criteria_required":
-                lambda patient_info: patient_info.bulky_disease_criteria,
+            "extranodal_sites_required":
+                lambda patient_info: patient_info.extranodal_sites,
         }
     },
     # Authoring compound/"tiered" rules (e.g. Jain classification, NCT05861050):

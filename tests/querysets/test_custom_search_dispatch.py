@@ -38,6 +38,24 @@ def test_omop_therapy_ids_legacy_returns_none_without_importing_release_gate(mon
     assert _omop_therapy_ids({}) == (None, None)  # missing key == off
 
 
+def test_mcl_attr_block_key_order_matches_cb():
+    """QR4d.3 drain follow-up: the MCL attr block key order must match CB's
+    USER_TO_TRIAL_ATTRS_MAPPING (the source of truth). filter_by_patient_info
+    iterates mapping.keys(), so a divergent order makes the add_traces trace order
+    (and per-step records/dropped) differ across the CB-orchestrator / package-
+    orchestrator boundary for an MCL patient. Re-drift here silently re-introduces
+    that divergence — the drain review caught it because the package block had been
+    reordered vs CB."""
+    from exact_matching.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
+    keys = list(USER_TO_TRIAL_ATTRS_MAPPING)
+    i = keys.index('bone_marrow_involvement')
+    assert keys[i + 1:i + 10] == [
+        'bulky_disease_criteria', 'largest_lesion_size', 'p53_ihc',
+        'morphologic_variant', 'disease_behavior', 'disease_subtype',
+        'mipi_risk', 'mipi_c_risk', 'extranodal_sites',
+    ]
+
+
 # Stateful handlers that take ctx — they call multiple queryset methods or
 # branch on ctx, so the "exactly one queryset call with the value" assertion
 # doesn't fit. Verified by hand in the dispatch refactor and covered by the
