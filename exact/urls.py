@@ -7,6 +7,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 
+from exact.health import health_check
+
 
 class ObtainAuthToken(APIView):
     """Return a DRF token for valid username/password credentials."""
@@ -22,6 +24,8 @@ class ObtainAuthToken(APIView):
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # Ahead of the trials include, which owns the rest of the root namespace.
+    path('healthz', health_check, name='healthz'),
 ]
 
 # Persistent DRF tokens are a dev/test-only credential; don't expose the
