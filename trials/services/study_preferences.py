@@ -82,12 +82,19 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
             return value if isinstance(value, list) else [value]
         return []
 
-    def _str_list(key):
+    def _str_list(key, limit=50):
         """Repeated params and one comma-separated value both spell a list.
 
-        CB's /trials/form-settings/ reads the purpose param both ways, and a
-        caller holding the pre-#4663 single-value contract keeps working under
-        either spelling.
+        Repetition is the query-string convention, and what CB's
+        /trials/form-settings/ reads for its own `trial_purpose` param — but not
+        every caller can emit it, so one comma-separated value is accepted too.
+        Either way a caller holding the pre-#4663 single-value contract keeps
+        working.
+
+        Capped, because every code becomes another clause in the WHERE: the
+        purpose taxonomy has nine entries, so a longer list is junk, and an
+        unvalidated query string should not turn into thousands of them. CB
+        bounds the same field at 50.
         """
         codes = [
             code.strip()
@@ -102,7 +109,7 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
             if code and code.casefold() not in seen:
                 seen.add(code.casefold())
                 result.append(code)
-        return result
+        return result[:limit]
 
     def _int_list(key):
         result = []

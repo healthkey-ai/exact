@@ -649,8 +649,9 @@ class TrialQuerySet(models.QuerySet):
         patient sees. Here a caller only gets the filter by asking for it.
         """
         # Scalar unless it is genuinely a collection of them, rather than a
-        # whitelist of container types: a frozenset or a generator would
-        # otherwise fall through and reach SQL as a literal object.
+        # whitelist of container types: a frozenset would otherwise fall through
+        # and reach SQL as a literal object. Anything not iterable at all stays
+        # a scalar, the way it was before this took lists.
         if (
             trial_purpose is None
             or isinstance(trial_purpose, str)
@@ -658,17 +659,23 @@ class TrialQuerySet(models.QuerySet):
         ):
             values = [trial_purpose]
         else:
-            values = list(trial_purpose)
-        # Sorted when the caller's own order is arbitrary, so the same request
-        # does not render as two different statements between processes.
+            try:
+                values = list(trial_purpose)
+            except TypeError:
+                values = [trial_purpose]
+        # Sorted when the caller's own order is arbitrary, so the same selection
+        # does not render as two different statements between processes. By code
+        # rather than str(), which for a TrialPurpose is its title.
         if isinstance(trial_purpose, (set, frozenset)):
-            values.sort(key=str)
+            values.sort(key=lambda value: str(getattr(value, 'code', value)))
 
         # Deduplicated the way they are matched, keeping the first spelling, or
         # 'treatment,TREATMENT' is two clauses selecting the same rows.
         codes, seen = [], set()
         for value in values:
             code = getattr(value, 'code', value)
+            if isinstance(code, str):
+                code = code.strip()
             if code is None or code == '':
                 continue
             key = str(code).casefold()
@@ -679,12 +686,11 @@ class TrialQuerySet(models.QuerySet):
 
         if not codes:
             return self
-        if len(codes) == 1:
-            return self.eligible_for_relation('purpose__code', codes[0])
 
-        # Spelled out rather than through eligible_for_relation, which takes one
-        # value, and as an OR of iexact rather than __in, which would quietly
-        # make the multi-code path case-sensitive where the single one is not.
+        # An OR of iexact rather than __in, which would quietly make this
+        # case-sensitive where the rest of the class is not. A single code
+        # renders exactly what eligible_for_relation builds, so it is not given
+        # a path of its own to drift from.
         condition = Q()
         for code in codes:
             condition |= Q(purpose__code__iexact=code)

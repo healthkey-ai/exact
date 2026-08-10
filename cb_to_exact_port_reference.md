@@ -173,7 +173,7 @@ EXACT takes the same list of codes (#354) and keeps two differences on purpose:
 | trials whose purpose was never extracted | kept (`Q(purpose__isnull=True)`) | dropped | CB has applied this filter to every user by default since #4650, so an exact match would drop the whole unextracted corpus from the first page a patient sees. EXACT filters only when a caller asks it to. |
 | case | exact | `iexact` | pre-existing here; mirrors `by_trial_type` through `eligible_for_relation` |
 
-**Watch out**: CB's `StudyInfo.trial_purpose` now defaults to `["treatment"]`. A consumer forwarding CB's stored default straight to EXACT would silently lose every trial with no extracted purpose — the leniency that makes that default safe lives in CB's copy only. No CB→EXACT client exists today.
+**DRAIN-BLOCKING.** CB's `TrialQuerySet` subclasses this one and overrides `by_trial_purpose` (CB `trials/querysets/trial.py` on `2omop`). The two are **not** evaluated-result-identical, so this predicate must not be drained under QR2 of CB's `docs/exact-queryset-reconciliation.md`. Dropping CB's override would hand CB the strict version, and since #4650 defaults every CB user to `["treatment"]`, the first page a patient sees would silently lose every trial whose purpose was never extracted. Same trap for anyone forwarding CB's stored selection to this API directly.
 
 ---
 

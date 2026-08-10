@@ -59,6 +59,14 @@ class TestStudyPreferencesParsing:
         )
         assert prefs.trial_purpose == ['treatment', 'supportive_care']
 
+    def test_trial_purpose_is_capped(self):
+        # Each code becomes another OR clause and the taxonomy has nine
+        # purposes, so a query string must not be able to ask for thousands.
+        many = ','.join(f'code_{i}' for i in range(200))
+        prefs = study_preferences_from_query_params({'trialPurpose': many})
+        assert len(prefs.trial_purpose) == 50
+        assert prefs.trial_purpose[0] == 'code_0'
+
     def test_trial_purpose_independent_from_trial_type(self):
         prefs = study_preferences_from_query_params({
             'trialType': 'interventional',
