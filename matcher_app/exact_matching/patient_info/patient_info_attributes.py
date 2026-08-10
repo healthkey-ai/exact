@@ -267,8 +267,8 @@ class PatientInfoAttributes:
         OMOP mode only; promop#370, ADR 0002). Mirror of
         get_user_therapy_component_ids: None when the field is absent (unknown ->
         callers fail-closed), else a normalized (stringified digit) list or [].
-        Consumed as the patient's type match-values once EXACT_OMOP_THERAPY_TYPES
-        is on (#285); inert before that.
+        Consumed as the patient's type match-values once OMOP therapy is on (#285
+        folded types into the base flag); inert before that.
         """
         val = self.get_value('therapy_type_ids')
         if val is None:

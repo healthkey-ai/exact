@@ -127,8 +127,9 @@ def _omop_therapy_ids(ctx):
 
     #286 Gate 1 (observe-only release-skew metric) is imported and run ONLY in OMOP mode
     (``ctx['omop_therapy']`` — the master flag). ``release_gated_class_ids`` short-circuits
-    to ``None`` without measuring when the TYPES flag is off, so master-gating the whole
-    thing is behaviour-preserving (legacy already resolved to ``None``). It also keeps the
+    to ``None`` without measuring when OMOP therapy is off (types are folded into the base
+    flag, #285), so master-gating the whole thing is behaviour-preserving (legacy already
+    resolved to ``None``). It also keeps the
     ``trials.services.omop.patient_release_gate`` import off the legacy path, so a host
     without the OMOP release-gate infra (CB, at the QR4d orchestrator drain) can run this
     dispatch instead of ImportError-ing on a module it doesn't ship.
@@ -1162,9 +1163,9 @@ class TrialQuerySet(models.QuerySet):
 
         # Component + type values (shared with the matcher). OMOP mode (Phase P, #234):
         # components are the consumer-supplied pre-expanded concept_ids
-        # (patient_component_ids). Types: OMOP-types mode (#285) uses the consumer's
-        # class concept_ids (patient_class_ids); else CB category codes via the flat
-        # lookup. Legacy: derived from the regimen via the CB graph. See therapy_graph.
+        # (patient_component_ids). Types (#285 folded into OMOP): the consumer's pre-expanded
+        # class concept_ids (patient_class_ids). Legacy: derived from the regimen via the CB
+        # graph. See therapy_graph.
         from trials.services.omop.therapy_graph import derive_component_and_type_values
         # measure=True: this is the once-per-search derivation, so the Phase-T
         # gating metric (#263) is recorded here, not per-trial in the matcher.

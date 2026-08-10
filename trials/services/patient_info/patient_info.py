@@ -91,11 +91,12 @@ _FIELDS = [
     _f(TextField, 'later_therapy'),
     _f(JSONField, 'later_therapies', default=list),
     # Component concept_ids supplied directly by PROMOP (promop#189) under OMOP mode.
-    # None when the consumer has not sent them; used by component_category_lookup for types.
+    # None when the consumer has not sent them; used for component matching.
     _f(JSONField, 'therapy_component_ids', default=None),
     # Drug-class "type" concept_ids pre-expanded by PROMOP (promop#370, ADR 0002).
     # None when the consumer has not sent them; consumed as the patient's type
-    # match-values once EXACT_OMOP_THERAPY_TYPES is on (#285). Inert until then.
+    # match-values once OMOP therapy is on (#285 folded types into the base flag). Inert
+    # until then.
     _f(JSONField, 'therapy_type_ids', default=None),
     # Aggregate therapy-vocab release the patient's therapy_type_ids were derived
     # against (promop VocabularyRelease pk as a decimal string; promop#394). One

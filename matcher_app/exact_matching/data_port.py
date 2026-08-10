@@ -36,7 +36,7 @@ class MatcherDataPort(Protocol):
         """Return (component_codes, therapy_types) for the patient's therapies.
 
         ``patient_class_ids`` supplies the patient's pre-expanded drug-class "type"
-        concept_ids (used as type_values under EXACT_OMOP_THERAPY_TYPES / #285).
+        concept_ids (used as type_values under the OMOP flag; #285 folded types in).
         """
         ...
 
@@ -50,7 +50,7 @@ class DjangoMatcherData:
 
         therapies = {}                       # regimen match-value -> title
         therapy_components_to_therapy = {}   # component match-value -> title
-        therapy_types_to_therapy = {}        # CB category code -> title (types not OMOP-mapped)
+        therapy_types_to_therapy = {}        # class concept_id -> title (#285 folded types into OMOP)
 
         if therapy_codes:
             for therapy in resolve_regimens(therapy_codes).prefetch_related('components__categories'):
@@ -72,8 +72,7 @@ class DjangoMatcherData:
             # original DB-query order.
             component_ids = get_component_ids() or []
             if component_ids:
-                from trials.models import TherapyComponent, TherapyComponentCategory
-                from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
+                from trials.models import TherapyComponent
                 keys = [str(c) for c in component_ids]
                 int_cids = [int(k) for k in keys if k.isdigit()]
                 title_by_cid = dict(
@@ -86,16 +85,9 @@ class DjangoMatcherData:
                     # value here later TypeErrors in match_required's sorted(set(values)).
                     title = title_by_cid.get(int(key)) if key.isdigit() else None
                     therapy_components_to_therapy.setdefault(key, title or key)
-                if not omop_types:
-                    # Legacy types: component concept_ids -> CB category codes (#4502).
-                    type_codes = component_concept_ids_to_type_codes(keys) or []
-                    if type_codes:
-                        title_by_code = dict(
-                            TherapyComponentCategory.objects.filter(code__in=type_codes)
-                            .values_list('code', 'title')
-                        )
-                        for code in type_codes:
-                            therapy_types_to_therapy.setdefault(code, title_by_code.get(code) or code)
+                # (The old component->CB-category lookup TYPE display path is retired —
+                # types are folded into the base OMOP flag, #285; the type display map is
+                # built from the patient's class concept_ids below.)
 
             if omop_types:
                 # OMOP types (#285): keys are the patient's class concept_ids as-is
