@@ -121,6 +121,7 @@ trial-search request.
 | `sponsor` | string | Filter by sponsor name |
 | `register` | string | Filter by trial register (e.g. `clinicaltrials.gov`) |
 | `trialType` | string | Filter by trial-type code |
+| `trialPurpose` | string, repeatable | Filter by trial-purpose code (`treatment`, `screening`, …), case-insensitive. Several purposes are a union — a trial matching any of them comes back: repeat the param (`?trialPurpose=treatment&trialPurpose=supportive_care`) or pass one comma-separated value. Trials whose purpose was never extracted are not returned. |
 | `validatedOnly` | boolean | Only return manually validated trials |
 | `distance` | number | Maximum distance from patient location |
 | `distanceUnits` | `km` \| `miles` | Units for `distance` (default `km`) |

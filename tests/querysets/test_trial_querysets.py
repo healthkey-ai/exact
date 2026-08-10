@@ -797,6 +797,8 @@ class TestTrialQuerySet:
         # None / empty is a no-op (returns full set)
         assert list(Trial.objects.by_trial_purpose(None).order_by('id')) == [t1, t2, t3, t4]
         assert list(Trial.objects.by_trial_purpose('').order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.by_trial_purpose([]).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.by_trial_purpose(['']).order_by('id')) == [t1, t2, t3, t4]
 
         # Code-string accepted, case-insensitive (mirrors by_trial_type via eligible_for_relation)
         assert list(Trial.objects.by_trial_purpose('treatment').order_by('id')) == [t1, t2]
@@ -808,8 +810,55 @@ class TestTrialQuerySet:
         assert list(Trial.objects.by_trial_purpose(treatment).order_by('id')) == [t1, t2]
         assert list(Trial.objects.by_trial_purpose(prevention).order_by('id')) == [t3]
 
+        # Several purposes at once (CB #4663): the union, not the intersection
+        assert list(Trial.objects.by_trial_purpose(['treatment']).order_by('id')) == [t1, t2]
+        assert list(
+            Trial.objects.by_trial_purpose(['treatment', 'prevention']).order_by('id')
+        ) == [t1, t2, t3]
+        # ...case-insensitive on that path too, and instances still accepted
+        assert list(
+            Trial.objects.by_trial_purpose(['TREATMENT', 'Prevention']).order_by('id')
+        ) == [t1, t2, t3]
+        assert list(
+            Trial.objects.by_trial_purpose([treatment, prevention]).order_by('id')
+        ) == [t1, t2, t3]
+
+        # Any collection of codes, not a whitelist of container types
+        assert list(
+            Trial.objects.by_trial_purpose(('treatment', 'prevention')).order_by('id')
+        ) == [t1, t2, t3]
+        assert list(
+            Trial.objects.by_trial_purpose({'treatment', 'prevention'}).order_by('id')
+        ) == [t1, t2, t3]
+        assert list(
+            Trial.objects.by_trial_purpose(frozenset(['treatment'])).order_by('id')
+        ) == [t1, t2]
+        assert list(
+            Trial.objects.by_trial_purpose(c for c in ('treatment',)).order_by('id')
+        ) == [t1, t2]
+
+        # A purpose nobody has adds nothing and takes nothing away
+        assert list(
+            Trial.objects.by_trial_purpose(['treatment', 'nonexistent']).order_by('id')
+        ) == [t1, t2]
+        # Blanks in the list are dropped, not treated as a purpose
+        assert list(
+            Trial.objects.by_trial_purpose(['', 'treatment']).order_by('id')
+        ) == [t1, t2]
+
+        # The same purpose twice, in either spelling, is still one clause and
+        # one row per trial — the filter must not fan the join out.
+        repeated = Trial.objects.by_trial_purpose(['treatment', 'TREATMENT'])
+        assert list(repeated.order_by('id')) == [t1, t2]
+        assert repeated.count() == repeated.distinct().count()
+
         # Unknown code → empty queryset
         assert list(Trial.objects.by_trial_purpose('nonexistent').order_by('id')) == []
+        assert list(Trial.objects.by_trial_purpose(['nonexistent']).order_by('id')) == []
+
+        # A trial whose purpose was never extracted stays out whatever is asked
+        # for — unlike CB, where this filter is on by default for everyone.
+        assert t4 not in list(Trial.objects.by_trial_purpose(['treatment', 'prevention']))
 
     @pytest.mark.django_db
     def test_by_study_type(self):

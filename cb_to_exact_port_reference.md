@@ -154,15 +154,26 @@ EXACT target: create `trials/trial_taxonomy.py` mirroring the structure, plus a 
 
 ---
 
-## Issue: by_trial_purpose() queryset
+## Issue: by_trial_purpose() queryset — PORTED, with deliberate divergences
 
-CB source: `trials/querysets/trial.py:407-410`
+CB source as of cancerbot-org/cancerbot#4663 (`trials/querysets/trial.py`):
 ```python
-def by_trial_purpose(self, purpose):
-    return self.filter(purpose=purpose)
+if isinstance(trial_purpose, str):
+    trial_purpose = [trial_purpose] if trial_purpose else []
+codes = [code for code in (trial_purpose or []) if code]
+if not codes:
+    return self
+return self.filter(Q(purpose__code__in=codes) | Q(purpose__isnull=True))
 ```
 
-Note: requires `Trial.purpose` FK to a `TrialPurpose` model — check if EXACT has either; likely needs both model + field + queryset method.
+EXACT takes the same list of codes (#354) and keeps two differences on purpose:
+
+| | CB | EXACT | Why |
+|---|---|---|---|
+| trials whose purpose was never extracted | kept (`Q(purpose__isnull=True)`) | dropped | CB has applied this filter to every user by default since #4650, so an exact match would drop the whole unextracted corpus from the first page a patient sees. EXACT filters only when a caller asks it to. |
+| case | exact | `iexact` | pre-existing here; mirrors `by_trial_type` through `eligible_for_relation` |
+
+**Watch out**: CB's `StudyInfo.trial_purpose` now defaults to `["treatment"]`. A consumer forwarding CB's stored default straight to EXACT would silently lose every trial with no extracted purpose — the leniency that makes that default safe lives in CB's copy only. No CB→EXACT client exists today.
 
 ---
 

@@ -639,13 +639,56 @@ class TrialQuerySet(models.QuerySet):
         return self.eligible_for_relation('trial_type__code', trial_type)
 
     def by_trial_purpose(self, trial_purpose):
-        """Filter by Trial.purpose. Accepts a code string or a TrialPurpose
-        instance (uses its `.code`); blank/None is a no-op.
+        """Filter by Trial.purpose. Accepts a list of codes (CB #4663), a single
+        code string, or a TrialPurpose instance (uses its `.code`); an empty
+        selection is a no-op. A trial matching any of the codes is kept.
+
+        Strict about trials whose purpose was never extracted, where CB's copy
+        keeps them: there the filter applies to every user by default, so an
+        exact match would drop every unextracted trial from the first page a
+        patient sees. Here a caller only gets the filter by asking for it.
         """
-        if trial_purpose is None or trial_purpose == '':
+        # Scalar unless it is genuinely a collection of them, rather than a
+        # whitelist of container types: a frozenset or a generator would
+        # otherwise fall through and reach SQL as a literal object.
+        if (
+            trial_purpose is None
+            or isinstance(trial_purpose, str)
+            or hasattr(trial_purpose, 'code')
+        ):
+            values = [trial_purpose]
+        else:
+            values = list(trial_purpose)
+        # Sorted when the caller's own order is arbitrary, so the same request
+        # does not render as two different statements between processes.
+        if isinstance(trial_purpose, (set, frozenset)):
+            values.sort(key=str)
+
+        # Deduplicated the way they are matched, keeping the first spelling, or
+        # 'treatment,TREATMENT' is two clauses selecting the same rows.
+        codes, seen = [], set()
+        for value in values:
+            code = getattr(value, 'code', value)
+            if code is None or code == '':
+                continue
+            key = str(code).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            codes.append(code)
+
+        if not codes:
             return self
-        code = getattr(trial_purpose, 'code', trial_purpose)
-        return self.eligible_for_relation('purpose__code', code)
+        if len(codes) == 1:
+            return self.eligible_for_relation('purpose__code', codes[0])
+
+        # Spelled out rather than through eligible_for_relation, which takes one
+        # value, and as an OR of iexact rather than __in, which would quietly
+        # make the multi-code path case-sensitive where the single one is not.
+        condition = Q()
+        for code in codes:
+            condition |= Q(purpose__code__iexact=code)
+        return self.filter(condition)
 
     def by_study_type(self, study_type):
         if not study_type or str(study_type).upper() in ('', 'ALL'):
