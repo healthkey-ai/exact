@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from trials.api.pagination import TrialsPagination
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
+from trials.db_compat import defer_missing_columns
 from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
 from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
 from trials.services.patient_info.resolve import resolve_patient_info
@@ -198,7 +199,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                          queryset=LocationTrial.objects.select_related('location'))
             )
 
-        return queryset
+        # Last, so it applies to whatever the branches above built. No-op
+        # unless the database is behind the models and the deployment opts in
+        # — see trials/db_compat.py and exact#360.
+        return defer_missing_columns(queryset)
 
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
