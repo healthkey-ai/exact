@@ -88,8 +88,9 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     # Serves the Module Federation remote bundle (remoteEntry.js + chunks)
-    # from WHITENOISE_ROOT with cross-origin headers so the ht-phr host can
-    # load it. Active only when WHITENOISE_ROOT resolves (Dockerfile.gcp).
+    # from WHITENOISE_ROOT with cross-origin headers so a federation host can
+    # load it. Active only when WHITENOISE_ROOT resolves — both Dockerfile
+    # and Dockerfile.gcp build the remote into the image.
     'exact.middleware.CorsWhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -237,9 +238,43 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # below); SessionAuthentication stays for the browsable API/admin. Production
 # callers use Firebase or the service token. Default-deny stays (IsAuthenticated).
 # ---------------------------------------------------------------------------
+# Deployments differ in which identity providers exist: the PHR portal is the
+# family's identity service, while Firebase only exists where a legacy host
+# does. Listing a provider that cannot work is misleading, so the chain is
+# configurable — set PARTNER_AUTH_PROVIDERS to the ones a deployment has.
+_DEFAULT_AUTH_PROVIDERS = (
+    'accounts.providers.firebase.FirebaseTokenProvider,'
+    'accounts.providers.phr.PhrTokenProvider'
+)
 PARTNER_AUTH_PROVIDERS = [
-    'accounts.providers.firebase.FirebaseTokenProvider',
+    p.strip()
+    for p in os.environ.get('PARTNER_AUTH_PROVIDERS', _DEFAULT_AUTH_PROVIDERS).split(',')
+    if p.strip()
 ]
+
+# ── PHR portal identity ───────────────────────────────────────────────
+# The portal issues the tokens a signed-in patient carries into this
+# service. RS256 tokens verify offline against its JWKS; deployments still
+# on the HS256 dev fallback verify by introspection instead.
+PHR_ISSUER = os.environ.get('PHR_ISSUER', 'healthkey-phr')
+_phr_base_url = os.environ.get('PHR_BASE_URL', '').rstrip('/')
+PHR_JWKS_URL = os.environ.get(
+    'PHR_JWKS_URL',
+    f'{_phr_base_url}/api/v1/auth/jwks/' if _phr_base_url else '',
+)
+PHR_INTROSPECT_URL = os.environ.get(
+    'PHR_INTROSPECT_URL',
+    f'{_phr_base_url}/api/v1/auth/introspect/' if _phr_base_url else '',
+)
+PHR_JWKS_CACHE_TTL = int(os.environ.get('PHR_JWKS_CACHE_TTL', '3600'))
+# Floor between JWKS refetches. A kid the cache has not seen triggers a
+# refresh, so without a floor every token carrying an unknown kid would drive
+# its own blocking outbound fetch — and retries against a JWKS endpoint that
+# is down would be unbounded. Must stay well under PHR_JWKS_CACHE_TTL so key
+# rotation is still picked up promptly.
+PHR_JWKS_MIN_REFRESH_INTERVAL = int(
+    os.environ.get('PHR_JWKS_MIN_REFRESH_INTERVAL', '60')
+)
 FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID', 'exact-test' if DEBUG else '')
 FIREBASE_SKIP_REVOCATION_CHECK = os.environ.get(
     'FIREBASE_SKIP_REVOCATION_CHECK', 'true' if DEBUG else 'false'

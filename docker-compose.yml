@@ -29,6 +29,16 @@ services:
       DATABASE_USER: exact
       DATABASE_PASSWORD: exact
       DATABASE_PORT: "5432"
+      # The portal is the only identity provider locally — no Firebase here,
+      # so listing it would only log "no credentials configured".
+      PARTNER_AUTH_PROVIDERS: accounts.providers.phr.PhrTokenProvider
+      # Verifies portal-issued tokens against a portal running on the host.
+      PHR_BASE_URL: http://host.docker.internal:8000
+      # Allow-all rather than a pinned origin list: vite moves to 5174, 5175…
+      # whenever the previous port is taken, and a pinned list looks correct
+      # right up until it blocks the portal's preflight. Deployments set the
+      # real list.
+      CORS_ALLOW_ALL_ORIGINS: "true"
       MALLOC_NANO_ZONE: "0"
       PORT: "${PORT:-8000}"
     volumes:
