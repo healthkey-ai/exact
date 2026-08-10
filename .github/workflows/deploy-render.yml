@@ -1,0 +1,139 @@
+name: Deploy to Render
+
+# Ships `main` to the Render staging service. Runs alongside deploy-staging,
+# which ships the same commit to Cloud Run: exact is deployed to both, and
+# neither platform is authoritative.
+#
+# Gated on the django workflow rather than calling a reusable one — none of
+# this repo's CI workflows are workflow_call-able, and rewiring them to be so
+# is a bigger change than this deploy warrants. workflow_run fires once that
+# suite finishes, and the conclusion check below is what keeps a red build
+# from shipping.
+#
+# Render's own auto-deploy is off for this service (Terraform sets
+# auto_deploy = false) so the platform cannot race this workflow and ship a
+# commit that never ran the test suite.
+#
+# Needs:
+#   secrets.RENDER_API_KEY          — Render API key
+#   vars.RENDER_EXACT_SERVICE_ID    — the exact web service id (srv-…)
+
+on:
+  workflow_run:
+    workflows: [django]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-render
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Render (staging)
+    runs-on: ubuntu-latest
+    # workflow_run fires for every branch and for failed runs too, so the
+    # branch and conclusion both have to be checked here. workflow_dispatch
+    # carries neither, hence the event fallback.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    steps:
+      - name: Trigger Render deploy
+        id: trigger
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SERVICE_ID:-}" ]; then
+            echo "vars.RENDER_EXACT_SERVICE_ID is not set"; exit 1
+          fi
+
+          RESPONSE=$(curl -s -w '\n%{http_code}' -X POST \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
+            -d '{}')
+          CODE=${RESPONSE##*$'\n'}
+          BODY=${RESPONSE%$'\n'*}
+
+          case "$CODE" in
+            2*) ;;
+            *) echo "Render refused the deploy: HTTP $CODE $BODY"; exit 1 ;;
+          esac
+
+          DEPLOY_ID=$(printf '%s' "$BODY" | python3 -c "
+          import json, sys
+          raw = sys.stdin.read().strip()
+          print(json.loads(raw).get('id', '') if raw else '')
+          ")
+
+          # Render answers 201 with the new deploy, but 202 with an empty body
+          # when the service already has one queued — piping that straight into
+          # a JSON parser fails the run even though a deploy is on its way.
+          # Adopt the in-flight one and wait on it instead.
+          if [ -z "$DEPLOY_ID" ]; then
+            DEPLOY_ID=$(curl -sf -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys?limit=1" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['deploy']['id'])")
+            echo "HTTP $CODE with no body — a deploy was already queued; waiting on $DEPLOY_ID"
+          fi
+
+          echo "deploy_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
+          echo "Triggered deploy $DEPLOY_ID"
+
+      - name: Wait for deploy to go live
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
+          DEPLOY_ID: ${{ steps.trigger.outputs.deploy_id }}
+        run: |
+          # Generous ceiling: this image builds the frontend remote and a
+          # GDAL/GEOS-linked Python stack, which is slower than the other
+          # services in the family.
+          for i in $(seq 1 90); do
+            # Tolerate a blank answer: a transient API hiccup should cost one
+            # poll, not the whole deploy.
+            STATUS=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
+              "https://api.render.com/v1/services/$SERVICE_ID/deploys/$DEPLOY_ID" \
+              | python3 -c "
+          import json, sys
+          try:
+              print(json.load(sys.stdin).get('status', ''))
+          except Exception:
+              print('')
+          ")
+            if [ -z "$STATUS" ]; then
+              echo "[$i] status unavailable, retrying"
+              sleep 20
+              continue
+            fi
+            echo "[$i] $STATUS"
+            case "$STATUS" in
+              live) exit 0 ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "Deploy failed with status: $STATUS"; exit 1 ;;
+            esac
+            sleep 20
+          done
+          echo "Timed out waiting for deploy"; exit 1
+
+      - name: Smoke check
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          URL=$(curl -sf -H "Authorization: Bearer $RENDER_API_KEY" \
+            "https://api.render.com/v1/services/$SERVICE_ID" \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['serviceDetails']['url'])")
+          echo "Checking $URL"
+          curl -sf --max-time 30 "$URL/healthz" > /dev/null
+          # The federation remote is the reason the portal can render Find
+          # Trials at all — a deploy that serves the API but not this is
+          # broken from the portal's point of view.
+          curl -sf --max-time 30 "$URL/remoteEntry.js" > /dev/null
+          echo "healthz and remoteEntry.js both served"
