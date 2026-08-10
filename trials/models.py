@@ -1264,3 +1264,62 @@ class TrialUniverseEntry(TimeStampMixin):
 
     class Meta:
         unique_together = ('universe', 'trial')
+
+
+class ProjectionRelease(TimeStampMixin):
+    """EXACT read-model for CB's published projection registry (Design S, Gate 1 gap #2;
+    ADR 0002/0003 Option D). CB (cancerbot #4696) writes these on the CB-owned trials DB;
+    EXACT reads them via the ``trials`` alias (the router sends ``trials``-app models there
+    when ``TRIALS_DATABASE_URL`` is set, else the local ``default`` for single-DB / tests).
+    The schema MIRRORS CB's ``ProjectionRelease`` so the alias read matches; EXACT never
+    writes these (CB's DB-level guards enforce insert-only / one-way).
+
+    ``projection_id`` (P) is CB-minted, distinct from ``omop_therapy_release_id`` (R, the
+    carried promop VocabularyRelease). ``manifest_checksum`` is the frozen CB↔EXACT
+    checksum EXACT recomputes to verify. EXACT trusts a projection only when
+    ``published ∧ ¬disabled ∧ recomputed checksum == manifest_checksum ∧ vocab equality``.
+    """
+    projection_id = models.CharField(max_length=255, primary_key=True)
+    vocab_release_id = models.CharField(max_length=64)
+    published = models.BooleanField(default=False)
+    published_at = models.DateTimeField(null=True, blank=True)
+    manifest_checksum = models.CharField(max_length=128, blank=True, default='')
+    disabled = models.BooleanField(default=False)
+    disabled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['published', 'disabled'], name='idx_proj_release_state'),
+            models.Index(fields=['vocab_release_id'], name='idx_proj_release_vocab'),
+        ]
+
+    def __str__(self):
+        return (f"ProjectionRelease(P={self.projection_id}, R={self.vocab_release_id}, "
+                f"published={self.published}, disabled={self.disabled})")
+
+
+class ProjectionSnapshot(models.Model):
+    """EXACT read-model for one frozen trial projection row within a ``ProjectionRelease``
+    (Design S). EXACT reads these instead of the mutable ``Trial`` columns, so a
+    post-attestation live-``Trial`` edit on CB can't drift a trusted projection. Mirrors
+    CB's schema; EXACT never writes (CB owns + guards the table)."""
+    projection = models.ForeignKey(
+        ProjectionRelease, on_delete=models.CASCADE, related_name='snapshots',
+        db_column='projection_id')
+    trial_code = models.CharField(max_length=255)
+    omop_therapy_types_required = models.JSONField(blank=True, null=False, default=list)
+    omop_therapy_types_excluded = models.JSONField(blank=True, null=False, default=list)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['projection', 'trial_code'],
+                name='uq_projection_snapshot_trial'),
+        ]
+        indexes = [
+            GinIndex(fields=['omop_therapy_types_required'], name='idx_proj_snap_req_gin'),
+            GinIndex(fields=['omop_therapy_types_excluded'], name='idx_proj_snap_exc_gin'),
+        ]
+
+    def __str__(self):
+        return f"ProjectionSnapshot(P={self.projection_id}, trial={self.trial_code})"
