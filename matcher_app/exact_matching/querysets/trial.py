@@ -639,13 +639,62 @@ class TrialQuerySet(models.QuerySet):
         return self.eligible_for_relation('trial_type__code', trial_type)
 
     def by_trial_purpose(self, trial_purpose):
-        """Filter by Trial.purpose. Accepts a code string or a TrialPurpose
-        instance (uses its `.code`); blank/None is a no-op.
+        """Filter by Trial.purpose. Accepts a list of codes (CB #4663), a single
+        code string, or a TrialPurpose instance (uses its `.code`); an empty
+        selection is a no-op. A trial matching any of the codes is kept.
+
+        Strict about trials whose purpose was never extracted, where CB's copy
+        keeps them: there the filter applies to every user by default, so an
+        exact match would drop every unextracted trial from the first page a
+        patient sees. Here a caller only gets the filter by asking for it.
         """
-        if trial_purpose is None or trial_purpose == '':
+        # Scalar unless it is genuinely a collection of them, rather than a
+        # whitelist of container types: a frozenset would otherwise fall through
+        # and reach SQL as a literal object. Anything not iterable at all stays
+        # a scalar, the way it was before this took lists.
+        if (
+            trial_purpose is None
+            or isinstance(trial_purpose, str)
+            or hasattr(trial_purpose, 'code')
+        ):
+            values = [trial_purpose]
+        else:
+            try:
+                values = list(trial_purpose)
+            except TypeError:
+                values = [trial_purpose]
+        # Sorted when the caller's own order is arbitrary, so the same selection
+        # does not render as two different statements between processes. By code
+        # rather than str(), which for a TrialPurpose is its title.
+        if isinstance(trial_purpose, (set, frozenset)):
+            values.sort(key=lambda value: str(getattr(value, 'code', value)))
+
+        # Deduplicated the way they are matched, keeping the first spelling, or
+        # 'treatment,TREATMENT' is two clauses selecting the same rows.
+        codes, seen = [], set()
+        for value in values:
+            code = getattr(value, 'code', value)
+            if isinstance(code, str):
+                code = code.strip()
+            if code is None or code == '':
+                continue
+            key = str(code).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            codes.append(code)
+
+        if not codes:
             return self
-        code = getattr(trial_purpose, 'code', trial_purpose)
-        return self.eligible_for_relation('purpose__code', code)
+
+        # An OR of iexact rather than __in, which would quietly make this
+        # case-sensitive where the rest of the class is not. A single code
+        # renders exactly what eligible_for_relation builds, so it is not given
+        # a path of its own to drift from.
+        condition = Q()
+        for code in codes:
+            condition |= Q(purpose__code__iexact=code)
+        return self.filter(condition)
 
     def by_study_type(self, study_type):
         if not study_type or str(study_type).upper() in ('', 'ALL'):

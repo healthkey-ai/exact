@@ -797,6 +797,8 @@ class TestTrialQuerySet:
         # None / empty is a no-op (returns full set)
         assert list(Trial.objects.by_trial_purpose(None).order_by('id')) == [t1, t2, t3, t4]
         assert list(Trial.objects.by_trial_purpose('').order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.by_trial_purpose([]).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.by_trial_purpose(['']).order_by('id')) == [t1, t2, t3, t4]
 
         # Code-string accepted, case-insensitive (mirrors by_trial_type via eligible_for_relation)
         assert list(Trial.objects.by_trial_purpose('treatment').order_by('id')) == [t1, t2]
@@ -808,8 +810,101 @@ class TestTrialQuerySet:
         assert list(Trial.objects.by_trial_purpose(treatment).order_by('id')) == [t1, t2]
         assert list(Trial.objects.by_trial_purpose(prevention).order_by('id')) == [t3]
 
+        # Several purposes at once (CB #4663): the union, not the intersection
+        assert list(Trial.objects.by_trial_purpose(['treatment']).order_by('id')) == [t1, t2]
+        assert list(
+            Trial.objects.by_trial_purpose(['treatment', 'prevention']).order_by('id')
+        ) == [t1, t2, t3]
+        # ...case-insensitive on that path too, and instances still accepted
+        assert list(
+            Trial.objects.by_trial_purpose(['TREATMENT', 'Prevention']).order_by('id')
+        ) == [t1, t2, t3]
+        assert list(
+            Trial.objects.by_trial_purpose([treatment, prevention]).order_by('id')
+        ) == [t1, t2, t3]
+
+        # Any collection of codes, not a whitelist of container types
+        assert list(
+            Trial.objects.by_trial_purpose(('treatment', 'prevention')).order_by('id')
+        ) == [t1, t2, t3]
+        assert list(
+            Trial.objects.by_trial_purpose({'treatment', 'prevention'}).order_by('id')
+        ) == [t1, t2, t3]
+        assert list(
+            Trial.objects.by_trial_purpose(frozenset(['treatment'])).order_by('id')
+        ) == [t1, t2]
+        # A one-shot iterator is deliberately NOT canonised: filter_by_study_info
+        # reads study_info.trial_purpose twice, once to filter and once for the
+        # trace, and the second read of a generator is empty.
+
+        # Something that is not a collection at all is still treated as one
+        # code rather than raising TypeError on the way in — same as before
+        # this took lists. (Postgres then rejects UPPER(int) on evaluation,
+        # which it did then too; the point is that building the queryset does
+        # not blow up in a new place.)
+        Trial.objects.by_trial_purpose(5)
+
+        # Surrounding whitespace is not part of a code, matching the parser
+        assert list(
+            Trial.objects.by_trial_purpose([' treatment ']).order_by('id')
+        ) == [t1, t2]
+
+        # A purpose nobody has adds nothing and takes nothing away
+        assert list(
+            Trial.objects.by_trial_purpose(['treatment', 'nonexistent']).order_by('id')
+        ) == [t1, t2]
+        # Blanks in the list are dropped, not treated as a purpose
+        assert list(
+            Trial.objects.by_trial_purpose(['', 'treatment']).order_by('id')
+        ) == [t1, t2]
+
+        # The same purpose twice, in either spelling, is still one clause and
+        # one row per trial — the filter must not fan the join out.
+        repeated = Trial.objects.by_trial_purpose(['treatment', 'TREATMENT'])
+        assert list(repeated.order_by('id')) == [t1, t2]
+        assert repeated.count() == repeated.distinct().count()
+
         # Unknown code → empty queryset
         assert list(Trial.objects.by_trial_purpose('nonexistent').order_by('id')) == []
+        assert list(Trial.objects.by_trial_purpose(['nonexistent']).order_by('id')) == []
+
+        # A trial whose purpose was never extracted stays out whatever is asked
+        # for — unlike CB, where this filter is on by default for everyone.
+        assert t4 not in list(Trial.objects.by_trial_purpose(['treatment', 'prevention']))
+
+    @pytest.mark.django_db
+    def test_by_trial_purpose_reaches_the_filter_through_study_info(self):
+        """The plumbing, not just the predicate: StudyPreferences now carries a
+        list where it carried a string, and nothing else covers that hop."""
+        from trials.services.study_preferences import (
+            StudyPreferences,
+            study_preferences_from_query_params,
+        )
+
+        treatment = TrialPurposeFactory(code='treatment', title='Treatment')
+        prevention = TrialPurposeFactory(code='prevention', title='Prevention')
+
+        t1 = TrialFactory(purpose=treatment)
+        t2 = TrialFactory(purpose=prevention)
+        TrialFactory(purpose=TrialPurposeFactory(code='screening', title='Screening'))
+        TrialFactory(purpose=None)
+
+        prefs = StudyPreferences(trial_purpose=['treatment', 'prevention'])
+        filtered, _ = Trial.objects.filter_by_study_info(prefs)
+        assert list(filtered.order_by('id')) == [t1, t2]
+
+        # ...and the same set arriving as a query string
+        from django.http import QueryDict
+
+        prefs = study_preferences_from_query_params(
+            QueryDict('trialPurpose=treatment&trialPurpose=prevention')
+        )
+        filtered, _ = Trial.objects.filter_by_study_info(prefs)
+        assert list(filtered.order_by('id')) == [t1, t2]
+
+        # An empty selection is no filter at all
+        filtered, _ = Trial.objects.filter_by_study_info(StudyPreferences())
+        assert filtered.count() == 4
 
     @pytest.mark.django_db
     def test_by_study_type(self):
