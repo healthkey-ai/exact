@@ -153,10 +153,19 @@ class PhrTokenProvider(TokenProvider):
         # differently and neither order is right for both. A SimpleJWT payload
         # carries `user_id`; an RFC 7662 response carries `sub` — optionally,
         # §2.2 does not require it — and may carry neither.
-        if header.get("alg") == "RS256":
+        alg = header.get("alg")
+        if alg == "RS256":
             verified = self._verify_jwks(token, header.get("kid"))
-        else:
+        elif alg == "HS256":
+            # HS256 is the dev-key fallback, verified via the portal's
+            # introspection endpoint (opt-in — see PHR_INTROSPECT_URL). Every
+            # other alg — `none`, RS384/PS256, or an HS256-for-RS256 confusion
+            # attempt — is rejected here rather than routed to a blocking
+            # outbound call, so a forged token cannot be an amplification lever.
             verified = self._verify_introspect(token)
+        else:
+            logger.debug("phr token rejected: unsupported alg=%r", alg)
+            return None
         if verified is None:
             return None
         claims, sub = verified
@@ -206,9 +215,31 @@ class PhrTokenProvider(TokenProvider):
         return (claims, str(sub)) if sub else None
 
     def _verify_introspect(self, token: str) -> tuple[dict[str, Any], str] | None:
+        url = settings.PHR_INTROSPECT_URL
+        if not url:
+            # Opt-in: without an explicit endpoint an HS256 token is simply
+            # unverifiable here. No network call is made — a forged token
+            # bearing iss=PHR_ISSUER cannot drive an outbound request.
+            logger.debug("phr introspection not configured; rejecting HS256 token")
+            return None
+        auth = None
+        introspect_auth = settings.PHR_INTROSPECT_AUTH
+        if ":" in introspect_auth:
+            # partition keeps everything after the first ":" as the secret, so a
+            # secret containing a colon survives intact.
+            client_id, _, client_secret = introspect_auth.partition(":")
+            auth = (client_id, client_secret)
+        elif introspect_auth:
+            # A value with no ":" would otherwise send an empty-password Basic
+            # header silently — ignore it and say so instead.
+            logger.warning("PHR_INTROSPECT_AUTH ignored: expected 'client_id:client_secret'")
         try:
             resp = httpx.post(
-                settings.PHR_INTROSPECT_URL, json={"token": token}, timeout=5
+                # RFC 7662 §2.1: form-encoded body, client-authenticated.
+                url,
+                data={"token": token, "token_type_hint": "access_token"},
+                auth=auth,
+                timeout=5,
             )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
