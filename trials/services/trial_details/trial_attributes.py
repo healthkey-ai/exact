@@ -13,6 +13,7 @@ from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
 from trials.services.utils import disease_attr_applies
 from trials.services.value_options import ValueOptions
+from trials.db_compat import missing_columns
 
 
 def get_nested_attribute(instance, path):
@@ -366,11 +367,23 @@ class TrialAttributes:
 
         computed_fields = self.computed_general_fields()
 
+        # Columns the trials database does not have. This loop walks every
+        # field the model declares and reads it, so a corpus behind the models
+        # (see #360) turns the eligibility table into a 500: the deferred
+        # column is loaded on attribute access and the query names a column
+        # that is not there. Skipping is the right answer for a details view —
+        # the corpus holds no value for the attribute, so there is nothing to
+        # show. Empty whenever the schema matches, which is every deployment
+        # that is not reading the legacy corpus.
+        absent = set(missing_columns(trial.__class__, trial._state.db))
+
         for attr in trial.__class__._meta.fields:
             attr_name = attr.name
             if attr_name in ATTR_NAME_TO_SKIP:
                 continue
             if attr_name in THERAPIES_ATTRS_UNDERSCORED:
+                continue
+            if attr_name in absent:
                 continue
 
             if attr_name == 'trial_type':

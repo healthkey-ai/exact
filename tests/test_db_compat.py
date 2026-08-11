@@ -8,6 +8,8 @@ about the decision the module makes given what it finds.
 """
 import pytest
 
+from django.db.utils import ProgrammingError
+
 from trials import db_compat
 from trials.models import Trial
 
@@ -174,3 +176,55 @@ def test_install_patches_each_manager_once(settings):
                 if getattr(m, '_defers_missing_columns', False):
                     del m.get_queryset
                     del m._defers_missing_columns
+
+
+@pytest.mark.django_db
+def test_details_skips_columns_the_database_lacks(settings, monkeypatch):
+    """A corpus behind the models must not 500 the eligibility table.
+
+    `TrialAttributes.details` walks every field the model declares and reads
+    it. Against a database missing one of those columns, the deferred load
+    fires on attribute access and raises ProgrammingError — which is how
+    `POST /trials/<id>/match/` returned 500 on a deployment reading the legacy
+    corpus (#360). The attribute should be skipped instead: the corpus holds
+    no value for it, so there is nothing to render.
+    """
+    from trials.services.trial_details import trial_attributes as ta
+
+    settings.TRIALS_DB_TOLERATE_MISSING_COLUMNS = True
+    absent = "omop_intervention_concept_ids"
+    assert absent in [f.name for f in Trial._meta.fields]
+
+    monkeypatch.setattr(
+        ta, "missing_columns", lambda model, using: (absent,) if model is Trial else ()
+    )
+
+    trial = Trial.objects.create(
+        study_id="NCT-TEST-0001", brief_title="t", disease="breast cancer"
+    )
+
+    # Reading it must be what would blow up, so make the attribute raise the
+    # way a missing column does. `__set__` is what makes this a *data*
+    # descriptor — without it the instance __dict__ shadows the class
+    # attribute and nothing raises, which is exactly how Django's own
+    # DeferredAttribute works.
+    class _Boom:
+        def __get__(self, obj, owner=None):
+            raise ProgrammingError(f"column trials_trial.{absent} does not exist")
+
+        def __set__(self, obj, value):
+            pass
+
+    monkeypatch.setattr(Trial, absent, _Boom(), raising=False)
+
+    with pytest.raises(ProgrammingError):
+        getattr(trial, absent)
+
+    # A real PatientInfo, not None: `details` dereferences it, which is a
+    # separate gap tracked in #362 and not what this test is about.
+    from trials.services.patient_info.patient_info import PatientInfo
+
+    out = ta.TrialAttributes(
+        trial=trial, patient_info=PatientInfo(disease="breast cancer")
+    ).details()
+    assert absent not in out
