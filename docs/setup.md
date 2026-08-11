@@ -365,6 +365,8 @@ environment variables — never commit secret values to git.
 | `DATABASE_HOST` | `localhost` | PostgreSQL host |
 | `DATABASE_PORT` | `5432` | PostgreSQL port |
 | `TRIALS_DATABASE_URL` | _(unset)_ | External trials DB URL — enables split-database mode (`postgresql://user:pass@host:5432/db`) |
+| `TRIALS_DB_MIGRATE` | `false` | Apply `trials` migrations to the `trials` alias. Only for a copy you own — the external catalog's schema is not ours to change. Accepts the literal `true` only. |
+| `TRIALS_DB_TOLERATE_MISSING_COLUMNS` | `false` | **Stopgap, see #360.** Defer columns the trials corpus lacks, so a read-only consumer keeps working when the models drift ahead of it. Accepts `1/true/yes/on`. Applies only to the `trials` alias, and refuses to arm — logging why — when that alias is absent *or* addresses the same host, port and name as `default`, so it does not mask an un-applied migration on the primary database. Cannot help a `filter()` on an absent column: `?therapy_id=` still fails. |
 | `PATIENT_DATABASE_URL` | _(unset)_ | External patient DB URL — used by `search_trials_for_patients` CLI command |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL for Celery (only needed for async tasks) |
 | `GDAL_LIBRARY_PATH` | `/opt/homebrew/lib/libgdal.dylib` | Path to GDAL shared library |
