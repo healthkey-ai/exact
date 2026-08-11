@@ -257,6 +257,32 @@ PARTNER_AUTH_PROVIDERS = [
 # service. RS256 tokens verify offline against its JWKS; deployments still
 # on the HS256 dev fallback verify by introspection instead.
 PHR_ISSUER = os.environ.get('PHR_ISSUER', 'healthkey-phr')
+# Introspection fallback — opt-in, and off in staging/prod by default.
+# It delegates the signature check to the portal (an `active` response is
+# taken as vouching for the token, and the subject may come from the token's
+# *unverified* payload), so a portal that introspects without fully verifying
+# signatures would let a forged token through. Both PHR_*_URLs derive from the
+# same PHR_BASE_URL, so without this flag every RS256 deployment silently
+# enabled the fallback too — and the caller picked which path to use.
+# Same fail-closed shape as ENABLE_DRF_TOKEN_AUTH: `os.environ.get(...)`, not
+# the module-level ENVIRONMENT, which defaults to 'local' — a deploy that
+# forgets to set ENVIRONMENT would otherwise read as local and turn this ON,
+# which is precisely the misconfigured deploy the gate exists for.
+_phr_introspection_default = (
+    'true' if (DEBUG or os.environ.get('ENVIRONMENT') == 'local') else 'false'
+)
+PHR_ALLOW_INTROSPECTION = os.environ.get(
+    'PHR_ALLOW_INTROSPECTION', _phr_introspection_default
+).lower() in ('1', 'true')
+# Cap on outbound introspection calls per interval. Reaching this provider
+# needs only an unverified `iss`, and DRF authenticates before it throttles,
+# so without a cap an anonymous caller could hold every sync worker in a 5s
+# POST and use this service to flood the portal. Sized to sit well above real
+# sign-in volume on the dev deployments that use this path at all.
+PHR_INTROSPECT_MAX_CALLS = int(os.environ.get('PHR_INTROSPECT_MAX_CALLS', '30'))
+PHR_INTROSPECT_RATE_INTERVAL = int(
+    os.environ.get('PHR_INTROSPECT_RATE_INTERVAL', '60')
+)
 _phr_base_url = os.environ.get('PHR_BASE_URL', '').rstrip('/')
 PHR_JWKS_URL = os.environ.get(
     'PHR_JWKS_URL',
