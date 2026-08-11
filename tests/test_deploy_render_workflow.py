@@ -13,6 +13,7 @@ regexes rather than PyYAML, which is not a dependency of this project.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -79,6 +80,14 @@ def _run_scripts():
             continue
         i += 1
     assert scripts, 'no run: scripts found in deploy-render.yml'
+    # Keyed on the step name, so a step added without one would map its script
+    # onto the previous step's key and silently drop that script from the map —
+    # quietly narrowing the `${{`-injection guard below.
+    declared = len(re.findall(r'^\s*run:', DEPLOY_RENDER.read_text(), re.MULTILINE))
+    assert len(scripts) == declared, (
+        f'found {declared} `run:` keys but only {len(scripts)} named steps — '
+        'every step needs a `name:` for these tests to cover it'
+    )
     return scripts
 
 
@@ -119,8 +128,12 @@ def _embedded_python(marker):
 
 
 def _run_embedded(program, stdin, commit_id):
+    # The deploy job runs no setup-python, so the workflow's `python3` is the
+    # system one. Prefer that over the interpreter running pytest, which may be
+    # newer and accept syntax the runner would reject.
+    interpreter = shutil.which('python3') or sys.executable
     return subprocess.run(
-        [sys.executable, '-c', program],
+        [interpreter, '-c', program],
         input=stdin,
         capture_output=True,
         text=True,
@@ -172,10 +185,20 @@ class TestWorkflowRunTrigger:
     @pytest.mark.parametrize('guard', [
         r"github\.event\.workflow_run\.conclusion\s*==\s*'success'",
         r"github\.event\.workflow_run\.head_branch\s*==\s*'main'",
+        r"github\.event\.workflow_run\.event\s*==\s*'push'",
     ])
-    def test_conclusion_and_branch_are_both_guarded(self, guard):
-        """workflow_run fires for every branch and every conclusion, including
-        failures — dropping either guard turns this into a deploy-on-red."""
+    def test_conclusion_branch_and_event_are_all_guarded(self, guard):
+        """workflow_run fires for every branch, every conclusion and every
+        upstream event — so dropping the conclusion check makes this a
+        deploy-on-red, and dropping the event check makes it deploy fork PRs.
+
+        The `event == 'push'` clause is the one that is easy to think redundant.
+        This repo is public and django.yml runs on bare `pull_request:`, so a
+        fork PR produces a `backend` run whose `head_branch` is the branch name
+        in the *fork* — `main`, for anyone who pushed to their fork's default
+        branch first. Branch and conclusion alone would let that deploy, in the
+        base-repo context, with the Render API key.
+        """
         assert re.search(guard, DEPLOY_RENDER.read_text()), \
             f'deploy-render.yml is missing the {guard!r} guard'
 
@@ -274,11 +297,14 @@ class TestTheWorkflowsOwnLogic:
 
     @pytest.mark.parametrize('commit_id', [
         SHA,
-        'sha-with-a-"quote"',   # json.dumps escapes; printf would not
+        'sha-with-a-"quote"',   # json.dumps escapes; a %-format would not
         'sha\\with\\backslash',
     ])
     def test_the_request_body_escapes_its_input(self, commit_id):
-        program = _embedded_python('json.dumps')
+        # Located by `commitId`, which is the field being built rather than the
+        # function building it — so this fails on unescaped output, not merely
+        # because someone stopped calling json.dumps.
+        program = _embedded_python('commitId')
         result = _run_embedded(program, '', commit_id)
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {'commitId': commit_id}

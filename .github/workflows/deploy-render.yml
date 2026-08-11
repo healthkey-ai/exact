@@ -41,6 +41,16 @@ jobs:
     # workflow_run fires for every branch and for failed runs too, so the
     # branch and conclusion both have to be checked here. workflow_dispatch
     # carries neither, hence the event fallback.
+    # Three things have to hold, and `head_branch == 'main'` is not one of them
+    # on its own. This repo is public and django.yml runs on bare
+    # `pull_request:`, so a fork PR gets a `backend` run whose `head_branch` is
+    # the branch name *in the fork* — `main`, for anyone who pushes to their
+    # fork's default branch before opening the PR. That run's completion would
+    # satisfy a branch-and-conclusion check, and this job would then execute in
+    # the base-repo context, with RENDER_API_KEY, pinning `commitId` to an
+    # unreviewed fork commit. Requiring the upstream event to be a `push`
+    # excludes every PR run, fork or not.
+    #
     # A manual dispatch is branch-checked too. It used to be harmless without
     # one: the request carried no commit, so Render built the tracked branch
     # whatever ref the dispatch came from. Now that the commit is pinned, an
@@ -48,7 +58,8 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' &&
        github.ref == 'refs/heads/main') ||
-      (github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main')
     steps:
       - name: Trigger Render deploy
@@ -74,14 +85,20 @@ jobs:
           # branch points at when it receives the call, so a push landing while
           # the suite was still running would ship a revision that never ran
           # the tests — defeating the gate this workflow exists to be.
+          # On its own line, not inline in the curl arguments: `set -e` ignores a
+          # non-zero exit from a command substitution used as an argument, so a
+          # broken generator would post `-d ""` — the branch-tip deploy this is
+          # here to prevent — instead of failing at the real cause.
+          BODY_JSON=$(python3 -c "
+          import json, os
+          print(json.dumps({'commitId': os.environ['COMMIT_ID']}))
+          ")
+
           RESPONSE=$(curl -s -w '\n%{http_code}' -X POST \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
             "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
-            -d "$(python3 -c "
-          import json, os
-          print(json.dumps({'commitId': os.environ['COMMIT_ID']}))
-          ")")
+            -d "$BODY_JSON")
           CODE=${RESPONSE##*$'\n'}
           BODY=${RESPONSE%$'\n'*}
 
@@ -159,6 +176,7 @@ jobs:
           # Generous ceiling: this image builds the frontend remote and a
           # GDAL/GEOS-linked Python stack, which is slower than the other
           # services in the family.
+          set -uo pipefail
           for i in $(seq 1 90); do
             # Tolerate a blank answer: a transient API hiccup should cost one
             # poll, not the whole deploy.
@@ -184,6 +202,15 @@ jobs:
           else:
               print(f'waiting {status}' if status else 'pending')
           ")
+            # An empty verdict means the program itself died — a missing
+            # COMMIT_ID in this step's env, say. Without this the `case` below
+            # matches nothing and the run emits 90 blank lines over 30 minutes
+            # before timing out, naming no cause.
+            if [ -z "$VERDICT" ]; then
+              echo "[$i] the status check produced no verdict, retrying"
+              sleep 20
+              continue
+            fi
             echo "[$i] $VERDICT"
             case "$VERDICT" in
               live)

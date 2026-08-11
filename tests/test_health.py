@@ -95,9 +95,16 @@ class TestHealthz:
         assert ('django.db', 'connection') in imported, \
             '/healthz must probe the default connection'
 
+        # `name.split('.')[0]` too, not just `module`: a plain `import
+        # trials.models` is recorded with an empty module, so filtering on the
+        # module alone can never match it — and that is one of the two natural
+        # ways to reach a trials model from here.
         model_imports = sorted(
-            f'{module}.{name}' for module, name in imported
-            if module.startswith('trials') or module == 'django.apps'
+            f'{module}.{name}' if module else name
+            for module, name in imported
+            if module.startswith('trials')
+            or module == 'django.apps'
+            or name.split('.')[0] in ('trials', 'django.apps')
         )
         assert not model_imports, (
             f'/healthz imports {model_imports} — an ORM read is routed to the '
