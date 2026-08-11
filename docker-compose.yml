@@ -24,6 +24,18 @@ services:
       - path: .env
         required: false
     environment:
+      # Explicit, because `.env` is optional above and this gate reads
+      # ENVIRONMENT via os.environ.get so an unset value counts as *deployed*
+      # and fails closed — without it, `docker compose up` on a fresh clone has
+      # no working credential against the portal's HS256 dev deployment.
+      #
+      # This flag rather than `ENVIRONMENT: local`, which would also flip
+      # EXACT_ALLOW_PERSON_ID_LOOKUP on. That gate is deliberately closed
+      # (#150/#108): the `?person_id=` resolver reads from PROMOP with a static
+      # service token that is not bound to the caller, so enabling it here
+      # would re-open an IDOR against whatever upstream a developer's .env
+      # points at. Keep the blast radius to the one gate that needs opening.
+      PHR_ALLOW_INTROSPECTION: "true"
       DATABASE_HOST: db
       DATABASE_NAME: exact
       DATABASE_USER: exact

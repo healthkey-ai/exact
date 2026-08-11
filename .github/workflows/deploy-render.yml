@@ -4,15 +4,16 @@ name: Deploy to Render
 # which ships the same commit to Cloud Run: exact is deployed to both, and
 # neither platform is authoritative.
 #
-# Gated on the django workflow rather than calling a reusable one — none of
+# Gated on the backend suite rather than calling a reusable workflow — none of
 # this repo's CI workflows are workflow_call-able, and rewiring them to be so
 # is a bigger change than this deploy warrants. workflow_run fires once that
 # suite finishes, and the conclusion check below is what keeps a red build
 # from shipping.
 #
 # Render's own auto-deploy is off for this service (Terraform sets
-# auto_deploy = false) so the platform cannot race this workflow and ship a
-# commit that never ran the test suite.
+# auto_deploy = false), and every deploy this workflow requests is pinned to
+# the commit that passed the suite — so neither the platform nor a push
+# landing mid-run can ship a revision the tests never saw.
 #
 # Needs:
 #   secrets.RENDER_API_KEY          — Render API key
@@ -20,7 +21,12 @@ name: Deploy to Render
 
 on:
   workflow_run:
-    workflows: [django]
+    # This matches the triggering workflow's `name:`, NOT its filename — the
+    # test suite lives in django.yml but is named `backend`. Naming the file
+    # here silently never matches: workflow_run simply does not fire, every
+    # `if:` below becomes unreachable, and nothing reports an error.
+    # tests/test_deploy_render_workflow.py guards the pairing.
+    workflows: [backend]
     types: [completed]
   workflow_dispatch:
 
@@ -35,8 +41,13 @@ jobs:
     # workflow_run fires for every branch and for failed runs too, so the
     # branch and conclusion both have to be checked here. workflow_dispatch
     # carries neither, hence the event fallback.
+    # A manual dispatch is branch-checked too. It used to be harmless without
+    # one: the request carried no commit, so Render built the tracked branch
+    # whatever ref the dispatch came from. Now that the commit is pinned, an
+    # unguarded dispatch would ship the dispatched branch's untested tip.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main')
     steps:
@@ -45,18 +56,32 @@ jobs:
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
+          # The revision the suite actually ran against. Via env, never
+          # interpolated into the script below. workflow_dispatch carries no
+          # workflow_run payload, so it falls back to the dispatched ref's tip.
+          COMMIT_ID: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
 
           if [ -z "${SERVICE_ID:-}" ]; then
             echo "vars.RENDER_EXACT_SERVICE_ID is not set"; exit 1
           fi
+          if [ -z "${COMMIT_ID:-}" ]; then
+            echo "could not resolve the commit to deploy"; exit 1
+          fi
 
+          # `commitId`, not `{}`: without it Render builds whatever the tracked
+          # branch points at when it receives the call, so a push landing while
+          # the suite was still running would ship a revision that never ran
+          # the tests — defeating the gate this workflow exists to be.
           RESPONSE=$(curl -s -w '\n%{http_code}' -X POST \
             -H "Authorization: Bearer $RENDER_API_KEY" \
             -H "Content-Type: application/json" \
             "https://api.render.com/v1/services/$SERVICE_ID/deploys" \
-            -d '{}')
+            -d "$(python3 -c "
+          import json, os
+          print(json.dumps({'commitId': os.environ['COMMIT_ID']}))
+          ")")
           CODE=${RESPONSE##*$'\n'}
           BODY=${RESPONSE%$'\n'*}
 
@@ -65,25 +90,57 @@ jobs:
             *) echo "Render refused the deploy: HTTP $CODE $BODY"; exit 1 ;;
           esac
 
+          # Verifying the commit on this path too, not only when adopting: an
+          # API that ignored or renamed `commitId` would silently drop it —
+          # unknown JSON fields go unremarked — and the run would build the
+          # tracked branch's tip and report success, which is the whole thing
+          # the pinning is here to prevent.
           DEPLOY_ID=$(printf '%s' "$BODY" | python3 -c "
-          import json, sys
+          import json, os, sys
           raw = sys.stdin.read().strip()
-          print(json.loads(raw).get('id', '') if raw else '')
+          if not raw:
+              print('')
+              raise SystemExit(0)
+          deploy = json.loads(raw)
+          built = (deploy.get('commit') or {}).get('id')
+          if built is not None and built != os.environ['COMMIT_ID']:
+              sys.exit(f'Render accepted the deploy for {built}, not the '
+                       f'requested {os.environ[\"COMMIT_ID\"]}')
+          print(deploy.get('id', ''))
           ")
 
           # Render answers 201 with the new deploy, but 202 with an empty body
           # when the service already has one queued — piping that straight into
           # a JSON parser fails the run even though a deploy is on its way.
-          # Adopt the in-flight one and wait on it instead.
+          # Adopt the in-flight one, but only after checking it is for this
+          # commit and is not already finished: "the most recent deploy" could
+          # be someone else's revision, or an older build that is already live,
+          # in which case the wait below would pass on its first poll and the
+          # run would report success for a deploy it never made.
           if [ -z "$DEPLOY_ID" ]; then
             DEPLOY_ID=$(curl -sf -H "Authorization: Bearer $RENDER_API_KEY" \
               "https://api.render.com/v1/services/$SERVICE_ID/deploys?limit=1" \
-              | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['deploy']['id'])")
-            echo "HTTP $CODE with no body — a deploy was already queued; waiting on $DEPLOY_ID"
+              | python3 -c "
+          import json, os, sys
+          IN_FLIGHT = {'created', 'queued', 'build_in_progress',
+                       'pre_deploy_in_progress', 'update_in_progress'}
+          deploy = json.load(sys.stdin)[0]['deploy']
+          queued = (deploy.get('commit') or {}).get('id')
+          if queued != os.environ['COMMIT_ID']:
+              sys.exit(f'queued deploy is for {queued}, not {os.environ[\"COMMIT_ID\"]}')
+          # An allowlist, not just 'not live': a finished-and-failed deploy
+          # would otherwise be adopted and then reported by the wait step as
+          # this run's failure, when this run never requested it.
+          if deploy.get('status') not in IN_FLIGHT:
+              sys.exit(f'most recent deploy is not in flight (status='
+                       f'{deploy.get(\"status\")!r}) — nothing was queued for this run')
+          print(deploy['id'])
+          ")
+            echo "HTTP $CODE with no body — adopting queued deploy $DEPLOY_ID for $COMMIT_ID"
           fi
 
           echo "deploy_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
-          echo "Triggered deploy $DEPLOY_ID"
+          echo "Triggered deploy $DEPLOY_ID for $COMMIT_ID"
 
       - name: Wait for deploy to go live
         env:
