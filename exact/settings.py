@@ -200,6 +200,19 @@ TRIALS_DB_MIGRATE = os.environ.get('TRIALS_DB_MIGRATE', 'false').lower() == 'tru
 
 DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 
+# The trials corpus is data-only and externally owned: it has no
+# django_migrations table, and the router above refuses to migrate the trials
+# app into it for that reason. So the models can drift ahead of it, and the
+# first sign is a 500 naming a column the corpus does not have.
+#
+# With this on, the trial endpoints introspect the corpus once and defer the
+# columns it lacks, which keeps a read-only consumer working against an older
+# schema. A stopgap for exact#360, not a substitute for it — leave it off
+# wherever the database does match the models.
+TRIALS_DB_TOLERATE_MISSING_COLUMNS = os.environ.get(
+    'TRIALS_DB_TOLERATE_MISSING_COLUMNS', 'false'
+).lower() in ('1', 'true', 'yes', 'on')
+
 # Shared Redis cache when REDIS_URL is configured (deploys), else per-process
 # LocMemCache (local dev / CI / tests). Keyed off the *raw* env var, not the
 # Celery-defaulted `redis_url` below, so an unset REDIS_URL never points the
