@@ -147,32 +147,56 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
           DEPLOY_ID: ${{ steps.trigger.outputs.deploy_id }}
+          COMMIT_ID: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          # This is also where the commit is *confirmed*, not just requested.
+          # The POST response is only checked when it happens to echo a commit,
+          # which would leave the pin unverified — and therefore fail open —
+          # against an API that stops echoing it or silently drops `commitId`.
+          # The deploy detail endpoint reports the commit it actually built, so
+          # going live without ever naming one is treated as a failure here.
+          #
           # Generous ceiling: this image builds the frontend remote and a
           # GDAL/GEOS-linked Python stack, which is slower than the other
           # services in the family.
           for i in $(seq 1 90); do
             # Tolerate a blank answer: a transient API hiccup should cost one
             # poll, not the whole deploy.
-            STATUS=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
+            VERDICT=$(curl -s -H "Authorization: Bearer $RENDER_API_KEY" \
               "https://api.render.com/v1/services/$SERVICE_ID/deploys/$DEPLOY_ID" \
               | python3 -c "
-          import json, sys
+          import json, os, sys
+          FAILED = {'build_failed', 'update_failed', 'pre_deploy_failed',
+                    'canceled', 'deactivated'}
           try:
-              print(json.load(sys.stdin).get('status', ''))
+              deploy = json.load(sys.stdin)
           except Exception:
-              print('')
+              print('pending')
+              raise SystemExit(0)
+          status = deploy.get('status', '')
+          built = (deploy.get('commit') or {}).get('id')
+          if built is not None and built != os.environ['COMMIT_ID']:
+              print(f'mismatch {built}')
+          elif status in FAILED:
+              print(f'failed {status}')
+          elif status == 'live':
+              print('live' if built is not None else 'unverified')
+          else:
+              print(f'waiting {status}' if status else 'pending')
           ")
-            if [ -z "$STATUS" ]; then
-              echo "[$i] status unavailable, retrying"
-              sleep 20
-              continue
-            fi
-            echo "[$i] $STATUS"
-            case "$STATUS" in
-              live) exit 0 ;;
-              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
-                echo "Deploy failed with status: $STATUS"; exit 1 ;;
+            echo "[$i] $VERDICT"
+            case "$VERDICT" in
+              live)
+                echo "Deploy $DEPLOY_ID is live at $COMMIT_ID"; exit 0 ;;
+              unverified)
+                echo "Deploy went live but never reported a commit, so nothing"
+                echo "confirms it is $COMMIT_ID. Refusing to call this a success."
+                exit 1 ;;
+              mismatch*)
+                echo "Deploy built ${VERDICT#mismatch }, not the tested $COMMIT_ID"
+                exit 1 ;;
+              failed*)
+                echo "Deploy failed with status: ${VERDICT#failed }"; exit 1 ;;
             esac
             sleep 20
           done

@@ -99,18 +99,22 @@ def _deploy_post_request():
 
 
 def _embedded_python(marker):
-    """The inline `python3 -c` program in the deploy step containing *marker*.
+    """The inline `python3 -c` program, across all steps, containing *marker*.
 
     Executable form: dedented, with the shell's `\\"` escapes resolved. Lets the
     tests below run the workflow's own logic instead of grepping for it — a
     source match proves a check is present, never that it is right.
     """
-    scripts = _run_scripts()
-    step = next(s for s in scripts.values() if '-X POST' in s)
-    blocks = re.findall(r'python3 -c "\n(.*?)\n *"', step, re.DOTALL)
+    blocks = [
+        block
+        for script in _run_scripts().values()
+        for block in re.findall(r'python3 -c "\n(.*?)\n *"', script, re.DOTALL)
+    ]
     matching = [b for b in blocks if marker in b]
-    assert len(matching) == 1, \
-        f'expected exactly one embedded program containing {marker!r}, got {len(matching)}'
+    assert len(matching) == 1, (
+        f'expected exactly one embedded program containing {marker!r}, '
+        f'got {len(matching)} (of {len(blocks)} programs)'
+    )
     return textwrap.dedent(matching[0].replace('\\"', '"'))
 
 
@@ -281,11 +285,16 @@ class TestTheWorkflowsOwnLogic:
 
     @pytest.mark.parametrize('body,expected_id', [
         ({'id': 'dep-1', 'commit': {'id': SHA}}, 'dep-1'),
-        ({'id': 'dep-2'}, 'dep-2'),                      # no commit echoed back
+        # A response that names no commit is tolerated *here* only because the
+        # wait step refuses to call such a deploy a success — see
+        # TestTheDeployIsConfirmedNotJustRequested. Failing closed at this point
+        # instead would make every deploy fail against an API that simply does
+        # not echo the field.
+        ({'id': 'dep-2'}, 'dep-2'),
         ({'id': 'dep-3', 'commit': None}, 'dep-3'),
     ])
     def test_an_accepted_deploy_for_this_commit_is_used(self, body, expected_id):
-        program = _embedded_python('built')
+        program = _embedded_python('raw =')
         result = _run_embedded(program, json.dumps(body), SHA)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == expected_id
@@ -293,7 +302,7 @@ class TestTheWorkflowsOwnLogic:
     def test_an_accepted_deploy_for_another_commit_fails_the_run(self):
         """If Render ever ignored `commitId`, the build would be of the branch
         tip and the run would otherwise report success."""
-        program = _embedded_python('built')
+        program = _embedded_python('raw =')
         result = _run_embedded(
             program, json.dumps({'id': 'dep-x', 'commit': {'id': OTHER_SHA}}), SHA
         )
@@ -302,7 +311,7 @@ class TestTheWorkflowsOwnLogic:
 
     def test_an_empty_body_yields_no_deploy_id(self):
         """The 202 case, which hands over to the adopt path."""
-        program = _embedded_python('built')
+        program = _embedded_python('raw =')
         result = _run_embedded(program, '', SHA)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == ''
@@ -336,3 +345,73 @@ class TestTheWorkflowsOwnLogic:
         assert result.returncode != 0, \
             f'a deploy that is {reason} must not be adopted'
         assert not result.stdout.strip()
+
+
+class TestTheDeployIsConfirmedNotJustRequested:
+    """Pinning `commitId` on the request only states an intention.
+
+    The POST response is checked when it happens to echo a commit, so on its own
+    the pin fails open: an API that stopped echoing the field, or silently
+    dropped `commitId` from the request, would look identical to success. The
+    deploy detail endpoint reports the commit actually built, so the wait step
+    is where the pin is confirmed — and a deploy that reaches `live` without
+    ever naming a commit has to fail.
+    """
+
+    @pytest.fixture
+    def verdict(self):
+        program = _embedded_python('FAILED')
+
+        def check(deploy, commit_id=SHA):
+            body = '' if deploy is None else json.dumps(deploy)
+            result = _run_embedded(program, body, commit_id)
+            assert result.returncode == 0, result.stderr
+            return result.stdout.strip()
+
+        return check
+
+    def test_live_at_the_tested_commit_succeeds(self, verdict):
+        assert verdict({'status': 'live', 'commit': {'id': SHA}}) == 'live'
+
+    def test_live_without_a_commit_is_not_a_success(self, verdict):
+        """The fail-open case: nothing here confirms `commitId` was honoured."""
+        assert verdict({'status': 'live'}) == 'unverified'
+        assert verdict({'status': 'live', 'commit': None}) == 'unverified'
+
+    def test_a_different_commit_fails_even_while_still_building(self, verdict):
+        """Caught as early as the API admits it, not after 30 minutes."""
+        assert verdict(
+            {'status': 'build_in_progress', 'commit': {'id': OTHER_SHA}}
+        ) == f'mismatch {OTHER_SHA}'
+
+    def test_a_different_commit_outranks_a_live_status(self, verdict):
+        assert verdict({'status': 'live', 'commit': {'id': OTHER_SHA}}) \
+            == f'mismatch {OTHER_SHA}'
+
+    @pytest.mark.parametrize('status', [
+        'build_failed', 'update_failed', 'pre_deploy_failed',
+        'canceled', 'deactivated',
+    ])
+    def test_terminal_failures_are_reported(self, verdict, status):
+        assert verdict({'status': status, 'commit': {'id': SHA}}) == f'failed {status}'
+
+    @pytest.mark.parametrize('status', [
+        'created', 'queued', 'build_in_progress', 'update_in_progress',
+    ])
+    def test_in_flight_statuses_keep_polling(self, verdict, status):
+        assert verdict({'status': status, 'commit': {'id': SHA}}) == f'waiting {status}'
+
+    def test_an_unparseable_or_empty_answer_costs_one_poll(self, verdict):
+        """A transient API hiccup must not fail the deploy."""
+        assert verdict(None) == 'pending'
+        assert verdict({}) == 'pending'
+
+    def test_the_wait_step_receives_the_commit(self):
+        """It cannot confirm anything without COMMIT_ID in its own env block."""
+        scripts = _run_scripts()
+        name = next(n for n, s in scripts.items() if 'FAILED' in s)
+        source = DEPLOY_RENDER.read_text()
+        step = source.split(f'- name: {name}', 1)[1].split('run:', 1)[0]
+        assert re.search(
+            r"COMMIT_ID:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha", step
+        ), f'the {name!r} step must receive COMMIT_ID via env:'
