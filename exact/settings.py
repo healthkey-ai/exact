@@ -262,10 +262,16 @@ PHR_JWKS_URL = os.environ.get(
     'PHR_JWKS_URL',
     f'{_phr_base_url}/api/v1/auth/jwks/' if _phr_base_url else '',
 )
-PHR_INTROSPECT_URL = os.environ.get(
-    'PHR_INTROSPECT_URL',
-    f'{_phr_base_url}/api/v1/auth/introspect/' if _phr_base_url else '',
-)
+# Introspection is the HS256 dev-key fallback ONLY, and it is OPT-IN: it must
+# be set explicitly and is deliberately NOT derived from PHR_BASE_URL. An
+# RS256 production deployment sets PHR_BASE_URL for JWKS but leaves this empty,
+# so a forged non-RS256 token bearing iss=PHR_ISSUER cannot drive a blocking
+# outbound introspection call (would otherwise be an unauthenticated DoS /
+# amplification vector — the JWKS path is throttled, this one was not).
+PHR_INTROSPECT_URL = os.environ.get('PHR_INTROSPECT_URL', '')
+# Optional client credentials for the RFC 7662 introspection call, as
+# "client_id:client_secret" -> HTTP Basic. Empty = unauthenticated (dev only).
+PHR_INTROSPECT_AUTH = os.environ.get('PHR_INTROSPECT_AUTH', '')
 PHR_JWKS_CACHE_TTL = int(os.environ.get('PHR_JWKS_CACHE_TTL', '3600'))
 # Floor between JWKS refetches. A kid the cache has not seen triggers a
 # refresh, so without a floor every token carrying an unknown kid would drive

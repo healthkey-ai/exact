@@ -20,7 +20,9 @@ name: Deploy to Render
 
 on:
   workflow_run:
-    workflows: [django]
+    # Matches the CI workflow's `name:` (django.yml is `name: backend`), not
+    # its filename — a mismatch here means the deploy never triggers.
+    workflows: [backend]
     types: [completed]
   workflow_dispatch:
 

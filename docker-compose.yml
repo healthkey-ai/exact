@@ -34,6 +34,12 @@ services:
       PARTNER_AUTH_PROVIDERS: accounts.providers.phr.PhrTokenProvider
       # Verifies portal-issued tokens against a portal running on the host.
       PHR_BASE_URL: http://host.docker.internal:8000
+      # Local dev may run the portal on its HS256 key; opt in to introspection
+      # explicitly (it is no longer auto-derived from PHR_BASE_URL, so a public
+      # RS256 deployment has no unauthenticated introspection surface). Harmless
+      # when the portal issues RS256 — those tokens verify offline via JWKS and
+      # never reach this endpoint.
+      PHR_INTROSPECT_URL: http://host.docker.internal:8000/api/v1/auth/introspect/
       # Allow-all rather than a pinned origin list: vite moves to 5174, 5175…
       # whenever the previous port is taken, and a pinned list looks correct
       # right up until it blocks the portal's preflight. Deployments set the
