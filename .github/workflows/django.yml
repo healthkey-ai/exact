@@ -21,10 +21,20 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-v1
         restore-keys: |
           ${{ runner.os }}-pip-
+    # -v2 invalidates a poisoned generation of this cache. It snapshots the whole
+    # Python installation, site-packages/pip included, and actions/cache unpacks
+    # it *over* the directory without removing what is already there. When the
+    # snapshot's pip differs from the runner's preinstalled one, files present in
+    # both are overwritten and files only in the newer survive, leaving a mixture
+    # of two pip versions — which fails as
+    #   ImportError: cannot import name 'get_runnable_pip'
+    #                from 'pip._internal.utils.misc'
+    # on the very first `pip install`. It depends on which runner you land on, so
+    # it flaps: the same commit failed twice and passed on the third attempt.
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo apt-get -qq update && \
@@ -64,10 +74,11 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+    # Same cache, same reason as in `build` above — keep the suffixes in step.
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo apt-get -qq update && \
