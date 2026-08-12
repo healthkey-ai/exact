@@ -355,22 +355,29 @@ class TestOffByDefault:
         assert patched == []
 
     @pytest.mark.django_db
-    def test_defer_is_a_no_op_on_a_matching_database(self, settings, monkeypatch):
-        """The default path must not change the SQL at all.
+    def test_defer_is_a_no_op_when_the_flag_is_off(self, settings, monkeypatch):
+        """Drift present, corpus armed — only the flag says no.
 
-        A corpus is configured and `corpus_alias` points at this database, so the
-        flag is the only thing standing between the queryset and a deferral —
-        otherwise the alias gate returns early and this passes however the flag
-        is read.
+        Both halves matter, and getting either wrong is why this test could not
+        fail for three review rounds. Without configured drift the deferral is
+        empty on the merits; without a corpus the alias gate returns before the
+        flag is read at all. The earlier version patched `corpus_alias` and
+        `MIGRATIONS_TABLE`, which are never reached when the flag is off, and ran
+        against a database that matches the models.
         """
         settings.TRIALS_DB_TOLERATE_MISSING_COLUMNS = False
-        monkeypatch.setattr(db_compat, 'corpus_alias', lambda: 'default')
-        monkeypatch.setattr(db_compat, 'MIGRATIONS_TABLE', 'not_a_table_here')
-        qs = Trial.objects.all()
-        assert (
-            db_compat.defer_missing_columns(qs).query.deferred_loading
-            == qs.query.deferred_loading
+        settings.DATABASES = {
+            **settings.DATABASES,
+            'trials': {**settings.DATABASES['default'], 'NAME': 'exact_corpus_stub'},
+        }
+        _stub_columns(
+            monkeypatch,
+            [f.column for f in Trial._meta.local_fields if f.column != ABSENT],
         )
+        qs = Trial.objects.using('trials')
+        assert db_compat.defer_missing_columns(qs).query.deferred_loading == (
+            frozenset(), True
+        ), 'deferred with the flag off'
 
 
 class TestAViewBackedCorpus:
@@ -710,6 +717,7 @@ class TestInstall:
         alias and query whatever the router picked."""
         config = restore_managers
         db_compat.install(config)
+        assert Trial.objects._defers_missing_columns is True, 'nothing was patched'
         # 'default', not 'trials': the router already sends Trial to the corpus,
         # so asserting 'trials' holds even when the copied manager's `_db` is
         # ignored. Only the alias the router would *not* have chosen shows that
@@ -719,9 +727,9 @@ class TestInstall:
 
 
 class TestThePatchedManagersStayUsable:
-    """Replacing a manager's class is invasive; these are the two Django
-    mechanisms that resolve a manager class *by name* and so break silently on a
-    dynamically created one."""
+    """Replacing a manager's class is invasive. These cover the mechanisms that
+    resolve a manager class *by name* — and so break silently on a dynamically
+    created one — plus what `install()` must do to the registry."""
 
     def test_managers_still_pickle(self, corpus, restore_managers):
         """Pickling looks the class up in the module it names. Before the class
@@ -735,9 +743,11 @@ class TestThePatchedManagersStayUsable:
 
     def test_managers_still_deconstruct(self, corpus, restore_managers):
         """`BaseManager.deconstruct` imports `__module__` and raises if the name
-        is absent — which would surface as a makemigrations crash, and only on a
-        deployment that has the flag on."""
+        is absent. Via makemigrations that would surface only for a manager with
+        `use_in_migrations = True`, and no trials manager sets one — so this
+        asserts deconstruct directly instead."""
         db_compat.install(restore_managers)
+        assert Trial.objects._defers_missing_columns is True, 'nothing was patched'
         for model in (Trial, Disease):
             assert model.objects.deconstruct()
 
@@ -752,7 +762,8 @@ class TestThePatchedManagersStayUsable:
         config = restore_managers
         # Populate the cache with pre-patch copies, the way an import that
         # touches a manager during app loading would.
-        assert Trial._meta.managers
+        assert Trial._meta.managers  # populating it is the point
+        assert 'managers' in Trial._meta.__dict__, 'premise: copies cached pre-patch'
         assert getattr(Trial.objects, '_defers_missing_columns', False) is False
 
         db_compat.install(config)
@@ -763,6 +774,7 @@ class TestThePatchedManagersStayUsable:
         dereference is *not* covered — the limits list says so and this pins it,
         because the related-manager result above invites assuming otherwise."""
         db_compat.install(restore_managers)
+        assert Trial.objects._defers_missing_columns is True, 'nothing was patched'
         assert getattr(Trial._base_manager, '_defers_missing_columns', False) is False
 
 
@@ -898,7 +910,10 @@ def test_details_skips_columns_the_database_lacks(settings, monkeypatch):
     # separate gap tracked in #362 and not what this test is about.
     from trials.services.patient_info.patient_info import PatientInfo
 
+    # That this does not raise is the assertion: `details()` walks every declared
+    # field and reads it, and the deferred load fires on access. Asserting
+    # `ABSENT not in out` would be vacuous — that field is never rendered.
     out = ta.TrialAttributes(
         trial=trial, patient_info=PatientInfo(disease='breast cancer')
     ).details()
-    assert ABSENT not in out
+    assert out

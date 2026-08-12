@@ -66,7 +66,7 @@ import time
 
 from django.conf import settings
 from django.db import DEFAULT_DB_ALIAS, connections
-from django.db.utils import ConnectionDoesNotExist, DatabaseError, Error
+from django.db.utils import ConnectionDoesNotExist, Error
 
 from exact.db_router import _TRIALS_DB
 
@@ -101,7 +101,11 @@ def _database_identity(config):
 
     A cheap pre-check, not the guarantee: host spellings are unbounded — a socket
     directory, a hostname against its IP, an alias in /etc/hosts — so this can
-    only catch the common ones. What actually keeps the tolerance off a database
+    only catch the common ones. It also puts one legitimate shape out of scope: a
+    corpus in the *same* database separated by a role ``search_path`` normalises
+    equal to ``default`` and is refused, even though the relations it exposes are
+    not the ones ``migrate`` maintains. Refusing is the safe direction, and the
+    ``MIGRATIONS_TABLE`` backstop would have caught it either way. What actually keeps the tolerance off a database
     this project migrates is the ``MIGRATIONS_TABLE`` backstop in
     ``missing_columns``, which asks the database instead of the config.
 
@@ -115,7 +119,7 @@ def _database_identity(config):
     """
     options = config.get('OPTIONS') or {}
     host = str(config.get('HOST') or options.get('host') or 'localhost').lower()
-    host = host.rstrip('.')
+    host = host.rstrip('.').strip('[]')
     if host in ('localhost', '127.0.0.1', '::1'):
         host = 'localhost'
     port = str(config.get('PORT') or options.get('port') or '5432')
@@ -258,7 +262,7 @@ def missing_columns(model, using):
                     cursor, table
                 )
             }
-    except (DatabaseError, Error, ConnectionDoesNotExist):
+    except (Error, ConnectionDoesNotExist):
         logger.exception(
             'Could not introspect %s on %r; deferring nothing there for %ss',
             table, using, INTROSPECTION_RETRY_INTERVAL,
@@ -321,7 +325,8 @@ def _deferring_manager_class(cls):
                 super(Deferring, self).get_queryset().using(alias)
             )
 
-    Deferring.__name__ = f'{cls.__name__}DeferringMissingColumns'
+    qualifier = cls.__module__.replace('.', '_')
+    Deferring.__name__ = f'{qualifier}_{cls.__name__}DeferringMissingColumns'
     Deferring.__qualname__ = Deferring.__name__
     # Importable under the name it reports: `BaseManager.deconstruct` resolves
     # `__module__`/`__name__` and raises if the attribute is not there, and
