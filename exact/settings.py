@@ -209,6 +209,12 @@ DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 # columns it lacks, which keeps a read-only consumer working against an older
 # schema. A stopgap for exact#360, not a substitute for it — leave it off
 # wherever the database does match the models.
+#
+# It only ever applies to the 'trials' alias, and refuses to arm at all when
+# that alias is not configured: the router falls back to 'default' for trials
+# models in single-database mode, and tolerating drift there would read an
+# un-applied migration as external drift and answer with less data instead of
+# failing. See trials/db_compat.py.
 TRIALS_DB_TOLERATE_MISSING_COLUMNS = os.environ.get(
     'TRIALS_DB_TOLERATE_MISSING_COLUMNS', 'false'
 ).lower() in ('1', 'true', 'yes', 'on')
