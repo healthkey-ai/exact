@@ -448,7 +448,8 @@ _MOCK_LOOKUP = {
         'hispanic/latino':           'other',
     },
     # Other models — empty for these unit tests
-    'Marker': {},
+    'CytogenicMarker': {},
+    'MolecularMarker': {},
     'PlannedTherapy': {},
     'ConcomitantMedication': {},
     '_therapy': {},

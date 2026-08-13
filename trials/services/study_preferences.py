@@ -15,9 +15,6 @@ class StudyPreferences:
     search_title: Optional[str] = None
     search_disease: Optional[str] = None
     search_treatment: Optional[str] = None
-    # Intervention-arm filter: OMOP concept_ids of the therapy being studied.
-    # Populated by CB; accepts ?therapy_id= one or more times.
-    therapy_id: list[int] = field(default_factory=list)
 
     # Sponsor / registry filters
     sponsor: Optional[str] = None
@@ -26,8 +23,8 @@ class StudyPreferences:
 
     # Trial classification filters
     trial_type: Optional[str] = None
-    # Several purposes at once (CB #4663), like therapy_id above: accepts
-    # ?trialPurpose= one or more times. Empty means no filter.
+    # Several purposes at once (CB #4663): accepts ?trialPurpose= one or more
+    # times. Empty means no filter.
     trial_purpose: list[str] = field(default_factory=list)
     study_type: Optional[str] = None
 
@@ -111,20 +108,10 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
                 result.append(code)
         return result[:limit]
 
-    def _int_list(key):
-        result = []
-        for v in _raw_list(key):
-            try:
-                result.append(int(v))
-            except (TypeError, ValueError):
-                pass
-        return result
-
     return StudyPreferences(
         search_title=_str('searchTitle'),
         search_disease=_str('searchDisease'),
         search_treatment=_str('searchTreatment'),
-        therapy_id=_int_list('therapy_id'),
         sponsor=_str('sponsor'),
         register=_str('register'),
         study_id=_str('studyId'),

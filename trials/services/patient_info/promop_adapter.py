@@ -50,7 +50,8 @@ def _build_code_lookup():
         Therapy, TherapyComponent,
         Her2Status, HrStatus, HrdStatus,
         HistologicType, EstrogenReceptorStatus, ProgesteroneReceptorStatus,
-        Ethnicity, PlannedTherapy, ConcomitantMedication, Marker,
+        Ethnicity, PlannedTherapy, ConcomitantMedication,
+        CytogenicMarker, MolecularMarker,
         MutationGene, MutationCode, MutationOrigin, MutationInterpretation,
         TumorStage, NodesStage, DistantMetastasisStage, StagingModality,
         BinetStage, ProteinExpression, RichterTransformation, TumorBurden,
@@ -61,7 +62,8 @@ def _build_code_lookup():
         Therapy, TherapyComponent,
         Her2Status, HrStatus, HrdStatus,
         HistologicType, EstrogenReceptorStatus, ProgesteroneReceptorStatus,
-        Ethnicity, PlannedTherapy, ConcomitantMedication, Marker,
+        Ethnicity, PlannedTherapy, ConcomitantMedication,
+        CytogenicMarker, MolecularMarker,
         MutationGene, MutationCode, MutationOrigin, MutationInterpretation,
         TumorStage, NodesStage, DistantMetastasisStage, StagingModality,
         BinetStage, ProteinExpression, RichterTransformation, TumorBurden,
@@ -302,8 +304,8 @@ def normalize_promop_row(row: dict) -> dict:
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     for _field, _model in [
-        ('cytogenic_markers',     'Marker'),
-        ('molecular_markers',     'Marker'),
+        ('cytogenic_markers',     'CytogenicMarker'),
+        ('molecular_markers',     'MolecularMarker'),
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
     ]:

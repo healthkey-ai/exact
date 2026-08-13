@@ -306,19 +306,17 @@ class ValueOptions:
 
     @property
     def cytogenic_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import CytogenicMarker
 
-        category = MarkerCategory.objects.get(code='cytogenic')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = CytogenicMarker.objects.order_by('id')
 
         return {'none': 'None', **{x.code: x.title for x in markers}}
 
     @property
     def molecular_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import MolecularMarker
 
-        category = MarkerCategory.objects.get(code='molecular')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = MolecularMarker.objects.order_by('id')
 
         return {'none': 'None', **{x.code: x.title for x in markers}}
 
