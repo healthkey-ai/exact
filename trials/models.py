@@ -34,15 +34,6 @@ class TimeStampMixin(models.Model):
         abstract = True
 
 
-class RawDataItem(TimeStampMixin):
-    record_id = models.CharField(unique=True, max_length=100)
-    source_name = models.CharField(max_length=50)
-    raw_data = models.TextField(blank=True, null=True)
-
-    def __str__(self):
-        return f"{self.record_id} from '{self.source_name}'"
-
-
 class Country(TimeStampMixin):
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     sort_key = models.IntegerField(blank=True, null=True)
@@ -113,6 +104,14 @@ class CytogenicMarker(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        # The class name, table and permission codenames keep the `cytogenic`
+        # spelling — renaming those is a breaking change (cf. #3558). This is
+        # the display name staff see in the admin index, the changelist and the
+        # permission picker (#4020).
+        verbose_name = 'cytogenetic marker'
+        verbose_name_plural = 'cytogenetic markers'
 
     def __str__(self):
         return self.title
@@ -1219,27 +1218,3 @@ class PreferredCountry(OptionsListMixin):
     sort_key = models.IntegerField(blank=True, null=True)
 
 
-# ---------------------------------------------------------------------------
-# Trial universe (lightweight trial categorisation)
-# ---------------------------------------------------------------------------
-
-class TrialUniverse(TimeStampMixin):
-    title = models.CharField(max_length=255, null=False, blank=False, unique=True, db_index=True)
-    code = models.CharField(max_length=255, null=False, blank=False, unique=True, db_index=True)
-    description = models.TextField(null=False, blank=True)
-
-    @property
-    def short_description(self):
-        max_length = 100
-        if self.description and len(self.description) > max_length:
-            return self.description[:max_length - 3] + '...'
-        return self.description
-
-
-class TrialUniverseEntry(TimeStampMixin):
-    universe = models.ForeignKey(TrialUniverse, on_delete=models.CASCADE, null=False, blank=False,
-                                 related_name='entries', db_index=True)
-    trial = models.ForeignKey(Trial, on_delete=models.CASCADE, null=False, blank=False)
-
-    class Meta:
-        unique_together = ('universe', 'trial')

@@ -69,7 +69,6 @@ passed inline per request; nothing is persisted.
 | `ConcomitantMedication` | Medication taxonomy |
 | `PreExistingConditionCategory` | Comorbidity categories |
 | `TrialType` / `TrialTypeDiseaseConnection` | Trial-type taxonomy by disease |
-| `RawDataItem` | Raw ingested trial data before extraction |
 
 ---
 
