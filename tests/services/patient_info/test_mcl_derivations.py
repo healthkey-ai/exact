@@ -150,17 +150,17 @@ class TestBulkyDiseaseCriteria:
         assert PatientInfoAttributes(pi).bulky_disease_criteria == []
 
     def test_lesion_5cm_alone(self):
-        pi = _mcl_patient(lesion_size_mcl=5)
+        pi = _mcl_patient(largest_lesion_size=5)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == ['bulky_lesion_5cm']
 
     def test_lesion_10cm_fires_all_three_lesion_thresholds(self):
-        pi = _mcl_patient(lesion_size_mcl=12)
+        pi = _mcl_patient(largest_lesion_size=12)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == [
             'bulky_lesion_5cm', 'bulky_lesion_7_5cm', 'bulky_lesion_10cm',
         ]
 
     def test_lesion_under_5cm_does_not_fire(self):
-        pi = _mcl_patient(lesion_size_mcl=4.9)
+        pi = _mcl_patient(largest_lesion_size=4.9)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == []
 
     def test_node_5cm_alone(self):
@@ -194,7 +194,7 @@ class TestBulkyDiseaseCriteria:
         ]
 
     def test_multiple_anatomic_sites_combine(self):
-        pi = _mcl_patient(lesion_size_mcl=5, largest_lymph_node_size=5, spleen_size=14)
+        pi = _mcl_patient(largest_lesion_size=5, largest_lymph_node_size=5, spleen_size=14)
         assert PatientInfoAttributes(pi).bulky_disease_criteria == [
             'bulky_lesion_5cm', 'bulky_node_5cm', 'bulky_spleen_13cm',
         ]
@@ -210,7 +210,7 @@ class TestNormalizerWiring:
             mipi_risk='high',  # caller-supplied; should be overwritten to 'low'
             mipi_c_risk='high',
             bulky_disease_criteria=['caller_supplied_garbage'],
-            lesion_size_mcl=12,
+            largest_lesion_size=12,
         )
         normalize_patient_info(pi)
         assert pi.mipi_risk == 'low'  # actual derivation for the default inputs
@@ -236,6 +236,6 @@ class TestNormalizerWiring:
     def test_disease_gate_is_case_insensitive(self, disease):
         # str(pi.disease).lower() == 'mantle cell lymphoma' must accept any
         # casing the API caller sends.
-        pi = _mcl_patient(disease=disease, lesion_size_mcl=6)
+        pi = _mcl_patient(disease=disease, largest_lesion_size=6)
         normalize_patient_info(pi)
         assert pi.bulky_disease_criteria == ['bulky_lesion_5cm']

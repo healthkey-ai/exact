@@ -279,9 +279,6 @@ class TrialQuerySet(models.QuerySet):
 
         query = self
 
-        # therapy_id applies to all search paths (standard and admin).
-        if study_info:
-            query = query.by_therapy_id(study_info.therapy_id)
 
         if search_type in ['all', 'favorites', 'my_trials']:
             query, _ = query.filter_for_admin(study_info, patient_info)
@@ -518,20 +515,6 @@ class TrialQuerySet(models.QuerySet):
             Q(brief_title__icontains=search_title) |
             Q(official_title__icontains=search_title)
         )
-
-    def by_therapy_id(self, therapy_ids: list[int]) -> models.QuerySet:
-        """Filter trials by intervention-arm concept_id(s).
-
-        Matches trials where ``omop_intervention_concept_ids`` contains ANY of
-        the given concept_ids. Populated by CB during trial sync; empty until
-        CB backfill runs (filter is a no-op on such trials).
-        """
-        if not therapy_ids:
-            return self
-        q = Q()
-        for tid in therapy_ids:
-            q |= Q(omop_intervention_concept_ids__contains=[tid])
-        return self.filter(q)
 
     def by_intervention_treatment(self, search_treatment):
         if not search_treatment or search_treatment == '':

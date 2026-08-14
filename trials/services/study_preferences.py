@@ -15,9 +15,6 @@ class StudyPreferences:
     search_title: Optional[str] = None
     search_disease: Optional[str] = None
     search_treatment: Optional[str] = None
-    # Intervention-arm filter: OMOP concept_ids of the therapy being studied.
-    # Populated by CB; accepts ?therapy_id= one or more times.
-    therapy_id: list[int] = field(default_factory=list)
 
     # Sponsor / registry filters
     sponsor: Optional[str] = None
@@ -72,27 +69,10 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         val = params.get(key)
         return val if val else None
 
-    def _int_list(key):
-        if hasattr(params, 'getlist'):
-            raw = params.getlist(key)
-        elif key in params:
-            v = params[key]
-            raw = v if isinstance(v, list) else [v]
-        else:
-            raw = []
-        result = []
-        for v in raw:
-            try:
-                result.append(int(v))
-            except (TypeError, ValueError):
-                pass
-        return result
-
     return StudyPreferences(
         search_title=_str('searchTitle'),
         search_disease=_str('searchDisease'),
         search_treatment=_str('searchTreatment'),
-        therapy_id=_int_list('therapy_id'),
         sponsor=_str('sponsor'),
         register=_str('register'),
         study_id=_str('studyId'),

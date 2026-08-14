@@ -48,7 +48,8 @@ def _build_code_lookup():
         Therapy, TherapyComponent,
         Her2Status, HrStatus, HrdStatus,
         HistologicType, EstrogenReceptorStatus, ProgesteroneReceptorStatus,
-        Ethnicity, PlannedTherapy, ConcomitantMedication, Marker,
+        Ethnicity, PlannedTherapy, ConcomitantMedication,
+        CytogenicMarker, MolecularMarker,
         MutationGene, MutationCode, MutationOrigin, MutationInterpretation,
         TumorStage, NodesStage, DistantMetastasisStage, StagingModality,
         BinetStage, ProteinExpression, RichterTransformation, TumorBurden,
@@ -59,7 +60,8 @@ def _build_code_lookup():
         Therapy, TherapyComponent,
         Her2Status, HrStatus, HrdStatus,
         HistologicType, EstrogenReceptorStatus, ProgesteroneReceptorStatus,
-        Ethnicity, PlannedTherapy, ConcomitantMedication, Marker,
+        Ethnicity, PlannedTherapy, ConcomitantMedication,
+        CytogenicMarker, MolecularMarker,
         MutationGene, MutationCode, MutationOrigin, MutationInterpretation,
         TumorStage, NodesStage, DistantMetastasisStage, StagingModality,
         BinetStage, ProteinExpression, RichterTransformation, TumorBurden,
@@ -83,6 +85,18 @@ def _build_code_lookup():
     # that the component→category chain resolves via a single Therapy code.
     therapy_map = {**lookup['TherapyComponent'], **lookup['Therapy']}
     lookup['_therapy'] = therapy_map
+
+    # Markers resolve against the UNION of both catalogs, not the one matching
+    # the field name. CTOMOP fills `cytogenic_markers` from a free-text FHIR
+    # cytogenetics report (`mm-cytogenetic-markers`), which routinely names a
+    # marker EXACT files under the molecular catalog (e.g. "TP53 Mutation") and
+    # vice versa. Resolving each field against only its own catalog would drop
+    # those names, and an unresolved marker field reads as *unknown* to the
+    # matcher — turning a hard exclusion into "potential". EXACT's pre-split
+    # `Marker` table was a single union, so this keeps that behavior. Both
+    # catalogs project the same code->title definitions, so merge order is
+    # immaterial.
+    lookup['_marker'] = {**lookup['MolecularMarker'], **lookup['CytogenicMarker']}
 
     # ── CTOMOP-specific aliases ──────────────────────────────────────────
     # CTOMOP stores display strings that differ from EXACT's canonical titles.
@@ -300,8 +314,8 @@ def normalize_ctomop_row(row: dict) -> dict:
     # These fields store comma-separated display names in CTOMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     for _field, _model in [
-        ('cytogenic_markers',     'Marker'),
-        ('molecular_markers',     'Marker'),
+        ('cytogenic_markers',     '_marker'),
+        ('molecular_markers',     '_marker'),
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
     ]:

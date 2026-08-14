@@ -492,16 +492,16 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
                 lambda patient_info: patient_info.morphologic_variant,
         }
     },
-    "lesion_size_mcl": {
+    "largest_lesion_size": {
         "type": "min_max_value",
         # No custom_search — routed through the type-based min_max_value
         # branch in filter_by_patient_info like every other min_max_value
         # config (weight, patient_age, etc.). #94 fix.
         "searchable": True,
         "disease": "MCL",
-        "attr_min": "lesion_size_mcl_min",
-        "attr_max": "lesion_size_mcl_max",
-        "attr": ["lesion_size_mcl_min", "lesion_size_mcl_max"],
+        "attr_min": "largest_lesion_size_min",
+        "attr_max": "largest_lesion_size_max",
+        "attr": ["largest_lesion_size_min", "largest_lesion_size_max"],
     },
     "disease_behavior": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,

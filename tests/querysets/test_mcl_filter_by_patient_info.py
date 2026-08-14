@@ -3,7 +3,7 @@ Regression test for #94 — filter_by_patient_info must not raise when an
 MCL patient has any of the 8 MCL custom_search attrs non-blank.
 
 Pre-fix, configs.py marked them with `custom_search=True` (or, for
-lesion_size_mcl, `custom_search=True` on a `min_max_value` type) but
+largest_lesion_size, `custom_search=True` on a `min_max_value` type) but
 the queryset had no corresponding `eligible_for_*` method and the
 attrs were absent from `_CUSTOM_SEARCH_DISPATCH`. Any MCL patient
 flowing through `filter_by_patient_info` with any of them set would
@@ -32,7 +32,7 @@ class TestMclFilterByPatientInfoSmoke:
         pi = PatientInfo(
             disease='mantle cell lymphoma',
             morphologic_variant='classic',
-            lesion_size_mcl=5.0,
+            largest_lesion_size=5.0,
             disease_behavior='indolent',
             disease_subtype='cmcl',
             extranodal_sites=['bone_marrow', 'gi_tract'],

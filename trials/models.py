@@ -34,17 +34,6 @@ class TimeStampMixin(models.Model):
         abstract = True
 
 
-class RawDataItem(TimeStampMixin):
-    record_id = models.CharField(unique=True, max_length=100)
-    source_name = models.CharField(max_length=50)
-    raw_data = models.TextField(blank=True, null=True)
-    old_raw_data = models.JSONField(default=dict, blank=True)
-    extracted_data = models.JSONField(default=dict, blank=True)
-
-    def __str__(self):
-        return f"{self.record_id} from '{self.source_name}'"
-
-
 class Country(TimeStampMixin):
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     sort_key = models.IntegerField(blank=True, null=True)
@@ -102,7 +91,7 @@ class Disease(TimeStampMixin):
         return self.title
 
 
-class Marker(TimeStampMixin):
+class MolecularMarker(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     description = models.TextField(blank=True, null=True)
@@ -110,29 +99,22 @@ class Marker(TimeStampMixin):
     def __str__(self):
         return self.title
 
-    categories = models.ManyToManyField(
-        'MarkerCategory',
-        blank=True,
-        through='MarkerCategoryConnection',
-        through_fields=('marker', 'category'),
-        related_name='category_markers'
-    )
 
-
-class MarkerCategory(TimeStampMixin):
+class CytogenicMarker(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
-    title = models.TextField(blank=False, null=False)
+    title = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        # The class name, table and permission codenames keep the `cytogenic`
+        # spelling — renaming those is a breaking change (cf. #3558). This is
+        # the display name staff see in the admin index, the changelist and the
+        # permission picker (#4020).
+        verbose_name = 'cytogenetic marker'
+        verbose_name_plural = 'cytogenetic markers'
 
     def __str__(self):
         return self.title
-
-
-class MarkerCategoryConnection(TimeStampMixin):
-    marker = models.ForeignKey(Marker, models.CASCADE, blank=True, null=True)
-    category = models.ForeignKey(MarkerCategory, models.CASCADE, blank=True, null=True)
-
-    class Meta:
-        unique_together = ['marker', 'category']
 
 
 class ConcomitantMedication(TimeStampMixin):
@@ -366,9 +348,6 @@ class Trial(TimeStampMixin):
     supportive_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
     planned_therapies_required = models.JSONField(blank=True, null=False, default=list)
     planned_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
-    # Populated by CB during trial sync: OMOP concept_ids of the intervention arm
-    # (what therapy the trial is giving/testing). Used by ?therapy_id= search.
-    omop_intervention_concept_ids = models.JSONField(blank=True, null=False, default=list)
     relapse_count_min = models.IntegerField(blank=True, null=True)
     relapse_count_max = models.IntegerField(blank=True, null=True)
     remission_duration_min = models.IntegerField(blank=True, null=True)
@@ -575,8 +554,8 @@ class Trial(TimeStampMixin):
     bone_marrow_involvement_required = models.BooleanField(blank=True, null=True, db_index=True)
 
     # MCL
-    lesion_size_mcl_min = models.FloatField(blank=True, null=True)
-    lesion_size_mcl_max = models.FloatField(blank=True, null=True)
+    largest_lesion_size_min = models.FloatField(blank=True, null=True)
+    largest_lesion_size_max = models.FloatField(blank=True, null=True)
     morphologic_variants_required = models.JSONField(blank=True, null=False, default=list)
     morphologic_variants_excluded = models.JSONField(blank=True, null=False, default=list)
     disease_behaviors_required = models.JSONField(blank=True, null=False, default=list)
@@ -626,7 +605,6 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['therapy_components_required', 'therapy_components_excluded'], name='idx_therapy_comps_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['supportive_therapies_required', 'supportive_therapies_excluded'], name='idx_sup_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['planned_therapies_required', 'planned_therapies_excluded'], name='idx_planned_therapies_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
-            GinIndex(fields=['omop_intervention_concept_ids'], name='idx_omop_intervention_cids_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['cytogenic_markers_required', 'cytogenic_markers_excluded'], name='idx_cytogenic_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['molecular_markers_required', 'molecular_markers_excluded'], name='idx_molecular_markers_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
             GinIndex(fields=['tumor_stages_required', 'tumor_stages_excluded'], name='idx_tumor_stages_pair_gin', opclasses=['jsonb_ops', 'jsonb_ops']),
@@ -1120,29 +1098,3 @@ class TumorBurden(OptionsListMixin):
 
 class PreferredCountry(OptionsListMixin):
     sort_key = models.IntegerField(blank=True, null=True)
-
-
-# ---------------------------------------------------------------------------
-# Trial universe (lightweight trial categorisation)
-# ---------------------------------------------------------------------------
-
-class TrialUniverse(TimeStampMixin):
-    title = models.CharField(max_length=255, null=False, blank=False, unique=True, db_index=True)
-    code = models.CharField(max_length=255, null=False, blank=False, unique=True, db_index=True)
-    description = models.TextField(null=False, blank=True)
-
-    @property
-    def short_description(self):
-        max_length = 100
-        if self.description and len(self.description) > max_length:
-            return self.description[:max_length - 3] + '...'
-        return self.description
-
-
-class TrialUniverseEntry(TimeStampMixin):
-    universe = models.ForeignKey(TrialUniverse, on_delete=models.CASCADE, null=False, blank=False,
-                                 related_name='entries', db_index=True)
-    trial = models.ForeignKey(Trial, on_delete=models.CASCADE, null=False, blank=False)
-
-    class Meta:
-        unique_together = ('universe', 'trial')

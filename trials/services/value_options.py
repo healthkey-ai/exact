@@ -19,7 +19,12 @@ class ValueOptions:
         # would serve the pre-#63 shape (missing those 40 keys), letting
         # the cached blob drift from fresh `all_options()` output until
         # the 1h TTL expires.
-        return 'ValueOptions.all_options.v2'
+        # v3: bumped when the marker option lists moved from EXACT's own
+        # Marker/MarkerCategory tables to CB's CytogenicMarker /
+        # MolecularMarker catalogs — the offered codes changed, so a
+        # populated Redis would keep serving the old vocabulary for up to
+        # the 1h TTL after deploy.
+        return 'ValueOptions.all_options.v3'
 
     @staticmethod
     def to_value_and_label(data):
@@ -291,19 +296,17 @@ class ValueOptions:
 
     @property
     def cytogenic_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import CytogenicMarker
 
-        category = MarkerCategory.objects.get(code='cytogenic')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = CytogenicMarker.objects.order_by('id')
 
         return {'none': 'None', **{x.code: x.title for x in markers}}
 
     @property
     def molecular_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import MolecularMarker
 
-        category = MarkerCategory.objects.get(code='molecular')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = MolecularMarker.objects.order_by('id')
 
         return {'none': 'None', **{x.code: x.title for x in markers}}
 

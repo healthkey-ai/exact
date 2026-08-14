@@ -217,7 +217,7 @@ _FIELDS = [
     # Ki67 / sizes (#41). Caller-supplied values are overwritten when the
     # patient's disease is MCL.
     _f(TextField, 'morphologic_variant'),
-    _f(FloatField, 'lesion_size_mcl'),
+    _f(FloatField, 'largest_lesion_size'),
     _f(TextField, 'disease_behavior'),
     _f(TextField, 'disease_subtype'),
     _f(JSONField, 'extranodal_sites', default=list),

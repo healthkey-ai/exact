@@ -559,7 +559,7 @@ class PatientInfoAttributes:
     # Ported from CB patient_info_attributes.py:488-567 with two adaptations:
     # 1. bulky_disease_criteria returns a list (matches EXACT's JSONField),
     #    not a comma-joined string.
-    # 2. Bulky lesion thresholds key off lesion_size_mcl (EXACT's MCL field),
+    # 2. Bulky lesion thresholds key off largest_lesion_size (EXACT's MCL field),
     #    not CB's largest_lesion_size.
     # MIPI: Hoster et al. 2008 (Blood 111:558-565).
     # MIPI-C: categorical MIPI x Ki-67 table (Hoster et al. 2014, ASH 2014
@@ -625,7 +625,7 @@ class PatientInfoAttributes:
         pi = self.patient_info
         criteria = []
 
-        lesion = pi.lesion_size_mcl
+        lesion = pi.largest_lesion_size
         if lesion is not None:
             if lesion >= 5:
                 criteria.append('bulky_lesion_5cm')
