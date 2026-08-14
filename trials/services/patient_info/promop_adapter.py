@@ -88,6 +88,18 @@ def _build_code_lookup():
     therapy_map = {**lookup['TherapyComponent'], **lookup['Therapy']}
     lookup['_therapy'] = therapy_map
 
+    # Markers resolve against the UNION of both catalogs, not the one matching
+    # the field name. PROMOP fills `cytogenic_markers` from a free-text FHIR
+    # cytogenetics report (`mm-cytogenetic-markers`), which routinely names a
+    # marker EXACT files under the molecular catalog (e.g. "TP53 Mutation") and
+    # vice versa. Resolving each field against only its own catalog would drop
+    # those names, and an unresolved marker field reads as *unknown* to the
+    # matcher — turning a hard exclusion into "potential". EXACT's pre-split
+    # `Marker` table was a single union, so this keeps that behavior. Both
+    # catalogs project the same code->title definitions, so merge order is
+    # immaterial.
+    lookup['_marker'] = {**lookup['MolecularMarker'], **lookup['CytogenicMarker']}
+
     # ── PROMOP-specific aliases ──────────────────────────────────────────
     # PROMOP stores display strings that differ from EXACT's canonical titles.
     # Add aliases so the resolver can map them without touching the DB data.
@@ -304,8 +316,8 @@ def normalize_promop_row(row: dict) -> dict:
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     for _field, _model in [
-        ('cytogenic_markers',     'CytogenicMarker'),
-        ('molecular_markers',     'MolecularMarker'),
+        ('cytogenic_markers',     '_marker'),
+        ('molecular_markers',     '_marker'),
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
     ]:

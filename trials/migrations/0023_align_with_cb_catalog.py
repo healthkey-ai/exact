@@ -6,16 +6,22 @@ from django.db import migrations, models, router
 def seed_markers(apps, schema_editor):
     """Populate the new catalogs so a single-DB install isn't left empty.
 
-    Split-DB deployments read markers from CB's catalog, which already has the
-    rows — this migration never runs there (the router blocks the 'trials'
-    alias). But on a single-database install the DeleteModel operations below
-    drop the seeded `trials_marker*` rows, and `migrate` does not run
-    `seed_reference_data`, so `/form-settings/` would serve `{'none': 'None'}`
-    and PROMOP marker-label normalization would drop every marker until an
-    operator reseeded by hand. Seed inline instead — same source and semantics
-    as `LoadMarkers`, idempotent via update_or_create.
+    On a single-database install the DeleteModel operations below drop the
+    seeded `trials_marker*` rows, and `migrate` does not run
+    `seed_reference_data` (only the Makefile target does), so `/form-settings/`
+    would serve `{'none': 'None'}` and PROMOP marker-label normalization would
+    drop every marker — reading as *unknown* to the matcher — until an operator
+    reseeded by hand. Seed inline instead: same source and semantics as
+    `LoadMarkers`, idempotent via update_or_create.
+
+    Deliberately scoped to EXACT's own database. Under `TRIALS_DB_MIGRATE` the
+    router would allow writes to the 'trials' alias, but that catalog is
+    CB-owned and already carries these rows — EXACT does not seed reference
+    data into it (ADR: the trials DB is externally managed, read-only).
     """
     alias = schema_editor.connection.alias
+    if alias != 'default':
+        return
     if not router.allow_migrate(alias, 'trials', model_name='cytogenicmarker'):
         return
 
@@ -33,6 +39,17 @@ def seed_markers(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    """Align the trials app with CB's catalog schema.
+
+    NOTE: intentional, irreversible data loss on single-database installs.
+    Reversing this migration restores the schema but not the contents of
+    `rawdataitem.old_raw_data` / `.extracted_data` (removed upstream in CB
+    0407; nothing in EXACT ever read or wrote them), `trial.
+    omop_intervention_concept_ids` (EXACT-only, never populated by CB), or the
+    dropped `trials_marker*` rows (re-seedable — see `seed_markers` above).
+    Split-database deployments lose nothing: the router keeps this migration
+    off the CB-owned catalog.
+    """
 
     dependencies = [
         ('trials', '0022_trial_largest_lymph_node_size_max_and_more'),
@@ -67,10 +84,11 @@ class Migration(migrations.Migration):
                 'abstract': False,
             },
         ),
-        # AlterUniqueTogether MUST precede the RemoveFields it references —
-        # the autodetector emits it last, which blows up with
-        # "MarkerCategoryConnection has no field named 'marker'" when the
-        # migration is replayed (test-DB build, fresh install).
+        # AlterUniqueTogether MUST precede the RemoveFields it references.
+        # As generated here it landed after them, and replaying the migration
+        # (test-DB build, fresh install) then died with "MarkerCategoryConnection
+        # has no field named 'marker'", so it was moved by hand. The resulting
+        # order matches CB's equivalent migration (0382).
         migrations.AlterUniqueTogether(
             name='markercategoryconnection',
             unique_together=None,

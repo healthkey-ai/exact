@@ -31,11 +31,12 @@ class TestCatalogs:
         for code, entry in {**self.cytogenic, **self.molecular}.items():
             assert entry is MarkersMapper._MARKERS[code], code
 
-    def test_shared_marker_is_identical_in_both_catalogs(self):
-        # A marker can be clinically relevant as both; the single definition
-        # table means the two catalogs must not carry diverging copies.
-        for code in set(self.cytogenic) & set(self.molecular):
-            assert self.cytogenic[code] == self.molecular[code], code
+    def test_catalogs_overlap_but_are_not_duplicates(self):
+        # A marker can be clinically relevant as both cytogenic and molecular,
+        # so the lists overlap — but neither may be a copy of the other, which
+        # would mean an ordered list was edited without its counterpart.
+        assert set(self.cytogenic) & set(self.molecular)
+        assert set(self.cytogenic) != set(self.molecular)
 
     def test_known_entry_del17p13_present(self):
         # Spot-check: del(17p13) is the headline TP53-deletion marker.

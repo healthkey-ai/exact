@@ -22,7 +22,7 @@ class TestStudyPreferencesParsing:
         assert prefs.trial_purpose == []
 
     def test_trial_purpose_repeated_param(self):
-        """Several purposes at once (CB #4663), the therapy_id spelling.
+        """Several purposes at once (CB #4663) — repeated query params.
 
         Through a real QueryDict, which is what DRF hands the parser.
         """

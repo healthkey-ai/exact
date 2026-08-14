@@ -450,6 +450,7 @@ _MOCK_LOOKUP = {
     # Other models — empty for these unit tests
     'CytogenicMarker': {},
     'MolecularMarker': {},
+    '_marker': {},
     'PlannedTherapy': {},
     'ConcomitantMedication': {},
     '_therapy': {},

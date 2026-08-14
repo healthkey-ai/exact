@@ -53,6 +53,7 @@ _MOCK_LOOKUP = {
     'Ethnicity': {},
     'CytogenicMarker': {},
     'MolecularMarker': {},
+    '_marker': {},
     'PlannedTherapy': {},
     'ConcomitantMedication': {},
     '_therapy': {},
