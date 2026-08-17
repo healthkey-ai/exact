@@ -1,27 +1,27 @@
-from django.db import migrations, models, router
+from django.db import migrations, models
 
 
 def seed_markers(apps, schema_editor):
-    """Populate the new catalogs so a single-DB install isn't left empty.
+    """Populate the new catalogs so no install is left with empty ones.
 
-    On a single-database install the DeleteModel operations below drop the
-    seeded `trials_marker*` rows, and `migrate` does not run
-    `seed_reference_data` (only the Makefile target does), so `/form-settings/`
-    would serve `{'none': 'None'}` and CTOMOP marker-label normalization would
-    drop every marker — reading as *unknown* to the matcher — until an operator
-    reseeded by hand. Seed inline instead: same source and semantics as
-    `LoadMarkers`, idempotent via update_or_create.
+    The DeleteModel operations below drop the seeded `trials_marker*` rows, and
+    `migrate` does not run `seed_reference_data` (only the Makefile target
+    does). Without this, `/form-settings/` would serve `{'none': 'None'}` and
+    CTOMOP marker-label normalization would drop every marker — reading as
+    *unknown* to the matcher, which turns hard exclusions into "potential" —
+    until an operator reseeded by hand. Seed inline instead: same source and
+    semantics as `LoadMarkers`, idempotent via update_or_create.
 
-    Deliberately scoped to EXACT's own database. Under `TRIALS_DB_MIGRATE` the
-    router would allow writes to the 'trials' alias, but that catalog is
-    CB-owned and already carries these rows — EXACT does not seed reference
-    data into it (ADR: the trials DB is externally managed, read-only).
+    No alias guard here, deliberately. `RunPython.database_forwards` already
+    calls `router.allow_migrate(alias, 'trials')`, which resolves correctly for
+    every mode: single-DB seeds; split-DB skips (the CB-owned catalog is never
+    migrated); and under `TRIALS_DB_MIGRATE` — which exists precisely for a
+    trials copy we own and keep current, see `exact/db_router.py` — the copy
+    gets seeded like any other DB we own. An earlier `alias != 'default'` guard
+    here broke exactly that last case: the tables were dropped and recreated
+    empty, and seeding was skipped.
     """
     alias = schema_editor.connection.alias
-    if alias != 'default':
-        return
-    if not router.allow_migrate(alias, 'trials', model_name='cytogenicmarker'):
-        return
 
     from trials.services.markers_mapper import MarkersMapper
 
@@ -52,6 +52,10 @@ class Migration(migrations.Migration):
     declares but never reads and the Harvard extract DROPs outright.
     Split-database deployments lose nothing: the router keeps this migration
     off the CB-owned catalog.
+
+    Leaves stale `django_content_type` / `auth_permission` rows for the deleted
+    models on single-DB installs — Django never removes them. Harmless; clear
+    them with `manage.py remove_stale_contenttypes` if you care.
     """
 
     dependencies = [
@@ -103,10 +107,11 @@ class Migration(migrations.Migration):
                 'abstract': False,
             },
         ),
-        # AlterUniqueTogether MUST precede the RemoveFields it references —
-        # the autodetector emits it after them, and replaying the migration
-        # then dies with "MarkerCategoryConnection has no field named 'marker'".
-        # This order matches CB's equivalent migration (0382).
+        # AlterUniqueTogether MUST precede the RemoveFields it references, or
+        # replaying the migration dies with "MarkerCategoryConnection has no
+        # field named 'marker'". (When this was generated on the sibling branch
+        # the autodetector emitted it after the removals; whatever the cause,
+        # this order is the correct one and matches CB's equivalent 0382.)
         migrations.AlterUniqueTogether(
             name='markercategoryconnection',
             unique_together=None,

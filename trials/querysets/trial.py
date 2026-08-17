@@ -279,7 +279,6 @@ class TrialQuerySet(models.QuerySet):
 
         query = self
 
-
         if search_type in ['all', 'favorites', 'my_trials']:
             query, _ = query.filter_for_admin(study_info, patient_info)
             max_distance = D(mi=1000)
@@ -1388,7 +1387,6 @@ class TrialQuerySet(models.QuerySet):
         has_no_prior_therapy = patient_info.prior_therapy in ["None"]
         user_therapies = patient_info_attr.get_user_therapies()
         is_therapies_filter_applied = False
-
 
         for user_attr in mapping.keys():
             user_attr_value = patient_info_attr.get_value(user_attr)

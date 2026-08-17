@@ -11,6 +11,13 @@ EXACT path: `/Users/lm/work/cancerbot/exact`
 
 This file holds the specific CB references intentionally kept OUT of the GH issues (so issues stay portable). Cross-reference by issue title.
 
+> **Names below are as of the port, not as of today.** CB has renamed some of them since.
+> Known drift: `lesion_size_mcl_min` / `lesion_size_mcl_max` / `lesion_size_mcl` were renamed
+> upstream to `largest_lesion_size_min` / `largest_lesion_size_max` / `largest_lesion_size`
+> (CB migration `0375`, ported here in `trials/migrations/0009_align_with_cb_catalog`) — the
+> `_mcl` suffix is gone because "largest lesion size" is a generic measurement. Check the current
+> CB models before porting anything from the sections below.
+
 ---
 
 ## Architectural reminder

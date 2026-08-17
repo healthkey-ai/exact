@@ -556,11 +556,11 @@ class PatientInfoAttributes:
 
     # ---------------------------------------------------------------------
     # MCL derivations (#41).
-    # Ported from CB patient_info_attributes.py:488-567 with two adaptations:
-    # 1. bulky_disease_criteria returns a list (matches EXACT's JSONField),
-    #    not a comma-joined string.
-    # 2. Bulky lesion thresholds key off largest_lesion_size (EXACT's MCL field),
-    #    not CB's largest_lesion_size.
+    # Ported from CB patient_info_attributes.py:488-567 with one adaptation:
+    # bulky_disease_criteria returns a list (matches EXACT's JSONField), not a
+    # comma-joined string. (The lesion-size field name used to diverge too —
+    # `lesion_size_mcl` here vs `largest_lesion_size` upstream — until CB's 0375
+    # rename was ported; the two are identical now.)
     # MIPI: Hoster et al. 2008 (Blood 111:558-565).
     # MIPI-C: categorical MIPI x Ki-67 table (Hoster et al. 2014, ASH 2014
     # abstract — full JCO 2016 publication uses a continuous variant).
