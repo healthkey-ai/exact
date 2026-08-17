@@ -2,7 +2,9 @@ name: backend
 
 on:
   push:
-    branches: [ dev, main ]
+    # `harvard/**`: the pinned Harvard deployment line. It never opens a PR
+    # against main, so without this its pushes would run no tests at all.
+    branches: [ dev, main, 'harvard/**' ]
   pull_request:
 
 jobs:

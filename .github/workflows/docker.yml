@@ -2,7 +2,12 @@ name: docker
 
 on:
   push:
-    branches: [dev, main]
+    # `harvard/**` is the pinned deployment line for the Harvard install: it
+    # tracks main plus the catalog-schema alignment, and is deliberately NOT
+    # merged into main (see the branch's commits). Building it here means the
+    # image that install runs comes out of CI like any other, instead of being
+    # built by hand on someone's laptop.
+    branches: [dev, main, 'harvard/**']
     tags: ['*']
 
 jobs:
