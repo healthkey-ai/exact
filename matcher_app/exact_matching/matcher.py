@@ -1060,6 +1060,14 @@ class UserToTrialAttrMatcher:
             return 'matched'
         elif under_user_control:
             return 'unknown'
+        elif ctx.is_blank:
+            # Blank/unresolved (e.g. a computed bool like meets_crab whose inputs
+            # aren't in yet) vs a trial that requires it: unknown, not a hard fail.
+            # The SQL path already treats this as potential (filter_by_patient_info
+            # skips blank attrs; potential_attrs_to_check counts them), and a
+            # definite False (not blank) still falls through to not_matched.
+            # (#4832 reconcile.)
+            return 'unknown'
         else:
             return 'not_matched'
 
