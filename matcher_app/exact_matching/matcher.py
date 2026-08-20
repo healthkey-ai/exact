@@ -449,6 +449,13 @@ class UserToTrialAttrMatcher:
     # used by both `_match_therapy_lines_attr` and downstream tests.
 
     def _match_therapy_things(self, values, required_list, excluded_list, has_no_prior_therapy):
+        # A NULL therapy column means "no list constraint", same as []. Coalesce so
+        # NULL short-circuits to 'matched' (symmetric with the SQL potential count's
+        # NULL-as-empty handling, #4832) and so the len()/overlap below never see
+        # None (a legacy NULL column would otherwise raise). null=True columns:
+        # therapies_/therapy_types_/therapy_components_{required,excluded}.
+        required_list = required_list or []
+        excluded_list = excluded_list or []
         if required_list == [] and excluded_list == []:
             return 'matched'
 
