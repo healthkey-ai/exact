@@ -296,7 +296,12 @@ class UserToTrialAttrsMapper:
                 #     trial_attr_name = "has_stages"
                 #     sql_check = "IS FALSE"
                 elif trial_attr_name in TRIAL_ATTRS_JSON_AS_A_LIST:
-                    sql_check = "= '[]'::jsonb"
+                    # A NULL jsonb column means "no list constraint", same as '[]'.
+                    # `NULL = '[]'::jsonb` is NULL (not TRUE), which would wrongly
+                    # fire the ELSE (potential) branch, so treat NULL as empty —
+                    # matching potential_attrs_for_trial (skips NULL) and the
+                    # matcher (empty list = matched). (#4832 count/attribution reconcile.)
+                    sql_check = {'cond': ['IS NULL', "= '[]'::jsonb"], 'type': 'OR'}
                 else:
                     sql_check = "IS NULL"
 
@@ -305,12 +310,16 @@ class UserToTrialAttrsMapper:
                     orig_sql_check = sql_check
                     for trial_name_custom_search_attr in trial_attr_name:
                         if trial_name_custom_search_attr in TRIAL_ATTRS_JSON_AS_A_LIST:
-                            sql_check = "= '[]'::jsonb"
+                            # NULL jsonb == empty list (see the scalar branch above).
+                            sql_check = {'cond': ['IS NULL', "= '[]'::jsonb"], 'type': 'OR'}
                         else:
                             sql_check = orig_sql_check
                         if isinstance(sql_check, dict):
                             column_conds = [f'{trial_name_custom_search_attr} {x}' for x in sql_check['cond']]
-                            columns.append(' OR '.join(column_conds))
+                            # Parenthesize: these OR conds are AND-joined with the
+                            # other columns below, so without parens SQL precedence
+                            # ('a OR b AND c') would regroup them wrongly.
+                            columns.append('(' + ' OR '.join(column_conds) + ')')
                         else:
                             columns.append(f'{trial_name_custom_search_attr} {sql_check}')
                     sql_query = f'(CASE WHEN {" AND ".join(columns)} THEN {then_value} END)'
