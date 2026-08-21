@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from exact_matching.patient_info.convertors.alp_uln_calculator import AlpUlnCalculator
 from exact_matching.patient_info.convertors.alt_uln_calculator import AltUlnCalculator
 from exact_matching.patient_info.convertors.ast_uln_calculator import AstUlnCalculator
@@ -977,6 +979,9 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "units_convertor": SerumCalciumConvertor,
         "default_unit": "mg/dL",
         "user_input_units_attr": "serum_calcium_level_units",
+        # Canonical mg/dL; bi-scaled trial thresholds self-heal via sane_range
+        # (out-of-band threshold skips the filter). (cancerbot#4840/#4845.)
+        "sane_range": (6, 20),
     },
     "creatinine_clearance_rate": {
         "type": "min_max_value",
@@ -994,6 +999,9 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "uln_calculator": ScrUlnCalculator,
         "uln_attr_min": "serum_creatinine_level_uln_min",
         "uln_attr_max": "serum_creatinine_level_uln_max",
+        # Canonical mg/dL; sane_range applies only to the abs min/max (the ULN
+        # path takes no sane_range, matching CB). (cancerbot#4840/#4845.)
+        "sane_range": (Decimal('0.1'), 25),
     },
     "hemoglobin_level": {
         "type": "min_max_value",
@@ -1002,6 +1010,11 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "units_convertor": BaseConvertor,
         "default_unit": "g/dL",
         "user_input_units_attr": "hemoglobin_level_units",
+        # Canonical is g/dL. Some trial thresholds are bi-scaled (g/L magnitudes
+        # wearing the g/dL label); sane_range skips the min/max filter for any
+        # threshold outside the g/dL band so a mislabelled g/L threshold does not
+        # silently exclude a patient. (cancerbot#4840/#4843.)
+        "sane_range": (2, 25),
     },
     "meets_crab": {
         "type": "bool_restriction",
@@ -1059,6 +1072,9 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "uln_calculator": BiliTUlnCalculator,
         "uln_attr_min": "serum_bilirubin_total_level_uln_min",
         "uln_attr_max": "serum_bilirubin_total_level_uln_max",
+        # Canonical mg/dL; sane_range applies to the abs min/max only.
+        # Direct bilirubin deliberately gets no guard. (cancerbot#4840/#4852.)
+        "sane_range": (Decimal('0.05'), 7.5),
     },
     "serum_bilirubin_level_direct": {
         "type": "min_max_value",
