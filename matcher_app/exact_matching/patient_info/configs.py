@@ -1061,6 +1061,14 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "type": "min_max_value",
         "searchable": True,
         "attr": "albumin",
+        # Previously unconvertible: no units_convertor, so a patient who entered
+        # G/L was compared raw against g/dL thresholds. Wire the convertor + the
+        # canonical unit, and guard the bi-scaled thresholds (14 rows are g/L
+        # magnitudes on the g/dL column). (cancerbot#4840/#4847/#4855.)
+        "units_convertor": BaseConvertor,
+        "default_unit": "g/dL",
+        "user_input_units_attr": "albumin_level_units",
+        "sane_range": (1, 7),
     },
     "serum_bilirubin_level_total": {
         "type": "min_max_value",
