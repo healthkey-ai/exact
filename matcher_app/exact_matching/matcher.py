@@ -97,17 +97,35 @@ def min_max_match(
     max_val: Optional[Any],
     value: Any,
     value_is_blank: bool,
+    sane_range: Optional[tuple] = None,
 ) -> Optional[AttrMatchStatus]:
     """Return `None` when both bounds are absent (no constraint), otherwise
     the standard per-attr match outcome. `min_val`/`max_val`/`value` are
     annotated `Any` because callers pass mixed numeric types (ints, floats,
     Decimals) plus date/datetime objects depending on the attr — uniform
     comparison via `<` / `>` is the only contract.
+
+    `sane_range=(low, high)`: a stored threshold outside the attribute's canonical
+    band is treated as no constraint (mid-migration bi-scaled thresholds), so the
+    matcher agrees with the queryset's sane_range guard instead of labelling an
+    admitted trial not_matched. (#4840.)
     """
     if min_val is None and max_val is None:
         return None
-    elif value_is_blank:
+    # Blank must be handled BEFORE the sane_range nullification below: otherwise an
+    # out-of-band threshold collapses both bounds to None and wrongly reports
+    # matched/no-constraint, disagreeing with the SQL classification (a blank attr
+    # against a constraint is 'potential').
+    if value_is_blank:
         return 'unknown'
+    if sane_range is not None:
+        low, high = sane_range
+        if min_val is not None and not (low <= min_val <= high):
+            min_val = None
+        if max_val is not None and not (low <= max_val <= high):
+            max_val = None
+    if min_val is None and max_val is None:
+        return None
     elif min_val is not None and value < min_val:
         return 'not_matched'
     elif max_val is not None and value > max_val:
@@ -1138,7 +1156,7 @@ class UserToTrialAttrMatcher:
         trial_attr_value_min = getattr(self.trial, attr_min_name)
         trial_attr_value_max = getattr(self.trial, attr_max_name)
 
-        abs_vals_match_res = min_max_match(trial_attr_value_min, trial_attr_value_max, ctx.value, ctx.is_blank)
+        abs_vals_match_res = min_max_match(trial_attr_value_min, trial_attr_value_max, ctx.value, ctx.is_blank, sane_range=ctx.meta.get("sane_range"))
         if "uln_attr_min" in ctx.meta and "uln_attr_max" in ctx.meta:
             trial_attr_value_uln_min = getattr(self.trial, ctx.meta["uln_attr_min"])
             trial_attr_value_uln_max = getattr(self.trial, ctx.meta["uln_attr_max"])
