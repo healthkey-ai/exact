@@ -10,7 +10,8 @@
     "build:spa": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:widget": "vite build --config vite.widget.config.ts"
   },
   "dependencies": {
     "@module-federation/runtime": "^2.4.0",
