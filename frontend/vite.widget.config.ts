@@ -14,6 +14,14 @@ import tailwindcss from "@tailwindcss/vite";
 // React of its own is involved in this subtree.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // A lib build does not auto-replace `process.env.NODE_ENV` the way an app build does,
+  // so React's `process.env.NODE_ENV` checks would reach the browser as bare `process`
+  // and throw "process is not defined". Define it (and a minimal process.env) at build
+  // time so the self-contained bundle has no Node globals.
+  define: {
+    "process.env.NODE_ENV": JSON.stringify("production"),
+    "process.env": "{}",
+  },
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
   },
