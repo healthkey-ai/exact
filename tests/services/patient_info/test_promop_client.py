@@ -39,7 +39,7 @@ class TestPromopClientFetch:
         assert result == {'person_id': 9001, 'disease': 'MM'}
         # Trailing slash on base_url should be stripped.
         call_args = mock_get.call_args
-        assert call_args.args[0] == 'https://promop.example.com/api/patient-info/9001/'
+        assert call_args.args[0] == 'https://promop.example.com/api/v1/patient-records/9001/'
         # Bearer auth attached.
         assert call_args.kwargs['headers']['Authorization'] == 'Bearer tk'
         assert call_args.kwargs['headers']['Accept'] == 'application/json'
@@ -125,7 +125,7 @@ class TestPromopClientFetch:
         ) as mock_get:
             assert client.fetch_patient('9001') == {'person_id': 9001}
         # URL has the validated integer, not the raw string.
-        assert mock_get.call_args.args[0] == 'https://promop.example.com/api/patient-info/9001/'
+        assert mock_get.call_args.args[0] == 'https://promop.example.com/api/v1/patient-records/9001/'
 
     def test_unwraps_patient_info_envelope(self):
         """The HTTP endpoint wraps the row in `{"patient_info": {...}}`; the
@@ -251,13 +251,16 @@ class TestOAuthV1:
         with patch(_POST, return_value=_token_response()), patch(_GET, return_value=_ok_response(body)):
             assert client.fetch_patient(9005) == {'person_id': 9005, 'disease': 'MM'}
 
-    def test_legacy_mode_uses_v0_url_and_static_token(self):
+    def test_static_token_mode_still_uses_the_v1_url(self):
+        """No OAuth config must not mean the legacy prefix (#387): promop routes
+        both prefixes to one viewset, so the static service token authenticates
+        against v1 too. Only the credential differs, never the URL."""
         client = PromopClient(base_url='https://promop.example.com', token='static')
         assert client.use_oauth is False
         with patch(_POST) as mpost, patch(_GET, return_value=_ok_response({'person_id': 1})) as mget:
             client.fetch_patient(9001)
         mpost.assert_not_called()
-        assert mget.call_args.args[0] == 'https://promop.example.com/api/patient-info/9001/'
+        assert mget.call_args.args[0] == 'https://promop.example.com/api/v1/patient-records/9001/'
         assert mget.call_args.kwargs['headers']['Authorization'] == 'Bearer static'
 
     def test_token_url_defaults_to_base_o_token(self):
@@ -307,16 +310,17 @@ class TestOAuthV1:
             client.fetch_patient(9001)
         assert mpost.call_args.kwargs['allow_redirects'] is False
 
-    def test_partial_oauth_config_is_legacy(self):
+    def test_partial_oauth_config_falls_back_to_the_static_token(self):
         """Only client_id (no secret) must not enable OAuth — it falls back to
-        the legacy static-token transport rather than half-authenticating."""
+        the static-token credential rather than half-authenticating. The URL
+        stays on v1 either way (#387)."""
         client = PromopClient(base_url='https://promop.example.com', token='static',
                               oauth_client_id='cid')  # secret missing
         assert client.use_oauth is False
         with patch(_POST) as mpost, patch(_GET, return_value=_ok_response({'person_id': 1})) as mget:
             client.fetch_patient(9001)
         mpost.assert_not_called()
-        assert mget.call_args.args[0] == 'https://promop.example.com/api/patient-info/9001/'
+        assert mget.call_args.args[0] == 'https://promop.example.com/api/v1/patient-records/9001/'
         assert mget.call_args.kwargs['headers']['Authorization'] == 'Bearer static'
 
     def test_settings_drive_oauth_config(self, settings):
