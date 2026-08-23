@@ -20,7 +20,13 @@ jobs:
           type=sha,format=long
           type=ref,event=branch
           type=ref,event=tag
-          type=raw,value=latest,enable={{is_default_branch}}
+          # NOT `{{is_default_branch}}`: metadata-action counts a tag push as
+          # coming from the default branch, so tagging any line other than main
+          # moves :latest onto it. This bit us with harvard-2026-08-14, a tag
+          # cut from a deployment branch that is never merged into main — the
+          # tag build republished :latest pointing at that build.
+          # :latest must mean "current main" and nothing else.
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
     - name: Login to Docker Registry
       uses: docker/login-action@v3
