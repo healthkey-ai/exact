@@ -3,13 +3,14 @@
 Used by `resolve_patient_info` when a request carries `?person_id=` (or a body
 field `person_id`) instead of an inline `patient_info` payload.
 
-Two transport modes, chosen by configuration (#237):
-- **v1 + OAuth2** (preferred): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set,
-  the client authenticates via OAuth2 `client_credentials` against promop
-  `/o/token/` (scope `patient/*.read`) and reads
-  `GET /api/v1/patient-records/{person_id}/`.
-- **legacy** (deprecated, sunsets 2026-09-01): otherwise it falls back to the
-  static `PROMOP_SERVICE_TOKEN` and `GET /api/patient-info/{person_id}/`.
+Always reads `GET /api/v1/patient-records/{person_id}/` (#387). Only the
+credential differs, chosen by configuration (#237):
+- **OAuth2** (preferred): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set, the
+  client authenticates via OAuth2 `client_credentials` against promop `/o/token/`
+  (scope `patient/*.read`).
+- **static service token**: otherwise it sends `PROMOP_SERVICE_TOKEN` as a bearer.
+  promop accepts it on v1 as well, so this mode is no longer a reason to fall back
+  to the deprecated, sunsetting `/api/patient-info/` prefix.
 
 Either way `fetch_patient(person_id)` returns the flat row dict (the shape
 `normalize_promop_row` expects) or `None` on any error path (network failure,
@@ -138,9 +139,13 @@ class PromopClient:
         return bool(self.oauth_client_id and self.oauth_client_secret)
 
     def _patient_url(self, person_id_int: int) -> str:
-        if self.use_oauth:
-            return f'{self.base_url}/api/v1/patient-records/{person_id_int}/'
-        return f'{self.base_url}/api/patient-info/{person_id_int}/'
+        # Always v1. The URL is deliberately NOT tied to `use_oauth` (#387):
+        # promop routes both prefixes to the same DRF viewset, so
+        # `ScopedTokenPermission` short-circuits on the static service token and
+        # authenticates it against v1 exactly as against the legacy path. Picking
+        # the URL off the auth mode left every OAuth-less deployment talking to a
+        # sunsetting endpoint for no reason.
+        return f'{self.base_url}/api/v1/patient-records/{person_id_int}/'
 
     def _authorization(self) -> str | None:
         """Bearer header value, or None when it can't be built (caller fails closed)."""
@@ -155,9 +160,9 @@ class PromopClient:
     def fetch_patient(self, person_id) -> dict | None:
         """Fetch the patient row and return the flat JSON row (or None on any error).
 
-        v1 (`/api/v1/patient-records/{id}/`) and legacy (`/api/patient-info/{id}/`)
-        both wrap the row in a `{"patient_info": {...}}` envelope; v1 additionally
-        carries a sibling `user` block and drops `patient_info_id`. This method
+        The response wraps the row in a `{"patient_info": {...}}` envelope with a
+        sibling `user` block (identical on the legacy prefix this used to call —
+        the two share one viewset). This method
         unwraps the `patient_info` envelope (ignoring siblings), so callers always
         receive a flat row matching `normalize_promop_row` — without unwrapping,
         every real field would be nested one level too deep and silently dropped
