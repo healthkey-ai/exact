@@ -98,6 +98,7 @@ def min_max_match(
     value: Any,
     value_is_blank: bool,
     sane_range: Optional[tuple] = None,
+    equal_bounds_are_ceiling: bool = False,
 ) -> Optional[AttrMatchStatus]:
     """Return `None` when both bounds are absent (no constraint), otherwise
     the standard per-attr match outcome. `min_val`/`max_val`/`value` are
@@ -109,7 +110,18 @@ def min_max_match(
     band is treated as no constraint (mid-migration bi-scaled thresholds), so the
     matcher agrees with the queryset's sane_range guard instead of labelling an
     admitted trial not_matched. (#4840.)
+
+    `equal_bounds_are_ceiling` (cb#4863): when a pair holds the SAME number in both
+    columns, extraction wrote a one-sided ceiling twice, so read it as a ceiling and
+    drop the vacuous floor rather than demanding an exact match. Must stay in step
+    with `eligible_for_min_max_value`'s flag on the search side, or search and trial
+    details disagree about the same trial. Passed for ULN pairs only; default False =
+    no-op. Ported from CB (the wider guarded/not_evaluated reporting there is a
+    separate divergence not carried here).
     """
+    if (equal_bounds_are_ceiling
+            and min_val is not None and max_val is not None and min_val == max_val):
+        min_val = None
     if min_val is None and max_val is None:
         return None
     # Blank must be handled BEFORE the sane_range nullification below: otherwise an
@@ -1162,7 +1174,9 @@ class UserToTrialAttrMatcher:
             trial_attr_value_uln_max = getattr(self.trial, ctx.meta["uln_attr_max"])
             user_attr_value_uln = self.patient_info_attr.get_uln_value(ctx.name)
             user_attr_value_uln_is_blank = ctx.is_blank or user_attr_value_uln is None
-            uln_vals_match_res = min_max_match(trial_attr_value_uln_min, trial_attr_value_uln_max, user_attr_value_uln, user_attr_value_uln_is_blank)
+            # ULN is the only pair read with equal-bounds as a ceiling (cb#4863) —
+            # keep in step with the search-side flag; the absolute pair above does not.
+            uln_vals_match_res = min_max_match(trial_attr_value_uln_min, trial_attr_value_uln_max, user_attr_value_uln, user_attr_value_uln_is_blank, equal_bounds_are_ceiling=True)
             if abs_vals_match_res is None and uln_vals_match_res is None:
                 return 'matched'
             elif abs_vals_match_res == 'not_matched' or uln_vals_match_res == 'not_matched':

@@ -954,7 +954,8 @@ class TrialQuerySet(models.QuerySet):
             goodness_score=score_expr,
         )
 
-    def eligible_for_min_max_value(self, attr_min_name, attr_max_name, value, skip_blank=True, sane_range=None):
+    def eligible_for_min_max_value(self, attr_min_name, attr_max_name, value, skip_blank=True,
+                                   sane_range=None, equal_bounds_are_ceiling=False):
         if value is None:
             return self
         if skip_blank and value == 0:
@@ -972,11 +973,24 @@ class TrialQuerySet(models.QuerySet):
             low, high = sane_range
             return Q(**{f'{attr_name}__lt': low}) | Q(**{f'{attr_name}__gt': high})
 
+        # equal_bounds_are_ceiling=True (cb#4863): a pair holding the SAME number in
+        # both columns is a one-sided ceiling that extraction wrote twice, so the floor
+        # is vacuous rather than demanding an exact match. Structurally the same move as
+        # out_of_band above — one more way for the floor to not apply — and it must stay
+        # in step with min_max_match in the detailed matcher, or search and trial details
+        # disagree about the same trial. Passed for ULN pairs only; the absolute pairs
+        # split by analyte (a hemoglobin floor vs a bilirubin ceiling), so the rule
+        # cannot be applied to them wholesale. Ported from CB; default False = no-op.
+        def bounds_are_equal(min_name, max_name):
+            return Q(**{f'{min_name}__exact': F(max_name)})
+
         scope = self
         if attr_min_name is not None:
             cond = Q(**{f'{attr_min_name}__lte': value}) | Q(**{f'{attr_min_name}__isnull': True})
             if sane_range is not None:
                 cond |= out_of_band(attr_min_name)
+            if equal_bounds_are_ceiling and attr_max_name is not None:
+                cond |= bounds_are_equal(attr_min_name, attr_max_name)
             scope = scope.filter(cond)
         if attr_max_name is not None:
             cond = Q(**{f'{attr_max_name}__gte': value}) | Q(**{f'{attr_max_name}__isnull': True})
@@ -1750,7 +1764,11 @@ class TrialQuerySet(models.QuerySet):
                 if user_attr_value_uln:
                     uln_attr_min_name = trial_attr_meta["uln_attr_min"]
                     uln_attr_max_name = trial_attr_meta["uln_attr_max"]
-                    scope = scope.eligible_for_min_max_value(uln_attr_min_name, uln_attr_max_name, user_attr_value_uln)
+                    # The only call site that passes it (cb#4863) — see the note on
+                    # min_max_match. The absolute pair a few lines up deliberately does not.
+                    scope = scope.eligible_for_min_max_value(
+                        uln_attr_min_name, uln_attr_max_name, user_attr_value_uln,
+                        equal_bounds_are_ceiling=True)
 
             else:
                 raise Exception(f'type "{trial_attr_meta["type"]}" is not supported')
