@@ -15,13 +15,19 @@ paths, exactly like a blank.
 import pytest
 
 from trials.models import Trial
+from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
 from trials.services.matching import status_equivalence as se
 from trials.services.patient_info.patient_info import PatientInfo
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from tests.factories import TrialFactory
 
-OUT_OF_DOMAIN = ['0', 'Getting worse', 'slow', 'high risk', 'Active', ' active']
+# The first four are values seen in production. 'Active' / ' active' are the
+# near-misses the exact-membership rule deliberately rejects. The last two are
+# non-strings: inline `patient_info` JSON reaches the field untyped (the resolver
+# coerces only dates and numerics), so a list or an int is as plausible as a bad
+# string — and a list is unhashable, which a bare set lookup would blow up on.
+OUT_OF_DOMAIN = ['0', 'Getting worse', 'slow', 'high risk', 'Active', ' active', [], 0]
 
 
 def _mm_patient(progression):
@@ -58,10 +64,17 @@ def test_out_of_domain_progression_is_potential_not_rejected(value):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize('required_flags', [
+    {'disease_progression_active_required': True},
+    {'disease_progression_smoldering_required': True},
+    # The combination where the old code was accidentally self-consistent.
+    {'disease_progression_active_required': True,
+     'disease_progression_smoldering_required': True},
+])
 @pytest.mark.parametrize('value', OUT_OF_DOMAIN + ['', None])
-def test_no_sql_matcher_divergence_on_out_of_domain_progression(value):
+def test_no_sql_matcher_divergence_on_out_of_domain_progression(value, required_flags):
     """The #4832 contract: the two paths must agree, whatever the value."""
-    trial = TrialFactory(disease='multiple myeloma', disease_progression_active_required=True)
+    trial = TrialFactory(disease='multiple myeloma', **required_flags)
     base = Trial.objects.filter(id=trial.id)
 
     divs = se.compare(base, _mm_patient(value))
@@ -105,6 +118,18 @@ def test_matching_domain_value_still_eligible():
     verdict = UserToTrialAttrMatcher(trial, _mm_patient('active')).trial_match_status()
 
     assert verdict == 'eligible'
+
+
+@pytest.mark.django_db
+def test_domain_matches_the_options_the_ui_offers():
+    """Guard against drift: the domain is the UI's option list minus the empty
+    "Unknown". Add an option there and forget this, and every patient who picks
+    it silently becomes 'unanswered'."""
+    from trials.services.value_options import ValueOptions
+
+    offered = {code for code in ValueOptions().progressions if code != ''}
+
+    assert offered == USER_TO_TRIAL_ATTRS_MAPPING['progression']['value_domain']
 
 
 @pytest.mark.django_db

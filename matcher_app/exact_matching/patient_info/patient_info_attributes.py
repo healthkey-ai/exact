@@ -5,7 +5,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils.functional import cached_property
 
-from exact_matching.patient_info.configs import CLOSED_VALUE_DOMAINS, THERAPY_LINES_ATTRS_UNDERSCORED
+from exact_matching.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from exact_matching.patient_info.convertors.base_convertor import BaseConvertor
 from exact_matching.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
 from exact_matching.patient_info.convertors.serum_creatinine_convertor import SerumCreatinineConvertor
@@ -143,18 +143,23 @@ class PatientInfoAttributes:
             if is_under_user_control and user_attr_value is not True:
                 is_blank = True
 
-        # A value outside a closed domain is not an answer (#5026). Reading it
-        # as unanswered here — the primitive BOTH matching paths share — is what
-        # keeps them from disagreeing about it: the SQL filter already no-ops on
-        # an unrecognised value, the potential count now stops treating it as
-        # filled, and the matcher returns 'unknown' instead of 'not_matched'.
-        # Membership is exact on purpose: the downstream handlers compare the raw
-        # value (`ctx.value == 'active'`), so accepting 'Active' or ' active' here
-        # as an answer would just move the disagreement one step along — blank on
-        # this side, `not_matched` on the matcher's. Anything that is not the
-        # stored code is unanswered.
-        if not is_blank and attr_name in CLOSED_VALUE_DOMAINS:
-            if user_attr_value not in CLOSED_VALUE_DOMAINS[attr_name]:
+        # A value outside the attr's closed domain is not an answer (#5026), and
+        # reading it as unanswered here — in the primitive BOTH matching paths
+        # share — is what stops them disagreeing about it. Membership is exact on
+        # purpose: the handlers compare the raw value (`ctx.value == 'active'`),
+        # so accepting 'Active' or ' active' as an answer would only move the
+        # disagreement one step along. A non-string (inline JSON reaches this
+        # untyped) is likewise not an answer, and is tested before the set
+        # lookup so an unhashable value cannot raise.
+        #
+        # This says nothing about what the SQL FILTER does with the value —
+        # `eligible_for_progression` happens to no-op on one it does not
+        # recognise, while e.g. `eligible_for_prior_therapy` runs a min/max
+        # branch. An attr whose filter is not a no-op needs that checked before
+        # a domain is declared for it.
+        value_domain = trial_attr_meta.get("value_domain")
+        if not is_blank and value_domain is not None:
+            if not isinstance(user_attr_value, str) or user_attr_value not in value_domain:
                 is_blank = True
 
         return is_blank
