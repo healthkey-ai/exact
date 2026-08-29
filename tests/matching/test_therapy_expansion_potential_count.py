@@ -150,3 +150,45 @@ def test_trial_without_therapy_criteria_is_unaffected():
 
     assert UserToTrialAttrMatcher(trial, patient).trial_match_status() == 'eligible'
     assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_no_prior_therapy_keeps_the_answer_as_answered():
+    """A patient who says they have had no prior therapy is a definite answer,
+    not an unknown: `_match_therapy_things` skips its unknown branch when
+    `has_no_prior_therapy`, so the matcher returns a definite verdict and the
+    count must keep treating the attr as filled. The SQL filter agrees — it
+    keeps only trials that require no therapies at all — so both paths call such
+    a trial not_eligible."""
+    trial = TrialFactory(disease='multiple myeloma',
+                         therapy_components_required=['lenalidomide'])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(
+        disease='multiple myeloma', patient_age=65,
+        first_line_therapy=UNEXPANDABLE, prior_therapy='None',
+    )
+
+    assert UserToTrialAttrMatcher(trial, patient).trial_match_status() == 'not_eligible'
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_partial_expansion_still_counts_as_answered(monkeypatch):
+    """Boundary pin for healthkey-ai/exact#390.
+
+    The count only stops trusting the answer when BOTH legs are unknown. When one
+    leg resolves (possible under EXACT_OMOP_THERAPY, where components come from
+    the consumer while types are derived separately), the attr stays 'answered'
+    here — deliberately, because a known leg can still decide its own criterion,
+    and splitting the count per leg is part of the OMOP-path work in #390, not
+    this fix. If #390 changes that, this test should fail and be updated.
+    """
+    from exact_matching.data_port import DjangoMatcherData
+
+    monkeypatch.setattr(
+        DjangoMatcherData, 'derive_component_and_type_values',
+        lambda self, values, component_ids, patient_class_ids=None: (None, ['chemotherapy_(alkylating_agent)']),
+    )
+    service = PatientInfoAttributes(_patient(UNEXPANDABLE))
+
+    assert UserToTrialAttrsMapper._therapies_do_not_expand(service) is False

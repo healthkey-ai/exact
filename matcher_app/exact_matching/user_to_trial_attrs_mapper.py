@@ -190,7 +190,7 @@ class UserToTrialAttrsMapper:
         Both halves must be unknown: a patient whose components are unknown but
         whose types are known can still decide a type criterion, and that case is
         the OMOP-path question tracked in healthkey-ai/exact#390, not this one.
-        Called once per `potential_attrs_to_check`, not per trial.
+        Called at most once per `potential_attrs_to_check`, not per trial.
         """
         from exact_matching.data_port import DjangoMatcherData
         from exact_matching.therapy_match_profile import (
@@ -223,6 +223,12 @@ class UserToTrialAttrsMapper:
         if patient_info:
             service = PatientInfoAttributes(patient_info)
             has_no_prior_therapy = patient_info.prior_therapy == 'None'
+
+        # Derived at most once per call (None = not computed yet). Only
+        # `first_line_therapy` reaches the check today — the other therapy-line
+        # attrs are `skip_in_counts` — but the memo keeps that an optimisation
+        # rather than a correctness assumption.
+        therapies_do_not_expand = None
 
         mapping = USER_TO_TRIAL_ATTRS_MAPPING
         for user_attr in mapping.keys():
@@ -264,9 +270,11 @@ class UserToTrialAttrsMapper:
                 # from_lines` still runs on the raw values, so a value that does
                 # contradict a required regimen keeps excluding the trial.
                 if is_filled_by_user and user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
-                        and not has_no_prior_therapy \
-                        and self._therapies_do_not_expand(service):
-                    is_filled_by_user = False
+                        and not has_no_prior_therapy:
+                    if therapies_do_not_expand is None:
+                        therapies_do_not_expand = self._therapies_do_not_expand(service)
+                    if therapies_do_not_expand:
+                        is_filled_by_user = False
 
                 # Per-criterion "named OR" attrs (high-risk MCL): replicate the
                 # three-valued matcher per trial instead of the aggregate
