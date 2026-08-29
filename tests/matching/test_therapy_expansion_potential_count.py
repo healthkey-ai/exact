@@ -218,3 +218,44 @@ def test_partial_expansion_still_counts_as_answered(monkeypatch):
     service = PatientInfoAttributes(_patient(UNEXPANDABLE))
 
     assert UserToTrialAttrsMapper._therapies_do_not_expand(service) is False
+
+
+@pytest.mark.django_db
+def test_the_two_count_fragments_are_scoped_to_their_legs():
+    """The shape of the fix, stated directly: the potential fragment keys on the
+    component/type columns only, the match-score fragment additionally requires a
+    regimen column, so a regimen-only trial stays answered."""
+    attrs, eligible = UserToTrialAttrsMapper().potential_attrs_to_check(
+        _patient(UNEXPANDABLE), with_eligible=True)
+
+    potential_sql = attrs['first_line_therapy']
+    eligible_sql = eligible['first_line_therapy']
+
+    for column in ('therapy_components_required', 'therapy_components_excluded',
+                   'therapy_types_required', 'therapy_types_excluded'):
+        assert column in potential_sql
+    for column in ('therapies_required', 'therapies_excluded'):
+        assert column not in potential_sql
+        assert column in eligible_sql
+
+
+@pytest.mark.django_db
+@pytest.mark.xfail(strict=True, reason='healthkey-ai/exact#392 — a regimen with no '
+                                       'components resolves to ([], []), which the matcher '
+                                       'reads as a definite no and SQL as no constraint')
+def test_zero_component_regimen_does_not_diverge():
+    """The gap this fix deliberately does not cover, pinned so #392 has a test.
+
+    `derive_component_and_type_values` returns (None, None) only when NO regimen
+    resolves. A regimen that exists with no components gives ([], []) — known-empty,
+    not unknown — so `_therapies_do_not_expand` is False and the count is unchanged,
+    while the matcher rejects the component criterion outright.
+    """
+    therapy = TherapyFactory()  # no TherapyComponentConnection
+    component = TherapyComponentFactory()
+    trial = TrialFactory(disease='multiple myeloma',
+                         therapy_components_required=[component.code])
+    base = Trial.objects.filter(id=trial.id)
+    patient = _patient(therapy.code)
+
+    assert se.compare(base, patient) == []
