@@ -73,6 +73,21 @@ def test_no_sql_matcher_divergence_on_out_of_domain_progression(value):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize('required_flag', [
+    'disease_progression_active_required',
+    'disease_progression_smoldering_required',
+])
+def test_sql_path_reads_an_out_of_domain_value_as_potential(required_flag):
+    """State the SQL side directly, not only through the equivalence helper:
+    the trial survives the filter and the count marks the criterion unmet, i.e.
+    Potential — the same verdict the matcher now returns."""
+    trial = TrialFactory(disease='multiple myeloma', **{required_flag: True})
+    base = Trial.objects.filter(id=trial.id)
+
+    assert se.sql_status_map(base, _mm_patient('Getting worse')) == {trial.id: 'potential'}
+
+
+@pytest.mark.django_db
 def test_conflicting_domain_value_still_rejects():
     """Guard against over-firing: a VALID value that contradicts the trial is
     still a definite no. Only unrecognised values became unknown."""
