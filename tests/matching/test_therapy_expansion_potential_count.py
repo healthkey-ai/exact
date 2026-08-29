@@ -53,8 +53,13 @@ def expandable_therapy(db):
 
 @pytest.mark.django_db
 def test_unexpandable_therapy_is_not_counted_as_answered():
-    """The precondition: 'radiotherapy' is not a regimen code, so it expands to
-    nothing and the count must not treat it as an answer."""
+    """The precondition: a value that is not a regimen code expands to nothing,
+    so the count must not treat it as an answer.
+
+    The real-world instances are `radiotherapy`, `chemotherapy`,
+    `aromatase_inhibitor`, `surgery`, `ww` — absent from the CB catalog this was
+    measured on, but several of them DO exist in EXACT's seeded test vocab, hence
+    the synthetic code here."""
     assert Therapy.objects.filter(code=UNEXPANDABLE).exists() is False
 
     service = PatientInfoAttributes(_patient(UNEXPANDABLE))
@@ -98,11 +103,26 @@ def test_unexpandable_therapy_vs_component_criterion_is_potential(expandable_the
     'therapy_components_excluded',
     'therapy_types_required',
     'therapy_types_excluded',
+    # The regimen leg is decided on the RAW values, so the matcher stays definite
+    # about these two. They are here because counting the attr's whole six-column
+    # fragment as potential would demote them — a divergence in the opposite
+    # direction (452 such trials in a CB catalog, mostly exclusion-only).
+    'therapies_required',
+    'therapies_excluded',
 ])
 def test_no_sql_matcher_divergence_on_unexpandable_therapy(criterion, expandable_therapy):
     """The #4832 contract, across the criteria that made the matcher say unknown."""
     _therapy, component = expandable_therapy
-    value = component.code if 'components' in criterion else 'chemotherapy_(alkylating_agent)'
+    if 'components' in criterion:
+        value = component.code
+    elif 'types' in criterion:
+        value = 'chemotherapy_(alkylating_agent)'
+    else:
+        # A regimen the patient's unexpandable value cannot overlap. For
+        # `therapies_required` the SQL filter drops the trial and the matcher says
+        # not_eligible; for `therapies_excluded` both say eligible. Either way they
+        # must agree.
+        value = 'krd'
     trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
     base = Trial.objects.filter(id=trial.id)
 
@@ -157,18 +177,23 @@ def test_no_prior_therapy_keeps_the_answer_as_answered():
     """A patient who says they have had no prior therapy is a definite answer,
     not an unknown: `_match_therapy_things` skips its unknown branch when
     `has_no_prior_therapy`, so the matcher returns a definite verdict and the
-    count must keep treating the attr as filled. The SQL filter agrees — it
-    keeps only trials that require no therapies at all — so both paths call such
-    a trial not_eligible."""
+    count must keep treating the attr as filled."""
+    # An EXCLUDING trial, deliberately: the no-prior hard filter keeps only trials
+    # whose *_required lists are all empty, so a component-REQUIRED trial never
+    # reaches the count and the guard would go untested (it did — deleting the
+    # guard left every test green).
     trial = TrialFactory(disease='multiple myeloma',
-                         therapy_components_required=['lenalidomide'])
+                         therapy_components_excluded=['lenalidomide'],
+                         therapies_required=[], therapy_components_required=[],
+                         therapy_types_required=[])
     base = Trial.objects.filter(id=trial.id)
     patient = PatientInfo(
         disease='multiple myeloma', patient_age=65,
         first_line_therapy=UNEXPANDABLE, prior_therapy='None',
     )
 
-    assert UserToTrialAttrMatcher(trial, patient).trial_match_status() == 'not_eligible'
+    assert UserToTrialAttrMatcher(trial, patient).trial_match_status() == 'eligible'
+    assert se.sql_status_map(base, patient) == {trial.id: 'eligible'}
     assert se.compare(base, patient) == []
 
 
@@ -183,11 +208,12 @@ def test_partial_expansion_still_counts_as_answered(monkeypatch):
     and splitting the count per leg is part of the OMOP-path work in #390, not
     this fix. If #390 changes that, this test should fail and be updated.
     """
-    from exact_matching.data_port import DjangoMatcherData
+    import trials.services.omop.therapy_graph as therapy_graph
 
     monkeypatch.setattr(
-        DjangoMatcherData, 'derive_component_and_type_values',
-        lambda self, values, component_ids, patient_class_ids=None: (None, ['chemotherapy_(alkylating_agent)']),
+        therapy_graph, 'derive_component_and_type_values',
+        lambda values, component_ids=None, measure=False, patient_class_ids=None: (
+            None, ['chemotherapy_(alkylating_agent)']),
     )
     service = PatientInfoAttributes(_patient(UNEXPANDABLE))
 

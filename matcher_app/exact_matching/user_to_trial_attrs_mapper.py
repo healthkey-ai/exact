@@ -14,6 +14,16 @@ from exact_matching.patient_info.patient_info_attributes import PatientInfoAttri
 from exact_matching.utils import disease_attr_applies
 
 
+# The therapy criteria split by which matcher leg decides them. The regimen leg
+# reads the patient's raw values, so it stays decidable even when the graph
+# cannot expand them; the component and type legs do not (#5013).
+_REGIMEN_ATTRS = ('therapies_required', 'therapies_excluded')
+_COMPONENT_AND_TYPE_ATTRS = (
+    'therapy_types_required', 'therapy_types_excluded',
+    'therapy_components_required', 'therapy_components_excluded',
+)
+
+
 class UserToTrialAttrsMapper:
     def potential_attrs_for_trial(self, trial, counts):
         def item(trial_attribute_name, user_attribute_name, trial_obj, cnt):
@@ -182,20 +192,37 @@ class UserToTrialAttrsMapper:
         return gating, matched
 
     @staticmethod
+    def _all_lists_empty(columns):
+        """SQL for "every one of these jsonb list columns is empty".
+
+        NULL means "no list constraint", same as '[]' — see the #4832 note on the
+        generic list branch below.
+        """
+        return ' AND '.join(
+            f"({column} IS NULL OR {column} = '[]'::jsonb)" for column in columns
+        )
+
+    @staticmethod
     def _therapies_do_not_expand(service):
         """True when the patient's therapies yield neither components nor types.
 
         Mirrors the matcher's derivation (`_match_therapy_related_things`), so the
         count and the verdict agree on what an unexpandable therapy answer means.
+
+        "Cannot expand" is narrower than it sounds: `derive_component_and_type_values`
+        returns (None, None) only when NO regimen resolves. A regimen that exists but
+        has no components resolves to ([], []), which the matcher then reads as a
+        definite 'not_matched' while the SQL filter skips the component check —
+        a separate divergence, tracked in #392.
         Both halves must be unknown: a patient whose components are unknown but
         whose types are known can still decide a type criterion, and that case is
         the OMOP-path question tracked in healthkey-ai/exact#390, not this one.
         Called at most once per `potential_attrs_to_check`, not per trial.
         """
-        from exact_matching.data_port import DjangoMatcherData
         from exact_matching.therapy_match_profile import (
             omop_therapy_enabled, omop_therapy_types_enabled,
         )
+        from trials.services.omop.therapy_graph import derive_component_and_type_values
 
         therapies = service.get_user_therapies()
         if not therapies:
@@ -203,9 +230,12 @@ class UserToTrialAttrsMapper:
             return False
         component_ids = service.get_user_therapy_component_ids() if omop_therapy_enabled() else None
         class_ids = service.get_user_therapy_type_ids() if omop_therapy_types_enabled() else None
-        # Same port the matcher derives through, so a host that injects its own
-        # data access gets one answer, not two.
-        component_values, type_values = DjangoMatcherData().derive_component_and_type_values(
+        # Called the same way the search filter calls it (querysets/trial.py), not
+        # through the matcher's injectable data port: a host that injects its own
+        # port would answer the VERDICT from its derivation and this COUNT from
+        # EXACT's, which is the divergence this change exists to close. Plumbing a
+        # port in here is worth doing when a host actually injects one.
+        component_values, type_values = derive_component_and_type_values(
             therapies, component_ids, patient_class_ids=class_ids)
         return component_values is None and type_values is None
 
@@ -261,20 +291,38 @@ class UserToTrialAttrsMapper:
                 # answer the matcher can use (#5013). `_match_therapy_lines_attr`
                 # runs the patient's therapies through
                 # `derive_component_and_type_values`; when they resolve to no
-                # regimen the component and type legs both come back 'unknown', so
-                # every trial carrying a component or type criterion is Potential
-                # to the matcher — while this count, seeing a non-empty string,
-                # called the attr answered and left the trial Eligible. Count it as
-                # still-to-fill-in instead. The hard filter is untouched: the
-                # regimen-level overlap in `eligible_for_therapy_related_things_
-                # from_lines` still runs on the raw values, so a value that does
-                # contradict a required regimen keeps excluding the trial.
+                # regimen the component and type legs come back 'unknown', so a
+                # trial carrying a component or type criterion is Potential to the
+                # matcher — while this count, seeing a non-empty string, called the
+                # attr answered and left the trial Eligible.
+                #
+                # Scope matters: the matcher decides the REGIMEN leg on the raw
+                # values (`_match_therapy_things(values, therapies_required, ...)`
+                # runs before any derivation), so it is definite about a trial that
+                # gates only on regimens. Emitting the attr's whole six-column
+                # fragment as potential would demote those trials — 452 of them in
+                # a CB catalog, mostly exclusion-only — and simply move the
+                # divergence to the other direction. So: potential when the trial
+                # gates on a component/type column, answered when it gates only on
+                # a regimen column.
+                #
+                # The hard filter is untouched either way: the regimen overlap in
+                # `eligible_for_therapy_related_things_from_lines` still runs on the
+                # raw values, so a value that contradicts a required regimen keeps
+                # excluding the trial.
                 if is_filled_by_user and user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
                         and not has_no_prior_therapy:
                     if therapies_do_not_expand is None:
                         therapies_do_not_expand = self._therapies_do_not_expand(service)
                     if therapies_do_not_expand:
-                        is_filled_by_user = False
+                        unknown_legs_empty = self._all_lists_empty(_COMPONENT_AND_TYPE_ATTRS)
+                        regimen_legs_empty = self._all_lists_empty(_REGIMEN_ATTRS)
+                        attrs2check[user_attr] = (
+                            f'(CASE WHEN {unknown_legs_empty} THEN NULL ELSE 1 END)')
+                        eligible_attrs2check[user_attr] = (
+                            f'(CASE WHEN ({unknown_legs_empty}) AND NOT ({regimen_legs_empty}) '
+                            f'THEN 1 ELSE NULL END)')
+                        continue
 
                 # Per-criterion "named OR" attrs (high-risk MCL): replicate the
                 # three-valued matcher per trial instead of the aggregate
