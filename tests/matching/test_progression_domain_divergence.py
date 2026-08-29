@@ -141,3 +141,27 @@ def test_trial_without_a_progression_requirement_is_unaffected():
     verdict = UserToTrialAttrMatcher(trial, _mm_patient('Getting worse')).trial_match_status()
 
     assert verdict == 'eligible'
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('value', ['active', 'smoldering'])
+@pytest.mark.parametrize('required_flags', [
+    {},
+    {'disease_progression_active_required': True},
+    {'disease_progression_smoldering_required': True},
+    {'disease_progression_active_required': True,
+     'disease_progression_smoldering_required': True},
+])
+def test_no_divergence_across_the_whole_domain(value, required_flags):
+    """The equality contract for the values that ARE answers, across every
+    requirement combination — the half the regression tests do not touch, and the
+    half a future change to the domain rule could break silently."""
+    trial = TrialFactory(disease='multiple myeloma', **required_flags)
+    base = Trial.objects.filter(id=trial.id)
+
+    divs = se.compare(base, _mm_patient(value))
+
+    assert divs == [], (
+        f"progression={value!r} vs {required_flags} diverges: "
+        f"{[(d.direction, d.matcher_unknown_attrs, d.matcher_not_matched_attrs) for d in divs]}"
+    )
