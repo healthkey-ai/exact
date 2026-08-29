@@ -19,6 +19,31 @@ THERAPIES_ATTRS = ["therapiesRequired", "therapiesExcluded", "therapyTypesRequir
 THERAPIES_ATTRS_UNDERSCORED = ["therapies_required", "therapies_excluded", "therapy_types_required", "therapy_types_excluded", "therapy_components_required", "therapy_components_excluded"]
 TRIAL_GENETIC_MUTATIONS_ATTRS_UNDERSCORED = ["mutation_genes_required", "mutation_variants_required", "mutation_origins_required", "mutation_interpretations_required"]
 
+# Patient attrs whose value is a closed domain, and what that domain is.
+#
+# Nothing validates these fields on the way in (CB's `progression` is a bare
+# TextField behind a bare CharField serializer), so real records carry values
+# like '0' or 'Getting worse'. The two matching paths then read such a value
+# differently: `TrialQuerySet.eligible_for_progression` recognises only the
+# domain members and falls through to `return self`, so SQL keeps the trial and
+# — because the value is not empty — does not count the attr as still-to-fill-in
+# either; the matcher's `_match_progression` ends in `else: not_matched` and
+# hard-rejects every trial that requires the criterion. cancerbot#5026 measured
+# 2735 diverging (patient, trial) pairs from four patients, one of them losing
+# 43% of its corpus.
+#
+# An unrecognised value is not an answer, so `is_attr_blank` reads it as
+# unanswered — which both paths already agree means "unknown / potential".
+# Membership is exact (no case folding, no stripping): see is_attr_blank.
+#
+# Only `progression` is listed. `prior_therapy` is the same shape (the matcher
+# already blanks an unrecognised label in `_match_prior_therapy`), but its SQL
+# side runs a min/max branch rather than a no-op, so it needs its own analysis —
+# tracked separately, not folded in here.
+CLOSED_VALUE_DOMAINS = {
+    'progression': frozenset({'active', 'smoldering'}),
+}
+
 ATTR_MAPPING_TYPE_COMPUTED = "computed"
 
 # "priorSCT": "prior SCT",

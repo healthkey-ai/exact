@@ -5,7 +5,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils.functional import cached_property
 
-from exact_matching.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
+from exact_matching.patient_info.configs import CLOSED_VALUE_DOMAINS, THERAPY_LINES_ATTRS_UNDERSCORED
 from exact_matching.patient_info.convertors.base_convertor import BaseConvertor
 from exact_matching.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
 from exact_matching.patient_info.convertors.serum_creatinine_convertor import SerumCreatinineConvertor
@@ -141,6 +141,20 @@ class PatientInfoAttributes:
             if user_attr_type in ['float', models.fields.FloatField] and user_attr_value == 0:
                 is_blank = True
             if is_under_user_control and user_attr_value is not True:
+                is_blank = True
+
+        # A value outside a closed domain is not an answer (#5026). Reading it
+        # as unanswered here — the primitive BOTH matching paths share — is what
+        # keeps them from disagreeing about it: the SQL filter already no-ops on
+        # an unrecognised value, the potential count now stops treating it as
+        # filled, and the matcher returns 'unknown' instead of 'not_matched'.
+        # Membership is exact on purpose: the downstream handlers compare the raw
+        # value (`ctx.value == 'active'`), so accepting 'Active' or ' active' here
+        # as an answer would just move the disagreement one step along — blank on
+        # this side, `not_matched` on the matcher's. Anything that is not the
+        # stored code is unanswered.
+        if not is_blank and attr_name in CLOSED_VALUE_DOMAINS:
+            if user_attr_value not in CLOSED_VALUE_DOMAINS[attr_name]:
                 is_blank = True
 
         return is_blank
