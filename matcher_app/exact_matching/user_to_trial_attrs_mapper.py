@@ -5,7 +5,11 @@ from django.db import models
 from django.db.models import Q
 
 from exact_matching.attribute_names import AttributeNames
-from exact_matching.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING, TRIAL_ATTRS_JSON_AS_A_LIST
+from exact_matching.patient_info.configs import (
+    THERAPY_LINES_ATTRS_UNDERSCORED,
+    TRIAL_ATTRS_JSON_AS_A_LIST,
+    USER_TO_TRIAL_ATTRS_MAPPING,
+)
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 from exact_matching.utils import disease_attr_applies
 
@@ -177,6 +181,34 @@ class UserToTrialAttrsMapper:
         matched = f"({inclusion} AND {exclusion_clear})"
         return gating, matched
 
+    @staticmethod
+    def _therapies_do_not_expand(service):
+        """True when the patient's therapies yield neither components nor types.
+
+        Mirrors the matcher's derivation (`_match_therapy_related_things`), so the
+        count and the verdict agree on what an unexpandable therapy answer means.
+        Both halves must be unknown: a patient whose components are unknown but
+        whose types are known can still decide a type criterion, and that case is
+        the OMOP-path question tracked in healthkey-ai/exact#390, not this one.
+        Called once per `potential_attrs_to_check`, not per trial.
+        """
+        from exact_matching.data_port import DjangoMatcherData
+        from exact_matching.therapy_match_profile import (
+            omop_therapy_enabled, omop_therapy_types_enabled,
+        )
+
+        therapies = service.get_user_therapies()
+        if not therapies:
+            # No therapy values at all: `is_attr_blank` already answers this case.
+            return False
+        component_ids = service.get_user_therapy_component_ids() if omop_therapy_enabled() else None
+        class_ids = service.get_user_therapy_type_ids() if omop_therapy_types_enabled() else None
+        # Same port the matcher derives through, so a host that injects its own
+        # data access gets one answer, not two.
+        component_values, type_values = DjangoMatcherData().derive_component_and_type_values(
+            therapies, component_ids, patient_class_ids=class_ids)
+        return component_values is None and type_values is None
+
     def potential_attrs_to_check(self, patient_info, counts=None, with_eligible=False):
         attrs2check = {}
         eligible_attrs2check = {}
@@ -218,6 +250,23 @@ class UserToTrialAttrsMapper:
                 if not is_blank:
                     is_filled_by_user = True
                     # continue
+
+                # A therapy-line answer the therapy graph cannot expand is not an
+                # answer the matcher can use (#5013). `_match_therapy_lines_attr`
+                # runs the patient's therapies through
+                # `derive_component_and_type_values`; when they resolve to no
+                # regimen the component and type legs both come back 'unknown', so
+                # every trial carrying a component or type criterion is Potential
+                # to the matcher — while this count, seeing a non-empty string,
+                # called the attr answered and left the trial Eligible. Count it as
+                # still-to-fill-in instead. The hard filter is untouched: the
+                # regimen-level overlap in `eligible_for_therapy_related_things_
+                # from_lines` still runs on the raw values, so a value that does
+                # contradict a required regimen keeps excluding the trial.
+                if is_filled_by_user and user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
+                        and not has_no_prior_therapy \
+                        and self._therapies_do_not_expand(service):
+                    is_filled_by_user = False
 
                 # Per-criterion "named OR" attrs (high-risk MCL): replicate the
                 # three-valued matcher per trial instead of the aggregate
