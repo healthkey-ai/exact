@@ -279,6 +279,16 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "disease": "MM",
         "custom_search": True,
         "searchable": True,
+        # Closed domain (mirrors ValueOptions.progressions minus the empty
+        # "Unknown"). Nothing validates writes — CB's field is a bare TextField
+        # behind a bare CharField serializer, filled by a free-text chatbot
+        # question — so records hold '0' or 'Getting worse'. Without this,
+        # `eligible_for_progression` no-ops on such a value (SQL: Eligible) while
+        # `_match_progression` falls into `else: not_matched` (matcher: Not
+        # Eligible): 2735 diverging (patient,trial) pairs from four patients,
+        # cancerbot#5026. `is_attr_blank` reads an unrecognised value as
+        # unanswered so both paths say potential.
+        "value_domain": frozenset({'active', 'smoldering'}),
         "attr": ["disease_progression_active_required", "disease_progression_smoldering_required"],
     },
     "measurable_disease_imwg": {

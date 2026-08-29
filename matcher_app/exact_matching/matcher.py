@@ -695,8 +695,12 @@ class UserToTrialAttrMatcher:
         if trial_attr_active_required is not True and trial_attr_smoldering_required is not True:
             return 'matched'
 
-        # "Unknown" is sent from the UI as an empty string (see ValueOptions.progressions)
-        if ctx.value is None or ctx.value == '':
+        # "Unknown" is sent from the UI as an empty string (see
+        # ValueOptions.progressions). `is_blank` also covers a value outside the
+        # closed domain (#5026) — an unrecognised value is not an answer, and the
+        # SQL filter already treats it as one it cannot act on, so returning
+        # 'not_matched' for it manufactured false negatives.
+        if ctx.is_blank:
             return 'unknown'
 
         if ctx.value == 'active' and trial_attr_smoldering_required is not True:

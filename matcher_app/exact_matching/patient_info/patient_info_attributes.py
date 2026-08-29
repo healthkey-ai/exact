@@ -143,6 +143,25 @@ class PatientInfoAttributes:
             if is_under_user_control and user_attr_value is not True:
                 is_blank = True
 
+        # A value outside the attr's closed domain is not an answer (#5026), and
+        # reading it as unanswered here — in the primitive BOTH matching paths
+        # share — is what stops them disagreeing about it. Membership is exact on
+        # purpose: the handlers compare the raw value (`ctx.value == 'active'`),
+        # so accepting 'Active' or ' active' as an answer would only move the
+        # disagreement one step along. A non-string (inline JSON reaches this
+        # untyped) is likewise not an answer, and is tested before the set
+        # lookup so an unhashable value cannot raise.
+        #
+        # This says nothing about what the SQL FILTER does with the value —
+        # `eligible_for_progression` happens to no-op on one it does not
+        # recognise, while e.g. `eligible_for_prior_therapy` runs a min/max
+        # branch. An attr whose filter is not a no-op needs that checked before
+        # a domain is declared for it.
+        value_domain = trial_attr_meta.get("value_domain")
+        if not is_blank and value_domain is not None:
+            if not isinstance(user_attr_value, str) or user_attr_value not in value_domain:
+                is_blank = True
+
         return is_blank
 
     def get_value(self, attr_name):
