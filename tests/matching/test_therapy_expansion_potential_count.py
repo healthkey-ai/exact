@@ -281,3 +281,29 @@ def test_an_unexpandable_value_on_another_line_still_agrees(field, criterion, ex
     assert divs == [], (
         f"{field}={UNEXPANDABLE!r} vs {criterion} diverges: "
         f"{[(d.direction, d.matcher_unknown_attrs, d.sql_potential_attrs) for d in divs]}")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('source', ['later_therapies', 'supportive_therapies'])
+def test_an_unexpandable_value_in_a_list_source_still_agrees(source, expandable_therapy):
+    """`get_user_therapies()` folds the two JSON list sources into the same bag as
+    the scalar lines, so they have to reach the count the same way."""
+    trial = TrialFactory(disease='multiple myeloma', therapies_excluded=['krd'])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          **{source: [{'therapy': UNEXPANDABLE}]})
+
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_an_empty_therapy_bag_is_left_to_is_attr_blank():
+    """The control: with no therapies at all the special fragment must not fire —
+    that state is `is_attr_blank`'s, and both paths already agree on it."""
+    trial = TrialFactory(disease='multiple myeloma', therapies_excluded=['krd'])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65)
+
+    assert UserToTrialAttrsMapper._therapies_do_not_expand(
+        PatientInfoAttributes(patient)) is False
+    assert se.compare(base, patient) == []
