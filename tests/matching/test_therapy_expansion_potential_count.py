@@ -347,3 +347,84 @@ def test_a_required_regimen_the_bag_cannot_meet_still_excludes(source, expandabl
 
     assert se.sql_status_map(base, patient) == {trial.id: 'not_eligible'}
     assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_a_mixed_bag_counts_as_answered(expandable_therapy):
+    """One resolvable therapy is enough: `derive_component_and_type_values` returns
+    that regimen's components, so every leg is decidable and the matcher is
+    definite — the count must not treat the bag as unexpandable because one of the
+    values is junk."""
+    therapy, component = expandable_therapy
+    trial = TrialFactory(disease='multiple myeloma',
+                         therapy_components_required=[component.code])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          first_line_therapy=therapy.code,
+                          second_line_therapy=UNEXPANDABLE)
+
+    assert UserToTrialAttrsMapper._therapies_do_not_expand(
+        PatientInfoAttributes(patient)) is False
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('bag', ['empty', 'expandable', 'unexpandable'])
+@pytest.mark.parametrize('criterion', ['therapy_components_required', 'therapies_excluded'])
+def test_no_prior_therapy_agrees_for_every_bag(bag, criterion, expandable_therapy, request):
+    """`has_no_prior_therapy` bypasses the bag override entirely, so the pre-existing
+    route has to agree on its own for all three bag states.
+
+    It does not, for one of the six: a patient who says "no prior therapy" while
+    carrying a resolvable one is dropped by the coarse no-prior filter (which keeps
+    only trials requiring nothing) and called eligible by the matcher (which
+    evaluates the real overlap). Contradictory data — 4 such patients in the
+    production catalog — and pre-existing: neither #394 nor #395 touches that
+    route. Filed as #396, xfailed here so closing it flips this green.
+    """
+    if bag == 'expandable' and criterion == 'therapy_components_required':
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True, reason='#396 — no-prior filter drops it, matcher says eligible'))
+    therapy, component = expandable_therapy
+    value = component.code if 'components' in criterion else 'krd'
+    trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
+    base = Trial.objects.filter(id=trial.id)
+    therapies = {'empty': None, 'expandable': therapy.code, 'unexpandable': UNEXPANDABLE}[bag]
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          prior_therapy='None', first_line_therapy=therapies)
+
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_an_empty_bag_keeps_the_generic_fragment():
+    """Not just "the paths agree" — that the special pair did not fire at all, so
+    the empty case is still `is_attr_blank`'s."""
+    attrs = UserToTrialAttrsMapper().potential_attrs_to_check(
+        PatientInfo(disease='multiple myeloma', patient_age=65))
+
+    fragment = attrs['first_line_therapy']
+
+    for column in ('therapies_required', 'therapies_excluded',
+                   'therapy_components_required', 'therapy_types_excluded'):
+        assert column in fragment, 'the generic six-column fragment, not the scoped pair'
+
+
+@pytest.mark.django_db
+def test_the_attr_is_counted_once_though_it_sits_in_both_dicts(expandable_therapy):
+    """`match_score`'s denominator is `num_nonnulls(potential + filled)`, and this
+    attr now appears in both. The two fragments are mutually exclusive by
+    construction, so it must contribute exactly one — a trial gating on a
+    component AND a regimen column counts 1, not 2."""
+    _therapy, component = expandable_therapy
+    trial = TrialFactory(disease='multiple myeloma',
+                         therapy_components_required=[component.code],
+                         therapies_excluded=['krd'])
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          first_line_therapy=UNEXPANDABLE)
+
+    annotated = (Trial.objects.filter(id=trial.id)
+                 .with_potential_attrs_count(patient).first())
+
+    assert annotated.potential_attrs_count == 1
+    assert 0 <= annotated.match_score <= 100
