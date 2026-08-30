@@ -307,3 +307,43 @@ def test_an_empty_therapy_bag_is_left_to_is_attr_blank():
     assert UserToTrialAttrsMapper._therapies_do_not_expand(
         PatientInfoAttributes(patient)) is False
     assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('source', ['second_line_therapy', 'later_therapy', 'supportive_therapies'])
+@pytest.mark.parametrize('criterion', ['therapies_excluded', 'therapy_components_required'])
+def test_an_expandable_value_on_another_line_is_answered(source, criterion, expandable_therapy):
+    """The mirror of the unexpandable case, and the other half of the same
+    principle: when the bag DOES expand, the matcher decides every leg from it and
+    is definite — so reading `first_line_therapy` as unanswered just because that
+    one column is empty demotes a trial the matcher already called eligible."""
+    therapy, component = expandable_therapy
+    value = component.code if 'components' in criterion else 'krd'
+    trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
+    base = Trial.objects.filter(id=trial.id)
+    payload = ({'therapy': therapy.code} if source == 'supportive_therapies' else therapy.code)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          **{source: [payload] if source == 'supportive_therapies' else payload})
+
+    divs = se.compare(base, patient)
+
+    assert divs == [], (
+        f"{source}={therapy.code!r} vs {criterion} diverges: "
+        f"{[(d.direction, d.matcher_unknown_attrs, d.sql_potential_attrs) for d in divs]}")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('source', ['second_line_therapy', 'later_therapies', 'supportive_therapies'])
+def test_a_required_regimen_the_bag_cannot_meet_still_excludes(source, expandable_therapy):
+    """The not-eligible leg for the newly-counted population: the hard filter is
+    reached through the post-loop fire, not the therapy-line dispatch, so it needs
+    its own pin."""
+    trial = TrialFactory(disease='multiple myeloma', therapies_required=['krd'])
+    base = Trial.objects.filter(id=trial.id)
+    payload = ({'therapy': UNEXPANDABLE} if source in ('later_therapies', 'supportive_therapies')
+               else UNEXPANDABLE)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          **{source: [payload] if source != 'second_line_therapy' else payload})
+
+    assert se.sql_status_map(base, patient) == {trial.id: 'not_eligible'}
+    assert se.compare(base, patient) == []
