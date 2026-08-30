@@ -1215,11 +1215,18 @@ class TrialQuerySet(models.QuerySet):
 
     def eligible_for_therapy_related_things_from_lines(self, therapy_codes: list[str], has_no_prior_therapy=False, patient_component_ids: list[str] | None = None, patient_class_ids: list[str] | None = None) -> models.QuerySet:
         if has_no_prior_therapy:
-            return self.filter(**{
-                f'{THERAPY_MATCH_PROFILE.therapies_required}__exact': [],
-                f'{THERAPY_MATCH_PROFILE.therapy_components_required}__exact': [],
-                f'{THERAPY_MATCH_PROFILE.therapy_types_required}__exact': [],
-            })
+            # Same NULL reading as the sibling filter below and as the count and
+            # the matcher (#383 / cb#4832): `__exact: []` alone misses a NULL
+            # column, so a treatment-naive patient lost every trial whose
+            # `*_required` is NULL while the matcher called them eligible.
+            def no_requirement(column):
+                return Q(**{f'{column}__exact': []}) | Q(**{f'{column}__isnull': True})
+
+            return self.filter(
+                no_requirement(THERAPY_MATCH_PROFILE.therapies_required)
+                & no_requirement(THERAPY_MATCH_PROFILE.therapy_components_required)
+                & no_requirement(THERAPY_MATCH_PROFILE.therapy_types_required)
+            )
 
         # The regimen (from-lines) filter needs therapy_codes, but OMOP component-only
         # patients (#224) have none while still carrying consumer-supplied components /
