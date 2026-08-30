@@ -1198,8 +1198,17 @@ class TrialQuerySet(models.QuerySet):
 
         values = [str(x).strip() for x in values]
 
+        # `__isnull` alongside `__exact: []`: a NULL jsonb column is "no list
+        # constraint". #383 (cb#4832) gave the count and the matcher that reading —
+        # `potential_attrs_to_check` tests `IS NULL OR = '[]'` and
+        # `_match_therapy_things` coalesces — but left the hard filter behind, so a
+        # NULL `*_required` column dropped the trial from the list while the matcher
+        # called the same patient eligible. Verified with the comparator before
+        # fixing: sql=not_eligible, matcher=eligible.
         return self.filter(
-            Q(**{f'{required_attr_name}__has_any_keys': values}) | Q(**{f'{required_attr_name}__exact': []})
+            Q(**{f'{required_attr_name}__has_any_keys': values})
+            | Q(**{f'{required_attr_name}__exact': []})
+            | Q(**{f'{required_attr_name}__isnull': True})
         ).exclude(
             Q(**{f'{excluded_attr_name}__has_any_keys': values})
         )
