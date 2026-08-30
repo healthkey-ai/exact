@@ -1,10 +1,10 @@
 # Core
-Django==5.2.7
+Django==5.2.17
 djangorestframework==3.16.1
 djangorestframework-camel-case==1.4.2
 drf-yasg==1.21.14
 django-cors-headers==4.9.0
-python-dotenv==1.2.1
+python-dotenv==1.2.3
 gunicorn==23.0.0
 whitenoise==6.11.0
 
@@ -33,7 +33,7 @@ firebase-admin==7.4.0
 django-countries==8.2.0
 glom==24.11.0
 inflection==0.5.1
-requests==2.32.5
+requests==2.33.1
 
 # Testing
 pytest==8.4.2
