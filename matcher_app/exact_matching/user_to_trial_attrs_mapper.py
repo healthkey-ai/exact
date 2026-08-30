@@ -310,10 +310,23 @@ class UserToTrialAttrsMapper:
                 # `eligible_for_therapy_related_things_from_lines` still runs on the
                 # raw values, so a value that contradicts a required regimen keeps
                 # excluding the trial.
-                if is_filled_by_user and user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
-                        and not has_no_prior_therapy:
+                # The matcher answers `first_line_therapy` from
+                # `get_user_therapies()` — the bag that folds in the other therapy
+                # lines and the supportive rows — while `is_attr_blank` looks only
+                # at the field. So the count has to ask the bag, not the field:
+                # a value in `second_line_therapy` drives the verdict either way,
+                # and reading `first_line_therapy` as unanswered because that one
+                # column is empty demoted trials the matcher had already decided.
+                #
+                # An empty bag is left alone: that is the state `is_attr_blank`
+                # owns, and both paths agree on it.
+                if user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
+                        and not has_no_prior_therapy and service.get_user_therapies():
                     if therapies_do_not_expand is None:
                         therapies_do_not_expand = self._therapies_do_not_expand(service)
+                    # The bag expands: the matcher decides every leg from it, so
+                    # the attr is answered however empty the field itself is.
+                    is_filled_by_user = not therapies_do_not_expand
                     if therapies_do_not_expand:
                         unknown_legs_empty = self._all_lists_empty(_COMPONENT_AND_TYPE_ATTRS)
                         regimen_legs_empty = self._all_lists_empty(_REGIMEN_ATTRS)

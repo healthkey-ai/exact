@@ -259,3 +259,172 @@ def test_zero_component_regimen_does_not_diverge():
     patient = _patient(therapy.code)
 
     assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('field', ['second_line_therapy', 'later_therapy'])
+@pytest.mark.parametrize('criterion', ['therapies_excluded', 'therapy_components_required'])
+def test_an_unexpandable_value_on_another_line_still_agrees(field, criterion, expandable_therapy):
+    """The matcher answers `first_line_therapy` from `get_user_therapies()`, which
+    folds in the other lines and the supportive rows — so an unexpandable value in
+    `second_line_therapy` drives the verdict while leaving `first_line_therapy`
+    blank. Gating the count on that field being filled left the old
+    all-six-columns fragment in place and demoted regimen-only trials."""
+    _therapy, component = expandable_therapy
+    value = component.code if 'components' in criterion else 'krd'
+    trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65, **{field: UNEXPANDABLE})
+
+    divs = se.compare(base, patient)
+
+    assert divs == [], (
+        f"{field}={UNEXPANDABLE!r} vs {criterion} diverges: "
+        f"{[(d.direction, d.matcher_unknown_attrs, d.sql_potential_attrs) for d in divs]}")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('source', ['later_therapies', 'supportive_therapies'])
+def test_an_unexpandable_value_in_a_list_source_still_agrees(source, expandable_therapy):
+    """`get_user_therapies()` folds the two JSON list sources into the same bag as
+    the scalar lines, so they have to reach the count the same way."""
+    trial = TrialFactory(disease='multiple myeloma', therapies_excluded=['krd'])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          **{source: [{'therapy': UNEXPANDABLE}]})
+
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_an_empty_therapy_bag_is_left_to_is_attr_blank():
+    """The control: with no therapies at all the special fragment must not fire —
+    that state is `is_attr_blank`'s, and both paths already agree on it."""
+    trial = TrialFactory(disease='multiple myeloma', therapies_excluded=['krd'])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65)
+
+    assert UserToTrialAttrsMapper._therapies_do_not_expand(
+        PatientInfoAttributes(patient)) is False
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('source', ['second_line_therapy', 'later_therapy', 'supportive_therapies'])
+@pytest.mark.parametrize('criterion', ['therapies_excluded', 'therapy_components_required'])
+def test_an_expandable_value_on_another_line_is_answered(source, criterion, expandable_therapy):
+    """The mirror of the unexpandable case, and the other half of the same
+    principle: when the bag DOES expand, the matcher decides every leg from it and
+    is definite — so reading `first_line_therapy` as unanswered just because that
+    one column is empty demotes a trial the matcher already called eligible."""
+    therapy, component = expandable_therapy
+    value = component.code if 'components' in criterion else 'krd'
+    trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
+    base = Trial.objects.filter(id=trial.id)
+    payload = ({'therapy': therapy.code} if source == 'supportive_therapies' else therapy.code)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          **{source: [payload] if source == 'supportive_therapies' else payload})
+
+    divs = se.compare(base, patient)
+
+    assert divs == [], (
+        f"{source}={therapy.code!r} vs {criterion} diverges: "
+        f"{[(d.direction, d.matcher_unknown_attrs, d.sql_potential_attrs) for d in divs]}")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('source', ['second_line_therapy', 'later_therapies', 'supportive_therapies'])
+def test_a_required_regimen_the_bag_cannot_meet_still_excludes(source, expandable_therapy):
+    """The not-eligible leg for the newly-counted population: the hard filter is
+    reached through the post-loop fire, not the therapy-line dispatch, so it needs
+    its own pin."""
+    trial = TrialFactory(disease='multiple myeloma', therapies_required=['krd'])
+    base = Trial.objects.filter(id=trial.id)
+    payload = ({'therapy': UNEXPANDABLE} if source in ('later_therapies', 'supportive_therapies')
+               else UNEXPANDABLE)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          **{source: [payload] if source != 'second_line_therapy' else payload})
+
+    assert se.sql_status_map(base, patient) == {trial.id: 'not_eligible'}
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_a_mixed_bag_counts_as_answered(expandable_therapy):
+    """One resolvable therapy is enough: `derive_component_and_type_values` returns
+    that regimen's components, so every leg is decidable and the matcher is
+    definite — the count must not treat the bag as unexpandable because one of the
+    values is junk."""
+    therapy, component = expandable_therapy
+    trial = TrialFactory(disease='multiple myeloma',
+                         therapy_components_required=[component.code])
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          first_line_therapy=therapy.code,
+                          second_line_therapy=UNEXPANDABLE)
+
+    assert UserToTrialAttrsMapper._therapies_do_not_expand(
+        PatientInfoAttributes(patient)) is False
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('bag', ['empty', 'expandable', 'unexpandable'])
+@pytest.mark.parametrize('criterion', ['therapy_components_required', 'therapies_excluded'])
+def test_no_prior_therapy_agrees_for_every_bag(bag, criterion, expandable_therapy, request):
+    """`has_no_prior_therapy` bypasses the bag override entirely, so the pre-existing
+    route has to agree on its own for all three bag states.
+
+    It does not, for one of the six: a patient who says "no prior therapy" while
+    carrying a resolvable one is dropped by the coarse no-prior filter (which keeps
+    only trials requiring nothing) and called eligible by the matcher (which
+    evaluates the real overlap). Contradictory data — 4 such patients in the
+    production catalog — and pre-existing: neither #394 nor #395 touches that
+    route. Filed as #396, xfailed here so closing it flips this green.
+    """
+    if bag == 'expandable' and criterion == 'therapy_components_required':
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True, reason='#396 — no-prior filter drops it, matcher says eligible'))
+    therapy, component = expandable_therapy
+    value = component.code if 'components' in criterion else 'krd'
+    trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
+    base = Trial.objects.filter(id=trial.id)
+    therapies = {'empty': None, 'expandable': therapy.code, 'unexpandable': UNEXPANDABLE}[bag]
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          prior_therapy='None', first_line_therapy=therapies)
+
+    assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+def test_an_empty_bag_keeps_the_generic_fragment():
+    """Not just "the paths agree" — that the special pair did not fire at all, so
+    the empty case is still `is_attr_blank`'s."""
+    attrs = UserToTrialAttrsMapper().potential_attrs_to_check(
+        PatientInfo(disease='multiple myeloma', patient_age=65))
+
+    fragment = attrs['first_line_therapy']
+
+    for column in ('therapies_required', 'therapies_excluded',
+                   'therapy_components_required', 'therapy_types_excluded'):
+        assert column in fragment, 'the generic six-column fragment, not the scoped pair'
+
+
+@pytest.mark.django_db
+def test_the_attr_is_counted_once_though_it_sits_in_both_dicts(expandable_therapy):
+    """`match_score`'s denominator is `num_nonnulls(potential + filled)`, and this
+    attr now appears in both. The two fragments are mutually exclusive by
+    construction, so it must contribute exactly one — a trial gating on a
+    component AND a regimen column counts 1, not 2."""
+    _therapy, component = expandable_therapy
+    trial = TrialFactory(disease='multiple myeloma',
+                         therapy_components_required=[component.code],
+                         therapies_excluded=['krd'])
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65,
+                          first_line_therapy=UNEXPANDABLE)
+
+    annotated = (Trial.objects.filter(id=trial.id)
+                 .with_potential_attrs_count(patient).first())
+
+    assert annotated.potential_attrs_count == 1
+    assert 0 <= annotated.match_score <= 100
