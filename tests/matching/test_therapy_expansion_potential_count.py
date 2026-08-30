@@ -259,3 +259,25 @@ def test_zero_component_regimen_does_not_diverge():
     patient = _patient(therapy.code)
 
     assert se.compare(base, patient) == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('field', ['second_line_therapy', 'later_therapy'])
+@pytest.mark.parametrize('criterion', ['therapies_excluded', 'therapy_components_required'])
+def test_an_unexpandable_value_on_another_line_still_agrees(field, criterion, expandable_therapy):
+    """The matcher answers `first_line_therapy` from `get_user_therapies()`, which
+    folds in the other lines and the supportive rows — so an unexpandable value in
+    `second_line_therapy` drives the verdict while leaving `first_line_therapy`
+    blank. Gating the count on that field being filled left the old
+    all-six-columns fragment in place and demoted regimen-only trials."""
+    _therapy, component = expandable_therapy
+    value = component.code if 'components' in criterion else 'krd'
+    trial = TrialFactory(disease='multiple myeloma', **{criterion: [value]})
+    base = Trial.objects.filter(id=trial.id)
+    patient = PatientInfo(disease='multiple myeloma', patient_age=65, **{field: UNEXPANDABLE})
+
+    divs = se.compare(base, patient)
+
+    assert divs == [], (
+        f"{field}={UNEXPANDABLE!r} vs {criterion} diverges: "
+        f"{[(d.direction, d.matcher_unknown_attrs, d.sql_potential_attrs) for d in divs]}")

@@ -310,7 +310,15 @@ class UserToTrialAttrsMapper:
                 # `eligible_for_therapy_related_things_from_lines` still runs on the
                 # raw values, so a value that contradicts a required regimen keeps
                 # excluding the trial.
-                if is_filled_by_user and user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
+                # Not gated on `is_filled_by_user`: the matcher answers
+                # `first_line_therapy` from `get_user_therapies()`, which folds in
+                # the other therapy lines and the supportive rows, so an
+                # unexpandable value in `second_line_therapy` leaves this field
+                # blank while still driving the verdict. Deciding from the same bag
+                # is what keeps the two paths together —
+                # `_therapies_do_not_expand` returns False for an empty bag, the
+                # case `is_attr_blank` already owns.
+                if user_attr in THERAPY_LINES_ATTRS_UNDERSCORED \
                         and not has_no_prior_therapy:
                     if therapies_do_not_expand is None:
                         therapies_do_not_expand = self._therapies_do_not_expand(service)
