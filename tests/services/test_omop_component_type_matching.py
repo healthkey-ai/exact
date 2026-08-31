@@ -1,20 +1,24 @@
-"""OMOP component + type matching under Phase P (#234).
+"""OMOP component matching under Phase P (#234).
 
 Under EXACT_OMOP_THERAPY:
 - regimen matches on OMOP concept_ids (omop_therapies_* columns);
 - component match-values are the consumer-supplied PRE-EXPANDED concept_ids
   (PatientInfo.therapy_component_ids), NOT reverse-mapped from the regimen via the
-  local CB graph;
-- type/category is NOT OMOP-mapped — resolved from the patient's component concept_ids
-  via the flat ComponentCategoryOmopLookup (CB category codes), matched against the
-  LEGACY therapy_types_* columns.
+  local CB graph.
+
+Drug-class TYPE matching is now folded into the base flag (#285) and matches the
+patient's pre-expanded class concept_ids against omop_therapy_types_* — covered by
+tests/services/test_omop_therapy_types_matching.py. The old mode-2 type path
+(component concept_ids -> ComponentCategoryOmopLookup CB category codes -> legacy
+therapy_types_* columns) is retired under OMOP; the type tests that exercised it were
+removed. Legacy (flag OFF) type matching via the CB M2M graph is unchanged.
 """
 import pytest
 from django.test import override_settings
 
 from trials.models import (
     Therapy, TherapyComponent, TherapyComponentCategory,
-    TherapyComponentConnection, TherapyComponentCategoryConnection, OmopConcept,
+    TherapyComponentConnection, TherapyComponentCategoryConnection,
 )
 from trials.services.omop.therapy_graph import derive_component_and_type_values
 from trials.services.omop.component_category_lookup import sync_component_category_lookup
@@ -36,10 +40,9 @@ def _graph():
     TherapyComponentConnection.objects.create(therapy=vrd, component=bort)
     TherapyComponentConnection.objects.create(therapy=vrd, component=lena)
     TherapyComponentCategoryConnection.objects.create(category=pi_cat, component=bort)
-    # Type resolution reads the flat ComponentCategoryOmopLookup (ADR 0001-A / #4502).
-    # Production has no live post_save sync — the loader/rebuild command populates it —
-    # so the test must sync after wiring the graph, or type_values come back empty.
-    sync_component_category_lookup()
+    # (pi_cat + the M2M connection are used only by the legacy — flag OFF — type path,
+    # which reads the CB M2M graph directly. The flat ComponentCategoryOmopLookup is no
+    # longer consulted for types under OMOP, #285.)
     return vrd, bort, lena, pi_cat
 
 
@@ -59,7 +62,8 @@ def test_derive_uses_consumer_supplied_component_ids_when_flag_on():
     # Phase P: components come from the pre-expanded ids, not the regimen.
     comps, types = derive_component_and_type_values([str(VRD_CID)], [str(BORT_CID), str(LEN_CID)])
     assert sorted(comps) == [str(BORT_CID), str(LEN_CID)]    # consumer-supplied concept_ids
-    assert types == ['zz_proteasome_inh']                    # types stay CB codes (flat lookup)
+    # types folded into the base flag (#285): with no class ids supplied -> unknown (None).
+    assert types is None
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
@@ -72,7 +76,8 @@ def test_derive_none_component_ids_is_unknown():
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_derive_empty_component_ids_is_known_empty():
     _graph()
-    assert derive_component_and_type_values([str(VRD_CID)], []) == ([], [])
+    # components known-empty; types unknown (no class ids supplied -> None, #285)
+    assert derive_component_and_type_values([str(VRD_CID)], []) == ([], None)
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
@@ -104,25 +109,9 @@ def test_component_excluded_blocks_via_concept_id():
     assert res == 'not_matched'
 
 
-# ── matcher: type level via the flat category lookup (legacy column) ──
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_type_required_matches_via_component_category_lookup():
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT_CID])
-    # type column stays LEGACY (CB code) even under OMOP
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
-    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
-    assert res == 'matched'
-
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_type_excluded_blocks_via_component_category_lookup():
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[BORT_CID])
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=['zz_proteasome_inh'])
-    res = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([str(VRD_CID)], False)
-    assert res == 'not_matched'
+# (Mode-2 type matching via the component→category lookup is retired under OMOP, #285.
+# Mode-3 type matching — patient class ids overlapped against omop_therapy_types_* — is
+# covered by tests/services/test_omop_therapy_types_matching.py.)
 
 
 # ── detail display (therapy_related_things_match_status) under OMOP ───
@@ -145,26 +134,6 @@ def test_display_component_excluded_status_via_concept_id():
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_components_excluded=[str(BORT_CID)])
     out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
     assert out['therapyComponentsExcluded']['status'] == 'not_matched'
-
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_type_required_status_via_lookup():
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID),
-                     prior_therapy='One line', therapy_component_ids=[BORT_CID])
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=['zz_proteasome_inh'])
-    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
-    assert out['therapyTypesRequired']['status'] == 'matched'
-
-
-@override_settings(EXACT_OMOP_THERAPY=True)
-def test_display_type_excluded_status_via_lookup():
-    _graph()
-    pi = PatientInfo(disease='multiple myeloma', first_line_therapy=str(VRD_CID),
-                     prior_therapy='One line', therapy_component_ids=[BORT_CID])
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=['zz_proteasome_inh'])
-    out = UserToTrialAttrMatcher(trial, pi).therapy_related_things_match_status()
-    assert out['therapyTypesExcluded']['status'] == 'not_matched'
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)
@@ -222,8 +191,6 @@ def test_display_includes_omop_concepts_code_and_title():
     assert out['therapyComponentsRequired']['omopConcepts'] == [
         {'code': BORT_CID, 'title': 'bortezomib', 'vocab': 'RxNorm'}
     ]
-    # types are CB-coded (not OMOP) → no omopConcepts on the type criterion
-    assert 'omopConcepts' not in out['therapyTypesRequired']
 
 
 @override_settings(EXACT_OMOP_THERAPY=True)

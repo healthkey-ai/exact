@@ -20,17 +20,19 @@ trial columns are read; both sides must speak the same vocabulary, which is the
 consumer's responsibility. This profile deliberately does NOT change dispatch
 order / matching semantics (kept behavior-identical).
 
-Regimen, drug-component, and supportive flip to OMOP concept_ids under the OMOP
-profile. The columns that stay on the legacy (internal-code) columns:
-- ``therapy_types_*`` (drug class / component-category): types are deliberately
-  NOT OMOP-mapped (HemOnc's class structure is poor) — EXACT keeps CB's own
-  category vocabulary and matches types through the CB graph
-  ``categories ↔ components ↔ therapies`` (the matcher reverse-maps the patient's
-  component concept_ids back to internal components, then to CB categories, and
-  overlaps those against the legacy ``therapy_types_*`` columns). See #197.
-- ``planned_*``: stays legacy — ``PlannedTherapy`` has no ``omop_concept_id`` and
-  76/85 planned codes are drug-classes/modalities, so ``omop_planned_therapies_*``
-  is empty and flipping would silently drop the constraint (#230 decision pending).
+Regimen, drug-component, drug-class TYPES, and supportive all flip to OMOP concept_ids
+under the OMOP profile — they are one unified projection and flip together with
+``EXACT_OMOP_THERAPY``; there is no separate types toggle (#285 folded types into the
+base flag). ``therapy_types_*`` now reads ``omop_therapy_types_*`` (drug-class concept_id
+overlap): reverses the earlier "types stay legacy / not OMOP-mapped" stance (decision A /
+#4502 / #197) now that the patient carries pre-expanded class concept_ids (promop#370). A
+non-mappable subset of umbrella/modality type criteria is handled per-criterion inside the
+type path (hybrid), independent of this flag.
+
+The only column that stays legacy:
+- ``planned_*``: ``PlannedTherapy`` has no ``omop_concept_id`` and 76/85 planned codes are
+  drug-classes/modalities, so ``omop_planned_therapies_*`` is empty and flipping would
+  silently drop the constraint (#230 decision pending).
 
 ``supportive_*`` flips to ``omop_supportive_therapies_*`` under the OMOP profile
 (#228): the dedicated supportive matching (#4449 — the matcher's
@@ -44,7 +46,7 @@ the trial-side flip is a safe no-op. When promop#230 lands, matching works
 end-to-end with no EXACT change; the #221 gate validates coverage before the prod
 flip. See #231.
 """
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from django.conf import settings
 
@@ -70,15 +72,20 @@ class TherapyMatchProfile:
 # Legacy (internal-code) columns — the default.
 LEGACY_THERAPY_MATCH_PROFILE = TherapyMatchProfile()
 
-# OMOP cutover profile: regimen + component + supportive read the omop_* concept_id
-# columns. therapy_types_* and planned_* intentionally stay legacy (see module
-# docstring): types are matched via the CB category graph, not OMOP concept_ids;
-# planned has no concept_ids yet (#230).
+# OMOP cutover profile: regimen + component + supportive + drug-class TYPES read the
+# omop_* concept_id columns. Only planned_* stays legacy (no concept_ids yet, #230).
+# Types are FOLDED into this one OMOP profile (promop ADR 0002, #285) — therapies,
+# components and types are one unified projection, so they flip together with the base
+# EXACT_OMOP_THERAPY flag; there is no separate types toggle. (This reverses "types stay
+# legacy" / decision A / #4502, now that the patient carries pre-expanded class
+# concept_ids, promop#370.)
 OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
     therapies_required='omop_therapies_required',
     therapies_excluded='omop_therapies_excluded',
     therapy_components_required='omop_therapy_components_required',
     therapy_components_excluded='omop_therapy_components_excluded',
+    therapy_types_required='omop_therapy_types_required',
+    therapy_types_excluded='omop_therapy_types_excluded',
     # Supportive flips too (#228): the dedicated supportive path (#4449 — the
     # _match_supportive_therapies matcher handler + eligible_for_supportive_therapies
     # queryset) reads the trial supportive columns via THIS profile, and the backfill
@@ -88,17 +95,6 @@ OMOP_THERAPY_MATCH_PROFILE = TherapyMatchProfile(
     # [] -> would silently drop the constraint) before the flag is flipped on prod.
     supportive_therapies_required='omop_supportive_therapies_required',
     supportive_therapies_excluded='omop_supportive_therapies_excluded',
-)
-
-# OMOP + drug-class TYPES profile (promop ADR 0002, #285): additionally flips
-# therapy_types_* to the omop_therapy_types_* class-concept_id columns. Only
-# active when BOTH EXACT_OMOP_THERAPY and EXACT_OMOP_THERAPY_TYPES are on — types
-# ride on top of the OMOP profile. Reverses "types stay legacy" (decision A/#4502)
-# now that the patient carries pre-expanded class concept_ids (promop#370).
-OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE = replace(
-    OMOP_THERAPY_MATCH_PROFILE,
-    therapy_types_required='omop_therapy_types_required',
-    therapy_types_excluded='omop_therapy_types_excluded',
 )
 
 
@@ -113,24 +109,21 @@ def omop_therapy_enabled() -> bool:
 
 
 def omop_therapy_types_enabled() -> bool:
-    """Whether trial drug-class TYPE matching reads the OMOP class-concept_id
-    columns (``omop_therapy_types_*``) instead of legacy CB category codes.
+    """Whether the OMOP drug-class TYPE match-path is engaged.
 
-    Off by default; gated by ``EXACT_OMOP_THERAPY_TYPES`` (promop ADR 0002, #285).
-    Requires ``EXACT_OMOP_THERAPY`` too — types ride on the OMOP profile, and the
-    patient's class concept_ids only flow in OMOP mode. Returns False (legacy types)
-    whenever OMOP therapy is off, so the flag alone can never divert the queryset /
-    matcher onto the OMOP-types path while the profile still names legacy columns.
+    Types are folded into the base OMOP profile (#285) — therapies, components and
+    types are one projection and flip together — so this is exactly ``EXACT_OMOP_THERAPY``.
+    Retained as the semantic gate for the OMOP-type code paths (the class-concept matcher
+    / queryset / patient class-id read); there is no separate ``EXACT_OMOP_THERAPY_TYPES``
+    toggle.
     """
-    return omop_therapy_enabled() and bool(getattr(settings, 'EXACT_OMOP_THERAPY_TYPES', False))
+    return omop_therapy_enabled()
 
 
 def get_therapy_match_profile() -> TherapyMatchProfile:
-    """Return the active profile for the current OMOP therapy settings."""
+    """Return the active profile for the current OMOP therapy setting."""
     if not omop_therapy_enabled():
         return LEGACY_THERAPY_MATCH_PROFILE
-    if omop_therapy_types_enabled():
-        return OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE
     return OMOP_THERAPY_MATCH_PROFILE
 
 

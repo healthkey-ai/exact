@@ -335,7 +335,7 @@ class UserToTrialAttrMatcher:
         # per the active profile, so match_required/excluded overlap correctly. Regimen
         # keys: concept_ids under OMOP, codes legacy. Component/type keys: OMOP (Phase P,
         # #234) — components are consumer-supplied concept_ids (get_user_therapy_component_ids),
-        # types are CB category codes via the flat lookup; legacy — the CB graph walk.
+        # types are consumer-supplied class concept_ids (#285 folded); legacy — the CB graph walk.
         # The regimen/component/category data access lives behind the data port
         # (E1.2b); DjangoMatcherData reproduces the previous inline logic 1:1.
         omop = omop_therapy_enabled()
@@ -419,9 +419,10 @@ class UserToTrialAttrMatcher:
         if types_excluded_conservative and getattr(self.trial, THERAPY_MATCH_PROFILE.therapy_types_excluded):
             out['therapyTypesExcluded']['status'] = 'not_matched'
 
-        # OMOP code + title per criterion (additive). Only the OMOP-mapped levels
-        # (regimen + component) hold concept_ids; resolve the TRIAL's required/excluded
-        # concept_ids to OMOP names via OmopConcept. Types stay CB-coded (no OMOP).
+        # OMOP code + title per criterion (additive). Resolve the TRIAL's required/excluded
+        # concept_ids to OMOP names via OmopConcept for regimen + component. Types are OMOP
+        # class concept_ids too (#285) but are NOT yet added to this omopConcepts display
+        # block — a display-parity follow-up (behaviour unchanged from before the fold).
         if omop_therapy_enabled():
             for key, col in (
                 ('therapiesRequired', THERAPY_MATCH_PROFILE.therapies_required),
@@ -504,7 +505,7 @@ class UserToTrialAttrMatcher:
         return 'matched'
 
     def _match_omop_type_things(self, type_values, required_list, excluded_list, has_no_prior_therapy):
-        """OMOP drug-class TYPE overlap under EXACT_OMOP_THERAPY_TYPES (#285) with
+        """OMOP drug-class TYPE overlap under the OMOP flag (#285, types folded in) with
         #286 per-concept release validation applied ASYMMETRICALLY.
 
         ``type_values`` is the patient's RAW class concept_ids: ``None`` = unknown,
@@ -549,12 +550,12 @@ class UserToTrialAttrMatcher:
 
         # Component + type (class) values. OMOP mode (Phase P, #234): components are the
         # consumer-supplied pre-expanded concept_ids (get_user_therapy_component_ids); types
-        # are CB category codes via the flat lookup (types are not OMOP-mapped). Legacy:
-        # derived from the regimen via the CB graph. See #197 / therapy_graph.
+        # are the consumer's pre-expanded class concept_ids (#285 folded types into OMOP).
+        # Legacy: derived from the regimen via the CB graph. See #197 / therapy_graph.
         from exact_matching.therapy_match_profile import omop_therapy_enabled, omop_therapy_types_enabled
         # OMOP only: read the consumer-supplied components. Gated so the legacy path
-        # does no OMOP-specific work (byte-identical to CB). Under EXACT_OMOP_THERAPY_TYPES
-        # (#285) also read the consumer's pre-expanded drug-class concept_ids for types.
+        # does no OMOP-specific work (byte-identical to CB). Under OMOP (#285, types folded
+        # in) also read the consumer's pre-expanded drug-class concept_ids for types.
         patient_component_ids = (self.patient_info_attr.get_user_therapy_component_ids()
                                  if omop_therapy_enabled() else None)
         patient_class_ids = (self.patient_info_attr.get_user_therapy_type_ids()
