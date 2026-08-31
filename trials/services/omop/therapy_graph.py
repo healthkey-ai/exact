@@ -7,18 +7,20 @@ trial columns. This is the single shared derivation so the two stay consistent.
 
 Vocabulary by level (see therapy_match_profile):
 - regimen: handled by the caller directly (concept_ids under OMOP / codes legacy).
-- component: OMOP-mapped — under EXACT_OMOP_THERAPY the patient's regimen
-  concept_ids are reverse-mapped to internal Therapies (via Therapy.omop_concept_id),
-  walked to their components, and the components' OMOP concept_ids are returned
-  (to overlap the omop_therapy_components_* columns). Legacy → internal codes.
+- component: OMOP mode (Phase P, #234) — the patient's component concept_ids are
+  supplied PRE-EXPANDED by the consumer (promop) via ``patient_component_ids``;
+  EXACT no longer reverse-maps regimens to components through the local CB graph.
+  Legacy mode → internal component codes via the CB graph (unchanged).
 - type / component-category: NOT OMOP-mapped — always returned as CB category
   CODES (to overlap the legacy therapy_types_* columns), because EXACT keeps CB's
-  own category vocabulary and matches types through this graph (#197).
+  own category vocabulary and matches types through the flat category lookup (#197).
 
-Returns ``(component_values, type_values)``; ``(None, None)`` when the patient
-has no resolvable regimens (preserves the matcher's "unknown" semantics).
+Returns ``(component_values, type_values)``. ``(None, None)`` means unknown
+(preserves the matcher's "unknown" semantics): OMOP → the consumer sent no
+``therapy_component_ids`` (``patient_component_ids is None``); legacy → the patient
+has no resolvable regimens. An empty list is a known-empty component set.
 """
-from trials.services.therapy_match_profile import omop_therapy_enabled
+from trials.services.therapy_match_profile import omop_therapy_enabled, omop_therapy_types_enabled
 
 
 def resolve_regimens(therapy_identifiers):
@@ -35,7 +37,59 @@ def resolve_regimens(therapy_identifiers):
     return Therapy.objects.filter(code__in=therapy_identifiers)
 
 
-def derive_component_and_type_values(therapy_identifiers):
+def derive_component_and_type_values(therapy_identifiers, patient_component_ids=None,
+                                     measure=False, patient_class_ids=None):
+    """Return ``(component_values, type_values)`` for the patient's therapies.
+
+    OMOP mode (Phase P, #234): components are the consumer-supplied pre-expanded
+    ``patient_component_ids`` (no local CB-graph walk). ``None`` = unknown (consumer
+    sent nothing) → ``(None, None)``; ``[]`` = known-empty; a list → those component
+    concept_ids.
+
+    Types (drug-class):
+    - OMOP-types mode (``EXACT_OMOP_THERAPY_TYPES`` on, promop ADR 0002 / #285):
+      types are the consumer-supplied pre-expanded class concept_ids
+      ``patient_class_ids`` — ``None`` = unknown (fail-closed downstream), ``[]`` =
+      known-empty, a list → those class concept_ids. Matched by overlap against
+      ``omop_therapy_types_*``.
+    - OMOP-types OFF: legacy — CB category codes from the components via the flat
+      category lookup (overlapped against legacy ``therapy_types_*``; #4502).
+
+    ``therapy_identifiers`` is used only by the legacy path.
+
+    Legacy mode (OMOP therapy flag OFF): the internal CB-graph expansion —
+    byte-identical to CB.
+
+    ``measure=True`` records the Phase-T gating metric (#263) when this call is the
+    per-search derivation (the search queryset passes it) — a regimen present under
+    OMOP with no consumer-supplied components. The matcher leaves it ``False`` so the
+    signal is emitted once per search, not once per trial scored. Observation only —
+    the return value is identical either way.
+    """
+    if omop_therapy_enabled():
+        types_on = omop_therapy_types_enabled()
+        if patient_component_ids is None:
+            if measure and therapy_identifiers:
+                from trials.services.omop.phase_t_metrics import record_regimen_unresolved
+                record_regimen_unresolved(therapy_identifiers)
+            # Components unknown -> component_values None. Types are independent under
+            # OMOP-types mode: a class-only patient (class ids but no components — and
+            # the #224 fold routes such patients here) still derives its types from the
+            # supplied class ids, so a required-class trial isn't false-negatived.
+            if types_on and patient_class_ids is not None:
+                return None, [str(cid) for cid in patient_class_ids]
+            return None, None
+        component_values = [str(cid) for cid in patient_component_ids]
+        if types_on:
+            # Types = the patient's pre-expanded class concept_ids as-is. Preserve
+            # None (consumer sent no class ids -> unknown -> fail-closed) vs [].
+            type_values = None if patient_class_ids is None else [str(cid) for cid in patient_class_ids]
+        else:
+            from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
+            type_values = component_concept_ids_to_type_codes(component_values) or []
+        return component_values, type_values
+
+    # ── legacy (flag OFF): internal CB-graph expansion — byte-identical to CB ──
     if not therapy_identifiers:
         return None, None
     from trials.models import TherapyComponent, TherapyComponentCategory
@@ -47,14 +101,10 @@ def derive_component_and_type_values(therapy_identifiers):
     components = TherapyComponent.objects.filter(
         therapycomponentconnection__therapy__in=therapies
     ).order_by('id')
+    component_values = [c.code for c in components]
     categories = TherapyComponentCategory.objects.filter(
         therapycomponentcategoryconnection__component__in=components
     ).order_by('id')
-
-    if omop_therapy_enabled():
-        component_values = [str(c.omop_concept_id) for c in components if c.omop_concept_id is not None]
-    else:
-        component_values = [c.code for c in components]
-    # types are not OMOP-mapped — CB category codes, both modes
     type_values = [cat.code for cat in categories]
+
     return component_values, type_values

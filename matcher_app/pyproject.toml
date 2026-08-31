@@ -1,0 +1,16 @@
+# Shared CB/EXACT trial matcher, extracted from EXACT (E1, epic cancerbot#4601).
+# Installable Django library: CB imports it via public git-tag pip; EXACT depends
+# on it too (its own trials app re-exports during the incremental extraction).
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exact-matching"
+version = "0.0.1"
+description = "Shared CB/EXACT trial matcher (queryset + per-trial matcher + config), behind CB's MatcherBackend interface. Extraction in progress (E1)."
+requires-python = ">=3.12"
+dependencies = ["Django>=5.0", "glom>=24.0", "django-pint>=1.0", "inflection>=0.5"]
+
+[tool.setuptools.packages.find]
+include = ["exact_matching*"]

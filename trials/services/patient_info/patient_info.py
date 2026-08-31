@@ -90,9 +90,20 @@ _FIELDS = [
     _f(TextField, 'second_line_outcome'),
     _f(TextField, 'later_therapy'),
     _f(JSONField, 'later_therapies', default=list),
-    # Component concept_ids supplied directly by CTOMOP (promop#189) under OMOP mode.
+    # Component concept_ids supplied directly by PROMOP (promop#189) under OMOP mode.
     # None when the consumer has not sent them; used by component_category_lookup for types.
     _f(JSONField, 'therapy_component_ids', default=None),
+    # Drug-class "type" concept_ids pre-expanded by PROMOP (promop#370, ADR 0002).
+    # None when the consumer has not sent them; consumed as the patient's type
+    # match-values once EXACT_OMOP_THERAPY_TYPES is on (#285). Inert until then.
+    _f(JSONField, 'therapy_type_ids', default=None),
+    # Aggregate therapy-vocab release the patient's therapy_type_ids were derived
+    # against (promop VocabularyRelease pk as a decimal string; promop#394). One
+    # value for the whole class set (unanimous-of-lines else null). #286 Gate 1
+    # compares it == active_pinned_release(); inert until the patient-release gate
+    # is enforced (ADR 0002 §Gate 1). TextField (not Decimal) to keep the exact
+    # decimal string — resolve._coerce_numerics would coerce a DecimalField.
+    _f(TextField, 'therapy_release_id', default=None),
     _f(DateField, 'later_date'),
     _f(TextField, 'later_outcome'),
     _f(TextField, 'old_supportive_therapies'),

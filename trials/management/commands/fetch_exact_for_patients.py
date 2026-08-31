@@ -1,7 +1,7 @@
 """
 Management command: fetch_exact_for_patients
 
-Loads all patients from an external patient DB (CTOMOP), runs the EXACT
+Loads all patients from an external patient DB (PROMOP), runs the EXACT
 search API for each one (top-N trials), and caches the full responses to
 disk so they can be analysed offline without re-running the slow search.
 
@@ -98,7 +98,7 @@ def _psql_query_rows(db_url, sql):
 
 
 def _fetch_patients(db_url, person_ids=None, limit=None):
-    """Return all patient dicts from CTOMOP via psql subprocess."""
+    """Return all patient dicts from PROMOP via psql subprocess."""
     where = ''
     if person_ids:
         ids_sql = ', '.join(str(int(i)) for i in person_ids)
@@ -121,12 +121,12 @@ def _fetch_patients(db_url, person_ids=None, limit=None):
 
 
 def _clean_row(row: dict) -> dict:
-    """Normalise + clean a CTOMOP row into a JSON-serialisable patient_info dict."""
+    """Normalise + clean a PROMOP row into a JSON-serialisable patient_info dict."""
     from trials.management.commands.search_trials_for_patients import (
-        _normalize_ctomop_row, SKIP_COLUMNS, JSON_FIELDS,
+        _normalize_promop_row, SKIP_COLUMNS, JSON_FIELDS,
     )
 
-    row = _normalize_ctomop_row(dict(row))
+    row = _normalize_promop_row(dict(row))
 
     cleaned = {}
     for col, val in row.items():
@@ -212,7 +212,7 @@ def _fetch_details_parallel(patient_info: dict, trial_ids: list[int],
 # ── management command ──────────────────────────────────────────────────────
 
 class Command(BaseCommand):
-    help = 'Fetch EXACT trial results for all CTOMOP patients and cache to disk.'
+    help = 'Fetch EXACT trial results for all PROMOP patients and cache to disk.'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -295,7 +295,7 @@ class Command(BaseCommand):
 
         rows = _fetch_patients(db_url, person_ids=person_ids or None,
                                limit=options.get('patient_limit'))
-        self.stdout.write(f'Found {len(rows)} patients in CTOMOP')
+        self.stdout.write(f'Found {len(rows)} patients in PROMOP')
 
         for row in rows:
             person_id = row.get('person_id')

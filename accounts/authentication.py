@@ -8,8 +8,11 @@ cached (Django cache, keyed by ``SHA256(token)[:32]``) for up to
 ``AUTH_TOKEN_CACHE_TTL`` seconds so repeated requests with the same Bearer
 token skip ``provider.verify()`` and the DB lookup.
 
-Unlike ctomop, EXACT does **not** own OMOP Person/PatientInfo, so the
+Unlike promop, EXACT does **not** own OMOP Person/PatientInfo, so the
 identity is resolved (get-or-create) but no patient row is provisioned.
+
+Both backends reject a deactivated ``Identity`` (``is_active=False``), on the
+cached path as well as the freshly-verified one — see ``_reject_if_inactive``.
 """
 from __future__ import annotations
 
@@ -32,6 +35,21 @@ logger = logging.getLogger(__name__)
 def _token_cache_key(token: str) -> str:
     digest = hashlib.sha256(token.encode()).hexdigest()[:32]
     return f"auth:partner:{digest}"
+
+
+def _reject_if_inactive(identity: Identity) -> Identity:
+    """Raise for a deactivated Identity, mirroring DRF's own backends.
+
+    ``IsAuthenticated`` only consults ``is_authenticated``, which
+    ``AbstractBaseUser`` hardcodes to ``True`` — so without this check an
+    Identity deactivated in the admin keeps full API access. DRF's built-in
+    ``TokenAuthentication``/``BasicAuthentication`` reject inactive users
+    (rest_framework/authentication.py); these house backends must match, or
+    ``is_active`` is a control that silently does nothing.
+    """
+    if not identity.is_active:
+        raise AuthenticationFailed("User inactive or deleted.")
+    return identity
 
 
 class PartnerAuthentication(BaseAuthentication):
@@ -71,7 +89,7 @@ class PartnerAuthentication(BaseAuthentication):
             if claims is None:
                 continue
 
-            identity = self._get_or_create_identity(claims)
+            identity = _reject_if_inactive(self._get_or_create_identity(claims))
             self._to_cache(token, identity.pk, claims)
             return (identity, claims)
 
@@ -89,6 +107,10 @@ class PartnerAuthentication(BaseAuthentication):
             identity = Identity.objects.get(pk=data["pk"])
         except Identity.DoesNotExist:
             return None
+        # Checked on the cached path as well: the cache stores the verification
+        # result, not an authorization decision, so a deactivation must take
+        # effect immediately rather than after AUTH_TOKEN_CACHE_TTL.
+        _reject_if_inactive(identity)
         claims = TokenClaims(**data["claims"])
         return (identity, claims)
 
@@ -147,7 +169,11 @@ class ServiceTokenAuthentication(BaseAuthentication):
             identity.set_unusable_password()
             identity.save(update_fields=["password"])
 
-        return (identity, "service-token")
+        # Deactivating the service Identity is the kill switch for the shared
+        # service token; without this it would have no effect. Note it must be
+        # *deactivated*, not deleted — `get_or_create` above would silently
+        # re-provision a fresh, active row on the very next request.
+        return (_reject_if_inactive(identity), "service-token")
 
     def authenticate_header(self, request):
         return "Bearer"

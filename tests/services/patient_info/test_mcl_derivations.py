@@ -53,15 +53,6 @@ class TestMipiRiskBuckets:
                           lactate_dehydrogenase_level=3000)
         assert PatientInfoAttributes(pi).mipi_risk == 'high'
 
-    def test_wbc_uses_per_microliter_magnitude_4421(self):
-        # Regression guard for CB #4421: WBC must be read as cells/µL. A median
-        # 7000/µL patient is 'intermediate'; the old ×10⁹/L reading (log10(7))
-        # scored ~2.82 lower and wrongly returned 'low'.
-        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
-                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
-                          lactate_dehydrogenase_level=250)
-        assert PatientInfoAttributes(pi).mipi_risk == 'intermediate'
-
     def test_high_cutoff_is_6_2_not_6_5(self):
         # Regression for the CB catch-up (#4478): the high band starts at 6.2, not
         # 6.5. age 73 + wbc 10000/uL (ldh at ULN) -> score ~= 6.34, which is in the
@@ -70,6 +61,15 @@ class TestMipiRiskBuckets:
                           white_blood_cell_count=10000, white_blood_cell_count_units='CELLS/UL',
                           lactate_dehydrogenase_level=250)
         assert PatientInfoAttributes(pi).mipi_risk == 'high'
+
+    def test_wbc_uses_per_microliter_magnitude_4421(self):
+        # Regression guard for CB #4421: WBC must be read as cells/µL. A median
+        # 7000/µL patient is 'intermediate'; the old ×10⁹/L reading (log10(7))
+        # scored ~2.82 lower and wrongly returned 'low'.
+        pi = _mcl_patient(patient_age=65, ecog_performance_status=0,
+                          white_blood_cell_count=7000, white_blood_cell_count_units='CELLS/UL',
+                          lactate_dehydrogenase_level=250)
+        assert PatientInfoAttributes(pi).mipi_risk == 'intermediate'
 
     def test_ecog_zero_does_not_add_penalty(self):
         # ECOG 0 and 1 both contribute 0 (predicate is ecog >= 2)

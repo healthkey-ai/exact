@@ -61,10 +61,39 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ['brief_title', 'official_title']
     pagination_class = TrialsPagination
 
+    def dispatch(self, request, *args, **kwargs):
+        # Pin one vocab-mirror release for the whole request (OMOP mode only), so
+        # every mirror read (title resolution) sees one generation and can never
+        # straddle an activation mid-request (#252 / ADR 0002). finalize_response
+        # runs inside this block, so the header sees the same context.
+        from vocab_mirror.release_context import MatchingReleaseContext
+        from trials.services.omop.component_category_lookup import component_lookup_request_cache
+        from trials.services.omop.type_release_gate import type_validation_request_cache
+        from trials.services.omop.patient_release_gate import patient_release_check_request_cache
+        # component_lookup_request_cache: dedup the per-trial component→type lookups
+        # within this request without a process-global cache that could go stale in
+        # web workers after a sync-job rebuild (ADR 0002 guard #8, #266).
+        # type_validation_request_cache: same, for the #286 per-concept class-id
+        # release validation (one mirror query per class-id set per request).
+        # patient_release_check_request_cache: same, for the #286 Gate 1 aggregate
+        # patient-release check (one decision per request; observe-only until enforced).
+        with MatchingReleaseContext() as ctx, component_lookup_request_cache(), \
+                type_validation_request_cache(), patient_release_check_request_cache():
+            self._release_ctx = ctx
+            return super().dispatch(request, *args, **kwargs)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        ctx = getattr(self, '_release_ctx', None)
+        if ctx is not None and ctx.header:
+            from vocab_mirror.release_context import RELEASE_HEADER
+            response[RELEASE_HEADER] = ctx.header
+        return response
+
     def _resolve_patient_info(self) -> Optional['PatientInfo']:
         # Resolve at most once per request: get_queryset and
         # get_serializer_context both call this, and `search` can hit it
-        # several times. Re-resolving re-runs the CTOMOP round-trip, so a
+        # several times. Re-resolving re-runs the PROMOP round-trip, so a
         # slow upstream multiplies per request (#159, #160). The holder is a
         # 1-tuple so a legitimately-resolved None is still cached.
         holder = getattr(self.request, '_exact_patient_info', None)
@@ -86,8 +115,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             # that looks valid — dangerous in a clinical matcher (#156).
             logger.exception('Failed to build patient_info from request payload')
             # Only a supplied inline payload that fails to build is client error
-            # (400). The CTOMOP fetch returns None on network failure (handled in
-            # CtomopClient), so an exception on the person_id path is a real
+            # (400). The PROMOP fetch returns None on network failure (handled in
+            # PromopClient), so an exception on the person_id path is a real
             # server/upstream bug — let it propagate as a 500 rather than masking
             # it as a misleading 400.
             if has_inline:
@@ -106,7 +135,12 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         if patient_info is None:
             patient_info = self._resolve_patient_info()
 
-        queryset = Trial.objects.all()
+        # trial_type is a FK serialized on every trial via StringRelatedField
+        # (list, search, detail); without select_related the serializer fetches
+        # it once per row — an N+1 (ported from CB perf(trials) select_related
+        # trial_type). The JOIN is cheap and the `count` action ignores it, so
+        # eager-load it on the base queryset.
+        queryset = Trial.objects.select_related('trial_type')
         study_prefs = self._resolve_study_preferences()
         search_type = self.request.query_params.get('type', None)
 
@@ -397,24 +431,24 @@ class FormSettingsViewSet(viewsets.ViewSet):
         return self.DISEASE_NAME_TO_CODE.get(lower, '')
 
 
-class NormalizeCtomopRowView(APIView):
-    """POST endpoint that exposes `normalize_ctomop_row` to authenticated
-    callers. Takes a raw CTOMOP `patient_info` row in the body and
+class NormalizePromopRowView(APIView):
+    """POST endpoint that exposes `normalize_promop_row` to authenticated
+    callers. Takes a raw PROMOP `patient_info` row in the body and
     returns the same row with EXACT-shaped values for the fields that
     differ between systems (receptor statuses → codes, TNM strings →
     short codes, therapy-line outcomes → IDs, refractory status labels,
     lab-value fallbacks, etc.).
 
     Exists so the federation dev harness (and any other client that
-    fetches CTOMOP rows browser-side) can run the same normalization
+    fetches PROMOP rows browser-side) can run the same normalization
     the server-side `?person_id=` resolver applies. Without this, an
     inline-fetch caller's `patient_info` reaches the matcher with raw
-    CTOMOP labels and a meaningful subset of fields silently reads as
+    PROMOP labels and a meaningful subset of fields silently reads as
     "unknown" — closes the limitation documented in PR #117.
 
     Same auth + token model as `/trials/`: `IsAuthenticated`, DRF
     Token. The function is pure / side-effect-free; the caller already
-    holds the patient row from their own session-authenticated CTOMOP
+    holds the patient row from their own session-authenticated PROMOP
     fetch so this endpoint doesn't widen the IDOR surface tracked in
     #108.
     """
@@ -422,18 +456,18 @@ class NormalizeCtomopRowView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
-        from trials.services.patient_info.ctomop_adapter import normalize_ctomop_row
+        from trials.services.patient_info.promop_adapter import normalize_promop_row
 
         raw = request.data
         if not isinstance(raw, dict):
             return Response(
-                {'detail': 'Body must be a JSON object representing one CTOMOP patient_info row.'},
+                {'detail': 'Body must be a JSON object representing one PROMOP patient_info row.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # `normalize_ctomop_row` mutates its argument in place; copy
+        # `normalize_promop_row` mutates its argument in place; copy
         # first so we never alter caller-owned state. (`dict(raw)` is
         # a shallow copy — fine because the function only rewrites
         # top-level keys plus the `genetic_mutations` items, which the
         # function itself defensively copies via `m = dict(m)`.)
-        normalized = normalize_ctomop_row(dict(raw))
+        normalized = normalize_promop_row(dict(raw))
         return Response(normalized)

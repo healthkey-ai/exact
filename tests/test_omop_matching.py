@@ -2,7 +2,7 @@
 
 EXACT is stateless and owns no patient-side crosswalk: when EXACT_OMOP_THERAPY is
 on, the patient's therapies arrive already as OMOP concept_ids (the consumer /
-CTOMOP supplies them, pre-expanded), and the trial omop_* columns also hold
+PROMOP supplies them, pre-expanded), and the trial omop_* columns also hold
 concept_ids. Matching is a plain overlap — both sides simply speak the vocabulary
 the active profile selects. Off: both sides speak internal codes. There is NO
 EXACT-side translation of patient codes (that was phase 3b, reverted here).
@@ -28,6 +28,7 @@ def _two_trials():
     return a, b
 
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_queryset_matches_on_legacy_codes_when_flag_off():
     a, b = _two_trials()
     # Off: patient speaks internal codes (what the legacy columns hold).
@@ -70,6 +71,7 @@ def _matcher_trials():
     return match, other
 
 
+@override_settings(EXACT_OMOP_THERAPY=False)
 def test_matcher_decision_on_legacy_codes_when_flag_off():
     match, other = _matcher_trials()
     pi = PatientInfo(disease='multiple myeloma')

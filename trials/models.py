@@ -163,7 +163,7 @@ class Therapy(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     description = models.TextField(blank=True, null=True)
-    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this code (pinned CTOMOP release); null when the regimen has no clean standard concept and is expanded into its components/classes at backfill. Source for the trial omop_* columns.")
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this code (pinned PROMOP release); null when the regimen has no clean standard concept and is expanded into its components/classes at backfill. Source for the trial omop_* columns.")
 
     def full_title(self):
         # Sort in Python so a `prefetch_related('components')` cache is reused.
@@ -215,7 +215,7 @@ class DiseaseRoundTherapyConnection(TimeStampMixin):
 class TherapyComponent(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False)
-    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug component (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_components_* columns.")
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug component (pinned PROMOP release); null when unmapped. Source for the trial omop_therapy_components_* columns.")
 
     def __str__(self):
         return self.title
@@ -240,7 +240,7 @@ class TherapyComponentConnection(TimeStampMixin):
 class TherapyComponentCategory(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
-    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP concept_id for this drug class (pinned CTOMOP release); null when unmapped. Source for the trial omop_therapy_types_* columns.")
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="Unused: drug-class 'types' are not OMOP-mapped (EXACT ADR 0001 decision A, #4502). Types resolve via the component concept_id -> category code lookup (#4503), not a class concept_id.")
 
     def __str__(self):
         return self.title
@@ -258,10 +258,12 @@ class OmopConcept(TimeStampMixin):
     """OMOP concept_id → display title + vocabulary.
 
     Resolves the concept_ids stored in the trial ``omop_*`` therapy columns (and
-    patient ``*_therapy_id``) to human-readable names for the API, independent of
-    which vocab model a concept came from (regimen / component / class / future
-    expanded concepts). Populated from the curated ``therapy_omop_mapping.csv``
-    (omop_concept_id, omop_name, omop_vocab) by ``load_therapy_omop_concept_ids``.
+    patient ``*_therapy_id``) to human-readable names for the API — the runtime title
+    projection for RUNTIME-APPLICABLE concepts (regimen / component). Drug-class "type"
+    concepts are NOT projected here (ADR-A/#4502, #4580): their crosswalk rows are
+    ``crosswalk_only`` and keep their ``omop_name`` for audit in
+    :class:`TherapyOmopMapping` only. Populated from the curated
+    ``therapy_omop_mapping.csv`` by ``load_therapy_omop_concept_ids``.
     Ported from CancerBot (CB owns the upstream); EXACT reads/populates it locally.
     """
     concept_id = models.BigIntegerField(primary_key=True)
@@ -287,10 +289,15 @@ class TherapyOmopMapping(TimeStampMixin):
     Ported from CancerBot (CB owns the upstream, #4476); EXACT reads/populates it locally.
     """
     LEVEL_CHOICES = [('regimen', 'regimen'), ('component', 'component'), ('category', 'category')]
-    # auto/curated/llm carry a CTOMOP-verified concept_id; needs_review/no_omop don't
+    # auto/curated/llm carry a PROMOP-verified concept_id that IS loaded as a runtime vocab
+    # mapping; needs_review/no_omop carry none. crosswalk_only/deferred carry a concept_id
+    # for AUDIT ONLY and are NOT runtime-applicable (#4580): crosswalk_only = category rows
+    # (drug-class types are not OMOP-mapped, ADR-A/#4502); deferred = component codes not yet
+    # authored in the vocab (Finding B) that would become applicable if the code is added.
     MATCH_CHOICES = [
         ('auto', 'auto'), ('curated', 'curated'), ('llm', 'llm'),
         ('needs_review', 'needs_review'), ('no_omop', 'no_omop'),
+        ('crosswalk_only', 'crosswalk_only'), ('deferred', 'deferred'),
     ]
     level = models.CharField(max_length=16, choices=LEVEL_CHOICES)
     cb_code = models.CharField(max_length=255)
@@ -382,6 +389,13 @@ class Trial(TimeStampMixin):
     age_high_limit = models.IntegerField(blank=True, null=True)
     gender = models.CharField(max_length=3, blank=True, null=True)
     ethnicity_required = models.JSONField(blank=True, null=False, default=list)
+    # OMOP demographics cutover (#4447): concept_id mirrors of the legacy demographic
+    # fields, filled by backfill_omop_demographics_columns. Read-only in EXACT;
+    # matching reads these only once the demographics profile/config are flipped.
+    # omop_ethnicity_required = race concept_ids as STRINGS in JSONB (mirrors the
+    # omop_therapies_* convention); omop_gender_concept_id = single OMOP gender concept.
+    omop_ethnicity_required = models.JSONField(blank=True, null=False, default=list)
+    omop_gender_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True)
     consent_capability_required = models.BooleanField(blank=True, null=True, db_index=True)
     no_tobacco_use_required = models.BooleanField(blank=True, null=True, db_index=True)
     no_substance_use_required = models.BooleanField(blank=True, null=True, db_index=True)
@@ -429,6 +443,11 @@ class Trial(TimeStampMixin):
     # only when the OMOP TherapyMatchProfile is active (Phase 3, behind a flag).
     omop_therapies_required = models.JSONField(blank=True, null=False, default=list)
     omop_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
+    # OMOP-mapped drug-class "types" (promop ADR 0002, reverses decision A/#4502):
+    # the patient now carries pre-expanded class concept_ids (promop#370), so these
+    # class-concept-id columns CAN overlap. Filled upstream by CB (#4633); read by
+    # EXACT only when the OMOP TherapyMatchProfile + EXACT_OMOP_THERAPY_TYPES are
+    # active (#285). Mirrors CB (#4631).
     omop_therapy_types_required = models.JSONField(blank=True, null=False, default=list)
     omop_therapy_types_excluded = models.JSONField(blank=True, null=False, default=list)
     omop_therapy_components_required = models.JSONField(blank=True, null=False, default=list)
@@ -629,8 +648,10 @@ class Trial(TimeStampMixin):
     autoimmune_cytopenias_refractory_to_steroids_required = models.BooleanField(blank=True, null=True, db_index=True)
     lymphadenopathy_required = models.BooleanField(blank=True, null=True, db_index=True)
     largest_lymph_node_size_min = models.FloatField(blank=True, null=True)
+    largest_lymph_node_size_max = models.FloatField(blank=True, null=True)
     splenomegaly_required = models.BooleanField(blank=True, null=True, db_index=True)
     spleen_size_min = models.FloatField(blank=True, null=True)
+    spleen_size_max = models.FloatField(blank=True, null=True)
     disease_activities_required = models.JSONField(blank=True, null=False, default=list)
     btk_inhibitor_refractory_required = models.BooleanField(blank=True, null=True, db_index=True)
     btk_inhibitor_refractory_excluded = models.BooleanField(blank=True, null=True, db_index=True)
@@ -689,6 +710,7 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['phases'], name='idx_phases_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['languages_skills_required'], name='idx_lang_skills_required_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['ethnicity_required'], name='idx_ethnicity_required_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['omop_ethnicity_required'], name='idx_omop_ethnicity_req_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['concomitant_medications_excluded'], name='idx_conc_med_excluded_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['stages'], name='idx_stages_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['pre_existing_conditions_excluded'], name='idx_pre_ex_cond_excluded_gin', opclasses=['jsonb_ops']),
@@ -1047,7 +1069,12 @@ class OptionsListIntCodeMixin(TimeStampMixin):
 
 
 class Ethnicity(OptionsListMixin):
-    pass
+    # OMOP migration (#4447): 'ethnicity' holds race categories (no separate race
+    # field), so this maps to OMOP RACE concepts. concept_id pinned to the PROMOP
+    # release; null when unmapped (e.g. 'other'). Source for the trial
+    # omop_ethnicity_* cols. Ported from CancerBot; populated by
+    # load_ethnicity_omop_concept_ids.
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP race concept_id (PROMOP) for this ethnicity value; null when unmapped.")
 
 
 class StemCellTransplant(OptionsListMixin):

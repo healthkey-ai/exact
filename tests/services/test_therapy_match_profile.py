@@ -26,8 +26,25 @@ from trials.services.therapy_match_profile import (
 pytestmark = pytest.mark.django_db
 
 
-def test_active_profile_defaults_to_legacy_columns():
-    # EXACT_OMOP_THERAPY defaults off -> legacy internal-code columns.
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_active_profile_uses_omop_columns_when_flag_on():
+    assert omop_therapy_enabled() is True
+    assert THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
+    assert THERAPY_MATCH_PROFILE.therapies_excluded == 'omop_therapies_excluded'
+    assert THERAPY_MATCH_PROFILE.therapy_components_required == 'omop_therapy_components_required'
+    assert THERAPY_MATCH_PROFILE.therapy_components_excluded == 'omop_therapy_components_excluded'
+    # supportive flips too (#228, dedicated path wired by #4449)
+    assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'omop_supportive_therapies_required'
+    assert THERAPY_MATCH_PROFILE.supportive_therapies_excluded == 'omop_supportive_therapies_excluded'
+    # types stay legacy even in OMOP mode (matched via CB category graph)
+    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'therapy_types_required'
+    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'therapy_types_excluded'
+    # planned stays legacy (76/85 codes unmappable — #230)
+    assert THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
+
+
+@override_settings(EXACT_OMOP_THERAPY=False)
+def test_active_profile_uses_legacy_columns_when_flag_off():
     assert omop_therapy_enabled() is False
     assert THERAPY_MATCH_PROFILE.therapies_required == 'therapies_required'
     assert THERAPY_MATCH_PROFILE.therapies_excluded == 'therapies_excluded'
@@ -42,23 +59,24 @@ def test_active_profile_defaults_to_legacy_columns():
 @override_settings(EXACT_OMOP_THERAPY=True)
 def test_active_profile_flips_mapped_levels_when_flag_on():
     assert omop_therapy_enabled() is True
-    # regimen + component flip to the omop_* concept_id columns...
+    # regimen + component + supportive flip to the omop_* concept_id columns...
     assert THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
     assert THERAPY_MATCH_PROFILE.therapies_excluded == 'omop_therapies_excluded'
     assert THERAPY_MATCH_PROFILE.therapy_components_required == 'omop_therapy_components_required'
     assert THERAPY_MATCH_PROFILE.therapy_components_excluded == 'omop_therapy_components_excluded'
+    assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'omop_supportive_therapies_required'
     # ...but types stay LEGACY (not OMOP-mapped — matched via the CB category graph),
-    # as do planned/supportive (their vocabs have no concept_ids yet).
+    # as does planned (76/85 codes unmappable — #230).
     assert THERAPY_MATCH_PROFILE.therapy_types_required == 'therapy_types_required'
     assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'therapy_types_excluded'
     assert THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
-    assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'supportive_therapies_required'
 
 
 def test_get_therapy_match_profile_switches_on_flag():
-    assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
     with override_settings(EXACT_OMOP_THERAPY=True):
         assert get_therapy_match_profile() is OMOP_THERAPY_MATCH_PROFILE
+    with override_settings(EXACT_OMOP_THERAPY=False):
+        assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
 
 
 def test_underlying_profiles_are_frozen():
@@ -79,6 +97,48 @@ def test_an_omop_profile_can_be_constructed():
         therapies_excluded='omop_therapies_excluded',
     )
     assert omop.therapies_required == 'omop_therapies_required'
-    # the shipped OMOP profile flips exactly the three mapped levels
+    # the shipped OMOP profile flips regimen + component + supportive; planned stays legacy
     assert OMOP_THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
+    assert OMOP_THERAPY_MATCH_PROFILE.supportive_therapies_required == 'omop_supportive_therapies_required'
     assert OMOP_THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
+
+
+@pytest.mark.django_db
+def test_supportive_matching_reads_omop_column_under_flag():
+    """#228: with supportive wired (#4449), the LIVE matcher + queryset enforce the
+    supportive pair via omop_supportive_* under the flag and legacy supportive_* off."""
+    from trials.models import Trial
+    from trials.services.patient_info.patient_info import PatientInfo
+    from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+    from tests.factories import TrialFactory
+
+    # Trial excludes a supportive drug at BOTH vocabularies: legacy CB code + OMOP cid.
+    t = TrialFactory(
+        supportive_therapies_excluded=['zz_sup_code'],
+        omop_supportive_therapies_excluded=['555'],
+    )
+    # Control: excludes 555 at the REGIMEN (omop) level. A supportive-only patient is not
+    # folded as a regimen, so this stays eligible under the flag — proving t's drop is the
+    # omop_supportive column, not the fold resolving 555 as a regimen.
+    t_reg = TrialFactory(omop_therapies_excluded=['555'])
+
+    with override_settings(EXACT_OMOP_THERAPY=True):
+        # matcher: patient carrying the concept_id is excluded (reads omop column)
+        pi = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': '555'}])
+        assert UserToTrialAttrMatcher(t, pi).attr_match_status('supportive_therapies') == 'not_matched'
+        # the legacy code no longer excludes under the flag
+        pi_legacy = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'zz_sup_code'}])
+        assert UserToTrialAttrMatcher(t, pi_legacy).attr_match_status('supportive_therapies') == 'matched'
+        # queryset reads the omop column too — via the FULL search path
+        result, _ = Trial.objects.filter_by_patient_info(pi)
+        assert not result.filter(pk=t.pk).exists()
+        assert result.filter(pk=t_reg.pk).exists()   # regimen-excluded control NOT folded -> kept
+        result_legacy, _ = Trial.objects.filter_by_patient_info(pi_legacy)
+        assert result_legacy.filter(pk=t.pk).exists()
+
+    with override_settings(EXACT_OMOP_THERAPY=False):
+        # legacy: the CB code excludes; the concept_id does not
+        pi_legacy = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'zz_sup_code'}])
+        assert UserToTrialAttrMatcher(t, pi_legacy).attr_match_status('supportive_therapies') == 'not_matched'
+        result_legacy, _ = Trial.objects.filter_by_patient_info(pi_legacy)
+        assert not result_legacy.filter(pk=t.pk).exists()

@@ -1,4 +1,5 @@
 import pytest
+from django.test import override_settings
 
 from trials.services.patient_info.patient_info import PatientInfo
 from trials.services.patient_info.normalize import normalize_patient_info
@@ -54,6 +55,118 @@ class TestUserToTrialAttrMatcher:
         assert service.therapy_related_things_mismatch_status() == 'unknown'
 
     @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
+    def test_supportive_therapies_match_status(self):
+        # The supportive_therapies pair must produce a real match status (#4449),
+        # not the previous always-'matched' no-op. Legacy mode (CB-code columns);
+        # the OMOP-column read is covered in test_therapy_match_profile.
+        trial_no_req = TrialFactory()
+        trial_req = TrialFactory(supportive_therapies_required=['bisphosphonate'])
+        trial_excl = TrialFactory(supportive_therapies_excluded=['bisphosphonate'])
+
+        def status(trial, pi):
+            return UserToTrialAttrMatcher(trial, pi).attr_match_status('supportive_therapies')
+
+        # Patient hasn't answered supportive_therapies.
+        pi = PatientInfo(disease='multiple myeloma')
+        assert status(trial_no_req, pi) == 'matched'      # no requirement -> matched
+        assert status(trial_req, pi) == 'unknown'          # required, unanswered -> unknown
+        assert status(trial_excl, pi) == 'unknown'
+
+        # Patient on bisphosphonate.
+        pi = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'bisphosphonate'}])
+        assert status(trial_no_req, pi) == 'matched'
+        assert status(trial_req, pi) == 'matched'          # required overlap -> matched
+        assert status(trial_excl, pi) == 'not_matched'     # excluded overlap -> not_matched
+
+        # Patient on a different supportive therapy.
+        pi = PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'epoetin'}])
+        assert status(trial_req, pi) == 'not_matched'      # required, no overlap -> not_matched
+        assert status(trial_excl, pi) == 'matched'
+
+    @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
+    def test_supportive_therapies_queryset_dedicated_filter(self):
+        # #4449: eligible_for_supportive_therapies is wired via the dispatch (previously
+        # dead). Drive the FULL search path (filter_by_patient_info -> _CUSTOM_SEARCH_DISPATCH
+        # -> get_supportive_therapy_codes -> eligible_for_supportive_therapies) so a broken
+        # or misrouted dispatch is caught. Legacy mode (CB-code columns).
+        from trials.models import Trial
+        t_excl = TrialFactory(supportive_therapies_excluded=['bisphosphonate'])
+        t_req = TrialFactory(supportive_therapies_required=['bisphosphonate'])
+        # EXCLUDES bisphosphonate at the regimen/prior-lines level. Legacy #4449:
+        # supportive codes fold into user_therapies (get_user_therapies) and DO feed
+        # the regimen/prior-lines filter, so a supportive-only patient on bisphosphonate
+        # is also dropped here. (The earlier "must not fold" assertion was an is_attr_blank
+        # artifact — the fold silently stopped firing for supportive-only patients — not an
+        # intended behaviour; restored by filter_by_patient_info's post-loop fire.)
+        t_line = TrialFactory(therapies_excluded=['bisphosphonate'])
+
+        # patient on bisphosphonate: supportive-excluded drops (supportive axis);
+        # supportive-required keeps; regimen-excluded ALSO drops (supportive folds in).
+        result, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'bisphosphonate'}]))
+        assert not result.filter(pk=t_excl.pk).exists()
+        assert result.filter(pk=t_req.pk).exists()
+        assert not result.filter(pk=t_line.pk).exists()   # supportive folds into the regimen axis (#4449 legacy) -> excluded
+        # patient on a different code: required trial drops (no overlap), excluded keeps
+        result, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='multiple myeloma', supportive_therapies=[{'therapy': 'epoetin'}]))
+        assert not result.filter(pk=t_req.pk).exists()
+        assert result.filter(pk=t_excl.pk).exists()
+
+    @pytest.mark.django_db
+    def test_planned_therapies_match_status(self):
+        # Behavioral coverage for planned matching (CB-code overlap). planned is NOT
+        # OMOP-flipped (matched via the legacy planned_therapies_* columns in both
+        # profiles), so this holds regardless of EXACT_OMOP_THERAPY.
+        trial_no_req = TrialFactory()
+        trial_req = TrialFactory(planned_therapies_required=['zz_asct'])
+        trial_excl = TrialFactory(planned_therapies_excluded=['zz_asct'])
+
+        def status(trial, pi):
+            return UserToTrialAttrMatcher(trial, pi).attr_match_status('planned_therapies')
+
+        # Patient hasn't answered planned_therapies.
+        pi = PatientInfo(disease='multiple myeloma')
+        assert status(trial_no_req, pi) == 'matched'   # no requirement -> matched
+        assert status(trial_req, pi) == 'unknown'       # required, unanswered -> unknown (potential)
+        assert status(trial_excl, pi) == 'unknown'
+
+        # Patient planning zz_asct.
+        pi = PatientInfo(disease='multiple myeloma', planned_therapies='zz_asct')
+        assert status(trial_no_req, pi) == 'matched'
+        assert status(trial_req, pi) == 'matched'        # required overlap -> matched
+        assert status(trial_excl, pi) == 'not_matched'   # excluded overlap -> not_matched
+
+        # Patient planning a different therapy.
+        pi = PatientInfo(disease='multiple myeloma', planned_therapies='zz_other')
+        assert status(trial_req, pi) == 'not_matched'    # required, no overlap -> not_matched
+        assert status(trial_excl, pi) == 'matched'
+
+    @pytest.mark.django_db
+    def test_planned_therapies_queryset_filter(self):
+        # Exercise the FULL search path (filter_by_patient_info -> _CUSTOM_SEARCH_DISPATCH
+        # -> _csv -> eligible_for_planned_therapies), not just the queryset method
+        # directly, so a broken/misrouted dispatch or _csv split is caught.
+        from trials.models import Trial
+        t_excl = TrialFactory(planned_therapies_excluded=['zz_asct'])
+        t_req = TrialFactory(planned_therapies_required=['zz_asct'])
+
+        # patient planning zz_asct (raw comma-string on PatientInfo): excluded drops, required keeps
+        result, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='multiple myeloma', planned_therapies='zz_asct'))
+        assert not result.filter(pk=t_excl.pk).exists()
+        assert result.filter(pk=t_req.pk).exists()
+
+        # patient planning a different code: required drops (no overlap), excluded keeps
+        result, _ = Trial.objects.filter_by_patient_info(
+            PatientInfo(disease='multiple myeloma', planned_therapies='zz_other'))
+        assert not result.filter(pk=t_req.pk).exists()
+        assert result.filter(pk=t_excl.pk).exists()
+
+    @pytest.mark.django_db
+    @override_settings(EXACT_OMOP_THERAPY=False)
     def test_therapy_related_things_match_status(self):
         patient_info = PatientInfo(disease='multiple myeloma', prior_therapy='None')
 

@@ -34,13 +34,13 @@ import shutil
 import subprocess
 
 from django.core.management.base import BaseCommand, CommandError
-from trials.services.patient_info.ctomop_adapter import (
+from trials.services.patient_info.promop_adapter import (
     JSON_FIELDS,
     OUTCOME_MAP as _OUTCOME_MAP,
     REFRACTORY_MAP as _REFRACTORY_MAP,
     SKIP_COLUMNS,
-    build_patient_info_from_ctomop_row as _build_patient_info,
-    normalize_ctomop_row as _normalize_ctomop_row,
+    build_patient_info_from_promop_row as _build_patient_info,
+    normalize_promop_row as _normalize_promop_row,
     resolve_code as _resolve_code,
     resolve_code_csv as _resolve_code_csv,
     resolve_therapy_code as _resolve_therapy_code,
@@ -138,7 +138,7 @@ class Command(BaseCommand):
             default='json',
             help='Output format for --output file. '
                  '"ground_truth" writes one row per trial in ground truth CSV format '
-                 '(CTOMOP Patient ID, Trial, Eligible/Potential, Suitability Score). '
+                 '(PROMOP Patient ID, Trial, Eligible/Potential, Suitability Score). '
                  'Default: json',
         )
         parser.add_argument(
@@ -146,7 +146,7 @@ class Command(BaseCommand):
             type=str,
             default='',
             help='Also write results in ground truth CSV format to this path '
-                 '(CTOMOP Patient ID, Trial, Eligible/Potential, Suitability Score). '
+                 '(PROMOP Patient ID, Trial, Eligible/Potential, Suitability Score). '
                  'Can be combined with --output / --format.',
         )
         parser.add_argument(
@@ -577,7 +577,7 @@ class Command(BaseCommand):
             with open(path, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    'CTOMOP Patient ID', 'Trial',
+                    'PROMOP Patient ID', 'Trial',
                     'Eligible/Potential', 'Suitability Score',
                 ])
                 for r in results:
