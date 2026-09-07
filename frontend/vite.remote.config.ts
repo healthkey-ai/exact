@@ -70,6 +70,8 @@ export default defineConfig(({ mode }) => {
         filename: "remoteEntry.js",
         exposes: {
           "./TrialMatches": "./src/federation/TrialMatches.tsx",
+          // Framework-agnostic mount for non-React hosts (HealthTree ONE).
+          "./TrialMatchesBridge": "./src/federation/TrialMatchesBridge.tsx",
           "./types": "./src/federation/types.ts",
           // The default per-user state adapter. Documented as "the
           // implementation a host with a PROMOP client can just use" — and
