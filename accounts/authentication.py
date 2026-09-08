@@ -159,7 +159,35 @@ class ServiceTokenAuthentication(BaseAuthentication):
         if not header.startswith("Bearer "):
             return None
 
-        if not hmac.compare_digest(header[7:], secret):
+        # Compare bytes, not str. `hmac.compare_digest` raises TypeError when
+        # either str argument is non-ASCII, and Django hands the header over
+        # latin-1-decoded, so any byte in 0x80-0xFF arrives here as a non-ASCII
+        # str. `Authorization: Bearer <0xE9>` was therefore an anonymous 500 --
+        # the same defect as #405, one authenticator earlier and needing no JWT
+        # shape at all, since this class runs first in DEFAULT_AUTHENTICATION_CLASSES.
+        #
+        # `latin-1` and not `utf-8`, because it is the *inverse* of what the
+        # server did: gunicorn (util.py: `str(b, 'latin1')`) and Django's ASGI
+        # handler both decode header bytes latin-1, so re-encoding latin-1
+        # reconstructs the bytes the client actually sent. Encoding utf-8 here
+        # double-encodes them, and a non-ASCII SERVICE_AUTH_TOKEN would then
+        # never match -- a silent, permanent 401 with nothing in the log. DRF
+        # uses the same inverse (`HTTP_HEADER_ENCODING = 'iso-8859-1'`).
+        #
+        # The secret is encoded utf-8 because that is how `os.environ` decoded
+        # it, with `surrogateescape` so env bytes that were not valid UTF-8
+        # cannot raise here on every request.
+        try:
+            presented = header[7:].encode("latin-1")
+        except UnicodeEncodeError:
+            # Unreachable from the wire -- latin-1 covers every byte -- but a
+            # test client can put an arbitrary str into META directly, and this
+            # method must stay total.
+            return None
+
+        if not hmac.compare_digest(
+            presented, secret.encode("utf-8", "surrogateescape")
+        ):
             return None
 
         identity, created = Identity.objects.get_or_create(

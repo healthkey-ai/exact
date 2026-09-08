@@ -6,7 +6,7 @@ from typing import Any
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 
-from .base import TokenClaims, TokenProvider
+from .base import TokenClaims, TokenProvider, unverified_str_claim
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,12 @@ class FirebaseTokenProvider(TokenProvider):
     """
 
     def can_handle(self, token: str, unverified_payload: dict[str, Any] | None) -> bool:
-        if unverified_payload is None:
-            return False
-        iss = unverified_payload.get("iss", "")
-        return iss.startswith(FIREBASE_ISS_PREFIX)
+        # `unverified_str_claim`, not `.get("iss", "")`: the default handles a
+        # missing claim but not one of the wrong type, and `.startswith` on a
+        # list or an int is an anonymous 500 here (#405).
+        return unverified_str_claim(unverified_payload, "iss").startswith(
+            FIREBASE_ISS_PREFIX
+        )
 
     def verify(self, token: str) -> TokenClaims | None:
         try:

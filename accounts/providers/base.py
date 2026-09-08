@@ -33,6 +33,29 @@ def decode_jwt_unverified(token: str) -> dict[str, Any] | None:
         return None
 
 
+def unverified_str_claim(payload: dict[str, Any] | None, name: str) -> str:
+    """Read one claim out of an *unverified* payload as a string, or "".
+
+    Everything in the unverified payload is attacker-controlled: it is decoded
+    without a signature check, by design, because routing has to happen before
+    anyone can verify. `decode_jwt_unverified` already refuses a non-object
+    payload, but a well-formed object can still carry a claim of the wrong
+    type -- `{"iss": ["x"]}`, `{"iss": 5}` -- and a provider that reaches for
+    a string method on it raises before any provider verifies anything. That
+    is an anonymous 500 on the authentication path (#405).
+
+    Routing decisions here are prefix or equality comparisons, and a non-string
+    claim can never match one, so collapsing it to "" is not lossy *for that
+    kind of routing*: it routes exactly as a missing claim does. A provider that
+    routed on a claim's absence would lose the distinction -- none exists, and
+    the merge would still only reach `verify()`, not past it.
+    """
+    if payload is None:
+        return ""
+    value = payload.get(name)
+    return value if isinstance(value, str) else ""
+
+
 @dataclass
 class TokenClaims:
     """Normalized result of a successful token verification."""
