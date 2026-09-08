@@ -3,25 +3,34 @@
 ``PartnerAuthentication`` delegates to pluggable token providers configured
 in ``PARTNER_AUTH_PROVIDERS``.  Each provider first gets a lightweight
 ``can_handle()`` check (unverified JWT payload inspection — no secrets, no
-external calls) before the real ``verify()`` is invoked.  Verified tokens are
-cached (Django cache, keyed by ``SHA256(token)[:32]``) for up to
-``AUTH_TOKEN_CACHE_TTL`` seconds so repeated requests with the same Bearer
-token skip ``provider.verify()`` and the DB lookup.
+external calls) before the real ``verify()`` is invoked.
+
+Every request is verified. There is deliberately no cache of verification
+results: one used to hold the identity and claims for ``AUTH_TOKEN_CACHE_TTL``
+seconds keyed by ``SHA256(token)[:32]``, and on a hit the token itself was
+never looked at again — so an **expired** token kept working until the entry
+aged out (#404). It bought only the provider round trip, not the database
+lookup, which ran on the cached path too.
 
 Unlike ctomop, EXACT does **not** own OMOP Person/PatientInfo, so the
 identity is resolved (get-or-create) but no patient row is provisioned.
 
-Both backends reject a deactivated ``Identity`` (``is_active=False``), on the
-cached path as well as the freshly-verified one — see ``_reject_if_inactive``.
+Both backends reject a deactivated ``Identity`` (``is_active=False``) — see
+``_reject_if_inactive``.
+
+What removing the cache does NOT close: with
+``FIREBASE_SKIP_REVOCATION_CHECK`` set, the provider calls
+``verify_id_token(check_revoked=False)``, which validates signature, issuer,
+audience and ``exp`` but not whether the token was revoked. So a revoked token
+is still accepted until it expires, and that is a configuration decision rather
+than a code one — tracked as #410, not here.
 """
 from __future__ import annotations
 
-import hashlib
 import hmac
 import logging
 
 from django.conf import settings
-from django.core.cache import cache as django_cache
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
@@ -30,11 +39,6 @@ from .providers import get_providers
 from .providers.base import TokenClaims, decode_jwt_unverified
 
 logger = logging.getLogger(__name__)
-
-
-def _token_cache_key(token: str) -> str:
-    digest = hashlib.sha256(token.encode()).hexdigest()[:32]
-    return f"auth:partner:{digest}"
 
 
 def _reject_if_inactive(identity: Identity) -> Identity:
@@ -62,10 +66,6 @@ class PartnerAuthentication(BaseAuthentication):
 
         token = header[7:]
 
-        cached = self._from_cache(token)
-        if cached is not None:
-            return cached
-
         providers = get_providers()
         if not providers:
             return None
@@ -90,46 +90,12 @@ class PartnerAuthentication(BaseAuthentication):
                 continue
 
             identity = _reject_if_inactive(self._get_or_create_identity(claims))
-            self._to_cache(token, identity.pk, claims)
             return (identity, claims)
 
         return None
 
     def authenticate_header(self, request):
         return "Bearer"
-
-    @staticmethod
-    def _from_cache(token: str):
-        data = django_cache.get(_token_cache_key(token))
-        if data is None:
-            return None
-        try:
-            identity = Identity.objects.get(pk=data["pk"])
-        except Identity.DoesNotExist:
-            return None
-        # Checked on the cached path as well: the cache stores the verification
-        # result, not an authorization decision, so a deactivation must take
-        # effect immediately rather than after AUTH_TOKEN_CACHE_TTL.
-        _reject_if_inactive(identity)
-        claims = TokenClaims(**data["claims"])
-        return (identity, claims)
-
-    @staticmethod
-    def _to_cache(token: str, identity_pk: int, claims: TokenClaims):
-        django_cache.set(
-            _token_cache_key(token),
-            {
-                "pk": identity_pk,
-                "claims": {
-                    "issuer": claims.issuer,
-                    "sub": claims.sub,
-                    "email": claims.email,
-                    "name": claims.name,
-                    "raw": claims.raw,
-                },
-            },
-            timeout=getattr(settings, "AUTH_TOKEN_CACHE_TTL", 60),
-        )
 
     @staticmethod
     def _get_or_create_identity(claims: TokenClaims) -> Identity:

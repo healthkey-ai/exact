@@ -334,7 +334,6 @@ FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID', 'exact-test' if DEBU
 FIREBASE_SKIP_REVOCATION_CHECK = os.environ.get(
     'FIREBASE_SKIP_REVOCATION_CHECK', 'true' if DEBUG else 'false'
 ).lower() in ('1', 'true')
-AUTH_TOKEN_CACHE_TTL = int(os.environ.get('AUTH_TOKEN_CACHE_TTL', '60'))
 SERVICE_AUTH_TOKEN = os.environ.get('SERVICE_AUTH_TOKEN', '')
 
 # Persistent DRF tokens (username/password -> never-expiring bearer, no scope,

@@ -27,16 +27,28 @@ def trial(db):
 
 
 @pytest.fixture(autouse=True)
-def _clear_token_cache():
-    """The verified-token cache is LocMem and lives for the whole process.
+def _assert_no_auth_state_is_cached():
+    """There is no verified-token cache any more (#404), and there must not be.
 
-    Without this, a test that authenticates leaves an entry keyed by its bearer
-    behind, and a later test reusing the same bearer silently becomes a cache
-    hit — so correctness would rest on collection order.
+    A reintroduced cache would let one test's bearer authenticate a later test,
+    so correctness would rest on collection order -- and in production an
+    expired token would keep working until the entry aged out.
+
+    The assertion inspects LocMem's actual keyspace. An earlier version asked
+    `django_cache.get("auth:partner:sentinel")`, which can never be non-None
+    because real keys are `auth:partner:<sha256 digest>` -- so it could not
+    fail, and did not fire even with the cache fully restored.
     """
+    from django.core.cache.backends.locmem import _caches
+
     django_cache.clear()
     yield
+    leaked = [
+        key for store in _caches.values() for key in store
+        if "auth:partner:" in key
+    ]
     django_cache.clear()
+    assert not leaked, f"a verified-token cache was reintroduced: {leaked[:3]}"
 
 
 def _match(client):
@@ -153,25 +165,6 @@ class TestInactiveIdentityIsRejected:
 
         assert _match(client).status_code == 401
 
-    def test_deactivated_partner_identity_is_rejected_via_the_cached_path(
-        self, trial, monkeypatch
-    ):
-        """Deactivated after a successful request, so the 401 comes from the
-        cache-hit branch. The cold-cache counterpart is the test below it."""
-        monkeypatch.setattr(
-            "accounts.authentication.get_providers",
-            lambda: [_FakeFirebaseProvider()],
-        )
-        client = APIClient()
-        client.credentials(HTTP_AUTHORIZATION="Bearer fake.partner.jwt")
-        assert _match(client).status_code == 200
-
-        Identity.objects.filter(
-            issuer=_FakeFirebaseProvider.ISSUER, sub=_FakeFirebaseProvider.SUB,
-        ).update(is_active=False)
-
-        assert _match(client).status_code == 401
-
     def test_already_inactive_partner_identity_is_rejected_on_fresh_verification(
         self, trial, monkeypatch
     ):
@@ -194,13 +187,14 @@ class TestInactiveIdentityIsRejected:
         client.credentials(HTTP_AUTHORIZATION="Bearer fake.partner.jwt")
         assert _match(client).status_code == 401
 
-    def test_deactivation_is_not_deferred_by_the_token_cache(self, trial, monkeypatch):
-        """A deactivation must bite immediately, not after AUTH_TOKEN_CACHE_TTL.
+    def test_every_request_is_verified_again(self, trial, monkeypatch):
+        """No cached path: the second request must reach `provider.verify` too.
 
-        The first request populates the verified-token cache; the second is a
-        cache hit that never reaches `provider.verify`. Without the check on
-        the cached path the deactivated identity would keep access for up to
-        `AUTH_TOKEN_CACHE_TTL` seconds.
+        This is the property that closes #404. A verification cache returned
+        the stored identity without looking at the token again, so an expired
+        token kept authenticating until the entry aged out. Counting
+        `verify` calls asserts the absence of that path directly, rather than
+        asserting that some cache happens to be empty.
         """
         verify_calls = []
 
@@ -218,16 +212,27 @@ class TestInactiveIdentityIsRejected:
 
         assert _match(client).status_code == 200
         assert _match(client).status_code == 200
-        # Second request was served from the cache, so the deactivation below
-        # exercises the cached path rather than a fresh verification.
-        assert len(verify_calls) == 1
+
+        assert len(verify_calls) == 2, (
+            "the second request was served without re-verifying the token"
+        )
+
+    def test_deactivation_bites_on_the_next_request(self, trial, monkeypatch):
+        """`is_active` was already checked on both paths (#398); with the cache
+        gone there is only one path, and this pins that it still bites."""
+        monkeypatch.setattr(
+            "accounts.authentication.get_providers",
+            lambda: [_FakeFirebaseProvider()],
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Bearer fake.partner.jwt")
+        assert _match(client).status_code == 200
 
         Identity.objects.filter(
             issuer=_FakeFirebaseProvider.ISSUER, sub=_FakeFirebaseProvider.SUB,
         ).update(is_active=False)
 
         assert _match(client).status_code == 401
-        assert len(verify_calls) == 1
 
 
 def _jwt_with_payload(payload: dict) -> str:
