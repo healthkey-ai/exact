@@ -19,7 +19,8 @@ Usage
     python manage.py compare_trials \\
       --input scripts/compare_input.json \\
       --output /tmp/compare_results \\
-      --source-db-url postgresql://user:pass@host:5432/patients
+      # Reads PATIENT_DATABASE_URL from the environment. Do not pass
+      # --source-db-url with a password in it: argv is world-readable (#403).
 
 Falls back to PATIENT_DATABASE_URL env var if --source-db-url is not given.
 """
@@ -30,6 +31,7 @@ import shutil
 import subprocess
 
 from django.core.management.base import BaseCommand
+from trials.services.psql_dsn import psql_dsn_and_env
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +72,10 @@ def _psql_query_rows(db_url, sql):
     a disabled SSL mode from the parent Django/conda environment.
     """
     wrapped = f"SELECT row_to_json(t) FROM ({sql}) t"
-    env = {**os.environ, 'PGSSLMODE': 'require'}
+    # The password goes in the environment, never in argv (#403).
+    dsn, env = psql_dsn_and_env(db_url, PGSSLMODE='require')
     result = subprocess.run(
-        ['psql', db_url, '-t', '--no-psqlrc', '-c', wrapped],
+        ['psql', dsn, '-t', '--no-psqlrc', '-c', wrapped],
         capture_output=True,
         text=True,
         env=env,

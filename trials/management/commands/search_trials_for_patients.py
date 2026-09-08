@@ -8,7 +8,9 @@ web server required.
 Usage
 -----
     python manage.py search_trials_for_patients \\
-      --source-db-url postgresql://user:pass@host:5432/patients
+      # Reads PATIENT_DATABASE_URL from the environment. Do not pass
+      # --source-db-url with a password in it: the shell expands it before
+      # exec, so the credential lands in this process's argv (#403).
 
     Falls back to PATIENT_DATABASE_URL env var if --source-db-url is not given.
 
@@ -46,6 +48,7 @@ from trials.services.patient_info.ctomop_adapter import (
     resolve_therapy_code as _resolve_therapy_code,
 )
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+from trials.services.psql_dsn import psql_dsn_and_env
 
 
 
@@ -376,11 +379,12 @@ class Command(BaseCommand):
             query += f' LIMIT {int(options["patient_limit"])}'
 
         wrapped = f'SELECT row_to_json(t) FROM ({query}) t'
-        env = {**os.environ, 'PGSSLMODE': 'require'}
+        # The password goes in the environment, never in argv (#403).
+        dsn, env = psql_dsn_and_env(source_db_url, PGSSLMODE='require')
 
         try:
             result = subprocess.run(
-                ['psql', source_db_url, '-t', '--no-psqlrc', '-c', wrapped],
+                ['psql', dsn, '-t', '--no-psqlrc', '-c', wrapped],
                 capture_output=True,
                 text=True,
                 env=env,
