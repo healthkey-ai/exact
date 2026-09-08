@@ -16,6 +16,7 @@
 // and CB's share / Standard-of-Care buttons.
 import { useEffect, useId, useMemo, useState } from "react";
 
+import { safeHref } from "../lib/safeUrl";
 import {
   ActionTooltip,
   CheckIcon,
@@ -561,6 +562,40 @@ function RegisterInterest({
   );
 }
 
+/**
+ * The registry link, or plain text when the corpus value is not a safe href.
+ *
+ * A separate component so the guard can be rendered and asserted rather than
+ * pattern-matched in the source (#406). An earlier test read this file with
+ * regexes and passed on `href={data.link || ""}` -- it recognised one spelling
+ * of the fix, not the property.
+ *
+ * Gated on the SANITISED value: gating on the raw one would render an `<a>`
+ * with no `href` for a rejected URL, which paints link styling over something
+ * that does nothing.
+ *
+ * `safeHref` rather than the stricter `safeRedirect`: `data.link` is always an
+ * absolute registry URL, so `safeRedirect`'s `^https://` would fit better --
+ * except that it would also drop the legacy `http://clinicaltrials.gov/ct2/...`
+ * links the corpus still carries. The looser check therefore also admits
+ * `mailto:`/`tel:` and relative paths, which this field never holds; a relative
+ * value would resolve against the HOST application's origin, since this is a
+ * federation remote. Not exploitable, but wider than the data warrants.
+ */
+export function NctLink({ link, studyId }: { link?: string | null; studyId?: string | null }) {
+  const href = safeHref(link);
+
+  if (!href) {
+    return <span className="exact-field__value">{studyId}</span>;
+  }
+
+  return (
+    <a className="exact-detail__nct" href={href} target="_blank" rel="noopener noreferrer">
+      {studyId}
+    </a>
+  );
+}
+
 export function TrialDetailPage({
   apiClient,
   trialId,
@@ -758,18 +793,7 @@ export function TrialDetailPage({
               <Field label="Trial Type" value={asText(data.trialType)} />
               <div className="exact-field">
                 <span className="exact-field__label">NCT Number: </span>
-                {data.link ? (
-                  <a
-                    className="exact-detail__nct"
-                    href={data.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {data.studyId}
-                  </a>
-                ) : (
-                  <span className="exact-field__value">{data.studyId}</span>
-                )}
+                <NctLink link={data.link} studyId={data.studyId} />
               </div>
               <Field label="Sponsor" value={asText(data.sponsorName)} />
             </div>
