@@ -46,6 +46,20 @@ export interface FakeApi {
   /** Leave `/form-settings/` unanswered, to see what renders while the option
    *  catalog is still in flight. */
   holdFormSettings: () => void;
+  /** Answer the next export with a file whose last line says it stopped
+   *  early — what a stream that died halfway delivers when the server was
+   *  still alive to say so. */
+  truncateNextExport: () => void;
+  /** Answer the next export with a file that just STOPS — no end marker and
+   *  no apology, which is what a proxy cutting the response leaves behind. */
+  cutNextExport: () => void;
+  /** Cut the next export in the one place that looks finished: inside a quoted
+   *  title holding a newline and the completion marker, so the file's last
+   *  PHYSICAL line is the marker while its last RECORD is a half-written
+   *  row. */
+  cutNextExportInsideAQuotedMarker: () => void;
+  /** Hold the next export open, and hand back the release. */
+  holdNextExport: () => () => void;
   /** Override fields on every trial's detail response from now on.
    *  Whatever is NOT overridden follows the trial actually asked for — so
    *  the id and title track the row that was clicked unless a test pins
@@ -148,6 +162,10 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   };
   let failWith: number | null = null;
   let holdSettings = false;
+  let truncateExport = false;
+  let cutExport = false;
+  let cutInsideQuote = false;
+  let heldExport: { release: () => void } | null = null;
   let detailOverrides: Partial<TrialDetailResponse> = {};
 
   const respond = (url: string, body?: unknown) => {
@@ -166,6 +184,34 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
           response: { status },
         }),
       );
+    }
+    if (url.includes("/trials/export/")) {
+      const body = cutInsideQuote
+        ? 'Study ID,Title\nNCT1,"a title\n# end of export — not really'
+        : cutExport
+        ? // Cut mid-row, and the row before it holds a title with a NEWLINE
+          // followed by the completion marker — `csv.writer` keeps a line
+          // break inside a quoted field, so the marker starts a physical line
+          // without starting a record.
+          'Study ID,Title\nNCT1,"a title\n# end of export — not really"\nNCT2,Part'
+        : truncateExport
+          ? "Study ID\nNCT1\n# EXPORT INCOMPLETE — this file stopped early after 1 trials\n"
+          : "Study ID\nNCT1\n# end of export — 1 trials\n";
+      truncateExport = false;
+      cutExport = false;
+      cutInsideQuote = false;
+      const answer = {
+        data: new Blob([body], { type: "text/csv" }),
+        headers: { "content-disposition": 'attachment; filename="trials-2026-09-11.csv"' },
+      };
+      if (heldExport) {
+        const held = heldExport;
+        heldExport = null;
+        return new Promise((resolve) => {
+          held.release = () => resolve(answer);
+        });
+      }
+      return Promise.resolve(answer);
     }
     // A single trial, not the list: `/trials/7/` and `/trials/7/match/`.
     // Answered FOR THE ID ASKED FOR — one id-blind object would render
@@ -228,6 +274,20 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     },
     holdFormSettings: () => {
       holdSettings = true;
+    },
+    truncateNextExport: () => {
+      truncateExport = true;
+    },
+    cutNextExport: () => {
+      cutExport = true;
+    },
+    cutNextExportInsideAQuotedMarker: () => {
+      cutInsideQuote = true;
+    },
+    holdNextExport: () => {
+      const slot = { release: () => {} };
+      heldExport = slot;
+      return () => slot.release();
     },
   };
 }

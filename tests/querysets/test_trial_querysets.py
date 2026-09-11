@@ -539,17 +539,18 @@ class TestTrialQuerySet:
 
         assert Trial.objects.count() == 3
 
-        last_treatment = None
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1, t2, t3]
+        # Compared as SETS: the queryset carries no `order_by`, so the order it
+        # comes back in is the planner's business and an equality against a
+        # list is a coin toss that usually lands the same way. It landed the
+        # other way once during this change, which is the only reason it is
+        # touched here — the claim is which trials, not in what order.
+        def eligible(last_treatment):
+            return set(Trial.objects.eligible_for_washout_period_duration(last_treatment))
 
-        last_treatment = dt.date.today() - dt.timedelta(days=25)
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1]
-
-        last_treatment = dt.date.today() - dt.timedelta(days=75)
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1, t2]
-
-        last_treatment = dt.date.today() - dt.timedelta(days=110)
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1, t2, t3]
+        assert eligible(None) == {t1, t2, t3}
+        assert eligible(dt.date.today() - dt.timedelta(days=25)) == {t1}
+        assert eligible(dt.date.today() - dt.timedelta(days=75)) == {t1, t2}
+        assert eligible(dt.date.today() - dt.timedelta(days=110)) == {t1, t2, t3}
 
     @pytest.mark.django_db
     def test_eligible_for_molecular_marker(self) -> None:

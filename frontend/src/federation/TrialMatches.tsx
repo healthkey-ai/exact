@@ -22,6 +22,7 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import { EXPORT_URL_LIFETIME_MS, exportIsComplete, exportTrials } from "./api";
 import { Tabs } from "./Tabs";
 import { hasInlinePatient } from "./api";
 import {
@@ -463,7 +464,104 @@ function TrialMatchesInner({
   // state tabs — `JSON.stringify` drops undefined keys, so all three
   // hashed identically and switching between them never reset the page.
   // A reader on page 2 then asked for page 2 of their bookmarks.
+  // The export is a file, not a view: no cache, no retry, and a status the
+  // reader can see. React Query would serve the same bytes back on a second
+  // click, which for a download means the reader gets a stale file.
+  const [exportState, setExportState] = useState<
+    "idle" | "working" | "failed" | "incomplete"
+  >("idle");
+  // Which view is on screen RIGHT NOW, for an export that settles later. A
+  // reader who exports Favorites and then switches tabs must not be handed the
+  // previous tab's rows, nor shown a failure under a view they never exported.
+  // Written during render, so by the time an in-flight export resolves it
+  // already describes where the reader is.
+  const viewKeyRef = useRef<string>("");
+  // On a state tab, `trialIds` is `undefined` in three different ways — the
+  // saved ids are still loading, the read failed, or there are more than the
+  // server will filter by. The list already refuses to search in all three.
+  // The export has to refuse too: sending no ids reaches the same endpoint
+  // with the same filters and returns the whole matched corpus, delivered as
+  // a file the tab has labelled "Favorites". That is the wrong-set answer the
+  // server's own `type=favorites` refusal exists to prevent, arrived at from
+  // the other side.
+  // Two ways the export cannot answer. A state tab whose ids are unavailable
+  // is the first. The second is no patient at all — a supported mode for the
+  // list, but the remote never sends `?type=all`, so every export in it is a
+  // guaranteed 400 surfaced as "please try again", which is advice that cannot
+  // work.
+  const exportUnavailable =
+    (stateTab != null && trialIds === undefined) ||
+    (!hasInlinePatient(patientInfo) && personId == null);
+  const exportUnavailableReason =
+    stateTab != null && trialIds === undefined
+      ? "Your saved trials aren't available right now, so this tab can't be exported."
+      : "An export needs a patient, and this view has none.";
+  const handleExport = async () => {
+    if (exportUnavailable) return;
+    setExportState("working");
+    const issuedFor = exportViewKey;
+    try {
+      const { blob, filename } = await exportTrials({
+        apiClient,
+        patientInfo,
+        personId,
+        // The filters the LIST is showing, tab included — the file has to be
+        // the answer to the question on screen, not to an unnarrowed one.
+        filters: queryFilters,
+        trialIds,
+      });
+      // The view moved while this was in flight. Dropping it costs the reader
+      // a click; handing it over downloads one tab's rows while the screen
+      // shows another's, under a filename that says neither.
+      if (viewKeyRef.current !== issuedFor) return;
+      const complete = await exportIsComplete(blob);
+      // Checked again on the far side of that await: scanning a large export
+      // takes long enough for the reader to change tabs while it runs, and the
+      // file would then be handed over under a view it does not describe.
+      if (viewKeyRef.current !== issuedFor) return;
+      if (!complete) {
+        // The server said so on the last line, because its 200 was spent
+        // before the first row. Saving it anyway hands over a file that looks
+        // complete and is not — and this one goes to an appointment.
+        setExportState("incomplete");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      // Attached before the click: Firefox has historically ignored a
+      // download click on an anchor that is not in the document.
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoked on a timer, not immediately. Some browsers — Safari the one
+      // that bites — start the download after the click handler has returned,
+      // and a URL revoked by then yields an empty or failed download. Not
+      // never, either: the blob is held for the life of the document
+      // otherwise, and an export of a few thousand trials is not small.
+      setTimeout(() => URL.revokeObjectURL(url), EXPORT_URL_LIFETIME_MS);
+      setExportState("idle");
+    } catch {
+      if (viewKeyRef.current !== issuedFor) return;
+      setExportState("failed");
+    }
+  };
+
   const queryKey = JSON.stringify([queryFilters, activeTab, trialIds ?? null]);
+  // The export's idea of "the same view", which the list's does not need: WHO
+  // the rows are about. A host switching patients with the filters untouched
+  // leaves `queryKey` identical, so without this the previous patient's file
+  // passes both staleness checks and is handed over under the new patient's
+  // name — the wrong rows, about the wrong person.
+  const exportViewKey = `${stateKey}|${queryKey}`;
+  viewKeyRef.current = exportViewKey;
+  // The failure belonged to the view it happened in. Left standing, it sits
+  // under a list the reader has since changed and reads as a fresh failure of
+  // what they are looking at now.
+  useEffect(() => {
+    setExportState("idle");
+  }, [exportViewKey]);
   const [lastQueryKey, setLastQueryKey] = useState(queryKey);
   if (lastQueryKey !== queryKey) {
     setLastQueryKey(queryKey);
@@ -629,6 +727,18 @@ function TrialMatchesInner({
 
         <button
           type="button"
+          className={`exact-list__export${exportState === "working" ? " is-working" : ""}`}
+          onClick={() => void handleExport()}
+          disabled={exportState === "working" || exportUnavailable}
+          // Said out loud rather than left as a dead control: everything else
+          // in this file names why it cannot answer.
+          title={exportUnavailable ? exportUnavailableReason : undefined}
+        >
+          {exportState === "working" ? "Preparing…" : "Export CSV"}
+        </button>
+
+        <button
+          type="button"
           className={`exact-filters__trigger${
             filtersOpen || activeFilterCount > 0 ? " is-on" : ""
           }`}
@@ -640,6 +750,14 @@ function TrialMatchesInner({
             : "Filter Results"}
         </button>
       </div>
+
+      {exportState === "failed" || exportState === "incomplete" ? (
+        <p className="exact-list__export-error" role="alert">
+          {exportState === "incomplete"
+            ? "That export stopped partway, so it wasn't saved. Please try again."
+            : "Couldn't prepare that file. Please try again."}
+        </p>
+      ) : null}
 
       {filtersOpen ? (
         <FilterPanel

@@ -851,6 +851,43 @@
  * out of Tailwind utilities and shadcn controls. Native controls here, so no
  * component library follows the remote into its host.
  * ------------------------------------------------------------------------- */
+/* Export CSV: the same chrome as the filter trigger — it sits beside it and
+   two differently-drawn buttons in one row read as two kinds of control. */
+.exact-root .exact-list__export {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.exact-root .exact-list__export:disabled {
+  /* `not-allowed`, not `progress`: the button is also disabled when the export
+     CANNOT run, and a spinner cursor over a dead control asserts work that is
+     not happening. */
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.exact-root .exact-list__export.is-working:disabled {
+  cursor: progress;
+}
+
+.exact-root .exact-list__export-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--exact-color-not-eligible);
+}
+
 .exact-root .exact-filters__trigger {
   display: inline-flex;
   align-items: center;
