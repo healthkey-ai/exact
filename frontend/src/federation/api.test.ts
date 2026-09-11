@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AxiosInstance } from "axios";
 
-import { fetchTrialDetail, fetchTrials, filterStateToParams } from "./api";
+import {
+  fetchTrialDetail,
+  fetchTrials,
+  filterStateToParams,
+  hasInlinePatient,
+} from "./api";
 import type { FilterState } from "./types";
 
 describe("filterStateToParams", () => {
@@ -50,9 +55,17 @@ describe("filterStateToParams", () => {
     });
   });
 
-  it("stringifies distance, including 0, and omits a falsy validatedOnly", () => {
-    expect(filterStateToParams({ distance: 0 })).toEqual({ distance: "0" });
+  it("stringifies a real distance and omits a falsy validatedOnly", () => {
+    expect(filterStateToParams({ distance: 50 })).toEqual({ distance: "50" });
     expect(filterStateToParams({ validatedOnly: false })).toEqual({});
+  });
+
+  it("omits a zero distance rather than sending a parameter that does nothing", () => {
+    // This used to assert `{distance: "0"}`. The backend gates on
+    // `if study_info.distance:`, so zero applies no radius at all — putting
+    // it on the wire made the request look filtered when it was not, and
+    // the panel's badge counted it.
+    expect(filterStateToParams({ distance: 0 })).toEqual({});
   });
 
   it("omits keys that are absent", () => {
@@ -186,5 +199,42 @@ describe("fetchTrials — the search path", () => {
     expect(
       filterStateToParams({ phase: "PHASE3", lastUpdate: "2026-01-01" }),
     ).toEqual({ phase: "PHASE3", lastUpdate: "2026-01-01" });
+  });
+});
+
+describe("hasInlinePatient", () => {
+  // The request and the component both have to answer "which prop is the
+  // patient?" the same way. They did not, and a host updating the inline
+  // payload while keeping a person id carried the previous patient's
+  // filters into the new patient's search — hence one exported function.
+  it("is true for a payload with fields", () => {
+    expect(hasInlinePatient({ disease: "multiple myeloma" })).toBe(true);
+  });
+
+  it("is false for nothing, null, or an empty object", () => {
+    // `{}` carries no patient, and the request falls through to the
+    // person_id path for it — so the identity must fall through too.
+    expect(hasInlinePatient(undefined)).toBe(false);
+    expect(hasInlinePatient(null)).toBe(false);
+    expect(hasInlinePatient({})).toBe(false);
+  });
+
+  it("agrees with the endpoint fetchTrials actually calls", async () => {
+    // Pins the two together: if the precedence changes in one place this
+    // fails rather than silently drifting again.
+    for (const payload of [undefined, null, {}, { disease: "mm" }]) {
+      const apiClient = fakeClient();
+      await fetchTrials({ apiClient, patientInfo: payload, personId: 9001 });
+      expect(apiClient.post.mock.calls.length > 0).toBe(hasInlinePatient(payload));
+      expect(apiClient.get.mock.calls.length > 0).toBe(!hasInlinePatient(payload));
+    }
+  });
+});
+
+describe("filterStateToParams — distance", () => {
+  it("omits a negative distance a host could pass in", () => {
+    // Truthiness is not enough: `-1` is truthy, reaches the backend's
+    // distance branch, and becomes a negative radius.
+    expect(filterStateToParams({ distance: -1 })).toEqual({});
   });
 });

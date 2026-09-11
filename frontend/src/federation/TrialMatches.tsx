@@ -17,12 +17,14 @@ function useDebounced<T>(value: T, delay: number): T {
 }
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import { FilterBar } from "./FilterBar";
+import { FilterPanel } from "./FilterPanel";
 import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
 import { Tabs } from "./Tabs";
+import { hasInlinePatient } from "./api";
+import { baselineFilters, countActiveFilters, countryFor } from "./filters";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
@@ -55,6 +57,7 @@ function TrialMatchesInner({
   );
   const [sort, setSort] = useState<string>(initialFilters?.sort ?? DEFAULT_SORT);
   const [page, setPage] = useState(1);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Reset detail view when patient context changes so we don't keep a
   // stale trial open from a previous patient. We key on a stable derived
@@ -71,26 +74,67 @@ function TrialMatchesInner({
     setPage(1);
   }, [personId, patientInfoKey]);
 
-  // Auto-derive `country` from the patient profile. The country filter
-  // was previously a dropdown but in practice was redundant — patients
-  // are matched to trials in their home country. We sync on every
-  // patient change (not just first mount) so swapping `patientInfo`
-  // — e.g. picking another row in the dev harness — re-scopes the
-  // trial list correctly. The equality guard prevents a `setFilters`
-  // re-render storm when the patient's country is already the active
-  // filter. `undefined` clears the param so a patient without a country
-  // gets the disease-agnostic union, not a stale previous country.
+  // `country` is seeded from the patient profile — patients are matched to
+  // trials they can reach — but the panel now offers the control, so the
+  // seeding happens ONCE PER PATIENT rather than continuously. The previous
+  // effect re-asserted the patient's country whenever it differed from the
+  // filter, which with a control on screen would have snapped the user's
+  // own choice back on the very next render.
   const patientCountry = useMemo(() => {
     const c = (patientInfo as Record<string, unknown> | null | undefined)?.["country"];
     return typeof c === "string" && c.trim() ? c.trim() : undefined;
   }, [patientInfo]);
-  useEffect(() => {
-    if (filters.country === patientCountry) return;
-    setFilters((prev) => ({ ...prev, country: patientCountry }));
-  }, [patientCountry, filters.country]);
+  // Keyed on WHICH PATIENT, not on the country value. Keyed on the value,
+  // a reader who overrode Patient A's country and then had the host swap to
+  // Patient B in the same country would keep searching A's override: the
+  // marker never changed, so the new patient was never seeded.
+  //
+  // `hasInlinePatient` decides which prop identifies the patient, because it
+  // is the same function the request uses to decide which one it sends. When
+  // this disagreed with that, a host updating the inline payload while
+  // keeping a person id carried the previous patient's filters into the new
+  // patient's search.
+  const patientIdentity = hasInlinePatient(patientInfo)
+    ? patientInfoKey
+    : personId != null
+      ? String(personId)
+      : null;
+  const UNSEEDED = "\u0000unseeded";
+  const seededFor = useRef<string | null>(UNSEEDED);
+  if (seededFor.current !== patientIdentity) {
+    // During render, not in an effect: an effect would let one request go
+    // out with the previous patient's country. `useRef` rather than state
+    // because this is a "have I done this yet" marker, not rendered data.
+    const isFirstSeed = seededFor.current === UNSEEDED;
+    seededFor.current = patientIdentity;
+    setFilters((prev) => ({
+      ...prev,
+      // The same answer the baseline computes. Written separately, the two
+      // disagreed whenever the patient had no country and the host had
+      // supplied one: this cleared it, the baseline kept it, and the badge
+      // read "Filters (1)" for a country that was never sent.
+      country: countryFor(patientCountry, initialFilters),
+      // Cleared when SWITCHING patients, not on the first seed: the options
+      // are disease-scoped, so a type picked for an MM patient is invisible
+      // in a BC patient's list and `by_trial_type` has no leniency for a
+      // value that is not there — the reader would get an empty result set
+      // from a control rendering blank. CB carries the structurally
+      // identical guard for its purpose->type narrowing. On mount there is
+      // no previous patient, and clearing would throw away a `trialType` the
+      // host asked for in `initialFilters`.
+      ...(isFirstSeed ? {} : { trialType: undefined }),
+    }));
+  }
+
+  const baseline = useMemo(
+    () => baselineFilters(patientCountry, initialFilters),
+    [patientCountry, initialFilters],
+  );
+  const activeFilterCount = countActiveFilters(filters, baseline);
 
   const debouncedTitle = useDebounced(filters.searchTitle, 400);
   const debouncedTreatment = useDebounced(filters.searchTreatment, 400);
+  const debouncedSponsor = useDebounced(filters.sponsor, 400);
   const debouncedDistance = useDebounced(filters.distance, 400);
   const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400);
   const activeTabDef = TABS.find((t) => t.value === activeTab) ?? TABS[0];
@@ -99,6 +143,7 @@ function TrialMatchesInner({
       ...filters,
       searchTitle: debouncedTitle,
       searchTreatment: debouncedTreatment,
+      sponsor: debouncedSponsor,
       distance: debouncedDistance,
       distanceUnits: debouncedDistanceUnits,
       type: activeTabDef.param,
@@ -108,6 +153,7 @@ function TrialMatchesInner({
       filters,
       debouncedTitle,
       debouncedTreatment,
+      debouncedSponsor,
       debouncedDistance,
       debouncedDistanceUnits,
       activeTabDef.param,
@@ -166,6 +212,10 @@ function TrialMatchesInner({
   const handleTabChange = (next: TabValue) => setActiveTab(next);
   const handleSortChange = (next: string) => setSort(next);
   const handleFiltersChange = (next: FilterState) => setFilters(next);
+  // Reset goes back to the baseline, not to `{}`: clearing the seeded
+  // country would silently widen the search to every country in the
+  // registry, which is not what "reset" means to the person clicking it.
+  const handleFiltersReset = () => setFilters(baseline);
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -220,14 +270,31 @@ function TrialMatchesInner({
 
       <div className="exact-list__controls">
         <SortControl value={sort} onChange={handleSortChange} />
+
+        <button
+          type="button"
+          className={`exact-filters__trigger${
+            filtersOpen || activeFilterCount > 0 ? " is-on" : ""
+          }`}
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen((open) => !open)}
+        >
+          {activeFilterCount > 0
+            ? `Filters (${activeFilterCount})`
+            : "Filter Results"}
+        </button>
       </div>
 
-      <FilterBar
-        apiClient={apiClient}
-        filters={filters}
-        onChange={handleFiltersChange}
-        diseaseCode={diseaseCode}
-      />
+      {filtersOpen ? (
+        <FilterPanel
+          apiClient={apiClient}
+          filters={filters}
+          onChange={handleFiltersChange}
+          onReset={handleFiltersReset}
+          canReset={activeFilterCount > 0}
+          diseaseCode={diseaseCode}
+        />
+      ) : null}
 
       {query.isLoading ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>Loading trials…</p>

@@ -169,7 +169,10 @@ export interface FilterState {
    *  phase was never ingested drop out of every value, including the
    *  lowest (EXACT #417). */
   phase?: string;
-  /** ISO date — keep trials updated after it. */
+  /** How many YEARS back to accept, as digits — not a date. `by_date_since`
+   *  runs it through `cast_str_to_int`, which takes digits only, so an ISO
+   *  date is silently dropped and nothing is filtered (#429). It also keeps
+   *  trials whose `last_update_date` is null. */
   lastUpdate?: string;
   /** "type" param. `eligible` / `potential` narrow server-side; `all`
    *  switches to the admin corpus, which skips the eligibility filter and

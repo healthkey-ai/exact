@@ -733,3 +733,156 @@
     display: inline;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Filter panel — CB's `TrialFiltersPanel` (ui.v2), which builds the same grid
+ * out of Tailwind utilities and shadcn controls. Native controls here, so no
+ * component library follows the remote into its host.
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-filters__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.exact-root .exact-filters__trigger:hover {
+  background: var(--exact-color-surface-2);
+}
+
+/* Both "open" and "has filters applied" light the trigger up: a closed panel
+   still filtering the list is the state most worth making visible. */
+.exact-root .exact-filters__trigger.is-on {
+  border-color: var(--exact-color-primary);
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-filters__trigger:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+.exact-root .exact-filters {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+}
+
+.exact-root .exact-filters__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 640px) {
+  .exact-root .exact-filters__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .exact-root .exact-filters__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .exact-root .exact-filters__grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.exact-root .exact-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.exact-root .exact-filter__label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--exact-color-text-tertiary);
+}
+
+.exact-root .exact-filter__input {
+  width: 100%;
+  min-width: 0;
+  height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+}
+
+.exact-root .exact-filter__input:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: -1px;
+}
+
+.exact-root .exact-filter__pair {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.exact-root .exact-filter__units {
+  width: 6rem;
+  flex: 0 0 auto;
+  padding: 0 0.5rem;
+}
+
+/* The units select filters nothing on its own, so it is disabled until a
+   distance is entered rather than sitting there implying it does something. */
+.exact-root .exact-filter__units:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+.exact-root .exact-filters__footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.exact-root .exact-filters__reset {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+}
+
+.exact-root .exact-filters__reset:hover:not(:disabled) {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-filters__reset:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.exact-root .exact-filters__reset:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
