@@ -135,3 +135,135 @@ export function hasActiveFilters(
 ): boolean {
   return countActiveFilters(filters, baseline) > 0;
 }
+
+/** The fields that are saved to the patient's stored preferences.
+ *
+ *  Exactly the controls the panel renders, and nothing else. Three kinds of
+ *  field are deliberately absent:
+ *
+ *  - `type` and `sort` belong to the tab bar and the sort control.
+ *  - `country` is derived from the patient's own profile and has no control
+ *    (#430). Storing it would store a copy of a fact that can change.
+ *  - `region`, `studyType` and `validatedOnly` can only arrive through a
+ *    host's `initialFilters`. Saving them would pin the host's scope into
+ *    the patient's own preferences, where it would outlive a host that had
+ *    stopped sending it — a filter running with nothing on screen that can
+ *    turn it off.
+ *  - `trialType` is absent for a reason of its own: it is scoped to the
+ *    disease. A type chosen for one has no matching option under another,
+ *    and `by_trial_type` has no leniency for a value that is not there —
+ *    an empty result set from a control rendering blank. The component
+ *    already treats a type as belonging to the patient it was picked for
+ *    (`trialTypeOwner`); a stored one would arrive unclaimed, so nothing
+ *    would ever make it stale. Persisting it needs the panel to check it
+ *    against the disease's own options first, which is #437.
+ */
+export const PERSISTED_FIELDS = [
+  "searchTitle",
+  "searchTreatment",
+  "sponsor",
+  "trialPurpose",
+  "recruitmentStatus",
+  "phase",
+  "register",
+  "lastUpdate",
+  "distance",
+  "distanceUnits",
+] as const;
+
+/** Longest stored string accepted. These travel on as query parameters, and
+ *  nothing a person types into a search box is anywhere near this. */
+const MAX_STORED_STRING = 200;
+
+/** What to save: the persisted fields, with anything inactive left out so
+ *  the stored object says only what the reader actually set.
+ *
+ *  A value the HOST set is left out too. The panel is fed the effective
+ *  filters, so a host's `initialFilters` ride along in every field it
+ *  touched, and a save would copy them into the patient's own preferences —
+ *  where they outrank the host on the next mount and outlive a host that
+ *  stopped sending them. The rule the field list already states for
+ *  `region` and friends, applied to the fields that do have controls. */
+export function filtersToStore(
+  filters: FilterState,
+  hostFilters: FilterState = {},
+  stored: FilterState = {},
+): FilterState {
+  const out: FilterState = {};
+  for (const field of PERSISTED_FIELDS) {
+    const value = filters[field];
+    // Identical to what the host asked for: not the reader's choice to
+    // store, and storing it changes nothing except who owns it.
+    //
+    // Unless the patient had already stored it. The two can agree by
+    // coincidence — a host scoping to PHASE3 for someone whose saved phase
+    // is PHASE3 — and since a save replaces the stored set whole, dropping
+    // the field on that coincidence deletes their preference. It surfaces
+    // the day the host stops sending it, which is exactly the day it was
+    // supposed to still be there.
+    // Deliberate consequence: once the patient has a stored value for a
+    // field, whatever they select there is theirs — including a value that
+    // happens to be the host's. The alternative makes choosing the value
+    // the host already uses mean "delete my preference", which is a
+    // surprising thing for a dropdown to do, and it cannot be told apart on
+    // screen from choosing it on purpose.
+    if (value === hostFilters[field] && stored[field] === undefined) continue;
+    if (field === "distance") {
+      if (isActiveDistance(value)) out.distance = value as number;
+      continue;
+    }
+    if (field === "distanceUnits") continue; // settled after the loop
+
+    if (typeof value === "string" && value !== "") {
+      out[field] = value.slice(0, MAX_STORED_STRING) as never;
+    }
+  }
+  // The unit is settled last, and outside the host-equality rule above.
+  //
+  // Only alongside a distance: on its own it is a unit for nothing. But a
+  // stored radius must always carry one — subtracted because it matched the
+  // host's, a saved 50 MILES came back as 50 km the day the host stopped
+  // sending the unit, which is a different set of trials and nothing on
+  // screen to say so.
+  if (out.distance != null) {
+    const unit = filters.distanceUnits;
+    if (unit === "km" || unit === "miles") out.distanceUnits = unit;
+  }
+  return out;
+}
+
+/** What to trust on the way back.
+ *
+ *  The stored payload is opaque JSON on the server — PROMOP checks that it
+ *  is an object and nothing more — and this remote is not its only writer.
+ *  So a stored value is treated as a claim, not as a `FilterState`: unknown
+ *  keys are dropped, and a value of the wrong type is dropped rather than
+ *  handed to a control that expects a string and would render `[object
+ *  Object]`, or sent to the backend to be rejected.
+ */
+export function sanitizeStoredFilters(raw: unknown): FilterState {
+  // No array check: a JSON array has none of these keys, so it falls out
+  // of the loop as `{}` anyway, and a guard that cannot change an answer is
+  // a guard no test can pin.
+  if (raw == null || typeof raw !== "object") return {};
+  const input = raw as Record<string, unknown>;
+  const out: FilterState = {};
+  for (const field of PERSISTED_FIELDS) {
+    const value = input[field];
+    if (field === "distance") {
+      if (isActiveDistance(value)) out.distance = value as number;
+      continue;
+    }
+    if (field === "distanceUnits") {
+      if (value === "km" || value === "miles") out.distanceUnits = value;
+      continue;
+    }
+    if (typeof value === "string" && value !== "" && value.length <= MAX_STORED_STRING) {
+      out[field] = value as never;
+    }
+  }
+  // A unit without a distance qualifies nothing; drop it rather than let it
+  // ride along into the request.
+  if (out.distanceUnits != null && out.distance == null) delete out.distanceUnits;
+  return out;
+}

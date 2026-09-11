@@ -403,7 +403,20 @@ describe("a host's initialFilters.trialType", () => {
       expect(screen.getByRole("button", { name: /Filters \(2\)/ })).toBeInTheDocument(),
     );
 
+    // The whole panel belongs to the patient it was filled in for, not just
+    // the trial type: a new patient gets the host's scope back, and (with a
+    // state adapter) their own saved filters over it. So nothing of the
+    // previous reader's is counted here.
     view.rerender(ui({ disease: "multiple myeloma", ref: "B" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Filter Results/ })).toBeInTheDocument(),
+    );
+
+    // Re-armed under the new patient, so Reset has something to clear.
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Recruitment status"),
+      "RECRUITING",
+    );
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /Filters \(1\)/ })).toBeInTheDocument(),
     );
@@ -1682,5 +1695,1126 @@ describe("the controls on the detail page", () => {
 
     await screen.findByText(/Nothing is sent to the trial's coordinators/);
     expect(screen.queryByText(/coordinator will reach out/i)).toBeNull();
+  });
+});
+
+describe("the filters the patient saved", () => {
+  const openPanel = async () =>
+    userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+
+  it("applies them to the first search, without a second request", async () => {
+    // Seeded into state they would arrive a render too late: a render-phase
+    // `setState` re-runs the component but does not un-send what the query
+    // observer was already told to fetch. So the first request went out
+    // with the defaults and a second followed — two matcher runs, and a
+    // flash of results nobody asked for.
+    const api = fakeApi();
+    const state = fakeState({ preferences: { phase: "PHASE3", sponsor: "Acme" } });
+    renderTrialMatches(api, { state: state.adapter });
+
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.phase).toBe("PHASE3");
+    expect(listed(api)[0].params.sponsor).toBe("Acme");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(listed(api).length).toBe(1);
+  });
+
+  it("counts them on the badge, because they are the reader's own", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({ preferences: { phase: "PHASE3" } }).adapter,
+    });
+    await screen.findByRole("button", { name: /Filters \(1\)/ });
+  });
+
+  it("shows them in the panel", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({ preferences: { searchTitle: "myeloma" } }).adapter,
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    expect(await screen.findByLabelText("Title")).toHaveValue("myeloma");
+  });
+
+  it("asks for nothing when the host gave no adapter", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.phase).toBeUndefined();
+  });
+
+  it("saves a change, once, after the typing stops", async () => {
+    // Every keystroke is a network write otherwise: "myeloma" is seven
+    // PATCHes.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await waitFor(() => expect(state.preferences()).toEqual({ searchTitle: "mm" }), {
+      timeout: 2000,
+    });
+    expect(state.adapter.savePreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves only the fields the panel owns", async () => {
+    // `type` and `sort` belong to other controls, and `country` is derived
+    // from the patient — a stored copy of a fact that can change.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, {
+      state: state.adapter,
+      patientInfo: { disease: "mm", country: "US" },
+      initialFilters: { type: "potential" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Recruitment status"),
+      "RECRUITING",
+    );
+    await waitFor(
+      () => expect(state.preferences()).toEqual({ recruitmentStatus: "RECRUITING" }),
+      { timeout: 2000 },
+    );
+  });
+
+  it("never has two saves in flight at once", async () => {
+    // The debounce only collapses changes inside its own window: type, wait
+    // it out, type again while that PATCH is still travelling, and two are
+    // in flight — applied in whatever order they arrive, so the older set
+    // can be the one that sticks.
+    const api = fakeApi();
+    let inFlight = 0;
+    let overlapped = false;
+    const release: (() => void)[] = [];
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn(() => {
+          inFlight += 1;
+          if (inFlight > 1) overlapped = true;
+          return new Promise<void>((resolve) => {
+            release.push(() => {
+              inFlight -= 1;
+              resolve();
+            });
+          });
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    const title = await screen.findByLabelText("Title");
+    await userEvent.type(title, "a");
+    await waitFor(() => expect(release.length).toBe(1), { timeout: 2000 });
+    await userEvent.type(title, "b");
+    // Past the debounce, so the second write is due and the only thing
+    // holding it back is the one already on the wire.
+    await new Promise((r) => setTimeout(r, 800));
+    expect(state.adapter.savePreferences).toHaveBeenCalledTimes(1);
+
+    // A third change, also while the first write is still travelling. It
+    // replaces the queued one rather than lining up behind it: within one
+    // patient a write is absolute, so the newer says everything the older
+    // would have, and sending both is a round trip for a set nobody will
+    // ever see.
+    await userEvent.type(title, "c");
+    await new Promise((r) => setTimeout(r, 800));
+
+    release[0]();
+    await waitFor(() => expect(state.adapter.savePreferences).toHaveBeenCalledTimes(2));
+    expect(overlapped).toBe(false);
+    // The second write carries the latest text, not a stale one.
+    expect(
+      (state.adapter.savePreferences as unknown as { mock: { calls: unknown[][] } }).mock
+        .calls[1][0],
+    ).toEqual({ searchTitle: "abc" });
+    release.forEach((fn) => fn());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(state.adapter.savePreferences).toHaveBeenCalledTimes(2);
+    release.forEach((fn) => fn());
+  });
+
+  it("clears them through reset, not by saving an empty set", async () => {
+    const api = fakeApi();
+    const state = fakeState({ preferences: { phase: "PHASE3" } });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reset filters" }));
+    await waitFor(() => expect(state.preferences()).toEqual({}));
+    expect(state.adapter.resetPreferences).toHaveBeenCalled();
+    expect(state.adapter.savePreferences).not.toHaveBeenCalled();
+  });
+
+  it("drops a save that was scheduled before the reset", async () => {
+    // It would otherwise land afterwards and put the filter it carries back.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    await new Promise((r) => setTimeout(r, 900));
+    expect(state.adapter.savePreferences).not.toHaveBeenCalled();
+    expect(state.preferences()).toEqual({});
+  });
+
+  it("sends a change the reader made just before leaving", async () => {
+    // A host unmounting the remote — a route change, a closed tab — is not
+    // the reader changing their mind.
+    const api = fakeApi();
+    const state = fakeState();
+    const view = renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    view.unmount();
+    await waitFor(() => expect(state.preferences()).toEqual({ searchTitle: "mm" }));
+  });
+
+  it("does not resurrect the filters when a reset is followed by leaving", async () => {
+    // Reset drops what the debounce was holding, not just the write it was
+    // going to become: left in place, the flush on unmount would send it
+    // afterwards and put the filters back.
+    const api = fakeApi();
+    const state = fakeState();
+    const view = renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    view.unmount();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(state.adapter.savePreferences).not.toHaveBeenCalled();
+    expect(state.preferences()).toEqual({});
+  });
+
+  it("does not hand a stored value of the wrong type to a control", async () => {
+    // The payload is opaque JSON on the server and this remote is not its
+    // only writer. Unchecked, the title input is handed an object and
+    // renders "[object Object]" — a filter the reader cannot read and did
+    // not set.
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({
+        preferences: { searchTitle: { not: "a string" }, phase: 42 },
+      }).adapter,
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.phase).toBeUndefined();
+
+    await openPanel();
+    expect(await screen.findByLabelText("Title")).toHaveValue("");
+  });
+
+  it("keeps its own cache true, since it will never refetch", async () => {
+    // `staleTime: Infinity` buys a panel that does not move under the
+    // reader's hands, and costs this: a host sharing one QueryClient across
+    // a route change remounts the remote onto the answer from before the
+    // write, so a filter the reader saved is simply gone.
+    const api = fakeApi();
+    const state = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = () => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui());
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await waitFor(() => expect(state.preferences()).toEqual({ searchTitle: "mm" }), {
+      timeout: 2000,
+    });
+
+    view.unmount();
+    render(ui());
+    await openPanel();
+    expect(await screen.findByLabelText("Title")).toHaveValue("mm");
+    // Served from the cache, exactly as intended — which is why the cache
+    // had to be told.
+    expect(state.adapter.getPreferences).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not lose a change queued behind the previous patient's write", async () => {
+    const api = fakeApi();
+    const release: (() => void)[] = [];
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn(
+          () => new Promise<void>((resolve) => release.push(resolve)),
+        ),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (patient: Record<string, unknown>) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={patient}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui({ disease: "mm", ref: "A" }));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "aa");
+    await waitFor(() => expect(release.length).toBe(1), { timeout: 2000 });
+
+    // The panel stays open across the swap; clicking the trigger again
+    // would close it.
+    view.rerender(ui({ disease: "mm", ref: "B" }));
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue(""));
+    await userEvent.type(screen.getByLabelText("Title"), "bb");
+    await new Promise((r) => setTimeout(r, 800));
+    // Still behind A's write, as it must be — one at a time.
+    expect(state.adapter.savePreferences).toHaveBeenCalledTimes(1);
+
+    release[0]();
+    // And when it goes out it is B's, under B's key. Carrying A's key — the
+    // key of the write it was queued behind — it was dropped on the floor
+    // and B's choice was never saved at all.
+    await waitFor(() =>
+      expect(state.adapter.savePreferences).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      (state.adapter.savePreferences as unknown as { mock: { calls: unknown[][] } }).mock
+        .calls[1][0],
+    ).toEqual({ searchTitle: "bb" });
+    release.forEach((fn) => fn());
+  });
+
+  it("does not let a reset and a save be in flight together", async () => {
+    // The server applies them in whichever order they arrive, and the
+    // losing order clears a filter the panel still shows as applied.
+    const api = fakeApi();
+    const order: string[] = [];
+    let releaseReset: () => void = () => {};
+    const state = fakeState({
+      // Something for Reset to clear: a stored filter is the reader's own,
+      // so it counts — a host's `initialFilters` is the baseline and would
+      // leave the button disarmed.
+      preferences: { phase: "PHASE3" },
+      overrides: {
+        resetPreferences: vi.fn(() => {
+          order.push("reset:start");
+          return new Promise<void>((resolve) => {
+            releaseReset = () => {
+              order.push("reset:done");
+              resolve();
+            };
+          });
+        }),
+        savePreferences: vi.fn(async () => {
+          order.push("save:start");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reset filters" }));
+    await waitFor(() => expect(order).toEqual(["reset:start"]));
+
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Recruitment status"),
+      "RECRUITING",
+    );
+    await new Promise((r) => setTimeout(r, 800));
+    expect(order).toEqual(["reset:start"]);
+
+    releaseReset();
+    await waitFor(() =>
+      expect(order).toEqual(["reset:start", "reset:done", "save:start"]),
+    );
+  });
+
+  it("does not overwrite filters it could not read", async () => {
+    // The worst thing this could do. A save is ABSOLUTE — it replaces the
+    // stored set — so writing one field while the rest are unknown discards
+    // everything the patient had saved, on the strength of a panel showing
+    // the defaults precisely BECAUSE they could not be read.
+    const api = fakeApi();
+    const state = fakeState({
+      preferences: { sponsor: "Acme", phase: "PHASE3" },
+      overrides: {
+        getPreferences: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await new Promise((r) => setTimeout(r, 900));
+    expect(state.adapter.savePreferences).not.toHaveBeenCalled();
+    // And the reader is told, before they spend any more effort on it.
+    await screen.findByText(/won't be saved/);
+  });
+
+  it("is not editable until the stored set is known", async () => {
+    // Same hazard as above, narrower window. Editable during the read, one
+    // change marks the session as touched — and the stored filters, when
+    // they land, are then never adopted. The reader's NEXT change saves
+    // that incomplete set as the absolute record and deletes everything
+    // they had.
+    const api = fakeApi();
+    let release: (value: Record<string, unknown>) => void = () => {};
+    const state = fakeState({
+      overrides: {
+        getPreferences: vi.fn(
+          () => new Promise<Record<string, unknown>>((resolve) => {
+            release = resolve;
+          }),
+        ),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openPanel();
+    await screen.findByText("Loading your saved filters…");
+    expect(screen.queryByLabelText("Title")).toBeNull();
+
+    release({ sponsor: "Acme" });
+    // And once they land they are what the panel shows.
+    await waitFor(() => expect(screen.getByLabelText("Sponsor")).toHaveValue("Acme"));
+  });
+
+  it("does not clear on the server what it could not read", async () => {
+    // The banner says changes won't be saved. Reset bypassing that gate
+    // would make it a lie in the most expensive direction — destroying the
+    // stored set we had just admitted we could not read.
+    const api = fakeApi();
+    const state = fakeState({
+      preferences: { sponsor: "Acme" },
+      overrides: {
+        getPreferences: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Recruitment status"),
+      "RECRUITING",
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Reset filters" }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(state.adapter.resetPreferences).not.toHaveBeenCalled();
+    expect(state.preferences()).toEqual({ sponsor: "Acme" });
+  });
+
+  it("says the panel is showing defaults when the adapter cannot be asked", async () => {
+    const api = fakeApi();
+    const state = fakeState();
+    delete (state.adapter as Partial<typeof state.adapter>).getPreferences;
+    renderTrialMatches(api, { state: state.adapter });
+    await screen.findByText(/Couldn't load your saved filters/);
+  });
+
+  it("does not say there are no trials while it is still waiting to ask", async () => {
+    // The read DISABLES the trials query, and a disabled query reports
+    // `isLoading` false — so nothing said the list was loading and the
+    // empty state fired. Every reader with saved filters saw "No trials
+    // found" for a moment before their trials arrived.
+    const api = fakeApi();
+    let release: (value: Record<string, unknown>) => void = () => {};
+    const state = fakeState({
+      overrides: {
+        getPreferences: vi.fn(
+          () => new Promise<Record<string, unknown>>((resolve) => {
+            release = resolve;
+          }),
+        ),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await screen.findByText("Loading trials…");
+    expect(screen.queryByText("No trials found")).toBeNull();
+
+    release({});
+    await waitFor(() => expect(listed(api).length).toBe(1));
+  });
+
+  it("does not half-work for an adapter that can read but not write", async () => {
+    // Half the methods is not a smaller feature, it is a wrong one: filters
+    // that load and then cannot be changed. The panel works locally and
+    // says so instead.
+    const api = fakeApi();
+    const state = fakeState({ preferences: { sponsor: "Acme" } });
+    delete (state.adapter as Partial<typeof state.adapter>).savePreferences;
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await screen.findByText(/Couldn't load your saved filters/);
+    expect(state.adapter.getPreferences).not.toHaveBeenCalled();
+
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    // Applied to this search, as the banner promises.
+    await waitFor(() => {
+      const last = listed(api)[listed(api).length - 1];
+      expect(last.params.searchTitle).toBe("mm");
+    });
+  });
+
+  it("is not deadlocked by an adapter that throws synchronously", async () => {
+    // The throw escapes before the promise chain is built, so `.finally`
+    // never runs and `inFlight` stays true — every later write queued
+    // behind one that already failed, for ever.
+    const api = fakeApi();
+    let broken = true;
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn((next: Record<string, unknown>) => {
+          if (broken) throw new TypeError("not a function");
+          return Promise.resolve(next).then(() => undefined);
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    const title = await screen.findByLabelText("Title");
+    await userEvent.type(title, "m");
+    await screen.findByRole("alert", {}, { timeout: 2000 });
+
+    broken = false;
+    await userEvent.type(title, "m");
+    await waitFor(
+      () => expect(state.adapter.savePreferences).toHaveBeenCalledTimes(2),
+      { timeout: 2000 },
+    );
+  });
+
+  it("does not wait on a read that cannot succeed", async () => {
+    // The list waits for the stored filters so the opening search carries
+    // them. Under the host's own client — three retries with backoff — a
+    // PROMOP outage held every tab on "Loading trials…" for seven seconds.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        getPreferences: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    // A client with the DEFAULTS a host would have, not the suite's
+    // retry-free one — the retries are the point.
+    const queryClient = new QueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listed(api).length).toBe(1), { timeout: 1500 });
+  });
+
+  it("does not wait on an adapter that cannot be asked", async () => {
+    const api = fakeApi();
+    const state = fakeState();
+    delete (state.adapter as Partial<typeof state.adapter>).getPreferences;
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1), { timeout: 1500 });
+  });
+
+  it("keeps the rest of the saved filters in the request on the first edit", async () => {
+    // The debounce is seeded at mount, when the stored filters are not
+    // there yet. Left to catch up, the first edit flipped the request onto
+    // held values that were still empty: for 400ms the Sponsor box read
+    // "Acme", the badge counted it, and the request did not carry it.
+    // All five debounced fields, not one: each needs the seeding and the
+    // rule is written out five times.
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({
+        preferences: {
+          sponsor: "Acme",
+          searchTitle: "myeloma",
+          searchTreatment: "len",
+          distance: 50,
+          distanceUnits: "km",
+        },
+      }).adapter,
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Recruitment status"),
+      "RECRUITING",
+    );
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    for (const request of listed(api)) {
+      expect(request.params.sponsor).toBe("Acme");
+      expect(request.params.searchTitle).toBe("myeloma");
+      expect(request.params.searchTreatment).toBe("len");
+      expect(request.params.distance).toBe("50");
+      expect(request.params.distanceUnits).toBe("km");
+    }
+  });
+
+  it("does not save the host's own filters as the patient's", async () => {
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, {
+      state: state.adapter,
+      initialFilters: { recruitmentStatus: "RECRUITING" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await waitFor(() => expect(state.preferences()).toEqual({ searchTitle: "mm" }), {
+      timeout: 2000,
+    });
+  });
+
+  it("prefers what the patient saved over what the host asked for", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({ preferences: { phase: "PHASE3" } }).adapter,
+      initialFilters: { phase: "PHASE2" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.phase).toBe("PHASE3");
+  });
+
+  it("clears the panel on Reset without waiting for the server", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      preferences: { phase: "PHASE3" },
+      overrides: { resetPreferences: vi.fn(() => new Promise<void>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reset filters" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Filter Results/ })).toBeInTheDocument(),
+    );
+  });
+
+  it("clears the save error once a save succeeds", async () => {
+    const api = fakeApi();
+    let fail = true;
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn(async () => {
+          if (fail) throw new Error("nope");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    const title = await screen.findByLabelText("Title");
+    await userEvent.type(title, "m");
+    await screen.findByRole("alert", {}, { timeout: 2000 });
+
+    fail = false;
+    await userEvent.type(title, "m");
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull(), {
+      timeout: 2000,
+    });
+  });
+
+  it("does not show one patient's save failure to the next", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (patient: Record<string, unknown>) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={patient}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui({ disease: "mm", ref: "A" }));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await screen.findByRole("alert", {}, { timeout: 2000 });
+
+    view.rerender(ui({ disease: "mm", ref: "B" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("queues a reset behind a save that is already on the wire", async () => {
+    // The mirror of the test above it, and the one the queue was written
+    // for: unserialised, the server applies them in whichever order they
+    // arrive, and the losing order leaves the filters the reader just
+    // cleared.
+    const api = fakeApi();
+    const order: string[] = [];
+    let releaseSave: () => void = () => {};
+    const state = fakeState({
+      preferences: { phase: "PHASE3" },
+      overrides: {
+        savePreferences: vi.fn(() => {
+          order.push("save:start");
+          return new Promise<void>((resolve) => {
+            releaseSave = () => {
+              order.push("save:done");
+              resolve();
+            };
+          });
+        }),
+        resetPreferences: vi.fn(async () => {
+          order.push("reset");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await waitFor(() => expect(order).toEqual(["save:start"]), { timeout: 2000 });
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(order).toEqual(["save:start"]);
+
+    releaseSave();
+    await waitFor(() => expect(order).toEqual(["save:start", "save:done", "reset"]));
+  });
+
+  it("does not write a finished save into the next patient's cache", async () => {
+    // The write resolves after the host has swapped patients, and what it
+    // puts into the cache is the filter set of the patient it was made for.
+    // Filed under the current key it would become patient B's stored
+    // filters — without ever being written to B's row on the server.
+    const api = fakeApi();
+    let release: () => void = () => {};
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn(
+          () => new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+        ),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (patient: Record<string, unknown>) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={patient}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui({ disease: "mm", ref: "A" }));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "aa");
+    await waitFor(() => expect(state.adapter.savePreferences).toHaveBeenCalled(), {
+      timeout: 2000,
+    });
+
+    view.rerender(ui({ disease: "mm", ref: "B" }));
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue(""));
+    release();
+    await new Promise((r) => setTimeout(r, 60));
+    expect(screen.getByLabelText("Title")).toHaveValue("");
+  });
+
+  it("says so when they cannot be read", async () => {
+    // Every control then looks exactly as it would if the reader had saved
+    // nothing at all.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        getPreferences: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await screen.findByText(/Couldn't load your saved filters/);
+    // And the search still runs, rather than waiting for a read that has
+    // already failed.
+    await waitFor(() => expect(listed(api).length).toBe(1));
+  });
+
+  it("says so when a change cannot be saved", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        savePreferences: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    const alert = await screen.findByRole("alert", {}, { timeout: 2000 });
+    expect(alert).toHaveTextContent("Couldn't save your filters");
+  });
+
+  it("does not let a stored tab switch the corpus", async () => {
+    // `type: "all"` is not a filter: it moves the server to the admin
+    // branch, which skips the eligibility filter and several study
+    // preferences with it (#424), and suppresses the tab counts.
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({ preferences: { type: "all", sort: "distance" } }).adapter,
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.type).toBeUndefined();
+    expect(listed(api)[0].params.sort).toBe("goodnessScore");
+  });
+
+  it("sends a pending write to the patient it was made for", async () => {
+    // The write carries the adapter it was made with, and an adapter is
+    // bound to one person (`createPromopState` bakes the person_id in).
+    // Checked against the CURRENT patient instead, a change made a moment
+    // before the host moved on was dropped on the floor.
+    const api = fakeApi();
+    const a = fakeState();
+    const b = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+
+    // Before the debounce elapses.
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(a.preferences()).toEqual({ searchTitle: "mm" }), {
+      timeout: 2000,
+    });
+    expect(b.adapter.savePreferences).not.toHaveBeenCalled();
+  });
+
+  it("sends a debounced edit when the next patient starts typing", async () => {
+    // The debounce is one slot. Cleared by B's first keystroke, A's change
+    // — made seconds earlier, still inside its 500ms — was simply gone.
+    const api = fakeApi();
+    const a = fakeState();
+    const b = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "aa");
+
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue(""));
+    await userEvent.type(screen.getByLabelText("Title"), "bb");
+
+    await waitFor(() => expect(a.preferences()).toEqual({ searchTitle: "aa" }), {
+      timeout: 2000,
+    });
+    await waitFor(() => expect(b.preferences()).toEqual({ searchTitle: "bb" }), {
+      timeout: 2000,
+    });
+  });
+
+  it("does not rebuild a filter the reset is still clearing", async () => {
+    // The cached stored set is the PRE-reset one until the write lands, and
+    // that is what tells a save to keep a value the host happens to agree
+    // with. An edit made in that window rebuilt the very preference the
+    // reset was clearing and wrote it back afterwards.
+    const api = fakeApi();
+    let releaseReset: () => void = () => {};
+    const state = fakeState({
+      // `phase` is the one at risk: stored AND asked for by the host, so
+      // it is kept only because the cache says the patient owns it.
+      // `sponsor` is there to arm the Reset button.
+      preferences: { phase: "PHASE3", sponsor: "Acme" },
+      overrides: {
+        resetPreferences: vi.fn(
+          () => new Promise<void>((resolve) => {
+            releaseReset = resolve;
+          }),
+        ),
+      },
+    });
+    renderTrialMatches(api, {
+      state: state.adapter,
+      initialFilters: { phase: "PHASE3" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reset filters" }));
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    releaseReset();
+
+    await waitFor(
+      () =>
+        expect(
+          (state.adapter.savePreferences as unknown as { mock: { calls: unknown[][] } })
+            .mock.calls[0]?.[0],
+        ).toEqual({ searchTitle: "mm" }),
+      { timeout: 2000 },
+    );
+  });
+
+  it("sends a debounced edit when the next patient clicks Reset", async () => {
+    // The same rule as the test above, through the other door. It was
+    // written in one path and not the other, so a change made seconds
+    // earlier vanished if the next reader happened to click Reset rather
+    // than type.
+    const api = fakeApi();
+    const a = fakeState();
+    const b = fakeState({ preferences: { phase: "PHASE3" } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "aa");
+
+    view.rerender(ui("B", b));
+    await userEvent.click(await screen.findByRole("button", { name: "Reset filters" }));
+
+    await waitFor(() => expect(a.preferences()).toEqual({ searchTitle: "aa" }));
+    expect(b.adapter.resetPreferences).toHaveBeenCalled();
+  });
+
+  it("treats an adapter rebuilt every render as the same patient", async () => {
+    // `state={createPromopState({client, personId})}` is the obvious way for
+    // a host to write it, and it hands over a NEW object on every render of
+    // the host — all of them the same person. Grouped by adapter identity,
+    // each of the reader's changes would queue a write of its own instead
+    // of superseding the last, and the same person would be written twice
+    // over with a set nobody will ever see.
+    const api = fakeApi();
+    const release: (() => void)[] = [];
+    const shared = fakeState({
+      overrides: {
+        savePreferences: vi.fn(
+          () => new Promise<void>((resolve) => {
+            release.push(resolve);
+          }),
+        ),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    // A fresh object each time the host renders, delegating to the same
+    // methods — which is what an inline `createPromopState` produces.
+    const ui = () => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm" }}
+          state={{ ...shared.adapter }}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui());
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+
+    const title = await screen.findByLabelText("Title");
+    await userEvent.type(title, "a");
+    await waitFor(() => expect(release.length).toBe(1), { timeout: 2000 });
+
+    view.rerender(ui());
+    await userEvent.type(screen.getByLabelText("Title"), "b");
+    await new Promise((r) => setTimeout(r, 700));
+    view.rerender(ui());
+    await userEvent.type(screen.getByLabelText("Title"), "c");
+    await new Promise((r) => setTimeout(r, 700));
+
+    release[0]();
+    await waitFor(() => expect(release.length).toBe(2), { timeout: 2000 });
+    release[1]();
+    await new Promise((r) => setTimeout(r, 80));
+    // Two writes, not three: the queued ones are one patient's, and the
+    // later says everything the earlier would have.
+    expect(shared.adapter.savePreferences).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it("does not let one patient's edit swallow another's queued reset", async () => {
+    // A write supersedes an earlier one only WITHIN one patient: B's
+    // filters say nothing about A's. Sharing one queue slot, A's reset was
+    // overwritten by B's next edit and A kept exactly what they cleared.
+    const api = fakeApi();
+    let releaseSave: () => void = () => {};
+    const a = fakeState({
+      preferences: { phase: "PHASE3" },
+      overrides: {
+        savePreferences: vi.fn(
+          () => new Promise<void>((resolve) => {
+            releaseSave = resolve;
+          }),
+        ),
+      },
+    });
+    const b = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await waitFor(() => expect(a.adapter.savePreferences).toHaveBeenCalled(), {
+      timeout: 2000,
+    });
+    // Queued behind the save that is on the wire.
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(screen.getByLabelText("Title")).toHaveValue(""));
+    await userEvent.type(screen.getByLabelText("Title"), "bb");
+    await new Promise((r) => setTimeout(r, 700));
+
+    releaseSave();
+    // Both survive: A's reset, and B's edit behind it.
+    await waitFor(() => expect(a.adapter.resetPreferences).toHaveBeenCalled());
+    await waitFor(() => expect(b.preferences()).toEqual({ searchTitle: "bb" }));
+  });
+
+  it("finishes a reset queued behind a save even after the patient changes", async () => {
+    // The in-flight save has already persisted A's filters. Drop the reset
+    // queued behind it and A is left holding exactly what they cleared.
+    const api = fakeApi();
+    let releaseSave: () => void = () => {};
+    const a = fakeState({
+      preferences: { phase: "PHASE3" },
+      overrides: {
+        savePreferences: vi.fn(
+          () => new Promise<void>((resolve) => {
+            releaseSave = resolve;
+          }),
+        ),
+      },
+    });
+    const b = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await openPanel();
+    await userEvent.type(await screen.findByLabelText("Title"), "mm");
+    await waitFor(() => expect(a.adapter.savePreferences).toHaveBeenCalled(), {
+      timeout: 2000,
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    view.rerender(ui("B", b));
+    releaseSave();
+
+    await waitFor(() => expect(a.adapter.resetPreferences).toHaveBeenCalled());
+    expect(b.adapter.resetPreferences).not.toHaveBeenCalled();
   });
 });

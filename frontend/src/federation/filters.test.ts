@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   DISTANCE_UNITS,
+  PERSISTED_FIELDS,
   baselineFilters,
   countActiveFilters,
   countryFor,
+  filtersToStore,
   hasActiveFilters,
   isActiveDistance,
+  sanitizeStoredFilters,
 } from "./filters";
 
 describe("baselineFilters", () => {
@@ -197,5 +200,223 @@ describe("isActiveDistance", () => {
     expect(isActiveDistance("25")).toBe(false);
     expect(isActiveDistance(Number.NaN)).toBe(false);
     expect(isActiveDistance(Number.POSITIVE_INFINITY)).toBe(false);
+  });
+});
+
+describe("what is saved", () => {
+  it("saves only what the panel can change", () => {
+    // `type` and `sort` belong to other controls; `country` is derived from
+    // the patient; `region`/`studyType`/`validatedOnly` can only come from
+    // the host, and saving them would pin its scope into the patient's own
+    // preferences, outliving a host that stopped sending it.
+    expect(
+      filtersToStore({
+        searchTitle: "myeloma",
+        type: "potential",
+        sort: "distance",
+        country: "US",
+        region: "EU",
+        studyType: "INTERVENTIONAL",
+        validatedOnly: true,
+      }),
+    ).toEqual({ searchTitle: "myeloma" });
+  });
+
+  it("leaves out what is not set, so the stored object says only what was", () => {
+    expect(filtersToStore({ searchTitle: "", sponsor: undefined })).toEqual({});
+  });
+
+  it("keeps a distance only when the backend would honour it", () => {
+    // Zero applies no limit and a negative one becomes a negative radius —
+    // an empty result set for a reason nothing on screen explains.
+    expect(filtersToStore({ distance: 50, distanceUnits: "km" })).toEqual({
+      distance: 50,
+      distanceUnits: "km",
+    });
+    expect(filtersToStore({ distance: 0, distanceUnits: "km" })).toEqual({});
+    expect(filtersToStore({ distance: -5, distanceUnits: "km" })).toEqual({});
+  });
+
+  it("does not save a unit for a distance that is not there", () => {
+    expect(filtersToStore({ distanceUnits: "miles" })).toEqual({});
+  });
+
+  it("truncates rather than storing something no request could carry", () => {
+    const stored = filtersToStore({ searchTitle: "x".repeat(5000) });
+    expect((stored.searchTitle as string).length).toBe(200);
+  });
+});
+
+describe("what is trusted on the way back", () => {
+  it("keeps the fields it knows", () => {
+    expect(
+      sanitizeStoredFilters({ searchTitle: "myeloma", phase: "PHASE3" }),
+    ).toEqual({ searchTitle: "myeloma", phase: "PHASE3" });
+  });
+
+  it("drops a key it does not know", () => {
+    // The payload is opaque JSON on the server and this remote is not its
+    // only writer. An unknown key riding into the request is a filter the
+    // reader cannot see and cannot turn off.
+    expect(sanitizeStoredFilters({ searchTitle: "a", favouriteColour: "blue" })).toEqual(
+      { searchTitle: "a" },
+    );
+  });
+
+  it("refuses a tab or a sort order smuggled in as a filter", () => {
+    // `type: "all"` is not a filter: it switches the server to the admin
+    // corpus, which skips the eligibility filter and several study
+    // preferences with it (#424), and suppresses the tab counts.
+    expect(sanitizeStoredFilters({ type: "all", sort: "distance" })).toEqual({});
+  });
+
+  it("drops a value of the wrong type rather than handing it to a control", () => {
+    expect(
+      sanitizeStoredFilters({ searchTitle: { toString: 1 }, phase: 42, sponsor: null }),
+    ).toEqual({});
+  });
+
+  it("drops a distance that is not a usable radius", () => {
+    expect(sanitizeStoredFilters({ distance: "50" })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: 0 })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: Number.NaN })).toEqual({});
+  });
+
+  it("drops a unit that qualifies nothing", () => {
+    expect(sanitizeStoredFilters({ distanceUnits: "km" })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: 10, distanceUnits: "furlongs" })).toEqual({
+      distance: 10,
+    });
+  });
+
+  it("reads a payload that is not an object at all as no filters", () => {
+    // PROMOP now refuses these on the way in, but rows written before that
+    // guard — or by another client against an older build — are still there.
+    for (const junk of [null, undefined, [], "phase=3", 42]) {
+      expect(sanitizeStoredFilters(junk)).toEqual({});
+    }
+  });
+
+  it("refuses a string longer than it would store", () => {
+    expect(sanitizeStoredFilters({ searchTitle: "x".repeat(201) })).toEqual({});
+  });
+});
+
+describe("which fields are persisted at all", () => {
+  it("is exactly this list", () => {
+    // Pinned by name. Five of them were carried by no other test: a field
+    // could drop out of the list, stop being saved, and nothing would say
+    // so — the reader's filter would simply not be there next time.
+    expect([...PERSISTED_FIELDS]).toEqual([
+      "searchTitle",
+      "searchTreatment",
+      "sponsor",
+      "trialPurpose",
+      "recruitmentStatus",
+      "phase",
+      "register",
+      "lastUpdate",
+      "distance",
+      "distanceUnits",
+    ]);
+  });
+
+  it("saves every one of them", () => {
+    const everything = {
+      searchTitle: "a",
+      searchTreatment: "b",
+      sponsor: "c",
+      trialPurpose: "treatment",
+      recruitmentStatus: "RECRUITING",
+      phase: "PHASE3",
+      register: "NCT",
+      lastUpdate: "2",
+      distance: 10,
+      distanceUnits: "km" as const,
+    };
+    expect(filtersToStore(everything)).toEqual(everything);
+    expect(sanitizeStoredFilters(everything)).toEqual(everything);
+  });
+
+  it("does not save the trial type", () => {
+    // It is scoped to the disease: a type chosen under one has no matching
+    // option under another, and `by_trial_type` has no leniency for a value
+    // that is not there — an empty list from a control rendering blank
+    // (#437).
+    expect(filtersToStore({ trialType: "drug" })).toEqual({});
+    expect(sanitizeStoredFilters({ trialType: "drug" })).toEqual({});
+  });
+
+  it("survives the round trip at the length limit", () => {
+    // One side truncates and the other drops what is too long; if they ever
+    // disagree by one character, a saved filter comes back as nothing.
+    const stored = filtersToStore({ searchTitle: "x".repeat(5000) });
+    expect(sanitizeStoredFilters(stored)).toEqual(stored);
+  });
+});
+
+describe("what the host asked for is not the patient's own", () => {
+  it("leaves a host filter out of the save", () => {
+    // The panel is fed the effective filters, so a host's initialFilters
+    // ride along in every field they touched. Saved, they outrank the host
+    // on the next mount and outlive a host that stopped sending them.
+    expect(
+      filtersToStore(
+        { searchTitle: "mm", recruitmentStatus: "RECRUITING", phase: "PHASE2" },
+        { recruitmentStatus: "RECRUITING", phase: "PHASE2" },
+      ),
+    ).toEqual({ searchTitle: "mm" });
+  });
+
+  it("keeps a stored value that the host happens to agree with", () => {
+    // The two can agree by coincidence. Since a save replaces the stored
+    // set whole, dropping the field on that coincidence DELETES the
+    // patient's preference — and it surfaces the day the host stops
+    // sending it, which is the day it was supposed to still be there.
+    expect(
+      filtersToStore(
+        { phase: "PHASE3", searchTitle: "mm" },
+        { phase: "PHASE3" },
+        { phase: "PHASE3" },
+      ),
+    ).toEqual({ phase: "PHASE3", searchTitle: "mm" });
+  });
+
+  it("keeps a value the reader changed away from the host's", () => {
+    expect(
+      filtersToStore({ phase: "PHASE3" }, { phase: "PHASE2" }),
+    ).toEqual({ phase: "PHASE3" });
+  });
+
+  it("stores nothing when the reader changed nothing", () => {
+    const host = { sponsor: "Acme", distance: 50, distanceUnits: "km" as const };
+    expect(filtersToStore(host, host)).toEqual({});
+  });
+});
+
+describe("a stored radius keeps its unit", () => {
+  it("even when the unit is the one the host asked for", () => {
+    // Subtracted as the host's, a saved 50 MILES comes back as 50 km the
+    // day the host stops sending the unit — a different set of trials, and
+    // nothing on screen to say why.
+    expect(
+      filtersToStore({ distance: 50, distanceUnits: "miles" }, { distanceUnits: "miles" }),
+    ).toEqual({ distance: 50, distanceUnits: "miles" });
+  });
+
+  it("and still stores no unit without a distance", () => {
+    expect(filtersToStore({ distanceUnits: "miles" })).toEqual({});
+  });
+});
+
+describe("an empty string is not a filter", () => {
+  it("is not stored", () => {
+    expect(filtersToStore({ searchTitle: "" })).toEqual({});
+  });
+
+  it("is not read back either", () => {
+    // A foreign writer's `{searchTitle: ""}` would otherwise ride into the
+    // panel and count on the badge as a filter that narrows nothing.
+    expect(sanitizeStoredFilters({ searchTitle: "" })).toEqual({});
   });
 });

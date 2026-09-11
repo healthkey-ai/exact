@@ -5,15 +5,31 @@
 // CB contract) or `personId` (CTOMOP federation path added in #102).
 import { useEffect, useMemo, useState, useRef } from "react";
 
-function useDebounced<T>(value: T, delay: number): T {
+/** Debounced, unless `immediate` — then the value passes straight through
+ *  AND the held value is kept in step behind it.
+ *
+ *  The delay is there so a keystroke is not a request. A value that arrives
+ *  from the patient's stored filters is not a keystroke: run through the
+ *  delay, it is `undefined` for the first 400ms, so the opening search goes
+ *  out without their saved sponsor and a second one follows with it.
+ *
+ *  Keeping the held value in step is the half that is easy to miss. Without
+ *  it, the first edit flips `immediate` off and hands back a held value
+ *  that never caught up — so for 400ms the Sponsor box reads "Acme", the
+ *  badge counts it, and the request does not carry it. */
+function useDebounced<T>(value: T, delay: number, immediate = false): T {
   const [debounced, setDebounced] = useState<T>(value);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    if (immediate) {
+      setDebounced(value);
+      return;
+    }
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setDebounced(value), delay);
     return () => { if (timer.current) clearTimeout(timer.current); };
-  }, [value, delay]);
-  return debounced;
+  }, [value, delay, immediate]);
+  return immediate ? value : debounced;
 }
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -36,6 +52,7 @@ import {
 import {
   canReadAdvanced,
   useAdvancedEnrollments,
+  useFilterPersistence,
   useSetTrialState,
   useStateIds,
   useTrials,
@@ -88,6 +105,50 @@ function TrialMatchesInner({
     setSelectedTrial(null);
     setPage(1);
   }, [personId, patientInfoKey]);
+
+  // BOTH props, not the precedence winner.
+  //
+  // `patientIdentity` answers "which prop names this patient", which is the
+  // right question for the matcher and the wrong one for a cache key. With
+  // both supplied it resolves to the inline payload — so two readers whose
+  // payload is the same minimal `{disease}` share a key, and the second one
+  // is served the first one's bookmarks for as long as they stay fresh.
+  // A cache key wants maximum discrimination: any difference in either prop
+  // is a different key.
+  const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
+
+  // The reader's saved filters.
+  //
+  // DERIVED into what the panel shows, not seeded into `filters` — the same
+  // rule `country` follows, and for the same reason: a render-phase
+  // `setState` re-runs the component but does not un-send what the query
+  // observer was already told to fetch, so seeding put one unfiltered
+  // request on the wire before the saved filters could apply.
+  const persistence = useFilterPersistence(state, stateKey, initialFilters);
+  // What applies when the reader has not touched the panel this session:
+  // the host's scope, with the patient's own saved filters over it.
+  const unedited = useMemo(
+    () => ({ ...(initialFilters ?? {}), ...(persistence.stored ?? {}) }),
+    [initialFilters, persistence.stored],
+  );
+  // `touched` is per patient: their edits are not the next reader's.
+  //
+  // The identity it uses is `stateKey`, which was chosen for maximum
+  // discrimination as a CACHE key — for the inline path it is the payload
+  // itself. So a host that changes the payload's content for the same
+  // person (the profile was edited, a field was added) reads here as a
+  // different patient, and the panel drops back to the stored filters,
+  // discarding edits the reader had not finished. Narrow — the content has
+  // to actually change — and widening it means guessing which key inside a
+  // host's opaque payload names the person, which is worse. #438.
+  //
+  // The WRITE half of that question is answered elsewhere and better: a
+  // pending write carries the adapter it was made with, and an adapter is
+  // bound to one person, so it lands where it belongs no matter what the
+  // props do afterwards.
+  const [touched, setTouched] = useState<string | null>(null);
+  const filtersAreMine = touched === stateKey;
+  const panelFilters = filtersAreMine ? filters : unedited;
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -157,13 +218,13 @@ function TrialMatchesInner({
   //
   // Falling back to the baseline's value makes the two agree by
   // construction, so the baseline itself needs no mask at all.
-  const trialType = trialTypeIsStale
-    ? initialFilters?.trialType
-    : filters.trialType;
+  // A stale pick falls back to what would apply if the reader had made
+  // none — which now includes their saved filters, not only the host's.
+  const trialType = trialTypeIsStale ? unedited.trialType : panelFilters.trialType;
 
   const effectiveFilters = useMemo(
-    () => ({ ...filters, country, trialType }),
-    [filters, country, trialType],
+    () => ({ ...panelFilters, country, trialType }),
+    [panelFilters, country, trialType],
   );
 
   const baseline = useMemo(
@@ -172,11 +233,11 @@ function TrialMatchesInner({
   );
   const activeFilterCount = countActiveFilters(effectiveFilters, baseline);
 
-  const debouncedTitle = useDebounced(filters.searchTitle, 400);
-  const debouncedTreatment = useDebounced(filters.searchTreatment, 400);
-  const debouncedSponsor = useDebounced(filters.sponsor, 400);
-  const debouncedDistance = useDebounced(filters.distance, 400);
-  const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400);
+  const debouncedTitle = useDebounced(effectiveFilters.searchTitle, 400, !filtersAreMine);
+  const debouncedTreatment = useDebounced(effectiveFilters.searchTreatment, 400, !filtersAreMine);
+  const debouncedSponsor = useDebounced(effectiveFilters.sponsor, 400, !filtersAreMine);
+  const debouncedDistance = useDebounced(effectiveFilters.distance, 400, !filtersAreMine);
+  const debouncedDistanceUnits = useDebounced(effectiveFilters.distanceUnits, 400, !filtersAreMine);
   // The bar depends on whether a host gave us somewhere to keep bookmarks.
   const tabs = useMemo(() => tabsFor(state != null), [state]);
   // A host can take the adapter away — on logout, or when reconfiguring it.
@@ -190,16 +251,6 @@ function TrialMatchesInner({
   }
   const activeTabDef = tabs.find((t) => t.value === activeTab) ?? tabs[0];
 
-  // BOTH props, not the precedence winner.
-  //
-  // `patientIdentity` answers "which prop names this patient", which is the
-  // right question for the matcher and the wrong one for a cache key. With
-  // both supplied it resolves to the inline payload — so two readers whose
-  // payload is the same minimal `{disease}` share a key, and the second one
-  // is served the first one's bookmarks for as long as they stay fresh.
-  // A cache key wants maximum discrimination: any difference in either prop
-  // is a different key.
-  const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
   const favorites = useStateIds(state, "favorites", stateKey);
   const registered = useStateIds(state, "registered", stateKey);
   // Not a display concern: this is what stops the register control being
@@ -359,7 +410,16 @@ function TrialMatchesInner({
     // `!idsFailed` too: without it a failed Favorites read still fires an
     // ordinary unfiltered search behind the error message — rows nobody
     // shows, and a full matcher run to produce them.
-    enabled: !waitingForIds && !tooManySavedIds && !idsFailed,
+    enabled:
+      !waitingForIds &&
+      !tooManySavedIds &&
+      !idsFailed &&
+      // Not merely cosmetic: without this the first search goes out with
+      // the defaults and a second one follows with the saved filters —
+      // two matcher runs, and a flash of results the reader did not ask
+      // for. A failed read is not a reason to wait (`isPending` is false
+      // once it has rejected); the panel shows the defaults and says so.
+      !persistence.isPending,
   });
 
   // While the ids are loading, the rows on screen belong to the previous
@@ -450,7 +510,9 @@ function TrialMatchesInner({
     if (next.trialType !== effectiveFilters.trialType) {
       setTrialTypeOwner(patientIdentity);
     }
+    setTouched(stateKey);
     setFilters(next);
+    persistence.save(next);
   };
   // Reset goes back to the baseline, not to `{}`: clearing the seeded
   // country would silently widen the search to every country in the
@@ -460,7 +522,15 @@ function TrialMatchesInner({
   // produce the same value — and a mutation test confirmed the line was
   // dead. It was load-bearing only under the earlier "mask to undefined"
   // rule, which is gone.
-  const handleFiltersReset = () => setFilters(baseline);
+  const handleFiltersReset = () => {
+    // `touched` is set here too: without it the panel would go on showing
+    // the stored filters — `unedited` still carries them — until the read
+    // that will never be refetched said otherwise, so Reset would appear to
+    // do nothing.
+    setTouched(stateKey);
+    setFilters(baseline);
+    persistence.reset();
+  };
 
   const handleSelect = (trial: TrialMatch) => {
     setSelectedTrial(trial);
@@ -583,7 +653,21 @@ function TrialMatchesInner({
         </button>
       </div>
 
-      {filtersOpen ? (
+      {/* Not editable until the stored set is known.
+          
+          The panel is otherwise live during the read, and an edit there
+          marks the session as touched — after which the stored filters,
+          when they land, are never adopted. The reader's next change then
+          saves that incomplete set as the absolute record and deletes
+          everything they had. The window is one round trip, and the list
+          itself is waiting on the same read. */}
+      {filtersOpen && persistence.isPending ? (
+        <p style={{ color: "var(--exact-color-text-muted)" }}>
+          Loading your saved filters…
+        </p>
+      ) : null}
+
+      {filtersOpen && !persistence.isPending ? (
         <FilterPanel
           apiClient={apiClient}
           filters={effectiveFilters}
@@ -594,7 +678,15 @@ function TrialMatchesInner({
         />
       ) : null}
 
-      {query.isLoading || waitingForIds || showingOtherTabsRows ? (
+      {/* `persistence.isPending` too: it DISABLES the trials query, and a
+          disabled query reports `isLoading` false — so nothing said the
+          list was loading and the empty state fired instead. Every reader
+          with saved filters saw "No trials found" for a moment before
+          their trials arrived. */}
+      {query.isLoading ||
+      persistence.isPending ||
+      waitingForIds ||
+      showingOtherTabsRows ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>Loading trials…</p>
       ) : null}
 
@@ -603,6 +695,26 @@ function TrialMatchesInner({
           You have saved {savedIds?.length} trials, and this view can show at
           most {MAX_TRIAL_IDS} at a time. Remove a few, or use the other tabs
           to find them.
+        </p>
+      ) : null}
+
+      {/* The panel is showing the defaults instead of what the reader saved,
+          and every control looks exactly as it would if they had saved
+          nothing. The second sentence is the important one: a save replaces
+          the stored set whole, so until this read succeeds nothing is
+          written — otherwise changing one control here would discard every
+          filter the patient had. */}
+      {persistence.unavailable ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          Couldn't load your saved filters, so the panel is showing the
+          defaults. Changes you make now apply to this search but won't be
+          saved.
+        </p>
+      ) : null}
+
+      {persistence.failed ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+          Couldn't save your filters. They still apply to this search.
         </p>
       ) : null}
 
@@ -698,6 +810,7 @@ function TrialMatchesInner({
       ) : null}
 
       {!query.isLoading &&
+      !persistence.isPending &&
       !waitingForIds &&
       !idsFailed &&
       !tooManySavedIds &&

@@ -218,6 +218,8 @@ export interface FakeState {
   /** Reads, counted. A write is supposed to invalidate the list it changed,
    *  and the only externally visible sign of that is a re-read. */
   reads: { favorites: number; registered: number };
+  /** The stored filters as they now stand. */
+  preferences: () => Record<string, unknown>;
 }
 
 /** A working adapter, backed by two arrays.
@@ -232,12 +234,17 @@ export function fakeState(
     registered?: string[];
     /** Trials a study team has moved past "registered". */
     advanced?: Record<string, AdvancedStatus>;
+    /** The patient's stored filter set. */
+    preferences?: Record<string, unknown>;
     overrides?: Partial<TrialStateAdapter>;
   } = {},
 ): FakeState {
   const favorites = [...(initial.favorites ?? [])];
   const registered = [...(initial.registered ?? [])];
   const reads = { favorites: 0, registered: 0 };
+  // The stored filters, as a real store: a test can assert what a save
+  // actually left behind rather than only that a spy was called.
+  let preferences: Record<string, unknown> = { ...(initial.preferences ?? {}) };
 
   const set = (list: string[], id: string, on: boolean) => {
     const at = list.indexOf(id);
@@ -257,13 +264,23 @@ export function fakeState(
     setFavorite: vi.fn(async (id: string, on: boolean) => set(favorites, id, on)),
     setRegistered: vi.fn(async (id: string, on: boolean) => set(registered, id, on)),
     listAdvancedEnrollments: vi.fn(async () => ({ ...(initial.advanced ?? {}) })),
-    getPreferences: vi.fn(async () => ({})),
-    savePreferences: vi.fn(async () => undefined),
-    resetPreferences: vi.fn(async () => undefined),
+    getPreferences: vi.fn(async () => ({ ...preferences })),
+    savePreferences: vi.fn(async (next: Record<string, unknown>) => {
+      preferences = { ...next };
+    }),
+    resetPreferences: vi.fn(async () => {
+      preferences = {};
+    }),
     ...initial.overrides,
   };
 
-  return { adapter, favorites, registered, reads };
+  return {
+    adapter,
+    favorites,
+    registered,
+    reads,
+    preferences: () => preferences,
+  };
 }
 
 export function renderTrialMatches(

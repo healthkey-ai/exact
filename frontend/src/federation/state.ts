@@ -56,8 +56,16 @@ export interface TrialStateAdapter {
   getPreferences(): Promise<FilterState>;
   /** Store the filters. */
   savePreferences(filters: FilterState): Promise<void>;
-  /** Clear them. Deliberately not `savePreferences({})`: the server merges
-   *  a partial update, so "reset" has to be its own call. */
+  /** Clear them.
+   *
+   *  Its own call rather than `savePreferences({})`, which as it happens
+   *  would also work — `preferences` is one JSON column and PATCHing it
+   *  replaces the lot. (What the server's docstring warns about is a PATCH
+   *  whose BODY is `{}`: that omits the field, so a partial update touches
+   *  nothing.) The reason to keep it separate is that "the default" is the
+   *  server's to define: today it is the empty object, and if it ever stops
+   *  being that, a client asserting `{}` would be asserting the wrong
+   *  thing. */
   resetPreferences(): Promise<void>;
 }
 
