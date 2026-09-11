@@ -18,12 +18,18 @@ import {
   localStoragePreferences,
 } from "./preferences";
 
-import { fetchFormSettings, fetchTrialDetail, fetchTrials } from "./api";
+import {
+  fetchFormSettings,
+  fetchTrialDetail,
+  fetchTrials,
+  fetchTrialsGraph,
+} from "./api";
 import type { AdvancedStatus, TrialId, TrialStateAdapter } from "./state";
 import type {
   FilterState,
   PatientInfo,
   TrialDetailResponse,
+  TrialsGraphResponse,
   TrialsResponse,
 } from "./types";
 
@@ -236,6 +242,48 @@ export function useFormSettings(
     queryFn: () => fetchFormSettings(apiClient, diseaseCode),
     staleTime: 5 * 60_000,
     enabled,
+  });
+}
+
+/** The knowledge graph, fetched only once the reader opens it.
+ *
+ *  It is a second full matcher run over the same search — every trial's
+ *  eligibility table, computed per trial — so it is not something to have
+ *  ready just in case. `enabled` is the open state of the panel.
+ */
+export function useTrialsGraph({
+  apiClient,
+  patientInfo,
+  personId,
+  filters,
+  trialIds,
+  limit,
+  enabled,
+}: {
+  apiClient: AxiosInstance;
+  patientInfo?: PatientInfo | null;
+  personId?: string | number | null;
+  filters?: FilterState;
+  trialIds?: string[];
+  limit?: number;
+  enabled: boolean;
+}): UseQueryResult<TrialsGraphResponse> {
+  return useQuery({
+    queryKey: [
+      "exact-trials-graph",
+      personId ?? null,
+      patientInfo ?? null,
+      filters ?? null,
+      // In the key as well as the request: a state tab narrows by ids alone,
+      // so without this its graph and the default tab's share a key and the
+      // wrong one is served from cache.
+      trialIds ?? null,
+      limit ?? null,
+    ],
+    queryFn: () =>
+      fetchTrialsGraph({ apiClient, patientInfo, personId, filters, trialIds, limit }),
+    enabled,
+    staleTime: 60_000,
   });
 }
 

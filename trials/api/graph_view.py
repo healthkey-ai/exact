@@ -67,7 +67,18 @@ class TrialsGraphViewSet(TrialsViewSet):
     """
     Reuses TrialsViewSet queryset logic to build a graph-oriented response.
     """
-    http_method_names = ["get"]
+    # POST as well as GET, for the alias below. The GET form stays exactly as
+    # it was for the callers that already speak it.
+    http_method_names = ["get", "post"]
+
+    # The inherited POST aliases, removed. `TrialsViewSet` carries `match`,
+    # `search_match` and `match_detail`, and widening `http_method_names`
+    # published all three under `/trials-graph/` — an untested second copy of
+    # the trials API at a URL nothing asked for. Setting an inherited action to
+    # None is how DRF's router is told to skip it.
+    match = None
+    search_match = None
+    match_detail = None
 
     @action(methods=["get"], detail=False, url_path="graph", url_name="graph")
     def graph(self, request, *args, **kwargs):
@@ -125,3 +136,22 @@ class TrialsGraphViewSet(TrialsViewSet):
             "patient": GraphPatientInfoSerializer(patient_info).data,
             "trials": trial_nodes,
         })
+
+    @action(methods=["post"], detail=False, url_path="graph/match", url_name="graph-match")
+    def graph_match(self, request, *args, **kwargs):
+        """POST alias for `graph`, carrying `patient_info` in the body.
+
+        The graph refuses to draw without a patient, and the two ways to supply
+        one are an inline payload — which only travels in a body, since
+        GET-with-body is forbidden by the Fetch spec and dropped by axios's XHR
+        adapter — or `?person_id=`, which is gated off outside DEBUG because it
+        would let any authenticated caller enumerate another patient's record
+        (#150/#108). So the GET form is reachable in local development and
+        essentially nowhere else, and the federated remote could not call this
+        endpoint at all.
+
+        Mirrors `search_match`: bind the action so `get_queryset` runs the
+        `search` branch, then delegate.
+        """
+        self.action = "graph"
+        return self.graph(request, *args, **kwargs)
