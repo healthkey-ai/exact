@@ -13,9 +13,23 @@ interface Props {
   trial: TrialMatch;
   onSelect?: (trial: TrialMatch) => void;
   isSelected?: boolean;
+  /** Whether this trial is bookmarked. `undefined` means not known yet —
+   *  the ids are still loading — and renders nothing rather than an
+   *  un-bookmarked star that would flip under the reader's eye. */
+  isFavorite?: boolean;
+  /** Omitted when the host supplied no state adapter, in which case no
+   *  control is drawn: a bookmark button with nowhere to write is a button
+   *  that forgets. */
+  onToggleFavorite?: (next: boolean) => void;
 }
 
-export function TrialCard({ trial, onSelect, isSelected }: Props) {
+export function TrialCard({
+  trial,
+  onSelect,
+  isSelected,
+  isFavorite,
+  onToggleFavorite,
+}: Props) {
   const distance =
     trial.distance != null
       ? `${trial.distance} ${trial.distanceUnits ?? ""}`.trim()
@@ -82,6 +96,26 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
         </div>
 
         <div className="exact-card__action">
+          {onToggleFavorite && isFavorite !== undefined ? (
+            <button
+              type="button"
+              className={`exact-fav${isFavorite ? " is-on" : ""}`}
+              aria-pressed={isFavorite}
+              aria-label={
+                isFavorite
+                  ? `Remove ${trial.briefTitle} from favorites`
+                  : `Add ${trial.briefTitle} to favorites`
+              }
+              onClick={(e) => {
+                // The card is itself a click target; without this, bookmarking
+                // would also open the trial.
+                e.stopPropagation();
+                onToggleFavorite(!isFavorite);
+              }}
+            >
+              {isFavorite ? "★" : "☆"}
+            </button>
+          ) : null}
           {onSelect ? (
             <button
               type="button"

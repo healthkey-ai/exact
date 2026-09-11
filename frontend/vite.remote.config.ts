@@ -71,6 +71,12 @@ export default defineConfig(({ mode }) => {
         exposes: {
           "./TrialMatches": "./src/federation/TrialMatches.tsx",
           "./types": "./src/federation/types.ts",
+          // The default per-user state adapter. Documented as "the
+          // implementation a host with a PROMOP client can just use" — and
+          // unusable as such while the build did not hand it over, which
+          // left a host to reimplement six methods against an API it would
+          // have to read this repository to learn.
+          "./state": "./src/federation/state.ts",
         },
         // Same singletons as SoC / hk-labs so a host that loads multiple
         // remotes shares one React tree and one query cache. No

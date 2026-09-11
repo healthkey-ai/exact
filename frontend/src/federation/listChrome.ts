@@ -7,37 +7,64 @@ import type { TabCounts } from "./types";
 /** Rows per page. CB shows 10; the server's own default is 20. */
 export const PAGE_SIZE = 10;
 
-/** The tabs CB offers, minus the two that need per-user state.
+/** CB's tab bar, as far as this remote can honestly reproduce it.
  *
- *  CB's bar is Eligible / All Trials (admin) / Registered / Favorites.
- *  Registered and Favorites are per-user relations EXACT does not hold —
- *  the server rejects `?type=favorites` and `?type=my_trials` outright
- *  (EXACT #417) — so they arrive with the PROMOP-backed state adapter in
- *  phase 2 rather than being rendered as tabs that cannot work.
+ *  CB's is Eligible / All Trials (admin) / Registered / Favorites. The last
+ *  two are per-user relations EXACT does not hold — the server rejects
+ *  `?type=favorites` and `?type=my_trials` outright (EXACT #417) — so they
+ *  are narrowed a different way: the ids come from the state adapter and go
+ *  down as `trial_ids`, which EXACT applies inside the queryset (#419).
+ *
+ *  They are therefore CONDITIONAL on a host having supplied that adapter.
+ *  Rendered without one they would be a tab that cannot answer, and a
+ *  bookmark control that forgets.
  *
  *  `eligible_and_potential` is CB's default tab. It is a no-op server-side,
  *  identical to sending no `type` at all, so it maps to `undefined` here
  *  rather than to a parameter that would suggest it narrows something. */
-export type TabValue = "eligible_and_potential" | "eligible" | "potential" | "all";
+export type TabValue =
+  | "eligible_and_potential"
+  | "eligible"
+  | "potential"
+  | "all"
+  | "favorites"
+  | "registered";
 
 export interface TabDef {
   value: TabValue;
   label: string;
   /** What goes on the wire; `undefined` means "send no `type`". */
   param?: "eligible" | "potential" | "all";
+  /** Narrowed by a list of ids from the state adapter rather than by
+   *  `?type=`, and hidden entirely when there is no adapter. */
+  needsState?: "favorites" | "registered";
 }
 
-export const TABS: TabDef[] = [
+const MATCH_TABS: TabDef[] = [
   { value: "eligible_and_potential", label: "Eligible" },
   { value: "eligible", label: "Fully matched", param: "eligible" },
   { value: "potential", label: "Potential", param: "potential" },
 ];
 
+const STATE_TABS: TabDef[] = [
+  { value: "registered", label: "Registered", needsState: "registered" },
+  { value: "favorites", label: "Favorites", needsState: "favorites" },
+];
+
+/** The bar to render. Without a state adapter it is CB's bar minus the two
+ *  tabs that would have nothing behind them. */
+export function tabsFor(hasState: boolean): TabDef[] {
+  return hasState ? [...MATCH_TABS, ...STATE_TABS] : MATCH_TABS;
+}
+
+/** @deprecated Prefer `tabsFor`; kept as the no-adapter bar. */
+export const TABS: TabDef[] = MATCH_TABS;
+
 /** The tab whose `param` matches a `type` the host passed in `initialFilters`.
  *  Falls back to the default tab for `undefined` and for values that are not
  *  tabs (`all` is a supported server value but is not offered as a tab). */
 export function tabValueForType(type: string | undefined): TabValue {
-  const match = TABS.find((tab) => tab.param === type);
+  const match = MATCH_TABS.find((tab) => tab.param === type);
   return match ? match.value : "eligible_and_potential";
 }
 
@@ -51,7 +78,13 @@ export function tabCount(
   tab: TabValue,
   counts: TabCounts | undefined,
   itemsTotalCount: number | null,
+  stateCounts?: { favorites?: number; registered?: number },
 ): number | null {
+  // The state tabs are counted by whoever holds the state, not by the
+  // matcher: their totals are how many the patient saved, which is true
+  // whether or not those trials still match today.
+  if (tab === "favorites") return stateCounts?.favorites ?? null;
+  if (tab === "registered") return stateCounts?.registered ?? null;
   if (tab === "eligible_and_potential") {
     if (counts) return counts.eligible + counts.potential;
     // Without counts the total is only the whole corpus when this tab is

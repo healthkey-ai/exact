@@ -450,3 +450,584 @@ describe("a trial type picked before the patient is known", () => {
     expect(last.params.trialType).toBeUndefined();
   });
 });
+
+describe("without a state adapter", () => {
+  it("renders neither the state tabs nor a bookmark control", async () => {
+    // They would be a tab that cannot answer and a button that forgets.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(screen.queryByRole("button", { name: /^Favorites/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Registered/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /favorites$/i })).toBeNull();
+  });
+
+  it("sends no trial_ids at all", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].body).toEqual({
+      patient_info: { disease: "multiple myeloma" },
+    });
+  });
+});
+
+describe("with a state adapter", () => {
+  const makeState = (favorites: string[] = [], registered: string[] = []) => {
+    const calls: { setFavorite: [string, boolean][] } = { setFavorite: [] };
+    const state = {
+      listFavoriteIds: vi.fn(async () => favorites),
+      listRegisteredIds: vi.fn(async () => registered),
+      setFavorite: vi.fn(async (id: string, on: boolean) => {
+        calls.setFavorite.push([id, on]);
+        if (on) favorites.push(id);
+        else favorites = favorites.filter((f) => f !== id);
+      }),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({})),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    return { state, calls };
+  };
+
+  const renderWithState = (api: ReturnType<typeof fakeApi>, state: unknown) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  it("offers the Favorites and Registered tabs, counted from the adapter", async () => {
+    const api = fakeApi();
+    const { state } = makeState(["1", "2"], ["3"]);
+    renderWithState(api, state);
+    await screen.findByRole("button", { name: "Favorites, 2 trials" });
+    await screen.findByRole("button", { name: "Registered, 1 trials" });
+  });
+
+  it("narrows the list by the saved ids when the tab is opened", async () => {
+    const api = fakeApi();
+    const { state } = makeState(["11", "12"]);
+    renderWithState(api, state);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect((listed(api)[1].body as { trial_ids: string[] }).trial_ids).toEqual([
+      "11",
+      "12",
+    ]);
+  });
+
+  it("asks for nothing — not for everything — when there are no bookmarks", async () => {
+    // The failure this guards: `[]` collapsing into "no filter" answers an
+    // empty Favorites tab with the whole registry.
+    const api = fakeApi();
+    const { state } = makeState([]);
+    renderWithState(api, state);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect((listed(api)[1].body as { trial_ids: string[] }).trial_ids).toEqual([]);
+  });
+
+  it("shows no rows under the tab until its ids have arrived", async () => {
+    // Not a request that can be prevented — while the ids are unknown
+    // `trialIds` is `undefined`, which is the DEFAULT tab's query key, so
+    // React Query answers from cache without asking anyone. What must not
+    // happen is the render: the eligible list under a Favorites heading
+    // says those trials are bookmarked.
+    const api = fakeApi();
+    let release: (ids: string[]) => void = () => {};
+    const pending = new Promise<string[]>((resolve) => {
+      release = resolve;
+    });
+    const state = {
+      listFavoriteIds: vi.fn(() => pending),
+      listRegisteredIds: vi.fn(async () => []),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({})),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    renderWithState(api, state);
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+
+    const before = listed(api).length;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(listed(api).length).toBe(before);
+    // The previous tab's rows are gone, not relabelled.
+    expect(screen.queryByText("Trial 1")).toBeNull();
+    expect(screen.getByText("Loading trials…")).toBeInTheDocument();
+
+    release(["42"]);
+    await waitFor(() => expect(listed(api).length).toBe(before + 1));
+    const last = listed(api)[listed(api).length - 1];
+    expect((last.body as { trial_ids: string[] }).trial_ids).toEqual(["42"]);
+  });
+
+  it("bookmarks a trial from its card", async () => {
+    const api = fakeApi();
+    const { state, calls } = makeState([]);
+    renderWithState(api, state);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
+    await waitFor(() => expect(calls.setFavorite).toEqual([["1", true]]));
+  });
+
+  it("does not open the trial when the bookmark is clicked", async () => {
+    // The card is itself a click target, so the toggle has to stop the event.
+    const api = fakeApi();
+    const { state } = makeState([]);
+    renderWithState(api, state);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
+    expect(screen.queryByText("Back to all trials")).toBeNull();
+  });
+});
+
+describe("the state tabs under failure and transition", () => {
+  const stateWith = (overrides: Record<string, unknown>) => ({
+    listFavoriteIds: vi.fn(async () => ["11"]),
+    listRegisteredIds: vi.fn(async () => []),
+    setFavorite: vi.fn(async () => undefined),
+    setRegistered: vi.fn(async () => undefined),
+    getPreferences: vi.fn(async () => ({})),
+    savePreferences: vi.fn(async () => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+    ...overrides,
+  });
+
+  const renderWith = (api: ReturnType<typeof fakeApi>, state: unknown) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  it("returns to the first page when a state tab is opened", async () => {
+    // `queryFilters.type` is undefined for the default tab AND for both
+    // state tabs, and JSON.stringify drops undefined keys — so all three
+    // hashed identically and the page never reset. A reader on page 2 asked
+    // for page 2 of their bookmarks.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    renderWith(api, stateWith({}));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect(listed(api)[1].params.page).toBe("2");
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(listed(api).length).toBe(3));
+    expect(listed(api)[2].params.page).toBeUndefined();
+  });
+
+  it("says so when the saved ids cannot be loaded", async () => {
+    // A rejected fetch also has no data, so treating that as "still
+    // loading" left the tab on "Loading trials…" for ever — with the trials
+    // query disabled, so even its own error branch could not speak.
+    const api = fakeApi();
+    const state = stateWith({
+      listFavoriteIds: vi.fn(async () => {
+        throw new Error("promop unreachable");
+      }),
+    });
+    renderWith(api, state);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText(/Couldn't load your saved trials/);
+    expect(screen.queryByText("Loading trials…")).toBeNull();
+  });
+
+  it("never paints another tab's rows under a state tab", async () => {
+    // The window `waitingForIds` did not cover: once the ids arrive it goes
+    // false in the same render that changes the query key, and
+    // `keepPreviousData` hands back the PREVIOUS key's rows. The eligible
+    // list was painted under the Favorites heading — and on a second visit,
+    // with the ids already cached, from the very first render.
+    const api = fakeApi({ results: [trial(1)] });
+    renderWith(api, stateWith({ listFavoriteIds: vi.fn(async () => ["99"]) }));
+    await screen.findByText("Trial 1");
+
+    let leaked = false;
+    const watch = setInterval(() => {
+      const onFavorites = screen
+        .queryByRole("button", { name: /^Favorites/ })
+        ?.getAttribute("aria-current");
+      if (onFavorites === "true" && screen.queryByText("Trial 1")) leaked = true;
+    }, 2);
+
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    await new Promise((r) => setTimeout(r, 40));
+    clearInterval(watch);
+
+    expect(leaked).toBe(false);
+  });
+
+  it("says so when a bookmark cannot be saved", async () => {
+    // The star is painted from the server's list, so a rejected PATCH
+    // leaves it exactly where it was — indistinguishable from a click that
+    // never registered.
+    const api = fakeApi();
+    const state = stateWith({
+      listFavoriteIds: vi.fn(async () => []),
+      setFavorite: vi.fn(async () => {
+        throw new Error("nope");
+      }),
+    });
+    renderWith(api, state);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
+    await screen.findByRole("alert");
+  });
+});
+
+describe("when the host takes the adapter away", () => {
+  it("moves the reader to a tab that still exists", async () => {
+    // On logout, or an adapter reconfiguration. Falling back only in the
+    // lookup would list the default tab's trials while no tab in the bar is
+    // marked current — the reader would be somewhere the UI cannot name.
+    const api = fakeApi();
+    const state = {
+      listFavoriteIds: vi.fn(async () => ["1"]),
+      listRegisteredIds: vi.fn(async () => []),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({})),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (withState: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={withState ? (state as never) : undefined}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui(true));
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Favorites/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+
+    view.rerender(ui(false));
+
+    expect(screen.queryByRole("button", { name: /^Favorites/ })).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Eligible/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+  });
+});
+
+describe("when a patient has saved more than the server will filter by", () => {
+  it("says so instead of sending a request that is refused", async () => {
+    // EXACT caps `trial_ids` at 500 — every id joins an `IN (...)`. Sending
+    // 501 means the tab never loads while its badge reports 501 saved, so
+    // the reader sees a count and an empty list with no explanation.
+    const api = fakeApi();
+    const many = Array.from({ length: 501 }, (_, i) => String(i + 1));
+    const state = {
+      listFavoriteIds: vi.fn(async () => many),
+      listRegisteredIds: vi.fn(async () => []),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({})),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText(/can show at most 500 at a time/);
+    // And no request went out carrying the oversized list.
+    expect(listed(api).length).toBe(1);
+  });
+});
+
+describe("counts while a state tab is active", () => {
+  const state = () => ({
+    listFavoriteIds: vi.fn(async () => ["1"]),
+    listRegisteredIds: vi.fn(async () => []),
+    setFavorite: vi.fn(async () => undefined),
+    setRegistered: vi.fn(async () => undefined),
+    getPreferences: vi.fn(async () => ({})),
+    savePreferences: vi.fn(async () => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+  });
+
+  const renderIt = (api: ReturnType<typeof fakeApi>, adapter: unknown) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={adapter as never}
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  it("does not label the match tabs with counts from a narrowed response", async () => {
+    // Those counts came back from a request filtered to the saved ids, so
+    // they describe the bookmarks. On the Eligible / Fully matched /
+    // Potential badges they would read as the corpus — "Fully matched, 1"
+    // for a reader with one bookmarked eligible trial and many matching.
+    const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Fully matched, 1 trials" });
+
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /Fully matched, / })).toBeNull(),
+    );
+    // The state tab's own count still comes from the adapter.
+    await screen.findByRole("button", { name: "Favorites, 1 trials" });
+  });
+
+  it("runs no matcher query behind a failed saved-ids read", async () => {
+    const api = fakeApi();
+    const adapter = {
+      ...state(),
+      listFavoriteIds: vi.fn(async () => {
+        throw new Error("promop unreachable");
+      }),
+    };
+    renderIt(api, adapter);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText(/Couldn't load your saved trials/);
+    await new Promise((r) => setTimeout(r, 40));
+    // Still just the first tab's request: nothing ran behind the error.
+    expect(listed(api).length).toBe(1);
+  });
+});
+
+describe("two more ways the state tabs could contradict themselves", () => {
+  const adapterWith = (overrides: Record<string, unknown>) => ({
+    listFavoriteIds: vi.fn(async () => []),
+    listRegisteredIds: vi.fn(async () => []),
+    setFavorite: vi.fn(async () => undefined),
+    setRegistered: vi.fn(async () => undefined),
+    getPreferences: vi.fn(async () => ({})),
+    savePreferences: vi.fn(async () => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+    ...overrides,
+  });
+
+  const renderIt = (api: ReturnType<typeof fakeApi>, adapter: unknown) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={adapter as never}
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  it("does not also say 'No trials found' over the cap message", async () => {
+    // Two answers to one question: the tab explains it cannot show that
+    // many, and then reports that there are none.
+    const api = fakeApi();
+    const many = Array.from({ length: 501 }, (_, i) => String(i + 1));
+    renderIt(api, adapterWith({ listFavoriteIds: vi.fn(async () => many) }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText(/can show at most 500 at a time/);
+    expect(screen.queryByText("No trials found")).toBeNull();
+  });
+
+  it("explains why bookmarking is unavailable on the ordinary tabs", async () => {
+    // The star is painted from the favorites list, so a failed read hides
+    // every one of them — on every tab — and the reader would conclude the
+    // feature had been taken away.
+    const api = fakeApi();
+    renderIt(
+      api,
+      adapterWith({
+        listFavoriteIds: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      }),
+    );
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    // Still on the default tab.
+    await screen.findByText(/bookmarking is unavailable/);
+    expect(screen.queryByRole("button", { name: /to favorites$/ })).toBeNull();
+  });
+});
+
+describe("two patients who look alike", () => {
+  it("does not serve one reader the other's bookmarks", async () => {
+    // The inline payload a host sends can be minimal — `{disease}` and
+    // nothing else — so two different people can produce the identical
+    // string. Keyed on that alone, the second reader is served the first
+    // one's saved trials for as long as they stay fresh.
+    const api = fakeApi();
+    const byPerson: Record<string, string[]> = { "1": ["11"], "2": ["22"] };
+    let current = "1";
+    const adapter = {
+      listFavoriteIds: vi.fn(async () => byPerson[current]),
+      listRegisteredIds: vi.fn(async () => []),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({})),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (personId: string) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          // Identical for both readers, which is the point.
+          patientInfo={{ disease: "multiple myeloma" }}
+          personId={personId}
+          state={adapter as never}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("1"));
+    await screen.findByRole("button", { name: "Favorites, 1 trials" });
+
+    current = "2";
+    view.rerender(ui("2"));
+    await waitFor(() => expect(adapter.listFavoriteIds).toHaveBeenCalledTimes(2));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(1));
+    const last = listed(api)[listed(api).length - 1];
+    expect((last.body as { trial_ids: string[] }).trial_ids).toEqual(["22"]);
+  });
+});
+
+describe("the failure messages stand alone", () => {
+  const renderWith = (
+    api: ReturnType<typeof fakeApi>,
+    adapter: unknown,
+    initialFilters?: Record<string, unknown>,
+  ) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          initialFilters={initialFilters as never}
+          state={
+            {
+              listRegisteredIds: async () => [],
+              setFavorite: async () => undefined,
+              setRegistered: async () => undefined,
+              getPreferences: async () => ({}),
+              savePreferences: async () => undefined,
+              resetPreferences: async () => undefined,
+              ...(adapter as object),
+            } as never
+          }
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  // The trigger: the state tab falls back to the default tab's query key,
+  // and when THAT key has no cached data a disabled query reports
+  // `isPlaceholderData` for ever. Mounting on another tab leaves it empty.
+  it("shows no loading line beside a failed saved-ids read", async () => {
+    const api = fakeApi();
+    renderWith(
+      api,
+      {
+        listFavoriteIds: async () => {
+          throw new Error("promop unreachable");
+        },
+      },
+      { type: "eligible" },
+    );
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText(/Couldn't load your saved trials/);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(screen.queryByText("Loading trials…")).toBeNull();
+  });
+
+  it("shows no loading line beside the over-the-cap message", async () => {
+    const api = fakeApi();
+    const many = Array.from({ length: 501 }, (_, i) => String(i + 1));
+    renderWith(api, { listFavoriteIds: async () => many }, { type: "eligible" });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText(/can show at most 500 at a time/);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(screen.queryByText("Loading trials…")).toBeNull();
+  });
+});

@@ -10,6 +10,8 @@
 import type { AxiosInstance } from "axios";
 import type { QueryClient } from "@tanstack/react-query";
 
+import type { TrialStateAdapter } from "./state";
+
 /** Sparse, schema-tolerant patient payload — mirrors EXACT's stateless
  *  `PatientInfo` Python class. Keys are camelCase as sent over the wire.
  *  See `trials/services/patient_info/patient_info.py`. */
@@ -212,4 +214,15 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
+  /** Where the patient's bookmarks, registrations and saved filters live.
+   *
+   *  Optional, and its absence is not a degraded mode so much as a smaller
+   *  one: without it the Favorites and Registered tabs and the bookmark
+   *  control are not rendered at all, because they would be controls with
+   *  nowhere to write. Everything else works unchanged.
+   *
+   *  `createPromopState` builds the default implementation from an
+   *  authenticated PROMOP client; a host that reaches the same data another
+   *  way implements the interface instead. */
+  state?: TrialStateAdapter;
 }

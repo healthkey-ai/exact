@@ -886,3 +886,26 @@
   outline: 2px solid var(--exact-color-primary);
   outline-offset: 1px;
 }
+
+/* Bookmark toggle on a trial card. A star rather than CB's bookmark glyph
+   because the remote ships no icon set and must not pull one into its host;
+   the accessible name carries the meaning either way. */
+.exact-root .exact-fav {
+  border: none;
+  background: none;
+  padding: 0.25rem;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--exact-color-text-tertiary);
+  cursor: pointer;
+}
+
+.exact-root .exact-fav.is-on {
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-fav:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+  border-radius: 0.25rem;
+}

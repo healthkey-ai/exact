@@ -238,3 +238,44 @@ describe("filterStateToParams — distance", () => {
     expect(filterStateToParams({ distance: -1 })).toEqual({});
   });
 });
+
+describe("fetchTrials — trial_ids", () => {
+  it("sends an empty list as an empty list, not as no filter", () => {
+    // The case the whole feature turns on: `[]` means "my bookmarks, of
+    // which there are none". Collapsing it into "no filter" answers an
+    // empty Favorites tab with every trial in the registry.
+    const apiClient = fakeClient();
+    return fetchTrials({
+      apiClient,
+      patientInfo: { disease: "mm" },
+      trialIds: [],
+    }).then(() => {
+      expect(apiClient.post).toHaveBeenCalledWith(
+        "/trials/search/match/",
+        { patient_info: { disease: "mm" }, trial_ids: [] },
+        { params: {} },
+      );
+    });
+  });
+
+  it("omits the key entirely when there is no id filter", async () => {
+    const apiClient = fakeClient();
+    await fetchTrials({ apiClient, patientInfo: { disease: "mm" } });
+    expect(apiClient.post).toHaveBeenCalledWith(
+      "/trials/search/match/",
+      { patient_info: { disease: "mm" } },
+      { params: {} },
+    );
+  });
+
+  it("posts on the person_id path too, because ids only travel in a body", async () => {
+    const apiClient = fakeClient();
+    await fetchTrials({ apiClient, personId: 9001, trialIds: ["7"] });
+    expect(apiClient.get).not.toHaveBeenCalled();
+    expect(apiClient.post).toHaveBeenCalledWith(
+      "/trials/search/match/",
+      { trial_ids: ["7"] },
+      { params: { person_id: "9001" } },
+    );
+  });
+});

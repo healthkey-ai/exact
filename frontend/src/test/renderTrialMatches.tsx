@@ -101,7 +101,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   };
   let failWith: number | null = null;
 
-  const respond = (url: string) => {
+  const respond = (url: string, body?: unknown) => {
     if (url.includes("form-settings")) return Promise.resolve({ data: FORM_SETTINGS });
     if (failWith != null) {
       const status = failWith;
@@ -111,6 +111,18 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
           response: { status },
         }),
       );
+    }
+    // Honour `trial_ids` the way the server does. Returning the same rows
+    // for a narrowed request makes the fake agree with any implementation,
+    // including one that ignores the filter — a test asserting "the wrong
+    // rows are not shown" then cannot fail.
+    const ids = (body as { trial_ids?: string[] } | undefined)?.trial_ids;
+    if (ids !== undefined) {
+      const wanted = new Set(ids.map(String));
+      const results = response.results.filter((t) => wanted.has(String(t.trialId)));
+      return Promise.resolve({
+        data: { ...response, results, itemsTotalCount: results.length },
+      });
     }
     return Promise.resolve({ data: response });
   };
@@ -123,7 +135,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
       params: config?.params ?? {},
       body: method === "post" ? a : undefined,
     });
-    return respond(url);
+    return respond(url, method === "post" ? a : undefined);
   };
 
   const client = {
