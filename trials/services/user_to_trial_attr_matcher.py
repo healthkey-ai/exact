@@ -10,10 +10,25 @@ if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
 
 # Per-attribute match outcomes. `attr_match_status` always returns one of
-# these three literal strings (it raises on unsupported config types
-# rather than returning a fourth tag). `min_max_match` is the exception:
+# these four literal strings (it raises on unsupported config types
+# rather than returning a fifth tag). `min_max_match` is the exception:
 # it returns `None` when neither bound is set, signalling "no constraint".
-AttrMatchStatus = Literal['matched', 'not_matched', 'unknown']
+#: Per-attribute verdicts.
+#:
+#: `not_evaluated` is the one that is easy to miss: the trial placed NO
+#: constraint on this attribute, so there was nothing to check. It used to be
+#: reported as `matched`, which is a different claim — "we checked and it
+#: passed" — and it reached two places it did not belong:
+#:
+#:   * the detail page, as a green tick against a requirement that is not one;
+#:   * `trial_match_score`, as a numerator AND denominator hit, so a trial
+#:     constraining two attributes out of forty scored near 100%. The Matching
+#:     sort then put the least specific trials first.
+#:
+#: It is NOT `unknown`: that means the trial asked and the PATIENT's data is
+#: missing, which is what makes a trial `potential`. `not_evaluated` says the
+#: trial never asked, and leaves eligibility untouched.
+AttrMatchStatus = Literal['matched', 'not_matched', 'unknown', 'not_evaluated']
 
 # Aggregate per-trial outcomes (`trial_match_status` returns one).
 TrialMatchStatus = Literal['eligible', 'potential', 'not_eligible']
@@ -164,6 +179,10 @@ class UserToTrialAttrMatcher:
                 continue
             out[attr] = self.attr_match_status(attr)
 
+        # `not_evaluated` is deliberately absent from this ladder: an
+        # attribute the trial never constrained cannot disqualify a patient
+        # and cannot leave a gap in their data. It falls through to eligible,
+        # which is what "nothing stood in the way" means.
         if 'not_matched' in out.values():
             return 'not_eligible'
         elif 'unknown' in out.values():
@@ -182,6 +201,12 @@ class UserToTrialAttrMatcher:
             ):
                 continue
             status = self.attr_match_status(attr)
+            if status == 'not_evaluated':
+                # Out of the fraction on both sides. Counting an attribute the
+                # trial never constrained as a match inflated the score of the
+                # least specific trials, which the Matching sort then ranked
+                # first.
+                continue
             all_count = all_count + 1
             if status == 'not_matched':
                 return 0
@@ -189,7 +214,10 @@ class UserToTrialAttrMatcher:
                 eligible_count = eligible_count + 1
 
         if all_count == 0:
-            return 0
+            # A trial that constrains nothing rules nobody out, so it matches
+            # everybody. Returning 0 here would reuse the sentinel that means
+            # "disqualified" and show an eligible trial as a 0% match.
+            return 100
         return int(float(eligible_count) * 100 / float(all_count))
 
     def match_score_and_status(self) -> tuple[int, 'TrialMatchStatus']:
@@ -211,6 +239,8 @@ class UserToTrialAttrMatcher:
             ):
                 continue
             status = self.attr_match_status(attr)
+            if status == 'not_evaluated':
+                continue  # see trial_match_score
             all_count += 1
             if status == 'not_matched':
                 has_not_matched = True
@@ -222,7 +252,9 @@ class UserToTrialAttrMatcher:
         if has_not_matched:
             return 0, 'not_eligible'
         if all_count == 0:
-            return 0, 'eligible'
+            # Constrains nothing, so it rules nobody out — 100, not the 0 that
+            # means disqualified. Kept in step with `trial_match_score`.
+            return 100, 'eligible'
         score = int(float(eligible_count) * 100 / float(all_count))
         return score, ('potential' if has_unknown else 'eligible')
 
@@ -349,7 +381,7 @@ class UserToTrialAttrMatcher:
     def attr_match_status(self, patient_info_attr: str) -> AttrMatchStatus:
         """Match a single patient attribute against the corresponding trial
         attribute(s) and return one of `'matched'`, `'not_matched'`,
-        `'unknown'`.
+        `'unknown'`, `'not_evaluated'` (the trial constrained nothing here).
 
         Dispatch is two-layer:
         1. `custom_search=True` configs route to a per-attr handler in
@@ -393,7 +425,9 @@ class UserToTrialAttrMatcher:
 
     def _match_therapy_things(self, values, required_list, excluded_list, has_no_prior_therapy):
         if required_list == [] and excluded_list == []:
-            return 'matched'
+            # Nothing required and nothing excluded — the trial has no opinion
+            # about this therapy attribute, so there is no match to report.
+            return 'not_evaluated'
 
         if values is None or values == '':
             if not has_no_prior_therapy:
@@ -437,6 +471,13 @@ class UserToTrialAttrMatcher:
         if 'unknown' in results:
             return 'unknown'
 
+        # All three arms (therapies, components, types) reported that the
+        # trial constrains nothing — so the composite does not either. Same
+        # precedence as `_match_computed_attr`: only claim a match when at
+        # least one arm had something to check.
+        if results and all(r == 'not_evaluated' for r in results):
+            return 'not_evaluated'
+
         return 'matched'
 
     # ── custom_search=True named handlers ────────────────────────────
@@ -444,7 +485,7 @@ class UserToTrialAttrMatcher:
     def _match_pre_existing_condition_categories(self, ctx):
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None or trial_attr_value == []:
-            return 'matched'
+            return 'not_evaluated'  # the trial excluded no condition categories
         elif ctx.is_blank:
             return 'unknown'
         elif len(get_overlap(ctx.value, trial_attr_value)) > 0:
@@ -462,7 +503,9 @@ class UserToTrialAttrMatcher:
         # (#4333, #4340).
         user_has_no_sct = sct_value_is_none(ctx.value)
         if not trial_attr_sct_history_required and not trial_attr_sct_history_excluded:
-            return 'matched'
+            # Neither required nor excluded — the trial has no transplant
+            # criterion, so there is nothing the patient met.
+            return 'not_evaluated'
 
         if ctx.is_blank:
             return 'unknown'
@@ -483,7 +526,7 @@ class UserToTrialAttrMatcher:
 
         user_has_no_cm = str(ctx.value).lower() == 'none'
         if not concomitant_medications_excluded:
-            return 'matched'
+            return 'not_evaluated'  # the trial excludes no concomitant medication
 
         if ctx.is_blank:
             return 'unknown'
@@ -506,7 +549,7 @@ class UserToTrialAttrMatcher:
 
     def _match_stage(self, ctx):
         if self.trial.stages == []:
-            return 'matched'
+            return 'not_evaluated'  # the trial names no stage
         elif ctx.is_blank:
             return 'unknown'
         elif len(get_overlap([ctx.value], self.trial.stages)) > 0:
@@ -517,7 +560,7 @@ class UserToTrialAttrMatcher:
     def _match_disease(self, ctx):
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None or trial_attr_value == '':
-            return 'matched'
+            return 'not_evaluated'  # the trial names no disease
         elif ctx.is_blank or ctx.value == '':
             return 'unknown'
         elif str(ctx.value).lower() in str(trial_attr_value).lower():
@@ -530,7 +573,8 @@ class UserToTrialAttrMatcher:
         trial_attr_pcl_required = getattr(self.trial, 'plasma_cell_leukemia_required')
 
         if trial_attr_no_pcl_required is not True and trial_attr_pcl_required is not True:
-            return 'matched'
+            # The trial requires neither the presence nor the absence of PCL.
+            return 'not_evaluated'
 
         if ctx.value is None:
             return 'unknown'
@@ -547,7 +591,8 @@ class UserToTrialAttrMatcher:
         trial_attr_smoldering_required = getattr(self.trial, 'disease_progression_smoldering_required')
 
         if trial_attr_active_required is not True and trial_attr_smoldering_required is not True:
-            return 'matched'
+            # The trial asks for neither active nor smoldering disease.
+            return 'not_evaluated'
 
         # "Unknown" is sent from the UI as an empty string (see ValueOptions.progressions)
         if ctx.value is None or ctx.value == '':
@@ -563,7 +608,7 @@ class UserToTrialAttrMatcher:
     def _match_last_treatment(self, ctx):
         trial_attr_value = getattr(self.trial, 'washout_period_duration')
         if trial_attr_value is None:
-            return 'matched'
+            return 'not_evaluated'  # the trial requires no washout period
 
         if ctx.has_no_prior_therapy:
             return 'matched'
@@ -580,7 +625,8 @@ class UserToTrialAttrMatcher:
         trial_attr_refractory_required = getattr(self.trial, 'refractory_required')
 
         if trial_attr_not_refractory_required is not True and trial_attr_refractory_required is not True:
-            return 'matched'
+            # The trial requires neither refractory nor non-refractory status.
+            return 'not_evaluated'
 
         if not ctx.value:
             return 'unknown'
@@ -614,7 +660,7 @@ class UserToTrialAttrMatcher:
                 value = mapping.get(tumor_grade_val, None)
 
         if trial_attr_value_min is None and trial_attr_value_max is None:
-            return 'matched'
+            return 'not_evaluated'  # neither bound set — no criterion
         elif ctx.is_blank:
             return 'unknown'
         elif trial_attr_value_min is not None and value < trial_attr_value_min:
@@ -633,7 +679,7 @@ class UserToTrialAttrMatcher:
             value = PatientInfoFlipyScore.scope_by_options(value)
 
         if trial_attr_value_min is None and trial_attr_value_max is None:
-            return 'matched'
+            return 'not_evaluated'  # neither bound set — no criterion
         elif ctx.is_blank:
             return 'unknown'
         elif trial_attr_value_min is not None and value < trial_attr_value_min:
@@ -663,7 +709,7 @@ class UserToTrialAttrMatcher:
         trial_attr_value_max = getattr(self.trial, 'therapy_lines_count_max')
 
         if trial_attr_value_min is None and trial_attr_value_max is None:
-            return 'matched'
+            return 'not_evaluated'  # neither bound set — no criterion
         elif ctx.is_blank:
             return 'unknown'
         elif trial_attr_value_min is not None and value < trial_attr_value_min:
@@ -684,7 +730,8 @@ class UserToTrialAttrMatcher:
         pi_interpretations = GeneticMutations.mutation_interpretations(ctx.value)
 
         if trial_mutation_genes_required == [] and trial_mutation_variants_required == [] and trial_mutation_origins_required == [] and trial_mutation_interpretations_required == []:
-            return 'matched'
+            # No gene, variant, origin or interpretation required.
+            return 'not_evaluated'
         elif ctx.is_blank:
             return 'unknown'
         else:
@@ -711,7 +758,10 @@ class UserToTrialAttrMatcher:
                 therapies = None
             return self._match_therapy_related_things(therapies, ctx.has_no_prior_therapy)
         else:
-            return 'matched'
+            # Only `first_line_therapy` is examined; the other line attrs are
+            # folded into that one calculation and never matched on their own,
+            # so claiming a match for them was claiming a check that never ran.
+            return 'not_evaluated'
 
     def _match_computed_attr(self, ctx):
         # "Named OR" criteria attrs (e.g. high-risk MCL) need count/sufficient/
@@ -729,6 +779,11 @@ class UserToTrialAttrMatcher:
             return 'not_matched'
         if 'unknown' in matching_results:
             return 'unknown'
+        # Every sub-criterion was absent, so the composite attribute is not a
+        # criterion of this trial either. Only claim a match when at least one
+        # sub-criterion was actually there to be met.
+        if matching_results and all(r == 'not_evaluated' for r in matching_results):
+            return 'not_evaluated'
         return 'matched'
 
     def _match_criteria_count(self, trial_attr_meta):
@@ -801,6 +856,12 @@ class UserToTrialAttrMatcher:
             return 'not_matched'
         if 'unknown' in statuses:
             return 'unknown'
+        # Derived from the trial's own lists, NOT from an empty `statuses`:
+        # passing an exclusion rule appends nothing either, and the two cases
+        # are opposites. "Nothing was asked" is not evaluated; "something was
+        # asked and the patient is clear of it" is a match.
+        if not (required or sufficient_any or excluded):
+            return 'not_evaluated'
         return 'matched'
 
     def high_risk_mcl_criteria_breakdown(self):
@@ -859,12 +920,15 @@ class UserToTrialAttrMatcher:
         is_exclude = '_excluded' in trial_subattr_name
 
         tr_attr_value = getattr(self.trial, trial_subattr_name)
+        # Unset, off, or an empty list: this sub-criterion is not part of the
+        # trial. Reported as its own state so the aggregate below can tell a
+        # criterion that passed from one that was never there.
         if tr_attr_value is None:
-            return 'matched'
+            return 'not_evaluated'
         if tr_attr_value is False:
-            return 'matched'
+            return 'not_evaluated'
         if isinstance(tr_attr_value, (list, tuple)) and tr_attr_value == []:
-            return 'matched'
+            return 'not_evaluated'
         if not isinstance(tr_attr_value, (list, tuple)):
             tr_attr_value = [tr_attr_value]
         uvalue = uvalue_func(self.patient_info)
@@ -898,7 +962,7 @@ class UserToTrialAttrMatcher:
     def _match_type_value(self, ctx):
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None:
-            return 'matched'
+            return 'not_evaluated'  # the trial set no value to match against
         elif ctx.is_blank:
             return 'unknown'
         elif ctx.value == trial_attr_value:
@@ -909,7 +973,7 @@ class UserToTrialAttrMatcher:
     def _match_type_str_value(self, ctx):
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None or trial_attr_value == '':
-            return 'matched'
+            return 'not_evaluated'  # the trial set no value to match against
         elif ctx.is_blank or ctx.value == '':
             return 'unknown'
         elif str(ctx.value).lower() == str(trial_attr_value).lower():
@@ -920,8 +984,13 @@ class UserToTrialAttrMatcher:
     def _match_type_bool_restriction(self, ctx):
         under_user_control = "under_user_control" in ctx.meta and ctx.meta["under_user_control"] is True
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
-        if trial_attr_value is None:
-            trial_attr_value = False
+        if not trial_attr_value:
+            # Unset or False: the trial does not require this, so it is not a
+            # criterion. Both cases, not just None — with the flag False every
+            # branch below ends in 'matched' whatever the patient's value is,
+            # which claims they were measured against a requirement that does
+            # not exist. This has to come BEFORE those branches.
+            return 'not_evaluated'
         value = False if ctx.value is None else ctx.value
         if value is True:
             return 'matched'
@@ -934,8 +1003,10 @@ class UserToTrialAttrMatcher:
 
     def _match_type_inversed_bool_restriction(self, ctx):
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
-        if trial_attr_value is None:
-            trial_attr_value = False
+        if not trial_attr_value:
+            # Unset or False — as above, every branch below returns 'matched'
+            # in that case, so there is no criterion to have met.
+            return 'not_evaluated'
         value = False if ctx.value is None else ctx.value
 
         if value is False:
@@ -954,7 +1025,7 @@ class UserToTrialAttrMatcher:
         trial_attr_value_min = getattr(self.trial, attr_min_name)
 
         if trial_attr_value_min is None:
-            return 'matched'
+            return 'not_evaluated'  # no lower bound — nothing to be under
         elif ctx.is_blank:
             return 'unknown'
         elif trial_attr_value_min is not None and ctx.value < trial_attr_value_min:
@@ -971,7 +1042,7 @@ class UserToTrialAttrMatcher:
         trial_attr_value_max = getattr(self.trial, attr_max_name)
 
         if trial_attr_value_max is None:
-            return 'matched'
+            return 'not_evaluated'  # no upper bound — nothing to be over
         elif ctx.is_blank:
             return 'unknown'
         elif trial_attr_value_max is not None and ctx.value > trial_attr_value_max:
@@ -1000,7 +1071,9 @@ class UserToTrialAttrMatcher:
             user_attr_value_uln_is_blank = ctx.is_blank or user_attr_value_uln is None
             uln_vals_match_res = min_max_match(trial_attr_value_uln_min, trial_attr_value_uln_max, user_attr_value_uln, user_attr_value_uln_is_blank)
             if abs_vals_match_res is None and uln_vals_match_res is None:
-                return 'matched'
+                # Neither the absolute nor the ULN form carries a bound: the
+                # trial did not constrain this attribute at all.
+                return 'not_evaluated'
             elif abs_vals_match_res == 'not_matched' or uln_vals_match_res == 'not_matched':
                 return 'not_matched'
             elif abs_vals_match_res == 'unknown' and uln_vals_match_res == 'unknown':
@@ -1009,7 +1082,9 @@ class UserToTrialAttrMatcher:
                 return 'matched'
             return 'unknown'
         else:
-            return abs_vals_match_res or 'matched'  # None means matched
+            # `None` means the trial set no bound, which is not the same as
+            # the patient clearing one.
+            return abs_vals_match_res or 'not_evaluated'
 
 
 # Module-level helpers used by SCT and concomitant-medications handlers.

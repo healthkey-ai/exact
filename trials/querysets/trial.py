@@ -237,6 +237,14 @@ class TrialQuerySet(models.QuerySet):
             f'num_nonnulls({filled_attrs}) * 100 / '
             f'NULLIF(num_nonnulls({all_attrs}), 0)'
         )
+        if attributes or filled_attributes:
+            # A patient was supplied, and every one of their attributes came
+            # back unevaluated: the trial constrains nothing, so it rules
+            # nobody out. 100, the same answer the detail page's matcher
+            # gives — a blank card next to a 100% page is the two disagreeing.
+            # Only on this path: with no patient there is nothing to score,
+            # and NULL still says so.
+            match_score_sql = f'COALESCE({match_score_sql}, 100)'
 
         sql_conditions = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info=None, counts=counts)
         sql_conditions_sum = ' + '.join([*sql_conditions.values(), '0'])

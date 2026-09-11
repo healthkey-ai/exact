@@ -405,6 +405,17 @@
   color: var(--exact-color-text-tertiary);
 }
 
+/* "not a requirement of this trial" — the row the trial never constrained.
+   Tertiary and italic on purpose: it is the absence of a criterion, so it
+   must not compete with the rows that are one. */
+.exact-root .exact-elig__note {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--exact-color-text-tertiary);
+}
+
 /* Field tooltip: "?" icon + floating text box on hover/focus */
 .exact-root .exact-tooltip__wrap {
   position: relative;

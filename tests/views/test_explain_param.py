@@ -128,4 +128,7 @@ class TestExplainSerializer:
         assert reasons is not None
         assert isinstance(reasons, list)
         assert len(reasons) > 0
-        assert all(r['status'] in {'matched', 'unknown', 'not_matched'} for r in reasons)
+        assert all(
+            r['status'] in {'matched', 'unknown', 'not_matched', 'not_evaluated'}
+            for r in reasons
+        )

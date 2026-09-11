@@ -1,5 +1,6 @@
 import pytest
 
+from trials.models import Trial
 from trials.services.patient_info.patient_info import PatientInfo
 from trials.services.patient_info.normalize import normalize_patient_info
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
@@ -229,15 +230,18 @@ class TestUserToTrialAttrMatcher:
 
     @pytest.mark.django_db
     def test_treatment_refractory_status_trial_has_no_requirement(self):
-        """When trial doesn't require either refractory status → always matched."""
+        """Neither refractory status required → not_evaluated, whatever the
+        patient's status is. The trial asked nothing here, so there is no
+        verdict to give — and reporting one put the attribute into the match
+        score for every patient equally."""
         trial = TrialFactory(not_refractory_required=False, refractory_required=False)
         pi = PatientInfo(disease='multiple myeloma')
         matcher = UserToTrialAttrMatcher(trial, pi)
 
         for value in (None, '', 'notRefractory', 'primaryRefractory'):
             pi.treatment_refractory_status = value
-            assert matcher.attr_match_status('treatment_refractory_status') == 'matched', \
-                f'Expected matched for value={value!r}'
+            assert matcher.attr_match_status('treatment_refractory_status') == 'not_evaluated', \
+                f'Expected not_evaluated for value={value!r}'
 
     @pytest.mark.django_db
     def test_progression_empty_string_is_unknown(self):
@@ -290,8 +294,9 @@ class TestUserToTrialAttrMatcher:
         assert pi.measurable_disease_imwg is None
 
         # Trial doesn't require → matched regardless of patient value.
+        # The trial does not require it, so nothing was checked.
         trial_no_req = TrialFactory(measurable_disease_imwg_required=None)
-        assert UserToTrialAttrMatcher(trial_no_req, pi).attr_match_status('measurable_disease_imwg') == 'matched'
+        assert UserToTrialAttrMatcher(trial_no_req, pi).attr_match_status('measurable_disease_imwg') == 'not_evaluated'
 
         # Trial requires + empty labs → 'unknown' (NOT 'not_matched').
         trial_requires = TrialFactory(measurable_disease_imwg_required=True)
@@ -384,8 +389,9 @@ class TestUserToTrialAttrMatcher:
         assert pi.meets_slim is None
 
         # Trial doesn't require → matched.
+        # The trial does not require it, so nothing was checked.
         trial_no_req = TrialFactory(meets_slim=None)
-        assert UserToTrialAttrMatcher(trial_no_req, pi).attr_match_status('meets_slim') == 'matched'
+        assert UserToTrialAttrMatcher(trial_no_req, pi).attr_match_status('meets_slim') == 'not_evaluated'
 
         # Trial requires + empty labs → 'unknown' (NOT 'not_matched').
         trial_requires = TrialFactory(meets_slim=True)
@@ -410,15 +416,19 @@ class TestUserToTrialAttrMatcher:
 
         pi = PatientInfo(disease='multiple myeloma')
 
-        # Blank patient: no-limit trial matches; max=0 trial is unknown.
+        # Blank patient: the no-limit trial never asked (not_evaluated —
+        # there is no requirement to have met); the max=0 trial asked and the
+        # patient's data is missing, which is what `unknown` means.
         pi.peripheral_neuropathy_grade = None
-        assert UserToTrialAttrMatcher(trial_no_limit, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
+        assert UserToTrialAttrMatcher(trial_no_limit, pi).attr_match_status('peripheral_neuropathy_grade') == 'not_evaluated'
         assert UserToTrialAttrMatcher(trial_max_zero, pi).attr_match_status('peripheral_neuropathy_grade') == 'unknown'
 
-        # Grade 0 patient: matches every trial (this is the fix path — used
-        # to be 'unknown' against max=0 because 0 was treated as blank).
+        # Grade 0 patient: passes every trial that asks (this is the fix
+        # path — used to be 'unknown' against max=0 because 0 was treated as
+        # blank). The no-limit trial still asks nothing, so it reports
+        # not_evaluated whatever the patient's grade is.
         pi.peripheral_neuropathy_grade = 0
-        assert UserToTrialAttrMatcher(trial_no_limit, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
+        assert UserToTrialAttrMatcher(trial_no_limit, pi).attr_match_status('peripheral_neuropathy_grade') == 'not_evaluated'
         assert UserToTrialAttrMatcher(trial_max_zero, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
         assert UserToTrialAttrMatcher(trial_max_two, pi).attr_match_status('peripheral_neuropathy_grade') == 'matched'
 
@@ -426,3 +436,122 @@ class TestUserToTrialAttrMatcher:
         pi.peripheral_neuropathy_grade = 3
         assert UserToTrialAttrMatcher(trial_max_zero, pi).attr_match_status('peripheral_neuropathy_grade') == 'not_matched'
         assert UserToTrialAttrMatcher(trial_max_two, pi).attr_match_status('peripheral_neuropathy_grade') == 'not_matched'
+
+
+class TestNotEvaluatedKeepsTheScoreHonest:
+    """An attribute the trial never constrained is not a match.
+
+    It used to be reported as `matched`, which put it in the numerator AND
+    the denominator of `trial_match_score` — so a trial that constrains two
+    attributes out of forty scored near 100%, and the Matching sort ranked
+    the least specific trials first.
+    """
+
+    @pytest.mark.django_db
+    def test_an_unconstrained_attr_reports_not_evaluated(self):
+        trial = TrialFactory(disease='multiple myeloma', age_low_limit=None, age_high_limit=None)
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        m = UserToTrialAttrMatcher(trial, pi)
+        assert m.attr_match_status('patient_age') == 'not_evaluated'
+
+    @pytest.mark.django_db
+    def test_a_constrained_attr_the_patient_meets_still_matches(self):
+        trial = TrialFactory(disease='multiple myeloma', age_low_limit=18, age_high_limit=75)
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        m = UserToTrialAttrMatcher(trial, pi)
+        assert m.attr_match_status('patient_age') == 'matched'
+
+    @pytest.mark.django_db
+    def test_unconstrained_attrs_do_not_lift_the_score(self):
+        """The same patient against a trial that asks one question and one
+        that asks the same question plus nothing else: the score must not
+        reward the second for the attributes it left empty."""
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        trial = TrialFactory(disease='multiple myeloma', age_low_limit=18, age_high_limit=75)
+        score = UserToTrialAttrMatcher(trial, pi).trial_match_score()
+        # Every other attribute on the factory-built trial is unconstrained,
+        # so the only question asked was age — and the patient met it.
+        assert score == 100
+
+    @pytest.mark.django_db
+    def test_a_trial_that_asks_almost_nothing_scores_on_what_it_asks(self):
+        """The sweep's headline claim, measured.
+
+        Against a factory-built trial that constrains only its disease, all
+        133 mapped attributes but that one report `not_evaluated` — so the
+        score is computed over the single question asked, not diluted by 132
+        that were not. Before the sweep 92 of them claimed a match.
+        """
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        trial = TrialFactory(disease='multiple myeloma')
+        m = UserToTrialAttrMatcher(trial, pi)
+        statuses = [m.attr_match_status(a) for a in m.mapping]
+        evaluated = [s for s in statuses if s != 'not_evaluated']
+        assert evaluated == ['matched'], (
+            f'expected only the disease criterion to be evaluated, got {evaluated}'
+        )
+        assert m.trial_match_score() == 100
+
+    @pytest.mark.django_db
+    def test_a_trial_that_asks_nothing_at_all_matches_everybody(self):
+        """0 and 100 are both reachable, and they must not be confused.
+
+        With every attribute unevaluated the fraction has no denominator. The
+        answer is 100 — a trial that constrains nothing rules nobody out —
+        where 0 is the sentinel for a disqualification, and would have shown
+        an eligible trial as a 0% match on the detail page.
+        """
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        m = UserToTrialAttrMatcher(TrialFactory(disease=None), pi)
+        assert [s for s in (m.attr_match_status(a) for a in m.mapping) if s != 'not_evaluated'] == []
+        assert m.trial_match_score() == 100
+        assert m.match_score_and_status() == (100, 'eligible')
+
+    @pytest.mark.django_db
+    def test_not_evaluated_does_not_change_eligibility(self):
+        """It is neutral: it cannot disqualify, and it is not a data gap."""
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        trial = TrialFactory(disease='multiple myeloma', age_low_limit=None, age_high_limit=None)
+        assert UserToTrialAttrMatcher(trial, pi).trial_match_status() == 'eligible'
+
+    @pytest.mark.django_db
+    def test_the_list_score_agrees_with_the_detail_score(self):
+        """The card and the page it links to must not contradict each other.
+
+        The list `match_score` is computed in SQL by `UserToTrialAttrsMapper`,
+        the detail score in Python by this matcher. A `*_required` flag set to
+        False is the case that pulled them apart: the matcher reads it as no
+        constraint, while the SQL counted any non-NULL flag as a requirement
+        met — 75 on the card against 66 on the page.
+        """
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45, no_other_active_malignancies=True)
+        normalize_patient_info(pi)
+        base = dict(disease='multiple myeloma', age_low_limit=18, age_high_limit=75, toxicity_grade_max=2)
+        cases = [({} if flag is None else {'no_other_active_malignancies_required': flag}, base)
+                 for flag in (None, False, True)]
+        # And the trial that constrains nothing at all, where the fraction has
+        # no denominator: the matcher says 100, and a NULL annotation would
+        # render as a blank card beside it.
+        cases.append(({'disease': None}, {}))
+        for kwargs, extra in cases:
+            trial = TrialFactory(**extra, **kwargs)
+            sql = (
+                Trial.objects.filter(id=trial.id)
+                .with_potential_attrs_count(pi)
+                .values_list('match_score', flat=True)
+                .first()
+            )
+            assert sql == UserToTrialAttrMatcher(trial, pi).trial_match_score(), (
+                f'list and detail disagree for {kwargs or "an unconstrained trial"}'
+            )
+
+    @pytest.mark.django_db
+    def test_the_single_pass_helper_agrees_with_the_two_methods(self):
+        pi = PatientInfo(disease='multiple myeloma', patient_age=45)
+        for kwargs in (
+            {'age_low_limit': 18, 'age_high_limit': 75},
+            {'age_low_limit': None, 'age_high_limit': None},
+            {'age_low_limit': 60, 'age_high_limit': 75},
+        ):
+            m = UserToTrialAttrMatcher(TrialFactory(disease='multiple myeloma', **kwargs), pi)
+            assert m.match_score_and_status() == (m.trial_match_score(), m.trial_match_status())

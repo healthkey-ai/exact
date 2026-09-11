@@ -54,8 +54,13 @@ class UserToTrialAttrsMapper:
                         return False
                 return True
 
-            is_under_user_control = 'under_user_control' in trial_attr_meta and trial_attr_meta['under_user_control'] is True
-            if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "tnbc_status"]:
+            # Every bool_restriction, not only the ones under user control: the
+            # flag is the constraint, so False means the trial does not gate on
+            # this attribute at all. Scoping it narrower left the SQL counting
+            # a False flag as a requirement while the matcher reads it as
+            # `not_evaluated`, and the list card then disagreed with the detail
+            # page it links to.
+            if trial_attr_meta["type"] == "bool_restriction" or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "tnbc_status"]:
                 if isinstance(trial_attr_name, list):
                     if all_is_not_true(trial=trial, attrs=trial_attr_name):
                         continue  # skip
@@ -204,7 +209,7 @@ class UserToTrialAttrsMapper:
             if has_no_prior_therapy and user_attr == 'last_treatment':
                 continue  # skip check for potential counts
 
-            is_under_user_control = 'under_user_control' in trial_attr_meta and trial_attr_meta['under_user_control'] is True
+            # (`under_user_control` no longer selects the bool_restriction rule below.)
 
             if patient_info:
                 if "disease" in trial_attr_meta and (
@@ -288,7 +293,9 @@ class UserToTrialAttrsMapper:
                 sql_query = f'(CASE WHEN {cases} THEN {then_value} END)'
 
             else:
-                if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status", "tp53_disruption", "btk_inhibitor_refractory", "bcl2_inhibitor_refractory", "measurable_disease_iwcll", "hepatomegaly", "autoimmune_cytopenias_refractory_to_steroids", "lymphadenopathy", "splenomegaly", "bone_marrow_involvement"]:
+                # As above: a False flag is not a constraint. `IS NOT TRUE`
+                # covers NULL and False alike.
+                if trial_attr_meta["type"] == "bool_restriction" or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status", "tp53_disruption", "btk_inhibitor_refractory", "bcl2_inhibitor_refractory", "measurable_disease_iwcll", "hepatomegaly", "autoimmune_cytopenias_refractory_to_steroids", "lymphadenopathy", "splenomegaly", "bone_marrow_involvement"]:
                     sql_check = "IS NOT TRUE"
                 elif trial_attr_meta["type"] == "str_value":
                     sql_check = {'cond': ['IS NULL', "= ''"], 'type': 'OR'}

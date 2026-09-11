@@ -104,7 +104,15 @@ export interface TrialDetailField {
   type: string;
   value: unknown;
   options?: { value: unknown; label: string }[] | null;
-  matchingType?: "matched" | "not_matched" | "unknown" | string;
+  matchingType?:
+    | "matched"
+    | "not_matched"
+    // The trial asked for this attribute but the patient's data is missing.
+    | "unknown"
+    // The trial placed no constraint on it at all — nothing was checked, so
+    // neither a tick nor a mismatch belongs on the row.
+    | "not_evaluated"
+    | string;
   ufield?: string | null;
   uvalue?: unknown;
   utype?: string;

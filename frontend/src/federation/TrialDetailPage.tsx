@@ -137,6 +137,12 @@ function formatValue(value: unknown, options?: TrialDetailField["options"]): str
 function EligibilityRow({ field }: { field: TrialDetailField }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
+  // The trial placed no constraint on this attribute, so it was never
+  // checked. Said out loud rather than left blank: a row with no tick and no
+  // mismatch mark reads the same as one the reader simply has no data for,
+  // and those are different — one is a gap they could close, the other is
+  // not a requirement at all.
+  const notEvaluated = field.matchingType === "not_evaluated";
   const required = formatValue(field.value, field.options);
   const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
@@ -158,6 +164,9 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
           <span className="exact-elig__check" aria-label="matches">
             <CheckIcon />
           </span>
+        ) : null}
+        {notEvaluated ? (
+          <span className="exact-elig__note">not a requirement of this trial</span>
         ) : null}
       </div>
       <div
