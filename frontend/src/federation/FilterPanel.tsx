@@ -10,7 +10,7 @@
 // without saying which. Single-select until that parser is ported — #428.
 import type { AxiosInstance } from "axios";
 
-import { DISTANCE_UNITS, isActiveDistance } from "./filters";
+import { DISTANCE_UNITS, LAST_UPDATE_OPTIONS, isActiveDistance } from "./filters";
 import { useFormSettings } from "./hooks";
 import type { FilterState } from "./types";
 
@@ -78,6 +78,23 @@ function SelectFilter({
   // value; when one is missing we supply the placeholder ourselves, so the
   // control always offers a way back to no filter.
   const hasEmpty = options.some((option) => option.value === "");
+  // A value the option list does not contain — one stored by another
+  // client, one from a host's `initialFilters`, one whose list belongs to
+  // a different disease — otherwise collapses this control to its
+  // placeholder: the reader is shown "Any" over a list the value is
+  // narrowing, with the badge counting a filter they can neither see nor
+  // clear from here. Showing it, even under its raw code, is what makes it
+  // clearable. (Deciding whether a value is legal is #444; this is the
+  // half that needs no answer from the server.)
+  //
+  // It also covers a legal value while the catalog is still on its way, so
+  // a saved filter reads as its own code for that moment and then as its
+  // label. That is the honest order: the code is what the request is
+  // carrying either way.
+  const shown =
+    value && !options.some((option) => option.value === value)
+      ? [...options, { value, label: value }]
+      : options;
   return (
     <Field label={label}>
       <select
@@ -86,8 +103,11 @@ function SelectFilter({
         onChange={(e) => onChange(e.target.value || undefined)}
       >
         {hasEmpty ? null : <option value="">Any</option>}
-        {options.map((option) => (
-          <option key={option.value || "__any__"} value={option.value}>
+        {/* Keys are prefixed so the key space is the values themselves:
+            keyed on `option.value || "__any__"`, a stored value of literally
+            `"__any__"` collided with the server's own empty-value entry. */}
+        {shown.map((option) => (
+          <option key={`opt:${option.value}`} value={option.value}>
             {option.label}
           </option>
         ))}
@@ -172,12 +192,7 @@ export function FilterPanel({
         <SelectFilter
           label="Updated within"
           value={filters.lastUpdate}
-          options={[
-            { value: "1", label: "the last year" },
-            { value: "2", label: "the last 2 years" },
-            { value: "3", label: "the last 3 years" },
-            { value: "5", label: "the last 5 years" },
-          ]}
+          options={[...LAST_UPDATE_OPTIONS]}
           onChange={(v) => set({ lastUpdate: v })}
         />
 

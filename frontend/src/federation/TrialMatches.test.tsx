@@ -13,6 +13,7 @@
 // They assert on the request log rather than on pixels: which request went
 // out, and when, is the thing that was wrong.
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
+import { StrictMode } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -237,6 +238,10 @@ describe("tab counts", () => {
     // The other two show nothing. Asserting on the DOM and not only on the
     // accessible name, which is an `aria-label` and so would have accepted
     // a badge rendering `0`.
+    // Awaited: the first search now waits for the saved filters (briefly),
+    // so the response is not already in hand by the time the tab bar has
+    // rendered. The assertion is the same one.
+    await waitFor(() => expect(screen.getAllByTestId("tab-count")).toHaveLength(1));
     const painted = screen.getAllByTestId("tab-count");
     expect(painted.map((el) => el.textContent)).toEqual(["3"]);
   });
@@ -2077,5 +2082,712 @@ describe("leaving the page without unmounting", () => {
     expect(remove.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(1);
     add.mockRestore();
     remove.mockRestore();
+  });
+});
+
+describe("the saved filters reach the first search", () => {
+  const withSaved = (saved: Record<string, unknown>) =>
+    fakeState({ overrides: { getPreferences: vi.fn(async () => saved) } }).adapter;
+
+  it("runs one search, not two", async () => {
+    // The saved set was applied through `setFilters` after the load, and
+    // nothing held the search back — so the opening request went out with
+    // the defaults and a second one followed once the set landed. Two
+    // matcher runs, and a flash of unfiltered results for a reader who had
+    // explicitly narrowed them.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: withSaved({ sponsor: "Acme" }) });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.sponsor).toBe("Acme");
+    await new Promise((r) => setTimeout(r, 700));
+    expect(listed(api).length).toBe(1);
+  });
+
+  it("does not wait longer than the grace period for a slow read", async () => {
+    // The list must not be hostage to the preferences service. A read that
+    // is merely slow gives the reader an unfiltered list and a corrected
+    // one when it arrives — which is what happened every time before the
+    // gate existed.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(() => new Promise<never>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1), { timeout: 2000 });
+  });
+
+  it("does not wait at all for a read that has failed", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        getPreferences: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1), { timeout: 250 });
+  });
+
+  it("never shows a filter the request does not carry", async () => {
+    // `useDebounced` is seeded at mount, before the saved values exist, so
+    // a loaded value sat behind the delay: the Sponsor box read "Acme", the
+    // badge counted it, and the request had no sponsor.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: withSaved({ sponsor: "Acme" }) });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+    await waitFor(() => expect(screen.getByLabelText("Sponsor")).toHaveValue("Acme"));
+    expect(listed(api)[listed(api).length - 1].params.sponsor).toBe("Acme");
+  });
+
+  it("does not drop a saved filter the moment the reader starts typing", async () => {
+    // The pass-through returns the live value, but the HELD value has to be
+    // kept in step behind it: the first keystroke switches the query over
+    // to the held one, and if that never caught up the saved sponsor
+    // vanishes from the request for 400ms — the same window as before, just
+    // arriving later.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: withSaved({ sponsor: "Acme" }) });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+
+    await userEvent.type(await screen.findByLabelText("Title"), "v");
+    await new Promise((r) => setTimeout(r, 700));
+    for (const request of listed(api)) {
+      expect(request.params.sponsor).toBe("Acme");
+    }
+  });
+
+  it("still debounces what the reader types", async () => {
+    // The pass-through applies only until they touch the panel; after that
+    // a keystroke must not be a request.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+
+    await userEvent.type(await screen.findByLabelText("Title"), "vrd");
+    expect(listed(api).length).toBe(1);
+    await waitFor(() => expect(listed(api).length).toBe(2), { timeout: 2000 });
+    expect(listed(api)[1].params.searchTitle).toBe("vrd");
+  });
+});
+
+describe("what the stored set is trusted to contain", () => {
+  const stored = (saved: Record<string, unknown>) =>
+    fakeState({ overrides: { getPreferences: vi.fn(async () => saved) } }).adapter;
+
+  it("drops a value of the wrong type before it reaches the request", async () => {
+    // The stored set is opaque JSON — PROMOP checks that it is an object
+    // and nothing more, and the localStorage fallback is a file anyone with
+    // the browser can edit. A `phase: 42` used to reach the query
+    // parameters unchallenged.
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: stored({ phase: 42, sponsor: { not: "a string" } }),
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.phase).toBeUndefined();
+    expect(listed(api)[0].params.sponsor).toBeUndefined();
+  });
+
+  it("drops a radius whose unit cannot be read", async () => {
+    // Keeping the number and dropping the unit looks harmless and is not:
+    // `by_distance` compares against `miles` and treats everything else as
+    // kilometres, so a stored 50 MILES with a garbled unit would quietly
+    // become 50 km — a different set of trials, from a value we admitted we
+    // could not parse.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: stored({ distance: 50, distanceUnits: "furlongs" }) });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.distance).toBeUndefined();
+  });
+
+  it("keeps the ordinary saved set intact", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: stored({
+        sponsor: "Acme",
+        phase: "PHASE3",
+        distance: 50,
+        distanceUnits: "km",
+        validatedOnly: true,
+      }),
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    const params = listed(api)[0].params;
+    expect(params.sponsor).toBe("Acme");
+    expect(params.phase).toBe("PHASE3");
+    expect(params.distance).toBe("50");
+    expect(params.distanceUnits).toBe("km");
+    expect(params.validatedOnly).toBe("true");
+  });
+});
+
+describe("the gate while the saved filters load", () => {
+  const slowRead = () =>
+    fakeState({
+      overrides: { getPreferences: vi.fn(() => new Promise<never>(() => {})) },
+    }).adapter;
+
+  it("says the list is loading, not that there is nothing to show", async () => {
+    // A DISABLED query reports `isLoading` false, so gating the search on
+    // the saved set silenced the loading line and let the empty state fire
+    // in its place: the reader was told there are no trials before anything
+    // had been asked.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: slowRead() });
+    // Synchronously, in the first paint — waiting would step past the
+    // grace period, after which the query is enabled and reports loading
+    // for the ordinary reason.
+    expect(screen.getByText("Loading trials…")).toBeInTheDocument();
+    expect(screen.queryByText("No trials found")).toBeNull();
+  });
+
+  it("holds the new patient's first search too", async () => {
+    // The gate was raised in an effect, which runs after the render that
+    // already handed the query observer the new key — so the switch fired
+    // an unfiltered search and a corrected one behind it, the very pair the
+    // gate exists to collapse.
+    const api = fakeApi();
+    const a = fakeState({ overrides: { getPreferences: vi.fn(async () => ({})) } });
+    const b = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ sponsor: "Beta" })) },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect(listed(api)[1].params.sponsor).toBe("Beta");
+    await new Promise((r) => setTimeout(r, 700));
+    expect(listed(api).length).toBe(2);
+  });
+
+  it("is not opened by a read its own effect has already abandoned", async () => {
+    // StrictMode double-invokes the mount effect, so there are two reads
+    // for the SAME writer — and ownership cannot tell them apart. The
+    // first, abandoned one would open the gate belonging to the second,
+    // still in flight: an unfiltered search, then a corrected one. Every
+    // entry point in this repo mounts under StrictMode, so this is the
+    // configuration anybody debugging the gate is looking at.
+    const api = fakeApi();
+    const settle: ((v: Record<string, unknown>) => void)[] = [];
+    const state = fakeState({
+      overrides: {
+        getPreferences: vi.fn(
+          () => new Promise<Record<string, unknown>>((resolve) => settle.push(resolve)),
+        ),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <TrialMatches
+            apiClient={api.client}
+            queryClient={queryClient}
+            patientInfo={{ disease: "mm" }}
+            state={state.adapter}
+          />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(settle.length).toBe(2));
+
+    // Only the abandoned read answers.
+    settle[0]({ sponsor: "Acme" });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(listed(api).length).toBe(0);
+  });
+
+  it("closes again when the host hands over an adapter for the same patient", async () => {
+    // The same patient throughout, so the key never changes — but the
+    // panel was reading `localStorage` a moment ago and is now waiting on
+    // PROMOP. Keyed on the patient alone the gate stayed open, and the
+    // saved set arrived after an unfiltered search had already gone out.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(() => new Promise<never>(() => {})) },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (withAdapter: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm" }}
+          state={withAdapter ? state.adapter : undefined}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui(false));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    view.rerender(ui(true));
+    // The adapter's read never answers, so the list holds — and says so —
+    // until the grace period. (Only the loading line is asserted: gaining
+    // an adapter does not change the trials query key, so no second search
+    // could go out here whatever the gate did.)
+    expect(screen.getByText("Loading trials…")).toBeInTheDocument();
+  });
+
+  it("is not re-closed by the previous patient's answer arriving late", async () => {
+    // The release carries the patient it was made for. Without that, A's
+    // read resolving after the switch writes a gate for A, the render that
+    // notices re-raises it for B — and B's own release has already been
+    // spent, so the list stops for good.
+    const api = fakeApi();
+    let releaseA: (v: Record<string, unknown>) => void = () => {};
+    const a = fakeState({
+      overrides: {
+        getPreferences: vi.fn(
+          () => new Promise<Record<string, unknown>>((resolve) => {
+            releaseA = resolve;
+          }),
+        ),
+      },
+    });
+    const b = fakeState({ overrides: { getPreferences: vi.fn(async () => ({})) } });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await screen.findByText("Trial 1");
+
+    releaseA({ sponsor: "Acme" });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(screen.getByText("Trial 1")).toBeInTheDocument();
+    expect(screen.queryByText("Loading trials…")).toBeNull();
+  });
+
+  it("does not debounce a patient's saved set when the reader comes back to them", async () => {
+    // Remembering which patient was typed for is not enough: returning to
+    // them turns it on again, and their re-loaded set goes through the
+    // delay — the same 400ms of a panel that disagrees with the request.
+    const api = fakeApi();
+    const a = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ sponsor: "Alpha" })) },
+    });
+    const b = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ sponsor: "Beta" })) },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+    await userEvent.type(await screen.findByLabelText("Title"), "v");
+
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(screen.getByLabelText("Sponsor")).toHaveValue("Beta"));
+    view.rerender(ui("A", a));
+    await waitFor(() => expect(screen.getByLabelText("Sponsor")).toHaveValue("Alpha"));
+    // The panel says Alpha; so must the request that went with it.
+    expect(listed(api)[listed(api).length - 1].params.sponsor).toBe("Alpha");
+  });
+
+  it("does not debounce the next patient's saved set after the reader has typed", async () => {
+    // `typing` was one-way, so it stayed true across the switch and the new
+    // patient's sponsor arrived through the delay: for 400ms the panel
+    // showed theirs while the request carried the previous reader's text.
+    const api = fakeApi();
+    const a = fakeState({ overrides: { getPreferences: vi.fn(async () => ({})) } });
+    const b = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ sponsor: "Beta" })) },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+    await userEvent.type(await screen.findByLabelText("Title"), "v");
+
+    view.rerender(ui("B", b));
+    await waitFor(() => expect(screen.getByLabelText("Sponsor")).toHaveValue("Beta"));
+    expect(listed(api)[listed(api).length - 1].params.sponsor).toBe("Beta");
+  });
+
+  it("applies a saved unit to the host's own radius", async () => {
+    // The reader switched the host's 50 km to 50 miles, so only the unit is
+    // theirs and only the unit is stored. Dropped on the way back in, the
+    // next mount silently searches kilometres again.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ distanceUnits: "miles" as const })) },
+    });
+    renderTrialMatches(api, {
+      state: state.adapter,
+      initialFilters: { distance: 50, distanceUnits: "km" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.distance).toBe("50");
+    expect(listed(api)[0].params.distanceUnits).toBe("miles");
+  });
+});
+
+describe("what the gate holds back besides the request", () => {
+  it("does not leave the previous rows on screen while it waits", async () => {
+    // Disabling a query does not clear what it is holding. Across a patient
+    // switch react-query keeps serving the previous answer, so the rows,
+    // the total and the badges all described the last reader's search while
+    // "Loading trials…" claimed otherwise above them.
+    const api = fakeApi({ results: [trial(1)], itemsTotalCount: 1, count: 4 });
+    const a = fakeState({ overrides: { getPreferences: vi.fn(async () => ({})) } });
+    const b = fakeState({
+      overrides: { getPreferences: vi.fn(() => new Promise<never>(() => {})) },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string, state: typeof a) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A", a));
+    await screen.findByText("Trial 1");
+
+    view.rerender(ui("B", b));
+    expect(screen.getByText("Loading trials…")).toBeInTheDocument();
+    expect(screen.queryByText("Trial 1")).toBeNull();
+    // And nothing numbers the list that is not being shown: the tab badge
+    // is painted from the same held response.
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    // Including the pager. Left live it is four clickable pages belonging
+    // to the previous patient, and clicking one sends the NEXT patient's
+    // first search as `page=3`.
+    expect(screen.queryByRole("button", { name: "2" })).toBeNull();
+  });
+
+  it("acts on Reset at once, even from a panel that was typed in", async () => {
+    // A button click is the canonical non-keystroke. With `typed` left set,
+    // the cleared panel sat over the narrowed rows for 400ms — empty box,
+    // badge reading no filters, old result set underneath.
+    const api = fakeApi({ results: [trial(1)] });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await screen.findByText("Trial 1");
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+
+    // The narrowed search answers with a different trial, so "which rows
+    // are on screen" is observable. (No new request goes out after Reset —
+    // the unfiltered key is already cached — which is exactly why the lag
+    // shows up as rows rather than as a request.)
+    api.setResponse({ results: [trial(7)] });
+    await userEvent.type(await screen.findByLabelText("Title"), "vrd");
+    await screen.findByText("Trial 7");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    // At once, not after the delay that belongs to typing.
+    await waitFor(() => expect(screen.getByText("Trial 1")).toBeInTheDocument(), {
+      timeout: 150,
+    });
+  });
+
+  it("stops debouncing when the host hands over an adapter mid-session", async () => {
+    // The patient key never changes here, which is exactly why the gate
+    // beside it is keyed on the writer rather than on the key — and why
+    // this state has to be too. Keyed on the key, the reader's earlier
+    // typing kept the delay on, and the saved set that arrived with the
+    // adapter went through it: 400ms of a panel disagreeing with its own
+    // request.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ sponsor: "Beta" })) },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (withAdapter: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm" }}
+          state={withAdapter ? state.adapter : undefined}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui(false));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+    await userEvent.type(await screen.findByLabelText("Title"), "v");
+
+    view.rerender(ui(true));
+    await waitFor(() => expect(screen.getByLabelText("Sponsor")).toHaveValue("Beta"));
+    expect(listed(api)[listed(api).length - 1].params.sponsor).toBe("Beta");
+  });
+
+  it("does not offer to load a patient it has not been given", async () => {
+    // The gate is about the saved filters, not about the search — with no
+    // patient the query never runs, and the loading line sat beside the
+    // message saying there is nobody to load.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(() => new Promise<never>(() => {})) },
+    });
+    renderTrialMatches(api, { patientInfo: null, state: state.adapter });
+    expect(screen.queryByText("Loading trials…")).toBeNull();
+    await screen.findByText(/Pass a/);
+  });
+
+  it("debounces every field the reader can type into, not just the first", async () => {
+    // Only Title was covered, so the pass-through could have been left on
+    // for the other four — a matcher run per keystroke — without a test
+    // noticing.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+
+    for (const label of ["Title", "Treatment", "Sponsor"]) {
+      const before = listed(api).length;
+      await userEvent.type(await screen.findByLabelText(label), "ab");
+      expect(listed(api).length).toBe(before);
+      await waitFor(() => expect(listed(api).length).toBe(before + 1), {
+        timeout: 2000,
+      });
+    }
+  });
+});
+
+describe("two guards that had no test of their own", () => {
+  it("says nothing about loading when there is no patient, whatever is in flight", async () => {
+    // The guard covered `savedFilters.pending` and not `waitingForIds`,
+    // and that one is worse: the ids query is enabled on the adapter alone,
+    // with no patient in it, so a hanging favorites read pairs "Loading
+    // trials…" with "Pass a patientInfo payload" permanently rather than
+    // for a frame.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { listFavoriteIds: vi.fn(() => new Promise<never>(() => {})) },
+    });
+    renderTrialMatches(api, { patientInfo: null, state: state.adapter });
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(screen.queryByText("Loading trials…")).toBeNull();
+    await screen.findByText(/Pass a/);
+  });
+
+  it("counts a person id as a patient", async () => {
+    // Both halves of `hasPatient`. With only the payload half, a mount that
+    // passes `personId` alone renders "Pass a patientInfo payload or
+    // personId to load trial matches" underneath its own rows.
+    const api = fakeApi();
+    renderTrialMatches(api, { patientInfo: null, personId: 9001 });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await screen.findByText("Trial 1");
+    expect(screen.queryByText(/Pass a/)).toBeNull();
+  });
+});
+
+describe("the pager during a placeholder window", () => {
+  const held = (api: ReturnType<typeof fakeApi>) => {
+    const real = api.client.post as unknown as (...a: unknown[]) => Promise<unknown>;
+    let armed = false;
+    let release: (() => void) | null = null;
+    (api.client as unknown as { post: unknown }).post = (...args: unknown[]) => {
+      const answer = real(...args);
+      if (!armed) return answer;
+      armed = false;
+      return new Promise((resolve) => {
+        release = () => resolve(answer);
+      });
+    };
+    return {
+      arm: () => {
+        armed = true;
+      },
+      release: () => release?.(),
+    };
+  };
+
+  it("keeps the page count of the view it belongs to", async () => {
+    // A page turn: same view, different page. The count cannot have
+    // changed, so hiding the pager only unmounts the button being clicked.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const gate = held(api);
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1", "2"] }).adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await screen.findByText("Trial 1");
+
+    gate.arm();
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    expect(screen.queryByText("Trial 1")).toBeNull();
+    expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
+    gate.release();
+  });
+
+  it("does not paint another view's page count", async () => {
+    // A tab switch is the same placeholder window, and the count in hand
+    // belongs to the tab being left. Painted, its pages are clickable —
+    // page 3 of a one-page view is a 404 from DRF, recovered only after
+    // the fact.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const gate = held(api);
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
+    await screen.findByText("Trial 1");
+
+    gate.arm();
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    expect(screen.queryByText("Trial 1")).toBeNull();
+    expect(screen.queryByRole("button", { name: "3" })).toBeNull();
+    gate.release();
+    // And it comes back once the answer is this view's.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument(),
+    );
+  });
+});
+
+describe("a filter the panel has no option for", () => {
+  it("is shown rather than collapsed to Any", async () => {
+    // A value stored by another client, or seeded by a host, or belonging
+    // to another disease's option list. Collapsed to the placeholder, the
+    // reader is shown "Any" over a list the value is narrowing, with the
+    // badge counting a filter they can neither see nor clear from that
+    // control. Membership cannot be checked here (#444); showing it can.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ lastUpdate: "7" })) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(listed(api)[0].params.lastUpdate).toBe("7");
+
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+    expect(await screen.findByLabelText("Updated within")).toHaveValue("7");
+  });
+
+  it("can be cleared from the control that shows it", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { getPreferences: vi.fn(async () => ({ lastUpdate: "7" })) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Filter/ }));
+
+    // The option has to BE there — without it the select's value is
+    // already "" and `selectOptions` fires a change event a real reader
+    // could not produce, so the assertion below would pass over a control
+    // that offers nothing to clear.
+    const select = await screen.findByLabelText("Updated within");
+    expect(
+      Array.from(select.querySelectorAll("option")).map((o) => o.value),
+    ).toContain("7");
+    await userEvent.selectOptions(select, "");
+    await waitFor(() => {
+      const last = listed(api)[listed(api).length - 1];
+      expect(last.params.lastUpdate).toBeUndefined();
+    });
+  });
+});
+
+describe("the pager across a patient switch", () => {
+  it("does not paint the previous patient's page count", async () => {
+    // The patient is part of "the view", and it is the part that is easy
+    // to leave out: react-query's key carries it, the component's does
+    // not, so two patients who share a country and a trial type look
+    // identical to anything keyed on the filters alone. The saved-filter
+    // gate does not cover this window either — it has already released by
+    // the time the new patient's search is in flight.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const real = api.client.post as unknown as (...a: unknown[]) => Promise<unknown>;
+    let armed = false;
+    const gate: { release: (() => void) | null } = { release: null };
+    (api.client as unknown as { post: unknown }).post = (...args: unknown[]) => {
+      const answer = real(...args);
+      if (!armed) return answer;
+      armed = false;
+      return new Promise((resolve) => {
+        gate.release = () => resolve(answer);
+      });
+    };
+    const state = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "mm", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A"));
+    await screen.findByText("Trial 1");
+    expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
+
+    armed = true;
+    view.rerender(ui("B"));
+    await waitFor(() => expect(gate.release).not.toBeNull());
+    expect(screen.queryByRole("button", { name: "3" })).toBeNull();
+    gate.release?.();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument(),
+    );
   });
 });

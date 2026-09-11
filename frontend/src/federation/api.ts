@@ -14,7 +14,7 @@
 
 import type { AxiosInstance } from "axios";
 
-import { isActiveDistance } from "./filters";
+import { isUsableLastUpdate, isActiveDistance } from "./filters";
 import type {
   FilterState,
   PatientInfo,
@@ -224,7 +224,15 @@ export function filterStateToParams(filters?: FilterState): Record<string, strin
   if (filters.register) out.register = filters.register;
   if (filters.searchTitle) out.searchTitle = filters.searchTitle;
   if (filters.phase) out.phase = filters.phase;
-  if (filters.lastUpdate) out.lastUpdate = filters.lastUpdate;
+  // Checked at the wire, like `distance` above it, because the storage
+  // check cannot see a value that never went through storage: a host's
+  // `initialFilters` reaches here directly. `"3000"` is digits, passes the
+  // server's own `cast_str_to_int`, and then takes
+  // `datetime.now() - timedelta(...)` below year 1 — an OverflowError, and
+  // a 500 on every search.
+  if (isUsableLastUpdate(filters.lastUpdate)) {
+    out.lastUpdate = filters.lastUpdate as string;
+  }
   if (filters.searchTreatment) out.searchTreatment = filters.searchTreatment;
   if (filters.type) out.type = filters.type;
   if (filters.sort) out.sort = filters.sort;
