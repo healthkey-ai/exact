@@ -7,6 +7,7 @@ import {
   countryFor,
   hasActiveFilters,
   isActiveDistance,
+  userOwnedFilters,
 } from "./filters";
 
 describe("baselineFilters", () => {
@@ -197,5 +198,113 @@ describe("isActiveDistance", () => {
     expect(isActiveDistance("25")).toBe(false);
     expect(isActiveDistance(Number.NaN)).toBe(false);
     expect(isActiveDistance(Number.POSITIVE_INFINITY)).toBe(false);
+  });
+});
+
+describe("userOwnedFilters", () => {
+  it("keeps only what the reader changed", () => {
+    const baseline = { country: "US", recruitmentStatus: "RECRUITING" };
+    const filters = { country: "US", recruitmentStatus: "RECRUITING", searchTitle: "vrd" };
+    expect(userOwnedFilters(filters, baseline)).toEqual({ searchTitle: "vrd" });
+  });
+
+  it("does not save the host's mount-time scope", () => {
+    // Persisting it would turn one mount's scope into a standing preference,
+    // and a later mount with a different scope would lose to the saved one.
+    const baseline = { country: "DE", recruitmentStatus: "NOT_YET_RECRUITING" };
+    expect(userOwnedFilters({ ...baseline }, baseline)).toEqual({});
+  });
+
+  it("keeps a field the reader overrode, even back to a common value", () => {
+    const baseline = { recruitmentStatus: "RECRUITING" };
+    expect(userOwnedFilters({ recruitmentStatus: "COMPLETED" }, baseline)).toEqual({
+      recruitmentStatus: "COMPLETED",
+    });
+  });
+
+  it("marks a cleared field present-but-undefined so it can be cleared server-side", () => {
+    const baseline = { searchTitle: "vrd" };
+    const out = userOwnedFilters({ searchTitle: undefined }, baseline);
+    expect("searchTitle" in out).toBe(true);
+    expect(out.searchTitle).toBeUndefined();
+  });
+});
+
+describe("userOwnedFilters — distance carries its unit", () => {
+  it("saves the unit alongside a distance", () => {
+    // Without it a radius chosen in miles comes back as the same number of km.
+    const out = userOwnedFilters({ distance: 50, distanceUnits: "miles" }, {});
+    expect(out).toEqual({ distance: 50, distanceUnits: "miles" });
+  });
+
+  it("does not save a unit with no distance behind it", () => {
+    expect(userOwnedFilters({ distanceUnits: "miles" }, {})).toEqual({});
+  });
+});
+
+describe("userOwnedFilters — ownership is sticky", () => {
+  it("keeps a saved field whose value happens to equal the baseline", () => {
+    // 50 miles against a 50-km baseline: the numbers match, the meanings do
+    // not. Dropping it here would make the next unrelated edit clear the
+    // reader's radius — units and all — on the server.
+    const baseline = { distance: 50, distanceUnits: "km" as const };
+    const next = { distance: 50, distanceUnits: "miles" as const, searchTitle: "vrd" };
+
+    // The units go either way — the control is enabled for a host-seeded
+    // distance, so switching 50 km to 50 miles has to be saved even though the
+    // number never changed and `distance` itself is the host's.
+    expect(userOwnedFilters(next, baseline)).toEqual({
+      searchTitle: "vrd",
+      distanceUnits: "miles",
+    });
+    // But units the reader never touched stay the host's.
+    expect(userOwnedFilters({ ...next, distanceUnits: "km" }, baseline)).toEqual({
+      searchTitle: "vrd",
+    });
+    expect(userOwnedFilters(next, baseline, new Set(["distance"]))).toEqual({
+      searchTitle: "vrd",
+      distance: 50,
+      distanceUnits: "miles",
+    });
+  });
+});
+
+describe("userOwnedFilters — a units-only change", () => {
+  it("is saved even though nothing else about the distance moved", () => {
+    // Otherwise the reader sets a 50-mile radius against the host's 50 km,
+    // nothing is persisted, and the next mount silently searches 50 km — a
+    // materially different search, with no sign anything was discarded.
+    const baseline = { distance: 50, distanceUnits: "km" as const };
+    const next = { distance: 50, distanceUnits: "miles" as const };
+    expect(userOwnedFilters(next, baseline)).toEqual({ distanceUnits: "miles" });
+    // And with no distance in play there is no unit to qualify.
+    expect(userOwnedFilters({ distanceUnits: "miles" as const }, {})).toEqual({});
+  });
+});
+
+describe("userOwnedFilters — clearing an owned field", () => {
+  it("emits a tombstone rather than omitting the key", () => {
+    // Both transports merge, so an absent key means "no opinion, keep what you
+    // have". A cleared filter that is merely omitted survives storage and is
+    // applied again on the next mount.
+    const out = userOwnedFilters({ searchTitle: undefined }, {}, new Set(["searchTitle"]));
+    expect("searchTitle" in out).toBe(true);
+    expect(out.searchTitle).toBeUndefined();
+    // Unowned and empty is genuinely nothing to say.
+    expect(userOwnedFilters({ searchTitle: undefined }, {})).toEqual({});
+  });
+});
+
+describe("userOwnedFilters — a cleared distance", () => {
+  it("takes its unit with it", () => {
+    // Otherwise the old unit survives on disk under a merge transport and
+    // becomes the unit for the next radius the reader enters.
+    const out = userOwnedFilters(
+      { distance: undefined, distanceUnits: "miles" as const },
+      {},
+      new Set(["distance"]),
+    );
+    expect("distanceUnits" in out).toBe(true);
+    expect(out.distanceUnits).toBeUndefined();
   });
 });

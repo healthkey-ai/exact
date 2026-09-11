@@ -24,7 +24,12 @@ import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
 import { Tabs } from "./Tabs";
 import { hasInlinePatient } from "./api";
-import { baselineFilters, countActiveFilters, countryFor } from "./filters";
+import {
+  baselineFilters,
+  countActiveFilters,
+  countryFor,
+  userOwnedFilters,
+} from "./filters";
 import { MAX_TRIAL_IDS } from "./state";
 import {
   DEFAULT_SORT,
@@ -36,6 +41,7 @@ import {
 import {
   canReadAdvanced,
   useAdvancedEnrollments,
+  useSavedFilters,
   useSetTrialState,
   useStateIds,
   useTrials,
@@ -206,6 +212,42 @@ function TrialMatchesInner({
   // drawn for a trial whose enrollment a study team has already advanced,
   // where "I'm Interested" would write `registered` over `entered`.
   const advanced = useAdvancedEnrollments(state, stateKey);
+  // Saved filters. Applied over the host's `initialFilters` rather than in
+  // place of them: the seeded country is the baseline the reader never chose,
+  // and a saved set that omits it must not silently widen the search to every
+  // country. Keys the reader did save win.
+  // Which fields are the reader's rather than the host's. Sticky: seeded from
+  // whatever was loaded, added to on every save, and emptied by Reset. Without
+  // it a saved field that happens to equal the current baseline would look
+  // like host scope on the next edit and be dropped. See `userOwnedFilters`.
+  const ownedFields = useRef<Set<string>>(new Set());
+  const savedFilters = useSavedFilters(state, stateKey, (saved) => {
+    for (const field of Object.keys(saved)) ownedFields.current.add(field);
+    // A saved trial type came from THIS patient's storage, so it is this
+    // patient's choice. Without claiming it the staleness rule — which exists
+    // to expire a type picked for someone else — would mask the very type
+    // just loaded, and a later edit would overwrite it.
+    if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
+    setFilters((current) => ({ ...current, ...saved }));
+  });
+  // Ownership is per patient: what the previous one had saved is not evidence
+  // about this one. Kept in step with `stateKey` — the same key the saved-set
+  // load is keyed on, so the clear lands before that patient's answer does.
+  // (The reader's session FILTERS are deliberately kept across the switch; it
+  // is the claim about who owns them that does not carry over.)
+  useEffect(() => {
+    ownedFields.current = new Set();
+  }, [stateKey]);
+
+  // NOTE on switching patients in place: the reader's session filters are
+  // deliberately KEPT, and only the trial-type ownership is re-decided (see
+  // `setTrialTypeOwner` below and "a trial type belongs to the patient it was
+  // chosen for"). Review flagged the saved-set overlay as leaking filters from
+  // one patient to the next; resetting to the seed instead breaks that tested
+  // decision. The filters belong to the reader's search, not to the patient —
+  // what belongs to the patient is the SAVED set, and the overlay applies the
+  // new patient's own saved keys over the top.
+
   const setFavorite = useSetTrialState(state, "favorites", stateKey);
   const setRegistered = useSetTrialState(state, "registered", stateKey);
 
@@ -451,6 +493,12 @@ function TrialMatchesInner({
       setTrialTypeOwner(patientIdentity);
     }
     setFilters(next);
+    // Only what the reader changed. `next` carries the host's mount-time
+    // scope too, and saving that would make one mount's scope their standing
+    // preference — a later mount with a different scope would lose to it.
+    const owned = userOwnedFilters(next, baseline, ownedFields.current);
+    for (const field of Object.keys(owned)) ownedFields.current.add(field);
+    savedFilters.persist(owned);
   };
   // Reset goes back to the baseline, not to `{}`: clearing the seeded
   // country would silently widen the search to every country in the
@@ -460,7 +508,17 @@ function TrialMatchesInner({
   // produce the same value — and a mutation test confirmed the line was
   // dead. It was load-bearing only under the earlier "mask to undefined"
   // rule, which is gone.
-  const handleFiltersReset = () => setFilters(baseline);
+  const handleFiltersReset = () => {
+    setFilters(baseline);
+    // Reset gives the fields back to the host, so nothing is owned any more.
+    ownedFields.current = new Set();
+    // `reset`, not `persist(baseline)`: the server merges a partial update, so
+    // writing the baseline would leave whatever the reader had saved for keys
+    // the baseline does not mention. It also retires a save already on the
+    // wire, which would otherwise land afterwards and restore what was
+    // just cleared.
+    savedFilters.reset();
+  };
 
   const handleSelect = (trial: TrialMatch) => {
     setSelectedTrial(trial);

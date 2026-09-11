@@ -1684,3 +1684,398 @@ describe("the controls on the detail page", () => {
     expect(screen.queryByText(/coordinator will reach out/i)).toBeNull();
   });
 });
+
+describe("saved filters", () => {
+  const adapter = (saved: Record<string, unknown> = {}) => ({
+    listFavoriteIds: vi.fn(async () => []),
+    listRegisteredIds: vi.fn(async () => []),
+    listAdvancedEnrollments: vi.fn(async () => ({})),
+    setFavorite: vi.fn(async () => undefined),
+    setRegistered: vi.fn(async () => undefined),
+    getPreferences: vi.fn(async () => saved),
+    // Typed argument so the assertion below can read what was saved.
+    savePreferences: vi.fn(async (_filters: Record<string, unknown>) => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+  });
+
+  const renderIt = (api: ReturnType<typeof fakeApi>, state?: unknown) => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+  };
+
+  it("applies what the reader saved last time", async () => {
+    const api = fakeApi();
+    renderIt(api, adapter({ searchTitle: "daratumumab" }));
+
+    // The badge counts filters that differ from the baseline, so it is the
+    // visible proof the saved set was applied rather than ignored.
+    await screen.findByRole("button", { name: /Filters \(1\)/ });
+  });
+
+  it("does not let an empty saved set clobber the seeded baseline", async () => {
+    const api = fakeApi();
+    renderIt(api, adapter({}));
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    // No saved opinion means the baseline stands, so nothing counts as active.
+    expect(
+      screen.queryByRole("button", { name: /Filters \(\d+\)/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("persists an edit through the adapter", async () => {
+    const api = fakeApi();
+    const state = adapter();
+    renderIt(api, state);
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    await userEvent.click(screen.getByRole("button", { name: /Filter Results|Filters \(/ }));
+    await userEvent.type(
+      await screen.findByLabelText("Title"),
+      "myeloma",
+    );
+
+    await waitFor(() => expect(state.savePreferences).toHaveBeenCalled());
+    const last = state.savePreferences.mock.calls.at(-1)?.[0];
+    expect(last?.searchTitle).toBe("myeloma");
+  });
+
+  it("resets through resetPreferences, not by saving the baseline", async () => {
+    // The server merges a partial update, so writing the baseline would leave
+    // whatever was saved for keys the baseline does not mention.
+    const api = fakeApi();
+    const state = adapter({ searchTitle: "daratumumab" });
+    renderIt(api, state);
+    await screen.findByRole("button", { name: /Filters \(1\)/ });
+
+    await userEvent.click(screen.getByRole("button", { name: /Filter Results|Filters \(/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Reset/ }));
+
+    await waitFor(() => expect(state.resetPreferences).toHaveBeenCalled());
+  });
+
+  it("does not send one patient's edit to the next patient's adapter", async () => {
+    // The writer debounces, so a host switching patients inside that window
+    // runs the old writer's flush during cleanup — after the prop has already
+    // changed. Reading the adapter at flush time would write filters edited
+    // for patient A into patient B's saved preferences.
+    const api = fakeApi();
+    const first = adapter();
+    const second = adapter();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (personId: string, state: unknown) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId={personId}
+          state={state as never}
+        />
+      </QueryClientProvider>
+    );
+
+    const view = render(ui("p1", first));
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "vrd");
+
+    // Switch patients immediately, inside the debounce window.
+    view.rerender(ui("p2", second));
+
+    await waitFor(() => expect(first.savePreferences).toHaveBeenCalled());
+    expect(second.savePreferences).not.toHaveBeenCalled();
+  });
+
+  it("does not let a slow load revert an edit made while it was in flight", async () => {
+    const api = fakeApi();
+    let release: (v: Record<string, unknown>) => void = () => {};
+    const state = {
+      ...adapter(),
+      getPreferences: vi.fn(
+        () =>
+          new Promise<Record<string, unknown>>((resolve) => {
+            release = resolve;
+          }),
+      ),
+    };
+    renderIt(api, state);
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "vrd");
+    const afterEdit = await screen.findByRole("button", { name: /Filters \(1\)/ });
+    expect(afterEdit).toBeInTheDocument();
+
+    // The stored set finally arrives, carrying something else entirely.
+    release({ sponsor: "someone else" });
+
+    // The reader's edit stands; the late answer is dropped.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Filters \(1\)/ })).toBeInTheDocument(),
+    );
+  });
+
+  it("keeps filters across a remount with no adapter at all", async () => {
+    // The fallback exists so the panel does not silently forget on reload for
+    // a host that supplies no state.
+    const first = fakeApi();
+    const view = renderIt(first);
+    await waitFor(() => expect(listed(first).length).toBeGreaterThan(0));
+
+    await userEvent.click(screen.getByRole("button", { name: /Filter Results|Filters \(/ }));
+    await userEvent.type(await screen.findByLabelText("Title"), "vrd");
+    await screen.findByRole("button", { name: /Filters \(1\)/ });
+
+    view.unmount();
+    const second = fakeApi();
+    renderIt(second);
+    await screen.findByRole("button", { name: /Filters \(1\)/ });
+  });
+});
+
+describe("a host that replaces the adapter without changing patient", () => {
+  it("writes through the new one, not the one captured at mount", async () => {
+    // A refreshed auth client is a new object for the same patient. The writer
+    // is deliberately not rebuilt — that would drop anything queued — so the
+    // calls have to route to whatever adapter is current for this key.
+    const mk = () => ({
+      listFavoriteIds: vi.fn(async () => []),
+      listRegisteredIds: vi.fn(async () => []),
+      listAdvancedEnrollments: vi.fn(async () => ({})),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => ({}) as Record<string, unknown>),
+      savePreferences: vi.fn(async (_f: Record<string, unknown>) => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    });
+    const api = fakeApi();
+    const stale = mk();
+    const fresh = mk();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (state: unknown) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId="p1"
+          state={state as never}
+        />
+      </QueryClientProvider>
+    );
+
+    const view = render(ui(stale));
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    view.rerender(ui(fresh));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "vrd");
+
+    await waitFor(() => expect(fresh.savePreferences).toHaveBeenCalled());
+    expect(stale.savePreferences).not.toHaveBeenCalled();
+  });
+});
+
+describe("saved filters belong to the patient they were saved for", () => {
+  const mk = (saved: Record<string, unknown> = {}) => ({
+    listFavoriteIds: vi.fn(async () => []),
+    listRegisteredIds: vi.fn(async () => []),
+    listAdvancedEnrollments: vi.fn(async () => ({})),
+    setFavorite: vi.fn(async () => undefined),
+    setRegistered: vi.fn(async () => undefined),
+    getPreferences: vi.fn(async () => saved),
+    savePreferences: vi.fn(async (_f: Record<string, unknown>) => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+  });
+  const client = () =>
+    new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+
+  it("applies a loaded trial type instead of expiring it as someone else's", async () => {
+    // The staleness rule exists to expire a type PICKED for another patient.
+    // A type read out of this patient's own storage is not that, but it
+    // arrives without an owner — so unless loading claims it, the mask set by
+    // the previous patient's pick hides the value that was just loaded.
+    const api = fakeApi();
+    const queryClient = client();
+    const ui = (personId: string, state: unknown) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId={personId}
+          state={state as never}
+        />
+      </QueryClientProvider>
+    );
+
+    const view = render(ui("p1", mk()));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(screen.getByRole("button", { name: /Filter/ }));
+    await userEvent.selectOptions(await screen.findByLabelText("Trial type"), "device");
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    view.rerender(ui("p2", mk({ trialType: "drug" })));
+
+    await waitFor(() =>
+      expect(listed(api).at(-1)?.params.trialType).toBe("drug"),
+    );
+  });
+
+  // NOT tested here, because it is not a defect: patient A's VISIBLE filters
+  // are saved for B after a switch. The panel deliberately keeps the reader's
+  // filters across a patient switch (see the NOTE in `TrialMatches`), so what
+  // is written for B is what B's reader is looking at. Ownership is reset per
+  // patient all the same — it is a claim about who chose a value, and that
+  // claim does not survive the switch.
+});
+
+describe("a slow load that is discarded", () => {
+  const mk = (getPreferences: () => Promise<Record<string, unknown>>) => ({
+    listFavoriteIds: vi.fn(async () => []),
+    listRegisteredIds: vi.fn(async () => []),
+    listAdvancedEnrollments: vi.fn(async () => ({})),
+    setFavorite: vi.fn(async () => undefined),
+    setRegistered: vi.fn(async () => undefined),
+    getPreferences: vi.fn(getPreferences),
+    savePreferences: vi.fn(async (_f: Record<string, unknown>) => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+  });
+
+  it("does not delete the saved filters it decided not to apply", async () => {
+    // The reader has sponsor and phase saved. On a slow connection the load
+    // arrives after they have already typed a title, so it is dropped — which
+    // is right, reverting a visible edit is worse. But the save that follows
+    // carries only the title, and a transport that saw the load will null
+    // every other key it knows about: two filters destroyed, never shown, on
+    // a slow connection only.
+    const api = fakeApi();
+    let release: (v: Record<string, unknown>) => void = () => {};
+    const state = mk(
+      () =>
+        new Promise<Record<string, unknown>>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId="p1"
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "dara");
+
+    release({ sponsor: "Janssen", phase: "2" });
+
+    await waitFor(() => expect(state.savePreferences).toHaveBeenCalled());
+    for (const call of state.savePreferences.mock.calls) {
+      expect(call[0]).not.toHaveProperty("sponsor");
+      expect(call[0]).not.toHaveProperty("phase");
+    }
+  });
+
+  it("does not delete them when the reader leaves before the load lands", async () => {
+    // Same wipe, reached the other way. The unmount cancels the load AND runs
+    // the flush against this same transport, so the save is queued behind a
+    // read that seeds the transport on its way through — while the set being
+    // saved is only what the reader typed.
+    const api = fakeApi();
+    let release: (v: Record<string, unknown>) => void = () => {};
+    const state = mk(
+      () =>
+        new Promise<Record<string, unknown>>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId="p1"
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "dara");
+
+    view.unmount();
+    release({ sponsor: "Janssen", phase: "2" });
+
+    await waitFor(() => expect(state.savePreferences).toHaveBeenCalled());
+    for (const call of state.savePreferences.mock.calls) {
+      expect(call[0]).not.toHaveProperty("sponsor");
+      expect(call[0]).not.toHaveProperty("phase");
+    }
+  });
+});
+
+describe("leaving the page without unmounting", () => {
+  it("flushes the queue on pagehide, and unsubscribes on unmount", async () => {
+    // A reload or tab close never unmounts, so the unmount flush does not
+    // cover the case the feature most obviously needs: set a filter, hit
+    // reload, find it gone. Asserted as wiring rather than behaviour — a
+    // debounce that fires on its own would make a behavioural assertion pass
+    // whether the listener existed or not.
+    const api = fakeApi();
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches apiClient={api.client} queryClient={queryClient} personId="p1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    const registered = add.mock.calls.filter(([type]) => type === "pagehide");
+    expect(registered).toHaveLength(1);
+
+    view.unmount();
+    expect(remove.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(1);
+    add.mockRestore();
+    remove.mockRestore();
+  });
+});

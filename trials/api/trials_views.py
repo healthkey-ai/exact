@@ -135,10 +135,14 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
           the response was the whole corpus presented as the patient's
           registered trials — wrong in a way nothing on screen reveals.
 
-        Fail closed until the real path lands: the favorites list will be
-        supplied by PROMOP and pushed down as a bounded `trial_ids` filter
-        (see docs/federated-ui-parity-plan.md, phase 2). A 400 naming the
-        reason beats either a 500 or a plausible wrong answer.
+        This rejection is permanent, not a placeholder. The real path has
+        since landed and is a different shape: the favorites list lives in
+        PROMOP and comes down as a bounded `trial_ids` filter, which narrows
+        inside the queryset (`_resolve_trial_ids` below; the federated UI's
+        Favorites tab uses it and never sends this type). Accepting
+        `?type=favorites` would mean accepting a search type that narrows
+        nothing — the plausible wrong answer this exists to prevent. So the
+        400 stays, and names the path that works.
 
         `not_eligible` goes too, for the same reason wearing different
         clothes: it matches no branch in `add_potential_attrs_count`, so it

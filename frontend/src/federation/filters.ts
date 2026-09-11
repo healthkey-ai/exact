@@ -127,6 +127,75 @@ export function countActiveFilters(
   }, 0);
 }
 
+/** The panel fields the reader has actually changed, as a partial filter set.
+ *
+ *  What gets SAVED, as opposed to what gets sent to the search. The baseline
+ *  carries the host's mount-time scope — the seeded country, an
+ *  `initialFilters.register` or `recruitmentStatus` the host chose for this
+ *  mount — and persisting those would turn one mount's scope into the reader's
+ *  standing preference: a later mount with a different scope would find the
+ *  stale one saved and the overlay would win.
+ *
+ *  A field the reader cleared back to nothing is present with `undefined`, not
+ *  absent, so the transport can clear it on the server rather than leaving the
+ *  old value behind a merge.
+ *
+ *  `owned` names fields already known to be the reader's — what a previous
+ *  mount loaded from storage, plus everything persisted since. Ownership is
+ *  sticky because equality to the current baseline is not evidence of its
+ *  absence: a reader who saved a 50-mile radius against a 50-KM baseline owns
+ *  a field whose value matches, and deriving ownership from the diff alone
+ *  would drop it on the next unrelated edit and take the units with it.
+ */
+export function userOwnedFilters(
+  filters: FilterState,
+  baseline: FilterState,
+  owned: ReadonlySet<string> = new Set(),
+): FilterState {
+  const out: FilterState = {};
+  for (const field of PANEL_FIELDS) {
+    const value = filters[field];
+    const base = baseline[field];
+    if (isInactive(field, value) && isInactive(field, base)) {
+      // An OWNED field that is now empty is emitted as `undefined` — a
+      // tombstone, not an omission. The merge transports both treat a key
+      // that is simply absent as "no opinion, keep what you have", so a
+      // cleared filter would survive on disk and be applied again on the
+      // next mount.
+      if (!owned.has(field)) continue;
+      (out as Record<string, unknown>)[field] = undefined;
+      continue;
+    }
+    if (value === base && !owned.has(field)) continue;
+    (out as Record<string, unknown>)[field] = value;
+  }
+  // `distanceUnits` is not a PANEL_FIELD — it qualifies `distance` rather than
+  // standing on its own, which is why it does not count toward the badge. It
+  // still has to be SAVED whenever a distance is active, or a radius chosen in
+  // miles comes back as the same number of kilometres.
+  //
+  // Not keyed on `distance` reaching `out`: the units control is enabled for a
+  // host-seeded distance too, so a reader can switch 50 km to 50 miles without
+  // changing the number, which leaves `distance` equal to the baseline and
+  // absent from `out`. Keyed on the units having actually been chosen, though
+  // — saving a unit the HOST seeded would make one mount's scope the reader's
+  // standing preference, and a later mount's 50-mile host radius would come
+  // back as 50 km.
+  if ("distance" in out && out.distance === undefined) {
+    // The units leave with the distance they qualified — the panel treats them
+    // that way, and a merge transport would otherwise keep the old unit on
+    // disk, to be applied to whatever radius comes next.
+    out.distanceUnits = undefined;
+  } else if (
+    isActiveDistance(filters.distance) &&
+    filters.distanceUnits !== undefined &&
+    ("distance" in out || filters.distanceUnits !== baseline.distanceUnits)
+  ) {
+    out.distanceUnits = filters.distanceUnits;
+  }
+  return out;
+}
+
 /** Whether the panel is showing anything other than the baseline — drives
  *  whether Reset is worth offering. */
 export function hasActiveFilters(
