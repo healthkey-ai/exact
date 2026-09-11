@@ -108,6 +108,8 @@ Data: `POST /trials/match/` with an inline payload, or `GET /trials/?person_id=`
 
 > **Why the body, not the query string.** The id list can get long, and the inline patient payload already travels in the body. A cap on the list length is mandatory and validated on entry: without it this is a ready-made vector for a request that expands into thousands of WHERE clauses.
 
+> **Do not attach `trial_ids` to the detail request.** `match_detail` shares `get_queryset`, so an id list that excludes the trial being opened turns its detail page into a 404. That is the right behaviour for a filter, and a live footgun for a host that keeps the favorites ids in a store and lets an interceptor add them to every match POST: every non-bookmarked trial would stop opening. The list request carries them; the detail request does not.
+
 > **Inline editing: write OMOP facts, not PatientRecord.** In PROMOP, `PatientRecord` is a read-only projection re-derived by a signal from the OMOP tables. There are two sanctioned write paths: granular CRUD on the OMOP tables (`/api/v1/measurements/`, `/conditions/`, …) and `PATCH /api/v1/patient-records/{person_id}/`, which does *not* write to the projection but translates each field into the matching OMOP table write and triggers the re-derivation. Inline editing should use the second — but every form field needs to be checked for an existing OMOP mapping; fields without one stay read-only rather than "saving" into nothing.
 
 ---
