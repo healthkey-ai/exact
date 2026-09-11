@@ -35,6 +35,14 @@ interface FetchTrialsArgs {
   page?: number;
   /** Rows per page. CB shows 10; the server default is 20. */
   limit?: number;
+  /** Narrow to these trial ids — how the Favorites and Registered tabs
+   *  work, since the ids live outside EXACT (#419).
+   *
+   *  `undefined` is "no such filter"; an EMPTY ARRAY is not. `[]` means the
+   *  patient asked for their bookmarks and has none, and the server reads
+   *  it the same way — collapsing the two would answer an empty Favorites
+   *  tab with the whole corpus. */
+  trialIds?: string[];
 }
 
 /** Fetch the trial-match list. Two paths depending on inputs:
@@ -75,14 +83,33 @@ export async function fetchTrials({
   filters,
   page,
   limit,
+  trialIds,
 }: FetchTrialsArgs): Promise<TrialsResponse> {
   const params = filterStateToParams(filters);
   if (page != null && page > 1) params.page = String(page);
   if (limit != null) params.limit = String(limit);
+  // `!== undefined`, never a truthiness test: `[]` is a filter that matches
+  // nothing, not the absence of one.
+  const body: Record<string, unknown> =
+    trialIds !== undefined ? { trial_ids: trialIds } : {};
+
   if (hasInlinePatient(patientInfo)) {
     const response = await apiClient.post<TrialsResponse>(
       "/trials/search/match/",
-      { patient_info: patientInfo },
+      { patient_info: patientInfo, ...body },
+      { params },
+    );
+    return response.data;
+  }
+
+  if (trialIds !== undefined) {
+    // The id list only travels in a body, and the `person_id` path is a GET.
+    // Posting the alias with no patient payload still reaches `search`, and
+    // the server resolves the patient from the query param.
+    if (personId != null) params.person_id = String(personId);
+    const response = await apiClient.post<TrialsResponse>(
+      "/trials/search/match/",
+      body,
       { params },
     );
     return response.data;

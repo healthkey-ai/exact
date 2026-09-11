@@ -9,13 +9,68 @@ import {
 } from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+
 import { fetchFormSettings, fetchTrialDetail, fetchTrials } from "./api";
+import type { TrialId, TrialStateAdapter } from "./state";
 import type {
   FilterState,
   PatientInfo,
   TrialDetailResponse,
   TrialsResponse,
 } from "./types";
+
+/** The bookmarked / registered ids, or nothing while there is no adapter.
+ *
+ *  Keyed on the PATIENT, not on the adapter object. Deliberately: a host
+ *  that builds its adapter inline — `state={createPromopState(...)}`, the
+ *  obvious way to write it — hands over a new object every render, and an
+ *  identity-keyed cache would refetch on each one. The cost of that choice
+ *  is that swapping transports for the SAME patient keeps the previous
+ *  adapter's ids until they go stale; a host doing that should change the
+ *  patient key or remount.
+ */
+export function useStateIds(
+  state: TrialStateAdapter | undefined,
+  kind: "favorites" | "registered",
+  key: string,
+): UseQueryResult<TrialId[]> {
+  return useQuery({
+    queryKey: ["exact-state-ids", kind, key],
+    queryFn: () =>
+      kind === "favorites"
+        ? state!.listFavoriteIds()
+        : state!.listRegisteredIds(),
+    enabled: state != null,
+    staleTime: 30_000,
+  });
+}
+
+/** Toggle one trial's bookmark or registration.
+ *
+ *  Invalidates the id lists rather than patching them by hand: the lists
+ *  drive a tab count and a tab's contents, and a hand-patched cache that
+ *  drifts from the server shows a Favorites tab that disagrees with the
+ *  bookmark on the card. The trial list itself is invalidated too, because
+ *  on the Favorites tab the row set IS the id list.
+ */
+export function useSetTrialState(
+  state: TrialStateAdapter | undefined,
+  kind: "favorites" | "registered",
+  key: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ trialId, on }: { trialId: TrialId; on: boolean }) =>
+      kind === "favorites"
+        ? state!.setFavorite(trialId, on)
+        : state!.setRegistered(trialId, on),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["exact-state-ids", kind, key] });
+      queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+    },
+  });
+}
 
 interface UseTrialsArgs {
   apiClient: AxiosInstance;
@@ -26,6 +81,8 @@ interface UseTrialsArgs {
   page?: number;
   /** Rows per page. */
   limit?: number;
+  /** Narrow to these ids; `[]` means "none", not "no filter". */
+  trialIds?: string[];
   /** Skip the query until the host has a patient context. Without
    *  patient context the response would be a public/unscoped trial
    *  list — usually not what a TrialMatches mount wants. */
@@ -39,6 +96,7 @@ export function useTrials({
   filters,
   page = 1,
   limit,
+  trialIds,
   enabled = true,
 }: UseTrialsArgs): UseQueryResult<TrialsResponse> {
   return useQuery({
@@ -49,9 +107,12 @@ export function useTrials({
       filters ?? null,
       page,
       limit ?? null,
+      // `?? null` rather than a spread or a truthiness test: `[]` and
+      // `undefined` are different questions and must be different keys.
+      trialIds ?? null,
     ],
     queryFn: () =>
-      fetchTrials({ apiClient, patientInfo, personId, filters, page, limit }),
+      fetchTrials({ apiClient, patientInfo, personId, filters, page, limit, trialIds }),
     // Paged, not infinite: CB paginates by number and so does this now, and
     // an infinite list cannot show per-tab totals or jump to a page. Previous
     // data is kept across page/filter changes so the list does not blank out

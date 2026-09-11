@@ -25,14 +25,15 @@ import { SortControl } from "./SortControl";
 import { Tabs } from "./Tabs";
 import { hasInlinePatient } from "./api";
 import { baselineFilters, countActiveFilters, countryFor } from "./filters";
+import { MAX_TRIAL_IDS } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
-  TABS,
   tabValueForType,
+  tabsFor,
   type TabValue,
 } from "./listChrome";
-import { useTrials } from "./hooks";
+import { useSetTrialState, useStateIds, useTrials } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
 
@@ -42,6 +43,7 @@ function TrialMatchesInner({
   personId,
   initialFilters,
   onTrialSelect,
+  state,
 }: Omit<TrialMatchesProps, "queryClient">) {
   useEffect(() => {
     injectStyles();
@@ -162,7 +164,62 @@ function TrialMatchesInner({
   const debouncedSponsor = useDebounced(filters.sponsor, 400);
   const debouncedDistance = useDebounced(filters.distance, 400);
   const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400);
-  const activeTabDef = TABS.find((t) => t.value === activeTab) ?? TABS[0];
+  // The bar depends on whether a host gave us somewhere to keep bookmarks.
+  const tabs = useMemo(() => tabsFor(state != null), [state]);
+  // A host can take the adapter away — on logout, or when reconfiguring it.
+  // The tab the reader was on then stops existing, and falling back only in
+  // `activeTabDef` would list the default tab's trials while no tab in the
+  // bar is marked current: the reader is somewhere the UI cannot name.
+  // Adjusting during render rather than in an effect, so the request that
+  // goes out is the one the visible tab describes.
+  if (!tabs.some((t) => t.value === activeTab)) {
+    setActiveTab(tabs[0].value);
+  }
+  const activeTabDef = tabs.find((t) => t.value === activeTab) ?? tabs[0];
+
+  // BOTH props, not the precedence winner.
+  //
+  // `patientIdentity` answers "which prop names this patient", which is the
+  // right question for the matcher and the wrong one for a cache key. With
+  // both supplied it resolves to the inline payload — so two readers whose
+  // payload is the same minimal `{disease}` share a key, and the second one
+  // is served the first one's bookmarks for as long as they stay fresh.
+  // A cache key wants maximum discrimination: any difference in either prop
+  // is a different key.
+  const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
+  const favorites = useStateIds(state, "favorites", stateKey);
+  const registered = useStateIds(state, "registered", stateKey);
+  const setFavorite = useSetTrialState(state, "favorites", stateKey);
+
+  const stateCounts = {
+    favorites: favorites.data?.length,
+    registered: registered.data?.length,
+  };
+
+  // Which ids narrow the list, if the active tab is one of the state tabs.
+  //
+  // `undefined` while the ids are still loading — NOT `[]`, which the server
+  // reads as "none of them" and would answer with an empty list a moment
+  // before the real one arrives. The query waits instead.
+  const stateTab = activeTabDef.needsState;
+  const stateIdsQuery = stateTab === "registered" ? registered : favorites;
+  const savedIds = stateTab ? (stateIdsQuery.data as string[] | undefined) : undefined;
+  // The server refuses a list past its cap, so sending one means the tab
+  // simply never loads while its badge cheerfully reports the count. Say
+  // what happened instead — the plan called for an explicit degradation
+  // here and this is it.
+  const tooManySavedIds = savedIds != null && savedIds.length > MAX_TRIAL_IDS;
+  const trialIds = tooManySavedIds ? undefined : savedIds;
+  // `isPending`, not `data === undefined`: a rejected fetch also has no
+  // data, and treating that as "still loading" left the tab on
+  // "Loading trials…" for ever, with the trials query disabled so even its
+  // error branch could never speak.
+  const waitingForIds = stateTab != null && stateIdsQuery.isPending;
+  const idsFailed = stateTab != null && stateIdsQuery.isError;
+  // Mutually exclusive by construction: a query that has rejected is no
+  // longer pending. Guarding the loading line with `!idsFailed` as well
+  // would be a second mechanism for the same thing, and would make the
+  // first untestable — which is how it was written the first time.
   const queryFilters = useMemo(
     () => ({
       ...effectiveFilters,
@@ -193,9 +250,49 @@ function TrialMatchesInner({
     filters: queryFilters,
     page,
     limit: PAGE_SIZE,
+    trialIds,
+    // `!idsFailed` too: without it a failed Favorites read still fires an
+    // ordinary unfiltered search behind the error message — rows nobody
+    // shows, and a full matcher run to produce them.
+    enabled: !waitingForIds && !tooManySavedIds && !idsFailed,
   });
 
-  const trials = query.data?.results ?? [];
+  // While the ids are loading, the rows on screen belong to the previous
+  // tab. React Query is serving them from its cache — `trialIds` is still
+  // `undefined`, which is the *default* tab's query key — so this is not a
+  // request that can be prevented, it is a render that must not happen:
+  // showing the eligible list under the Favorites heading says those trials
+  // are bookmarked.
+  // On a state tab, rows are shown only when they are THIS tab's rows.
+  //
+  // `waitingForIds` alone closed just the first half of the window: once
+  // the ids arrive it goes false in the same render that changes the query
+  // key, and `keepPreviousData` then hands back the previous key's rows —
+  // so the eligible list was painted under the Favorites heading, which is
+  // precisely the claim it was written to prevent. Worse on a second visit,
+  // where the ids are already cached and the flag is false from the start.
+  // `isPlaceholderData` alone, and only while the query can still resolve.
+  //
+  // Two corrections live in this line. An earlier version also tested
+  // `isFetching`, added while the leak test was failing for an unrelated
+  // reason (the test's fake server ignored the id filter, so the right and
+  // wrong rows were identical). Once that was fixed the clause turned out
+  // to be unnecessary — nothing could be made to leak without it — and it
+  // is not free: it blanked the list on every background refetch, which
+  // includes the window-focus one real hosts have on and the one that
+  // follows every bookmark.
+  //
+  // And the two states that DISABLE the query are excluded, because a
+  // disabled query still resolves `keepPreviousData`: with no cached data
+  // under the fallback key, `isPlaceholderData` stays true for ever and
+  // nothing will ever fetch it, so "Loading trials…" sat next to the error
+  // message permanently.
+  const showingOtherTabsRows =
+    stateTab != null && !idsFailed && !tooManySavedIds && query.isPlaceholderData;
+  const trials =
+    waitingForIds || idsFailed || tooManySavedIds || showingOtherTabsRows
+      ? []
+      : query.data?.results ?? [];
   const totalCount = query.data?.itemsTotalCount ?? null;
   const tabCounts = query.data?.tabCounts;
   // The server's own page total (`count`), not `ceil(items / PAGE_SIZE)`:
@@ -214,7 +311,12 @@ function TrialMatchesInner({
   // Keyed on the debounced filters for the same reason: resetting the page
   // the instant a key is pressed would fire a request for page 1 of the
   // *previous* filter, which the user sees as a flash of unfiltered results.
-  const queryKey = JSON.stringify(queryFilters);
+  // The tab and the ids belong in this signature, not just the filters.
+  // `queryFilters.type` is `undefined` for the default tab AND for both
+  // state tabs — `JSON.stringify` drops undefined keys, so all three
+  // hashed identically and switching between them never reset the page.
+  // A reader on page 2 then asked for page 2 of their bookmarks.
+  const queryKey = JSON.stringify([queryFilters, activeTab, trialIds ?? null]);
   const [lastQueryKey, setLastQueryKey] = useState(queryKey);
   if (lastQueryKey !== queryKey) {
     setLastQueryKey(queryKey);
@@ -300,10 +402,18 @@ function TrialMatchesInner({
       <h1 className="exact-list__title">Your Trials</h1>
 
       <Tabs
+        tabs={tabs}
         active={activeTab}
         onChange={handleTabChange}
-        counts={tabCounts}
-        activeTabTotal={totalCount}
+        // Withheld while a state tab is active: those counts came back from
+        // a request narrowed to the saved ids, so they describe the
+        // bookmarks, not the corpus. Painted on the Eligible / Fully
+        // matched / Potential badges they would read as the corpus —
+        // "Fully matched, 1" for a reader who has one bookmarked eligible
+        // trial and two hundred matching ones.
+        counts={stateTab ? undefined : tabCounts}
+        activeTabTotal={stateTab ? null : totalCount}
+        stateCounts={stateCounts}
       />
 
       <div className="exact-list__controls">
@@ -334,8 +444,43 @@ function TrialMatchesInner({
         />
       ) : null}
 
-      {query.isLoading ? (
+      {query.isLoading || waitingForIds || showingOtherTabsRows ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>Loading trials…</p>
+      ) : null}
+
+      {tooManySavedIds ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          You have saved {savedIds?.length} trials, and this view can show at
+          most {MAX_TRIAL_IDS} at a time. Remove a few, or use the other tabs
+          to find them.
+        </p>
+      ) : null}
+
+      {idsFailed ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          Couldn't load your saved trials:{" "}
+          {(stateIdsQuery.error as Error)?.message ?? "unknown error"}
+        </p>
+      ) : null}
+
+      {/* The bookmark control is painted from the favorites list, so when
+          that read fails every star vanishes — on EVERY tab, not just the
+          Favorites one, and with nothing on screen to say why. The reader
+          would conclude the feature had been removed. */}
+      {favorites.isError && !idsFailed ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          Couldn't load your favorites, so bookmarking is unavailable right
+          now.
+        </p>
+      ) : null}
+
+      {/* (4) A write that failed has to say so. The star is painted from
+          the server's list, so a rejected PATCH leaves it exactly where it
+          was — indistinguishable from a click that never registered. */}
+      {setFavorite.isError ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+          Couldn't update your favorites. Please try again.
+        </p>
       ) : null}
 
       {query.isError ? (
@@ -364,7 +509,19 @@ function TrialMatchesInner({
         aria-busy={query.isPlaceholderData || undefined}
       >
         {trials.map((t) => (
-          <TrialCard key={t.trialId} trial={t} onSelect={handleSelect} />
+          <TrialCard
+            key={t.trialId}
+            trial={t}
+            onSelect={handleSelect}
+            isFavorite={
+              favorites.data ? favorites.data.includes(String(t.trialId)) : undefined
+            }
+            onToggleFavorite={
+              state
+                ? (on) => setFavorite.mutate({ trialId: String(t.trialId), on })
+                : undefined
+            }
+          />
         ))}
       </div>
 
@@ -376,6 +533,10 @@ function TrialMatchesInner({
       ) : null}
 
       {!query.isLoading &&
+      !waitingForIds &&
+      !idsFailed &&
+      !tooManySavedIds &&
+      !showingOtherTabsRows &&
       (patientInfo != null || personId != null) &&
       trials.length === 0 ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>No trials found</p>

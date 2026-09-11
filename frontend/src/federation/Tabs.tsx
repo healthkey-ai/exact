@@ -1,9 +1,12 @@
 // Tab bar over the trial list, mirroring CB's `TabButton` row on Your
 // Trials. Structure lives in `exact.css` (`.exact-tabs*`).
-import { TABS, tabCount, type TabValue } from "./listChrome";
+import { tabCount, type TabDef, type TabValue } from "./listChrome";
 import type { TabCounts } from "./types";
 
 interface Props {
+  /** The bar to render — which tabs exist depends on whether the host gave
+   *  the component somewhere to keep bookmarks. */
+  tabs: TabDef[];
   active: TabValue;
   onChange: (tab: TabValue) => void;
   /** Server-side totals over the whole matched corpus. Absent when the
@@ -13,9 +16,20 @@ interface Props {
    *  default tab when the server sent no counts and that tab is the one
    *  being listed. */
   activeTabTotal: number | null;
+  /** Totals for the state-backed tabs, counted by whoever holds the state —
+   *  how many the patient saved, which is true whether or not those trials
+   *  still match today. */
+  stateCounts?: { favorites?: number; registered?: number };
 }
 
-export function Tabs({ active, onChange, counts, activeTabTotal }: Props) {
+export function Tabs({
+  tabs,
+  active,
+  onChange,
+  counts,
+  activeTabTotal,
+  stateCounts,
+}: Props) {
   // Plain buttons in a <nav>, not role="tablist"/"tab". The ARIA tab pattern
   // promises arrow-key navigation, a roving tabindex, and an associated
   // tabpanel; announcing "tab, 1 of 3" and then not moving on ← / → is worse
@@ -23,7 +37,7 @@ export function Tabs({ active, onChange, counts, activeTabTotal }: Props) {
   // filters over one list, and `aria-current` says which one is applied.
   return (
     <nav className="exact-tabs" aria-label="Filter trials by match status">
-      {TABS.map((tab) => {
+      {tabs.map((tab) => {
         const isActive = tab.value === active;
         const count = tabCount(
           tab.value,
@@ -32,6 +46,7 @@ export function Tabs({ active, onChange, counts, activeTabTotal }: Props) {
           // labelling an inactive tab with the active tab's count would be
           // a plain lie.
           isActive ? activeTabTotal : null,
+          stateCounts,
         );
         return (
           <button

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   SORT_OPTIONS,
   TABS,
+  tabsFor,
   getPageNumbers,
   sortOptionsFor,
   tabCount,
@@ -152,5 +153,54 @@ describe("sortOptionsFor", () => {
       value: "updated",
       label: "Sorted by updated",
     });
+  });
+});
+
+describe("tabsFor", () => {
+  it("offers CB's match tabs without a state adapter", () => {
+    expect(tabsFor(false).map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "eligible",
+      "potential",
+    ]);
+  });
+
+  it("adds Registered and Favorites once there is somewhere to keep them", () => {
+    expect(tabsFor(true).map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "eligible",
+      "potential",
+      "registered",
+      "favorites",
+    ]);
+  });
+
+  it("marks the state tabs so they are narrowed by ids, not by ?type=", () => {
+    // The server rejects `?type=favorites` outright; these are narrowed by
+    // a `trial_ids` list instead.
+    const byIds = tabsFor(true).filter((t) => t.needsState);
+    expect(byIds.map((t) => t.value)).toEqual(["registered", "favorites"]);
+    expect(byIds.every((t) => t.param === undefined)).toBe(true);
+  });
+});
+
+describe("tabCount for the state tabs", () => {
+  const counts = { eligible: 7, potential: 12 };
+
+  it("counts what the patient saved, not what the matcher found", () => {
+    // A bookmark stays a bookmark whether or not the trial still matches
+    // today, so the matcher's counts cannot answer for these tabs.
+    expect(tabCount("favorites", counts, null, { favorites: 3 })).toBe(3);
+    expect(tabCount("registered", counts, null, { registered: 2 })).toBe(2);
+  });
+
+  it("shows nothing while the ids are unknown", () => {
+    expect(tabCount("favorites", counts, 40, undefined)).toBeNull();
+    expect(tabCount("favorites", counts, 40, {})).toBeNull();
+  });
+
+  it("shows zero when the patient really has none", () => {
+    // Distinct from unknown: `0` is an answer, and the tab should say so.
+    expect(tabCount("favorites", counts, null, { favorites: 0 })).toBe(0);
   });
 });
