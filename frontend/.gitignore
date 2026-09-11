@@ -13,3 +13,5 @@ vite.config.js
 vite.config.d.ts
 vite.remote.config.js
 vite.remote.config.d.ts
+vitest.config.js
+vitest.config.d.ts

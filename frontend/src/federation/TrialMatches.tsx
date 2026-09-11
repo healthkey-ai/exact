@@ -74,63 +74,88 @@ function TrialMatchesInner({
     setPage(1);
   }, [personId, patientInfoKey]);
 
-  // `country` is seeded from the patient profile — patients are matched to
-  // trials they can reach — but the panel now offers the control, so the
-  // seeding happens ONCE PER PATIENT rather than continuously. The previous
-  // effect re-asserted the patient's country whenever it differed from the
-  // filter, which with a control on screen would have snapped the user's
-  // own choice back on the very next render.
+  const diseaseCode = useMemo(() => {
+    const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
+    return typeof d === "string" ? d : undefined;
+  }, [patientInfo]);
+
+  // `country` and `trialType` are DERIVED, not stored.
+  //
+  // Seeding them into filter state — even during render — put a request on
+  // the wire before the seeding took effect: the component suite caught two
+  // requests on every mount with a patient country, the first of them
+  // unscoped. A render-phase `setState` re-runs the component but does not
+  // un-send what the query observer has already been told to fetch.
+  //
+  // `country` also no longer has a control at all — its dropdown could not
+  // match anything (#430) — so storing it was storing a copy of a fact.
+  // `trialType` does have one; what is derived there is only whether the
+  // stored choice still applies to the patient on screen.
   const patientCountry = useMemo(() => {
     const c = (patientInfo as Record<string, unknown> | null | undefined)?.["country"];
     return typeof c === "string" && c.trim() ? c.trim() : undefined;
   }, [patientInfo]);
-  // Keyed on WHICH PATIENT, not on the country value. Keyed on the value,
-  // a reader who overrode Patient A's country and then had the host swap to
-  // Patient B in the same country would keep searching A's override: the
-  // marker never changed, so the new patient was never seeded.
+  const country = countryFor(patientCountry, initialFilters);
+
+  // A trial type belongs to the PATIENT it was chosen for, not to their
+  // disease. Carried into someone else it narrows their list by a choice
+  // they never made — and across diseases it is worse, because the option
+  // does not exist in their list at all and `by_trial_type` has no leniency
+  // for a value that is not there: an empty result set from a control
+  // rendering blank. Keyed on the disease this leaked between any two
+  // patients who shared one.
   //
-  // `hasInlinePatient` decides which prop identifies the patient, because it
-  // is the same function the request uses to decide which one it sends. When
-  // this disagreed with that, a host updating the inline payload while
-  // keeping a person id carried the previous patient's filters into the new
-  // patient's search.
+  // `hasInlinePatient` decides which prop names the patient, because it is
+  // the same function the request uses to decide which one it sends.
   const patientIdentity = hasInlinePatient(patientInfo)
     ? patientInfoKey
     : personId != null
       ? String(personId)
       : null;
-  const UNSEEDED = "\u0000unseeded";
-  const seededFor = useRef<string | null>(UNSEEDED);
-  if (seededFor.current !== patientIdentity) {
-    // During render, not in an effect: an effect would let one request go
-    // out with the previous patient's country. `useRef` rather than state
-    // because this is a "have I done this yet" marker, not rendered data.
-    const isFirstSeed = seededFor.current === UNSEEDED;
-    seededFor.current = patientIdentity;
-    setFilters((prev) => ({
-      ...prev,
-      // The same answer the baseline computes. Written separately, the two
-      // disagreed whenever the patient had no country and the host had
-      // supplied one: this cleared it, the baseline kept it, and the badge
-      // read "Filters (1)" for a country that was never sent.
-      country: countryFor(patientCountry, initialFilters),
-      // Cleared when SWITCHING patients, not on the first seed: the options
-      // are disease-scoped, so a type picked for an MM patient is invisible
-      // in a BC patient's list and `by_trial_type` has no leniency for a
-      // value that is not there — the reader would get an empty result set
-      // from a control rendering blank. CB carries the structurally
-      // identical guard for its purpose->type narrowing. On mount there is
-      // no previous patient, and clearing would throw away a `trialType` the
-      // host asked for in `initialFilters`.
-      ...(isFirstSeed ? {} : { trialType: undefined }),
-    }));
-  }
+  // "Unclaimed" is `undefined`, NOT `null` — and the distinction is
+  // load-bearing, because `null` is a real owner here: `patientIdentity` is
+  // `null` for a host placeholder like `patientInfo={}`, or for the render
+  // before the profile arrives, and the panel is live in that window. While
+  // the two shared a sentinel, a type picked there claimed `null`, read back
+  // as unclaimed, never went stale, and followed the reader into every
+  // patient afterwards, across diseases included.
+  //
+  // Unclaimed is also how a host's `initialFilters.trialType` outlives a
+  // patient arriving a render later: nobody has claimed it, so nothing makes
+  // it stale.
+  const [trialTypeOwner, setTrialTypeOwner] = useState<string | null | undefined>(
+    undefined,
+  );
+  const trialTypeIsStale =
+    trialTypeOwner !== undefined && trialTypeOwner !== patientIdentity;
+  // A stale choice falls back to the BASELINE's type, not to nothing.
+  //
+  // What goes stale is the reader's own pick, which was made for one
+  // patient. `initialFilters.trialType` is a different thing — a scope the
+  // host set when it mounted the remote — and `baselineFilters` already
+  // treats a host filter as something Reset restores rather than discards.
+  // Dropping to `undefined` threw it away silently, and cost a second click
+  // besides: Reset wrote the masked baseline into state while clearing the
+  // owner, so the next render's unmasked baseline disagreed with what had
+  // just been stored, the badge counted that disagreement and the button
+  // stayed armed.
+  //
+  // Falling back to the baseline's value makes the two agree by
+  // construction, so the baseline itself needs no mask at all.
+  const trialType = trialTypeIsStale
+    ? initialFilters?.trialType
+    : filters.trialType;
+
+  const effectiveFilters = useMemo(
+    () => ({ ...filters, country, trialType }),
+    [filters, country, trialType],
+  );
 
   const baseline = useMemo(
     () => baselineFilters(patientCountry, initialFilters),
     [patientCountry, initialFilters],
   );
-  const activeFilterCount = countActiveFilters(filters, baseline);
+  const activeFilterCount = countActiveFilters(effectiveFilters, baseline);
 
   const debouncedTitle = useDebounced(filters.searchTitle, 400);
   const debouncedTreatment = useDebounced(filters.searchTreatment, 400);
@@ -140,7 +165,7 @@ function TrialMatchesInner({
   const activeTabDef = TABS.find((t) => t.value === activeTab) ?? TABS[0];
   const queryFilters = useMemo(
     () => ({
-      ...filters,
+      ...effectiveFilters,
       searchTitle: debouncedTitle,
       searchTreatment: debouncedTreatment,
       sponsor: debouncedSponsor,
@@ -150,7 +175,7 @@ function TrialMatchesInner({
       sort: sort as FilterState["sort"],
     }),
     [
-      filters,
+      effectiveFilters,
       debouncedTitle,
       debouncedTreatment,
       debouncedSponsor,
@@ -211,16 +236,24 @@ function TrialMatchesInner({
 
   const handleTabChange = (next: TabValue) => setActiveTab(next);
   const handleSortChange = (next: string) => setSort(next);
-  const handleFiltersChange = (next: FilterState) => setFilters(next);
+  const handleFiltersChange = (next: FilterState) => {
+    // The reader picking a type claims it for the patient on screen. The
+    // panel is fed `effectiveFilters`, so an unrelated edit hands back the
+    // masked value unchanged and this does not fire.
+    if (next.trialType !== effectiveFilters.trialType) {
+      setTrialTypeOwner(patientIdentity);
+    }
+    setFilters(next);
+  };
   // Reset goes back to the baseline, not to `{}`: clearing the seeded
   // country would silently widen the search to every country in the
   // registry, which is not what "reset" means to the person clicking it.
+  // The owner is deliberately NOT cleared here. Once a stale choice falls
+  // back to the baseline's type, clearing it changes nothing — the two
+  // produce the same value — and a mutation test confirmed the line was
+  // dead. It was load-bearing only under the earlier "mask to undefined"
+  // rule, which is gone.
   const handleFiltersReset = () => setFilters(baseline);
-
-  const diseaseCode = useMemo(() => {
-    const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
-    return typeof d === "string" ? d : undefined;
-  }, [patientInfo]);
 
   const handleSelect = (trial: TrialMatch) => {
     setSelectedTrial(trial);
@@ -251,7 +284,12 @@ function TrialMatchesInner({
         trialId={selectedTrial.trialId}
         patientInfo={patientInfo}
         personId={personId}
-        filters={filters}
+        // The derived set, not raw state: the detail is scored under the
+        // preferences the list used, and `country` no longer lives in
+        // `filters`. Passing raw state sent the detail request without the
+        // patient's country, so its scores and distance could disagree with
+        // the card the reader clicked.
+        filters={effectiveFilters}
         onBack={() => window.history.back()}
       />
     );
@@ -288,7 +326,7 @@ function TrialMatchesInner({
       {filtersOpen ? (
         <FilterPanel
           apiClient={apiClient}
-          filters={filters}
+          filters={effectiveFilters}
           onChange={handleFiltersChange}
           onReset={handleFiltersReset}
           canReset={activeFilterCount > 0}
