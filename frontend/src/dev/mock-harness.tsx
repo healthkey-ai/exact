@@ -35,6 +35,10 @@ const results = [
     matchingType: "eligible",
     distance: 12,
     distanceUnits: "km",
+    // Real coordinates, so the backend-free QA surface can show the map. Two
+    // of these three sit at the same hospital on purpose: grouping is the
+    // part worth looking at by eye.
+    closestLocationGeoPoint: { latitude: 40.7644, longitude: -73.9566 },
     link: "https://clinicaltrials.gov/study/NCT04012345",
   },
   {
@@ -51,6 +55,7 @@ const results = [
     matchingType: "eligible",
     distance: 210,
     distanceUnits: "km",
+    closestLocationGeoPoint: { latitude: 40.7644, longitude: -73.9566 },
     link: "https://clinicaltrials.gov/study/NCT04567890",
   },
   {
@@ -65,6 +70,7 @@ const results = [
     matchScore: 71,
     goodnessScore: 54,
     matchingType: "potential",
+    closestLocationGeoPoint: { latitude: 37.7631, longitude: -122.4586 },
     distance: 4100,
     distanceUnits: "km",
     link: "https://clinicaltrials.gov/study/NCT05098765",

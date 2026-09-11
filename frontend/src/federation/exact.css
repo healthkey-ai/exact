@@ -503,6 +503,138 @@
   }
 }
 
+/* Map view — the places these trials are */
+.exact-root .exact-map {
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-map__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exact-root .exact-map__sub,
+.exact-root .exact-map__empty,
+.exact-root .exact-map__note {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-map__close {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.exact-root .exact-map__body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Side by side once there is room for both; the panel scrolls on its own so
+   the map stays put while the reader works down the places. */
+@media (min-width: 900px) {
+  /* Two columns only when there is a map to put in the first one. Without a
+     renderer the places are the whole panel, and a lone list in a 1.6fr/1fr
+     grid leaves a third of it blank. */
+  .exact-root .exact-map__body.has-map {
+    grid-template-columns: 1.6fr 1fr;
+    align-items: start;
+  }
+
+  .exact-root .exact-map__body.has-map .exact-map__places {
+    position: sticky;
+    top: 12px;
+    max-height: 32rem;
+    overflow-y: auto;
+  }
+}
+
+.exact-root .exact-map__canvas {
+  min-height: 20rem;
+  border-radius: var(--exact-border-radius);
+  overflow: hidden;
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-map__places {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exact-root .exact-map__place + .exact-map__place {
+  border-top: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-map__place-head {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exact-root .exact-map__place.is-open .exact-map__place-name {
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-map__place-name {
+  font-weight: 600;
+}
+
+.exact-root .exact-map__place-count,
+.exact-root .exact-map__distance {
+  font-size: 0.75rem;
+  color: var(--exact-color-text-tertiary);
+  white-space: nowrap;
+}
+
+.exact-root .exact-map__place-trials {
+  margin: 0 0 8px;
+  padding-left: 1rem;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.exact-root .exact-map__place-trials li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.exact-root .exact-map__place-trials button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--exact-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
 /* Field tooltip: "?" icon + floating text box on hover/focus */
 .exact-root .exact-tooltip__wrap {
   position: relative;
@@ -683,6 +815,15 @@
   justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
+}
+
+/* The triggers travel together at the right. `space-between` was written for
+   two children — the sort and the filter — and a third lands in the middle of
+   the row rather than beside the one it belongs with. */
+.exact-root .exact-list__triggers {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .exact-root .exact-sort {
