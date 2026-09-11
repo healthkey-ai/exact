@@ -263,6 +263,15 @@
 .exact-root .exact-detail__back:hover {
   text-decoration: underline;
 }
+/* Title and bookmark on one line, as CB puts its title and actions. The
+   star keeps its own baseline — `align-items: start` rather than center, so
+   a title that wraps to three lines does not drag the star to the middle. */
+.exact-root .exact-detail__head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
 .exact-root .exact-detail__title {
   margin: 0 0 0.75rem;
   font-size: 1.25rem;
@@ -385,6 +394,11 @@
 .exact-root .exact-elig__check {
   display: inline-flex;
   color: var(--exact-color-success-700);
+}
+
+.exact-root .exact-elig__mismatch {
+  display: inline-flex;
+  color: var(--exact-color-not-eligible);
 }
 .exact-root .exact-elig__units {
   font-size: 0.75rem;
@@ -908,4 +922,88 @@
   outline: 2px solid var(--exact-color-primary);
   outline-offset: 1px;
   border-radius: 0.25rem;
+}
+
+/* ---------------------------------------------------------------------------
+ * Register interest — CB's `RegisterInterestCard`, minus the promise that a
+ * coordinator will be in touch (nothing here notifies anyone).
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-register {
+  margin-top: 1rem;
+  border-color: var(--exact-color-success-200);
+  background: var(--exact-color-success-50);
+}
+
+.exact-root .exact-register__text {
+  margin: 0.5rem 0 0.75rem;
+  color: var(--exact-color-text-muted);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.exact-root .exact-register__btn {
+  padding: 0.625rem 0.875rem;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  background: var(--exact-color-brand-green);
+  box-shadow: var(--exact-shadow-card);
+  color: var(--exact-color-on-brand);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.exact-root .exact-register__btn:hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-brand-green-hover);
+}
+
+/* Withdraw is not the same act as registering and must not wear the same
+   green CTA: the reader is looking for the way out of something, not for
+   the way into it. */
+.exact-root .exact-register__btn.is-on {
+  border-color: var(--exact-color-border);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-register__btn.is-on:hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-surface);
+  color: var(--exact-color-text);
+}
+
+/* `aria-disabled`, not `:disabled` — the button keeps focus while the write
+   is on the wire (see TrialDetailPage), so the styling has to follow the
+   attribute that is actually set. */
+.exact-root .exact-register__btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.exact-root .exact-register__btn:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+/* A warning must not arrive in the same success green as an invitation:
+   "You may not meet this trial's eligibility criteria" was painted exactly
+   like "Interested in this trial?". And once the answer is recorded the
+   panel is neither — it is a receipt. */
+.exact-root .exact-register.is-warning {
+  border-color: var(--exact-color-warning-200);
+  background: var(--exact-color-warning-50);
+}
+
+.exact-root .exact-register.is-registered {
+  border-color: var(--exact-color-border);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-register__error {
+  margin: 0.5rem 0 0;
+  color: var(--exact-color-not-eligible);
+  font-size: 0.875rem;
 }

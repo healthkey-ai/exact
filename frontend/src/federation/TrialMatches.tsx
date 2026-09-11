@@ -33,9 +33,22 @@ import {
   tabsFor,
   type TabValue,
 } from "./listChrome";
-import { useSetTrialState, useStateIds, useTrials } from "./hooks";
+import {
+  canReadAdvanced,
+  useAdvancedEnrollments,
+  useSetTrialState,
+  useStateIds,
+  useTrials,
+} from "./hooks";
 import { injectStyles } from "./injectStyles";
 import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
+
+type StateKind = "favorites" | "registered";
+/** Which trials have a write in flight, and which have one that failed. */
+interface WriteState {
+  pending: string[];
+  failed: string[];
+}
 
 function TrialMatchesInner({
   apiClient,
@@ -189,7 +202,95 @@ function TrialMatchesInner({
   const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
   const favorites = useStateIds(state, "favorites", stateKey);
   const registered = useStateIds(state, "registered", stateKey);
+  // Not a display concern: this is what stops the register control being
+  // drawn for a trial whose enrollment a study team has already advanced,
+  // where "I'm Interested" would write `registered` over `entered`.
+  const advanced = useAdvancedEnrollments(state, stateKey);
   const setFavorite = useSetTrialState(state, "favorites", stateKey);
+  const setRegistered = useSetTrialState(state, "registered", stateKey);
+
+  // What each trial's writes are doing, remembered here rather than read
+  // off the mutation.
+  //
+  // One `useMutation` stands in for a per-trial operation, and it answers
+  // only for the LAST one submitted. Both of its flags were wrong for the
+  // same reason:
+  //
+  //   - `isError` answers "did the last write fail", not "did the write for
+  //     THIS trial fail". Filtering by `variables.trialId` addresses the
+  //     message to the right trial but does not make it durable: a rejection
+  //     that lands after the reader has moved on has no trial on screen to
+  //     belong to, and the next click on any trial discards it. Both cases
+  //     end with a patient who was shown "Saving…" and never told otherwise.
+  //
+  //   - `isPending` with the same filter goes FALSE for trial A as soon as a
+  //     write for trial B is submitted, because `variables` is B's. Reopen A
+  //     and its button is live again, with A's PATCH still on the wire —
+  //     the two-writes-in-flight race the guard exists to prevent.
+  //
+  // And it belongs to a PATIENT as much as to a trial. A host can swap
+  // `personId` or the inline payload at any moment, including while a write
+  // is on the wire; unkeyed, the previous patient's failure became this
+  // one's error message, and a trial id both have in common stayed busy.
+  //
+  // Two mechanisms, and they are not the same one twice: the record is
+  // DROPPED when the patient changes, and a callback that arrives after the
+  // change finds a key that no longer matches and writes nothing. Neither
+  // covers the other's case.
+  const [writes, setWrites] = useState<
+    { key: string } & Record<StateKind, WriteState>
+  >(() => ({
+    key: stateKey,
+    favorites: { pending: [], failed: [] },
+    registered: { pending: [], failed: [] },
+  }));
+  // Adjusted during render, like the tab fallback above, so the messages on
+  // screen belong to the patient on screen. An effect would paint one frame
+  // of the previous patient's failures first.
+  if (writes.key !== stateKey) {
+    setWrites({
+      key: stateKey,
+      favorites: { pending: [], failed: [] },
+      registered: { pending: [], failed: [] },
+    });
+  }
+  const mark = (
+    key: string,
+    kind: StateKind,
+    field: keyof WriteState,
+    trialId: string,
+    on: boolean,
+  ) =>
+    setWrites((prev) => {
+      if (prev.key !== key) return prev;
+      const list = prev[kind][field];
+      if (list.includes(trialId) === on) return prev;
+      return {
+        ...prev,
+        [kind]: {
+          ...prev[kind],
+          [field]: on ? [...list, trialId] : list.filter((id) => id !== trialId),
+        },
+      };
+    });
+  const write = (
+    kind: StateKind,
+    mutation: typeof setFavorite,
+    trialId: string,
+    on: boolean,
+  ) => {
+    if (writes[kind].pending.includes(trialId)) return;
+    const key = stateKey;
+    mark(key, kind, "pending", trialId, true);
+    mutation.mutate(
+      { trialId, on },
+      {
+        onError: () => mark(key, kind, "failed", trialId, true),
+        onSuccess: () => mark(key, kind, "failed", trialId, false),
+        onSettled: () => mark(key, kind, "pending", trialId, false),
+      },
+    );
+  };
 
   const stateCounts = {
     favorites: favorites.data?.length,
@@ -215,7 +316,11 @@ function TrialMatchesInner({
   // "Loading trials…" for ever, with the trials query disabled so even its
   // error branch could never speak.
   const waitingForIds = stateTab != null && stateIdsQuery.isPending;
-  const idsFailed = stateTab != null && stateIdsQuery.isError;
+  // `data === undefined` too: a failed REFETCH keeps the ids it had, and
+  // narrowing by slightly stale bookmarks beats blanking the tab and saying
+  // it could not be loaded when it could.
+  const idsFailed =
+    stateTab != null && stateIdsQuery.isError && stateIdsQuery.data === undefined;
   // Mutually exclusive by construction: a query that has rejected is no
   // longer pending. Guarding the loading line with `!idsFailed` as well
   // would be a second mechanism for the same thing, and would make the
@@ -380,12 +485,57 @@ function TrialMatchesInner({
   // `onBack` calls history.back() so the synthetic entry is consumed and
   // the popstate listener above fires setSelectedTrial(null).
   if (selectedTrial) {
+    const selectedId = String(selectedTrial.trialId);
     return (
       <TrialDetailPage
         apiClient={apiClient}
         trialId={selectedTrial.trialId}
         patientInfo={patientInfo}
         personId={personId}
+        // Values and callbacks, not the adapter: this component owns the id
+        // lists and the mutations, so it is the only place that can keep the
+        // star on the card and the star on the detail page saying the same
+        // thing. `undefined` where the answer is not known — the control is
+        // then not drawn at all, rather than drawn wrong for a moment.
+        trialState={
+          state
+            ? {
+                isFavorite: favorites.data
+                  ? favorites.data.includes(selectedId)
+                  : undefined,
+                favoriteBusy: writes.favorites.pending.includes(selectedId),
+                onToggleFavorite: (on) =>
+                  write("favorites", setFavorite, selectedId, on),
+                favoriteFailed: writes.favorites.failed.includes(selectedId),
+                // `data === undefined` too: a query that has errored KEEPS
+                // the data it had, so after a failed background refetch this
+                // was true while the star was still being drawn from the
+                // retained ids — an "unavailable" notice printed underneath
+                // a control that is present and works.
+                favoritesUnavailable: favorites.isError && favorites.data === undefined,
+                isRegistered:
+                  registered.data && advanced.data
+                    ? registered.data.includes(selectedId)
+                    : undefined,
+                onToggleRegistered: (on) =>
+                  write("registered", setRegistered, selectedId, on),
+                // Pending IS read off the mutation, and is scoped the same
+                // way: it describes a write in flight, which there can only
+                // be one of, and it must not disable a different trial's
+                // button.
+                registerPending: writes.registered.pending.includes(selectedId),
+                registerFailed: writes.registered.failed.includes(selectedId),
+                registeredUnavailable:
+                  (registered.isError && registered.data === undefined) ||
+                  (advanced.isError && advanced.data === undefined) ||
+                  !canReadAdvanced(state),
+                // Absent until the read answers: drawn against an unknown
+                // answer, the control is exactly the one that overwrites an
+                // advanced status.
+                advancedStatus: advanced.data?.[selectedId],
+              }
+            : undefined
+        }
         // The derived set, not raw state: the detail is scored under the
         // preferences the list used, and `country` no longer lives in
         // `filters`. Passing raw state sent the detail request without the
@@ -467,19 +617,33 @@ function TrialMatchesInner({
           that read fails every star vanishes — on EVERY tab, not just the
           Favorites one, and with nothing on screen to say why. The reader
           would conclude the feature had been removed. */}
-      {favorites.isError && !idsFailed ? (
+      {favorites.isError && favorites.data === undefined && !idsFailed ? (
         <p style={{ color: "var(--exact-color-not-eligible)" }}>
           Couldn't load your favorites, so bookmarking is unavailable right
           now.
         </p>
       ) : null}
 
-      {/* (4) A write that failed has to say so. The star is painted from
-          the server's list, so a rejected PATCH leaves it exactly where it
-          was — indistinguishable from a click that never registered. */}
-      {setFavorite.isError ? (
+      {/* A write that failed has to say so. The star is painted from the
+          server's list, so a rejected PATCH leaves it exactly where it was —
+          indistinguishable from a click that never registered.
+
+          From the recorded failures, not from the mutation: a registration
+          that rejects after the reader has gone back to the list had no
+          surface here at all, so the only thing they ever saw was
+          "Saving…". */}
+      {writes.favorites.failed.length ? (
         <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
           Couldn't update your favorites. Please try again.
+        </p>
+      ) : null}
+
+      {writes.registered.failed.length ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+          Couldn't save your interest in {writes.registered.failed.length === 1
+            ? "a trial"
+            : `${writes.registered.failed.length} trials`}
+          . Open the trial to try again.
         </p>
       ) : null}
 
@@ -516,9 +680,10 @@ function TrialMatchesInner({
             isFavorite={
               favorites.data ? favorites.data.includes(String(t.trialId)) : undefined
             }
+            busy={writes.favorites.pending.includes(String(t.trialId))}
             onToggleFavorite={
               state
-                ? (on) => setFavorite.mutate({ trialId: String(t.trialId), on })
+                ? (on) => write("favorites", setFavorite, String(t.trialId), on)
                 : undefined
             }
           />

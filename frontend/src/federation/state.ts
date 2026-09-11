@@ -29,6 +29,10 @@ export type TrialId = string;
  */
 export const MAX_TRIAL_IDS = 500;
 
+/** The enrollment statuses a patient must not be able to overwrite from
+ *  here. Set by a study team, not by the patient. */
+export type AdvancedStatus = "entered" | "completed";
+
 export interface TrialStateAdapter {
   /** The patient's bookmarked trial ids. */
   listFavoriteIds(): Promise<TrialId[]>;
@@ -38,6 +42,16 @@ export interface TrialStateAdapter {
   listRegisteredIds(): Promise<TrialId[]>;
   /** Register (or withdraw) interest in one trial. */
   setRegistered(trialId: TrialId, registered: boolean): Promise<void>;
+  /** The trials whose enrollment a study team has already moved past
+   *  "registered", by status.
+   *
+   *  Required, not optional, because what depends on it is not a nicety:
+   *  `listRegisteredIds` asks for `status=registered` exactly, so a patient
+   *  a coordinator has advanced to `entered` reads back as NOT registered —
+   *  and a control that then offers "I'm Interested" writes `registered`
+   *  over the advanced status when clicked. An adapter that cannot answer
+   *  this cannot safely be given the register control. */
+  listAdvancedEnrollments(): Promise<Record<TrialId, AdvancedStatus>>;
   /** The patient's saved search filters, or `{}` when they have none. */
   getPreferences(): Promise<FilterState>;
   /** Store the filters. */
@@ -98,6 +112,21 @@ export function createPromopState({
     // states is a product question, filed as EXACT #434; answering it also
     // needs PROMOP's `?status=` to accept more than one value.
     listRegisteredIds: () => ids({ status: "registered" }),
+    // Two requests because `?status=` takes one value. Ids only, like the
+    // others — the status is the map's value, so the UI can say which of
+    // the two it is rather than guessing.
+    listAdvancedEnrollments: async () => {
+      const [entered, completed] = await Promise.all([
+        ids({ status: "entered" }),
+        ids({ status: "completed" }),
+      ]);
+      const out: Record<TrialId, AdvancedStatus> = {};
+      for (const id of entered) out[id] = "entered";
+      // Completed last: a row can only be one status, but if the two reads
+      // straddle a change, the later state is the better answer.
+      for (const id of completed) out[id] = "completed";
+      return out;
+    },
     // Withdrawing is a status of its own rather than a deletion: the row is
     // the record that the patient was once interested, and PROMOP's enum
     // has `withdrawn` precisely so that fact survives.

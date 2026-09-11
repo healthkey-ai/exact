@@ -6,7 +6,14 @@
 // its own `/t/:id`; the remote owns the detail view itself).
 import type { KeyboardEvent } from "react";
 
-import { EyeIcon, Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
+import {
+  EyeIcon,
+  FavoriteToggle,
+  Field,
+  ScorePill,
+  SUITABILITY_HREF,
+  asText,
+} from "./bits";
 import type { TrialMatch } from "./types";
 
 interface Props {
@@ -21,6 +28,8 @@ interface Props {
    *  control is drawn: a bookmark button with nowhere to write is a button
    *  that forgets. */
   onToggleFavorite?: (next: boolean) => void;
+  /** A bookmark write for this trial is on the wire. */
+  busy?: boolean;
 }
 
 export function TrialCard({
@@ -29,6 +38,7 @@ export function TrialCard({
   isSelected,
   isFavorite,
   onToggleFavorite,
+  busy,
 }: Props) {
   const distance =
     trial.distance != null
@@ -96,26 +106,12 @@ export function TrialCard({
         </div>
 
         <div className="exact-card__action">
-          {onToggleFavorite && isFavorite !== undefined ? (
-            <button
-              type="button"
-              className={`exact-fav${isFavorite ? " is-on" : ""}`}
-              aria-pressed={isFavorite}
-              aria-label={
-                isFavorite
-                  ? `Remove ${trial.briefTitle} from favorites`
-                  : `Add ${trial.briefTitle} to favorites`
-              }
-              onClick={(e) => {
-                // The card is itself a click target; without this, bookmarking
-                // would also open the trial.
-                e.stopPropagation();
-                onToggleFavorite(!isFavorite);
-              }}
-            >
-              {isFavorite ? "★" : "☆"}
-            </button>
-          ) : null}
+          <FavoriteToggle
+            title={trial.briefTitle}
+            isFavorite={isFavorite}
+            onToggle={onToggleFavorite}
+            busy={busy}
+          />
           {onSelect ? (
             <button
               type="button"
