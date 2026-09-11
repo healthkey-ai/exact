@@ -38,6 +38,12 @@ def _bucket_by_matching_type(details: Dict[str, Any]) -> Dict[str, List[Dict[str
             buckets["matched"].append(item)
         elif mt in {"not matched", "not_matched", "not-matched", "notmatched"}:
             buckets["notMatched"].append(item)
+        elif mt in {"not evaluated", "not_evaluated", "not-evaluated", "notevaluated"}:
+            # Dropped, not bucketed. The three buckets describe the PATIENT
+            # against a requirement, and `not_evaluated` says there was no
+            # requirement — putting it in "missing" would tell the reader
+            # their data is incomplete when nothing was ever asked of it.
+            continue
         else:
             buckets["missing"].append(item)
 

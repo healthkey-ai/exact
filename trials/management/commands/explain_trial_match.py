@@ -188,6 +188,8 @@ class Command(BaseCommand):
             'matched':     self.style.SUCCESS,
             'unknown':     self.style.WARNING,
             'not_matched': self.style.ERROR,
+            # Not an issue: the trial placed no constraint on the attribute.
+            'not_evaluated': self.style.HTTP_INFO,
         }
 
         # Collect rows
@@ -205,8 +207,9 @@ class Command(BaseCommand):
 
         # Group by whether they differ
         differs = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in rows if cs != cbs]
-        same_bad = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in rows if cs == cbs and cs != 'matched']
-        same_good = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in rows if cs == cbs and cs == 'matched']
+        _fine = ('matched', 'not_evaluated')
+        same_bad = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in rows if cs == cbs and cs not in _fine]
+        same_good = [(a, cs, cbs, cv, cbv) for a, cs, cbs, cv, cbv in rows if cs == cbs and cs in _fine]
 
         col_a = max((len(a) for a, *_ in rows), default=20) + 2
 

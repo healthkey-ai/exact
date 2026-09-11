@@ -3,7 +3,10 @@ from trials.services.patient_info.patient_info_attributes import PatientInfoAttr
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from trials.services.utils import disease_attr_applies
 
-_STATUS_ORDER = {'not_matched': 0, 'unknown': 1, 'matched': 2}
+# Most actionable first. `not_evaluated` is listed rather than left to the
+# fallback: it is the least actionable of all — the trial asked nothing, so
+# there is nothing for the reader to do about it.
+_STATUS_ORDER = {'not_matched': 0, 'unknown': 1, 'matched': 2, 'not_evaluated': 3}
 
 
 def _trial_requirement(trial, meta):
@@ -46,12 +49,14 @@ class TrialMatchExplainer:
         #   'trialRequirement': {'min': 18, 'max': 75}}, ...]
 
     ``attr_match_status()`` always returns a plain status string
-    ('matched' | 'unknown' | 'not_matched'). The dict-shaped return value
+    ('matched' | 'unknown' | 'not_matched' | 'not_evaluated'). The
+    dict-shaped return value
     belongs to ``therapy_related_things_match_status()``, which is a separate
     method used only by the trial-details view.
 
-    Results are sorted: not_matched → unknown → matched, so the most
-    actionable information (disqualifiers, then data gaps) appears first.
+    Results are sorted: not_matched → unknown → matched → not_evaluated, so
+    the most actionable information (disqualifiers, then data gaps) appears
+    first and the attributes the trial never constrained appear last.
     """
 
     def __init__(self, trial, patient_info, matcher=None):

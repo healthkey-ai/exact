@@ -7,9 +7,29 @@ from tests.factories import TrialFactory
 
 class TestTrialMatchExplainer:
     @pytest.mark.django_db
-    def test_matched_attr(self):
-        """Attr with no trial restriction → matched, patient value surfaced."""
+    def test_unconstrained_attr_is_not_evaluated(self):
+        """Attr the trial does not restrict → not_evaluated, not matched.
+
+        "Matched" is a claim that the patient was checked against a
+        requirement and met it. With both bounds absent there is no
+        requirement, and reporting a match put a green tick on the detail
+        page against a criterion nobody checked — and a hit in the match
+        score's numerator, which inflated the least specific trials.
+        """
         trial = TrialFactory(age_low_limit=None, age_high_limit=None)
+        patient_info = PatientInfo(disease='multiple myeloma', patient_age=45)
+
+        reasons = TrialMatchExplainer(trial, patient_info).explain()
+
+        age_reason = next((r for r in reasons if r['attr'] == 'patient_age'), None)
+        assert age_reason is not None
+        assert age_reason['status'] == 'not_evaluated'
+        assert age_reason['patientValue'] == 45
+
+    @pytest.mark.django_db
+    def test_matched_attr(self):
+        """Attr the trial restricts, with the patient inside it → matched."""
+        trial = TrialFactory(age_low_limit=18, age_high_limit=75)
         patient_info = PatientInfo(disease='multiple myeloma', patient_age=45)
 
         reasons = TrialMatchExplainer(trial, patient_info).explain()
@@ -105,4 +125,6 @@ class TestTrialMatchExplainer:
         assert len(reasons) > 0
         for reason in reasons:
             assert set(reason.keys()) == {'attr', 'status', 'patientValue', 'trialRequirement'}
-            assert reason['status'] in {'matched', 'unknown', 'not_matched'}
+            assert reason['status'] in {
+                'matched', 'unknown', 'not_matched', 'not_evaluated',
+            }

@@ -41,9 +41,19 @@ class TrialTemplates:
         }
 
         mapping_for_order = {
+            # NOTE: the key is 'not matched' with a SPACE, while the status is
+            # `not_matched` — so a mismatch never matches it and falls through
+            # to the default weight of 5. Pre-existing; left alone here rather
+            # than reordered as a side effect of adding a status, because
+            # fixing it moves rows this change has nothing to do with.
             'not matched': 1,
             'unknown': 2,
-            'matched': 3
+            'matched': 3,
+            # 6, not 4: it has to land after the default-weight bucket that
+            # `not_matched` actually falls into. "The trial never asked" is the
+            # least informative row there is and must not sit above a real
+            # mismatch.
+            'not_evaluated': 6,
         }
 
         details = self._trial_attributes.details()

@@ -125,10 +125,26 @@ class TestHighRiskMclAggregateMatcher:
         assert _status(t, pi) == 'not_matched'
 
     @pytest.mark.django_db
-    def test_no_criteria_is_matched(self):
+    def test_excluded_absent_is_matched_not_unevaluated(self):
+        """A trial that gates ONLY on an exclusion, with a patient confirmed
+        clear of it, is a match — the rule was checked and the patient met it.
+
+        Passing an exclusion appends nothing to the status list, exactly as
+        naming no criteria at all does, so a verdict derived from that list
+        being empty reports the two identically. They are opposites."""
+        t = TrialFactory(disease='mantle cell lymphoma', high_risk_mcl_criteria_excluded=['blastoid'])
+        pi = _mcl_patient(morphologic_variant='classic')
+        assert _status(t, pi) == 'matched'
+
+    @pytest.mark.django_db
+    def test_no_criteria_is_not_evaluated(self):
+        """A trial naming no required, sufficient or excluded criterion has
+        no high-risk rule, so there is nothing the patient met. Reporting a
+        match here put the attribute into the score for every MCL trial that
+        does not use the criteria at all."""
         t = TrialFactory(disease='mantle cell lymphoma')
         pi = _mcl_patient(molecular_markers='tp53Mutation')
-        assert _status(t, pi) == 'matched'
+        assert _status(t, pi) == 'not_evaluated'
 
 
 class TestHighRiskMclBreakdown:
