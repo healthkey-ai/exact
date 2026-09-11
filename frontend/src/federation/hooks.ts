@@ -10,6 +10,13 @@ import {
 import type { AxiosInstance } from "axios";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef } from "react";
+
+import {
+  PreferenceWriter,
+  adapterPreferences,
+  localStoragePreferences,
+} from "./preferences";
 
 import { fetchFormSettings, fetchTrialDetail, fetchTrials } from "./api";
 import type { AdvancedStatus, TrialId, TrialStateAdapter } from "./state";
@@ -224,4 +231,151 @@ export function useFormSettings(
     queryFn: () => fetchFormSettings(apiClient, diseaseCode),
     staleTime: 5 * 60_000,
   });
+}
+
+/** Saved search filters: load them once, and route every write through the
+ *  queue in `preferences.ts`.
+ *
+ *  Keyed on the PATIENT, not on the adapter object — same reasoning as
+ *  `useStateIds`: a host that builds `state={createPromopState(...)}` inline
+ *  hands over a new object every render, and rebuilding the writer on each one
+ *  would lose whatever it had queued. A host that genuinely replaces the
+ *  adapter for the same patient — a refreshed auth client, say — is still
+ *  honoured, because calls route through whatever adapter is current for
+ *  THIS key rather than through the one captured when the writer was built.
+ *
+ *  With no adapter this falls back to `localStorage` rather than doing
+ *  nothing. The filter panel is the same panel either way, and a panel that
+ *  forgets on reload is a worse answer than a per-browser one.
+ */
+export function useSavedFilters(
+  state: TrialStateAdapter | undefined,
+  key: string,
+  onLoad: (saved: FilterState) => void,
+): { persist: (filters: FilterState) => void; reset: () => void } {
+  const hasAdapter = state != null;
+  // Read through a ref so the memo below does not rebuild on every render —
+  // a host writing `state={createPromopState(...)}` inline hands over a new
+  // object each time, and rebuilding would drop whatever the writer had queued.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Which patient the ref above currently belongs to. Both refs are written
+  // during render, so by the time an unmount cleanup runs after a patient
+  // switch they already describe the NEW patient.
+  const keyRef = useRef(key);
+  keyRef.current = key;
+
+  const transport = useMemo(() => {
+    // Each call picks its adapter rather than closing over one, because the
+    // two ways `state` can change need opposite answers:
+    //
+    //  - same patient, new adapter object (an inline `createPromopState(...)`,
+    //    or a genuinely refreshed client): use the current one. Rebuilding the
+    //    memo instead would drop whatever the writer had queued, and closing
+    //    over the old one would write through an expired client.
+    //  - different patient: use the captured one. This transport belongs to
+    //    the previous patient, and its writer's unmount flush carries filters
+    //    edited FOR that patient — sending them through the ref would file
+    //    them under the next patient's preferences.
+    const captured = stateRef.current;
+    const live = () =>
+      (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
+    return captured
+      ? adapterPreferences({
+          getPreferences: () => live().getPreferences(),
+          savePreferences: (f) => live().savePreferences(f),
+          resetPreferences: () => live().resetPreferences(),
+        })
+      : localStoragePreferences(key);
+    // `hasAdapter` rather than `state`: see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAdapter, key]);
+
+  const writer = useMemo(() => new PreferenceWriter(transport), [transport]);
+
+  const onLoadRef = useRef(onLoad);
+  onLoadRef.current = onLoad;
+
+  // Whether the reader has touched the filters since this writer was built.
+  // A slow `getPreferences()` that resolves afterwards must not merge the
+  // stored set over an edit made while it was in flight — that visibly
+  // reverts what they just did, and only on a slow connection, which is the
+  // hardest kind of bug to be told about.
+  const editedRef = useRef(false);
+  useEffect(() => {
+    editedRef.current = false;
+  }, [writer]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void transport
+      .get()
+      .then((saved) => {
+        // Either way the load is NOT applied, which leaves the writer holding
+        // a set that is a strict SUBSET of what is stored — the reader's one
+        // edit. Telling the transport to forget what it read keeps the next
+        // save additive; without it that save reads as "these are all the
+        // filters there are" and deletes saved filters the reader never even
+        // saw. `cancelled` needs it just as much as an edit does: an unmount
+        // runs the flush against this same transport, and the read it is
+        // queued behind seeds the transport on its way through.
+        if (cancelled || editedRef.current) {
+          transport.forget();
+          return;
+        }
+        // Nothing saved is the common case and must not clobber the filters
+        // the host seeded, so an empty object is treated as "no opinion".
+        if (!saved || Object.keys(saved).length === 0) return;
+        onLoadRef.current(saved);
+      })
+      .catch(() => {
+        // Unreachable saved filters are not a reason to fail the search.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [transport]);
+
+  // An edit made in the last few hundred milliseconds should survive the
+  // reader navigating away — or the host switching patients, which rebuilds
+  // the writer and runs this cleanup against the OLD transport.
+  useEffect(() => () => writer.flush(), [writer]);
+
+  // An unmount is not the only way to leave. A reload, a tab close or a host
+  // full-page navigation never unmounts anything, so the debounced write of
+  // the filter just set — the one the reader is most likely to expect back —
+  // is exactly the one that would be lost. `pagehide` covers the bfcache case
+  // that `beforeunload` does not; `visibilitychange` covers mobile, where a
+  // backgrounded tab may never fire either.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const leave = () => {
+      // `visibilitychange` fires on the way BACK too. Flushing then would
+      // cancel the debounce for an edit still in progress — a half-typed
+      // title persisted, and a second request when the reader finishes.
+      if (document.visibilityState !== "hidden") return;
+      writer.flush();
+    };
+    const hide = () => writer.flush();
+    window.addEventListener("pagehide", hide);
+    document.addEventListener("visibilitychange", leave);
+    return () => {
+      window.removeEventListener("pagehide", hide);
+      document.removeEventListener("visibilitychange", leave);
+    };
+  }, [writer]);
+
+  return useMemo(
+    () => ({
+      persist: (filters: FilterState) => {
+        editedRef.current = true;
+        writer.save(filters);
+      },
+      reset: () => {
+        editedRef.current = true;
+        writer.reset();
+      },
+    }),
+    [writer],
+  );
 }
