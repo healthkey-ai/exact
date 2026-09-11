@@ -111,6 +111,17 @@ const formSettings = {
       { value: "observational", label: "Observational" },
     ],
   },
+  // Names for the high-risk MCL panel. Without them the backend-free QA
+  // surface cannot show the feature at all — and that page is the only place
+  // the marks, the colours and the 640px layout get looked at by eye.
+  highRiskMclCriteria: {
+    options: [
+      { value: "tp53_mutation", label: "TP53 mutation" },
+      { value: "del17p", label: "del(17p)" },
+      { value: "ki67_30", label: "Ki-67 >= 30%" },
+      { value: "blastoid", label: "Blastoid morphology" },
+    ],
+  },
 };
 
 // Canned trial-detail payload (mirrors `TrialDetailsSerializer`): header meta,
@@ -136,6 +147,20 @@ function detailFor(id: string) {
       "this has on their treatment and outcomes.",
     matchScore: t.matchScore,
     goodnessScore: t.goodnessScore,
+    // One of each tone, so the panel can be checked by eye: a criterion met, a
+    // confirmed absence, a gap in the data, an alternative that costs nothing,
+    // and an exclusion the patient is clear of.
+    highRiskMclCriteriaBreakdown: {
+      aggregate: "matched",
+      minCount: 1,
+      matchedCount: 1,
+      required: [
+        { code: "tp53_mutation", status: "matched" },
+        { code: "del17p", status: "unknown" },
+      ],
+      sufficientAny: [{ code: "ki67_30", status: "not_matched" }],
+      excluded: [{ code: "blastoid", status: "matched" }],
+    },
     groupNames: [
       { value: "trialEligibilityAttributes", label: "Trial Eligibility Attributes" },
     ],

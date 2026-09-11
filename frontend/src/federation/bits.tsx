@@ -240,3 +240,25 @@ export function FavoriteToggle({
     </button>
   );
 }
+
+/** The tick the eligibility rows and the high-risk MCL panel share — two ticks
+ *  that differ read as two meanings. Here rather than in `TrialDetailPage`
+ *  because the panel imports it and that page imports the panel: a module
+ *  cycle that survives today only because nothing dereferences it at
+ *  module-evaluation time. */
+export const CheckIcon = () => (
+  <svg
+    width="16"
+    height="16"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M21.801 10A10 10 0 1 1 17 3.335" />
+    <path d="m9 11 3 3L22 4" />
+  </svg>
+);

@@ -125,6 +125,32 @@ export interface TrialDetailField {
   [key: string]: unknown;
 }
 
+/** One high-risk MCL criterion, reported in ELIGIBILITY terms: on an
+ *  EXCLUDED criterion `matched` means the patient is confirmed clear of it and
+ *  `not_matched` means they have it and are ruled out — the inverse of an
+ *  inclusion criterion. `unknown` means the source data is missing either way. */
+export interface MclCriterion {
+  code: string;
+  status: "matched" | "not_matched" | "unknown";
+}
+
+/** `highRiskMclCriteriaBreakdown` from `GET /trials/{id}/` — per-criterion
+ *  explainability for an attribute whose rule is really "at least N of these,
+ *  none of those, or any one of these" (#4408). Absent, or null, for a trial
+ *  that gates on no high-risk criteria and for a request with no patient.
+ *
+ *  Codes only: titles live in the `highRiskMclCriteria` options from
+ *  `/form-settings/`, so the catalog stays the one place that names them. */
+export interface HighRiskMclCriteriaBreakdown {
+  aggregate: "matched" | "not_matched" | "unknown" | "not_evaluated" | string;
+  /** How many of `required` are needed. At least 1. */
+  minCount: number;
+  matchedCount: number;
+  required: MclCriterion[];
+  excluded: MclCriterion[];
+  sufficientAny: MclCriterion[];
+}
+
 export interface GroupName {
   value: string;
   label: string;
@@ -160,6 +186,9 @@ export interface TrialDetailResponse {
   matchingType?: MatchingType | null;
   details: Record<string, TrialDetailField[]>;
   groupNames: GroupName[];
+  /** Detail view only, and only with a patient. Null for a trial that gates on
+   *  no high-risk MCL criteria — which is every trial outside that disease. */
+  highRiskMclCriteriaBreakdown?: HighRiskMclCriteriaBreakdown | null;
   [key: string]: unknown;
 }
 

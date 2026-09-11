@@ -43,6 +43,9 @@ export interface FakeApi {
   failNextWith: (status: number) => void;
   /** Replace what the list returns from now on. */
   setResponse: (response: Partial<TrialsResponse>) => void;
+  /** Leave `/form-settings/` unanswered, to see what renders while the option
+   *  catalog is still in flight. */
+  holdFormSettings: () => void;
   /** Override fields on every trial's detail response from now on.
    *  Whatever is NOT overridden follows the trial actually asked for — so
    *  the id and title track the row that was clicked unless a test pins
@@ -119,6 +122,17 @@ const FORM_SETTINGS = {
   phases: { options: [{ value: "", label: "ALL" }, { value: "PHASE3", label: "III" }] },
   register: { options: [{ value: "", label: "ALL" }] },
   allCountries: { options: [{ value: "", label: "Unknown" }] },
+  // Titles for the high-risk MCL panel. Deliberately NOT the codes with the
+  // underscores swapped out: the panel must be shown taking them from the
+  // catalog, not deriving them.
+  highRiskMclCriteria: {
+    options: [
+      { value: "tp53_mutation", label: "TP53 mutation" },
+      { value: "del17p", label: "del(17p)" },
+      { value: "blastoid", label: "Blastoid morphology" },
+      { value: "ki67_30", label: "Ki-67 >= 30%" },
+    ],
+  },
 };
 
 export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
@@ -133,10 +147,17 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     ...initial,
   };
   let failWith: number | null = null;
+  let holdSettings = false;
   let detailOverrides: Partial<TrialDetailResponse> = {};
 
   const respond = (url: string, body?: unknown) => {
-    if (url.includes("form-settings")) return Promise.resolve({ data: FORM_SETTINGS });
+    if (url.includes("form-settings")) {
+      return holdSettings
+        ? new Promise(() => {
+            /* never settles */
+          })
+        : Promise.resolve({ data: FORM_SETTINGS });
+    }
     if (failWith != null) {
       const status = failWith;
       failWith = null;
@@ -204,6 +225,9 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     },
     setDetail: (next: Partial<TrialDetailResponse>) => {
       detailOverrides = { ...detailOverrides, ...next };
+    },
+    holdFormSettings: () => {
+      holdSettings = true;
     },
   };
 }

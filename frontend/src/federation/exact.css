@@ -416,6 +416,93 @@
   color: var(--exact-color-text-tertiary);
 }
 
+/* High-risk MCL criteria panel (#4408) */
+.exact-root .exact-mcl {
+  margin-top: 16px;
+}
+
+.exact-root .exact-mcl__verdict {
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+
+.exact-root .exact-mcl__verdict.is-matched {
+  color: var(--exact-color-success-700);
+}
+
+.exact-root .exact-mcl__verdict.is-not_matched {
+  color: var(--exact-color-error-700);
+}
+
+.exact-root .exact-mcl__verdict.is-unknown {
+  color: var(--exact-color-warning-700);
+}
+
+.exact-root .exact-mcl__group + .exact-mcl__group {
+  margin-top: 14px;
+}
+
+.exact-root .exact-mcl__group-title {
+  margin: 0 0 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-mcl__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exact-root .exact-mcl__item {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.exact-root .exact-mcl__mark {
+  display: inline-flex;
+  justify-content: center;
+}
+
+.exact-root .exact-mcl__item.is-good .exact-mcl__mark {
+  color: var(--exact-color-eligible);
+}
+
+.exact-root .exact-mcl__item.is-bad .exact-mcl__mark {
+  color: var(--exact-color-not-eligible);
+}
+
+.exact-root .exact-mcl__item.is-unknown .exact-mcl__mark {
+  color: var(--exact-color-potential);
+}
+
+/* An unmet criterion in the "any one of these" group is not a failure — the
+   others cover it — so it is marked neutrally rather than in red. */
+.exact-root .exact-mcl__item.is-neutral .exact-mcl__mark {
+  color: var(--exact-color-text-tertiary);
+}
+
+.exact-root .exact-mcl__status {
+  font-size: 0.75rem;
+  /* Never the only carrier of the verdict: the mark beside it is coloured,
+     and colour alone is not a message. */
+  color: var(--exact-color-text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .exact-root .exact-mcl__item {
+    grid-template-columns: 20px 1fr;
+  }
+
+  .exact-root .exact-mcl__status {
+    grid-column: 2;
+  }
+}
+
 /* Field tooltip: "?" icon + floating text box on hover/focus */
 .exact-root .exact-tooltip__wrap {
   position: relative;
