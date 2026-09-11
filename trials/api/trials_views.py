@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import F, Prefetch, QuerySet
@@ -18,6 +19,23 @@ from trials.services.study_preferences import StudyPreferences, study_preference
 from trials.services.value_options import ValueOptions
 
 logger = logging.getLogger(__name__)
+
+#: A trial id as it may appear in a JSON string: ASCII digits, nothing else,
+#: and at most as many as a bigint can hold. `str.isdigit()` is not
+#: equivalent — see `TrialsViewSet._trial_id`.
+#:
+#: The length bound is not cosmetic: Python refuses to parse an integer past
+#: a digit limit (4300 by default), so an unbounded match sends a 5000-digit
+#: string into `int()` and the `ValueError` escapes the view as a 500 — the
+#: same failure the ASCII match was added to close.
+_TRIAL_ID_RE = re.compile(r'\d{1,19}', re.ASCII)
+
+#: The largest value the `id` column can hold (`BigAutoField` -> signed
+#: bigint). Anything above it is not merely a miss: PostgreSQL types the
+#: constant as `numeric`, which coerces the column in the `IN` comparison and
+#: gives up the primary-key index — so 500 such ids turn a bookmarks lookup
+#: into a table scan.
+_MAX_TRIAL_ID = 2 ** 63 - 1
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -138,7 +156,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             raise serializers.ValidationError({
                 'type': [
                     f"'{search_type}' is not supported: EXACT stores no per-user "
-                    f"trial state. Send the trial ids to filter by instead."
+                    f"trial state. POST the ids to filter by as `trial_ids` "
+                    f"instead — see /trials/search/match/."
                 ]
             })
         if search_type == 'not_eligible':
@@ -150,7 +169,122 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 ]
             })
 
+    #: The most bookmarks one request may filter by. Every id becomes part
+    #: of an `IN (...)`, so an unbounded list is a request that expands into
+    #: thousands of clauses — and a caller with that many bookmarks needs a
+    #: different feature, not a longer query.
+    MAX_TRIAL_IDS = 500
+
+    def _resolve_trial_ids(self):
+        """The `trial_ids` filter from the request body, or None.
+
+        This is how the federated UI's Favorites tab works: the bookmarks
+        live in PROMOP, which knows nothing about matching, so the ids come
+        down here and the narrowing happens inside the queryset — the only
+        place that can sort and paginate them alongside the match scores,
+        and produce a total that agrees with what it listed.
+
+        Body, not query string: the list can be long and the patient payload
+        is already travelling in the body on this path.
+
+        `None` means "no such filter". An EMPTY LIST does not: it means the
+        caller asked for their bookmarks and has none, so the honest answer
+        is no trials. Treating `[]` as absent would answer an empty
+        Favorites tab with the entire corpus.
+        """
+        # In the query string it is a mistake, and a quiet one: ignored, the
+        # request answers a bookmarks question with the whole corpus — the
+        # same wrong answer `[]` is guarded against, through another door.
+        if 'trial_ids' in self.request.query_params:
+            raise serializers.ValidationError({
+                'trial_ids': [
+                    'send trial_ids in the request body, not the query string '
+                    '— see POST /trials/search/match/.'
+                ]
+            })
+
+        data = getattr(self.request, 'data', None)
+        if not isinstance(data, dict) or 'trial_ids' not in data:
+            return None
+
+        raw = data.get('trial_ids')
+        if not isinstance(raw, (list, tuple)):
+            raise serializers.ValidationError(
+                {'trial_ids': ['must be a list of trial ids.']}
+            )
+        if len(raw) > self.MAX_TRIAL_IDS:
+            raise serializers.ValidationError({
+                'trial_ids': [
+                    f'at most {self.MAX_TRIAL_IDS} ids may be sent; got {len(raw)}.'
+                ]
+            })
+
+        ids = []
+        for value in raw:
+            ids.append(self._trial_id(value))
+        return ids
+
+    @staticmethod
+    def _trial_id(value):
+        """One id, or a 400.
+
+        Strict on purpose — every loose parse here turns into a filter the
+        caller did not ask for:
+
+        - `True` is an `int` in Python, so `int(True)` is trial 1.
+        - `int(3.5)` is 3, so a float silently becomes a DIFFERENT trial
+          rather than being refused.
+        - `str.isdigit()` is true for characters `int()` then refuses —
+          `'²'`, `'³'` — so guarding with it and converting afterwards
+          raises `ValueError` out of the view as a 500, not a 400.
+        - It is also true for fullwidth digits, where `int('１２３')` does
+          succeed and quietly yields a different trial than the literal
+          text the caller sent.
+
+        Hence an explicit ASCII-digits match rather than a character
+        predicate. Numeric strings are accepted because JSON from a browser
+        routinely carries ids that way; a negative one is refused because a
+        primary key is never negative, and admitting a sign is what let
+        `'--5'` through the old guard.
+        """
+        if isinstance(value, bool) or isinstance(value, float):
+            raise serializers.ValidationError(
+                {'trial_ids': [f'{value!r} is not a trial id.']}
+            )
+        if isinstance(value, int):
+            return TrialsViewSet._in_range(value, value)
+        if isinstance(value, str) and _TRIAL_ID_RE.fullmatch(value.strip()):
+            return TrialsViewSet._in_range(int(value), value)
+        raise serializers.ValidationError(
+            {'trial_ids': [f'{value!r} is not a trial id.']}
+        )
+
+    @staticmethod
+    def _in_range(number, original):
+        """Refuse an id the `id` column could not hold.
+
+        Not pedantry about a value that simply would not match: above the
+        bigint range PostgreSQL types the constant as `numeric`, coerces the
+        column to compare, and stops using the primary-key index. A list of
+        500 of those is a table scan wearing the shape of a bookmarks
+        lookup.
+
+        Negative is refused for its own reason — a primary key is never
+        negative, and admitting a sign is what let `'--5'` past an earlier
+        version of this guard.
+        """
+        if 0 <= number <= _MAX_TRIAL_ID:
+            return number
+        raise serializers.ValidationError(
+            {'trial_ids': [f'{original!r} is not a trial id.']}
+        )
+
     def get_queryset(self, patient_info=None):
+        # Before `_resolve_patient_info`, which can be a round trip to
+        # PROMOP: a malformed body should not pay for that to be told it is
+        # malformed.
+        trial_ids = self._resolve_trial_ids()
+
         if patient_info is None:
             patient_info = self._resolve_patient_info()
 
@@ -164,6 +298,12 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # any UI that carries the tab it came from in the query string.
         if self.action in ('list', 'count', 'search'):
             self._reject_user_scoped_search_type(search_type)
+
+        if trial_ids is not None:
+            # Before the matcher, not after: narrowing first means the
+            # scores, the ordering and `itemsTotalCount` are all computed
+            # over the set the caller asked about.
+            queryset = queryset.filter(id__in=trial_ids)
 
         if self.action in ['list', 'count', 'search']:
             queryset, _ = queryset.filtered_trials(
