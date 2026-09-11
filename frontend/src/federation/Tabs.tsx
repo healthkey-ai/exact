@@ -38,12 +38,22 @@ export function Tabs({ active, onChange, counts, activeTabTotal }: Props) {
             key={tab.value}
             type="button"
             aria-current={isActive || undefined}
+            // The label and the count are separate elements with no
+            // whitespace between them, so the accessible name computes to
+            // "Eligible19". Spelled out here instead.
+            aria-label={count != null ? `${tab.label}, ${count} trials` : tab.label}
             className={`exact-tab${isActive ? " is-active" : ""}`}
             onClick={() => onChange(tab.value)}
           >
             <span className="exact-tab__label">{tab.label}</span>
             {count != null ? (
-              <span className="exact-tab__count">{count}</span>
+              // `data-testid` because the button's accessible name is an
+              // `aria-label` computed above: a test that reads only the name
+              // cannot see what is actually painted here, and would pass
+              // against a badge rendering `0`.
+              <span className="exact-tab__count" data-testid="tab-count">
+                {count}
+              </span>
             ) : null}
           </button>
         );

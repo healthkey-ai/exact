@@ -12,6 +12,30 @@ Federated React 19 remote that ships the `TrialMatches` component. Toolchain mir
 | `npm run build:spa` | Production SPA build. Output: `dist/`. Use this if you want to deploy the harness as a static site. |
 | `npm run typecheck` | `tsc -b`. CI gates this. |
 
+## Tests
+
+`npm test` runs two vitest projects:
+
+| Project | Environment | Files | What belongs here |
+|---|---|---|---|
+| `logic` | `node` | `src/**/*.test.ts` | Pure functions — param mapping, page numbers, filter counting. Milliseconds. |
+| `component` | `jsdom` | `src/**/*.test.tsx` | The wiring: which request goes out, and when. |
+
+Run one with `npx vitest run --project component`.
+
+The component project exists because the wiring is where the defects were.
+Three review rounds on the list found a page-reset effect that could never
+fire, a stale-data indicator keyed on the wrong React Query flag, a debounce
+that fired an extra request for the previous filter, and a country seed that
+leaked between patients — none of them reachable from a pure-logic test.
+
+Those tests assert on the **request log** rather than on the DOM wherever
+they can (`src/test/renderTrialMatches.tsx` records every call the fake axios
+instance receives), because "which request, and when" is the thing that keeps
+being wrong. Assert on cache-served state, not on a request count, when the
+expected key is one React Query already holds — a reset back to the baseline
+issues no network call, and asserting one would be asserting a bug.
+
 ## Dev harness flow (`npm run dev:remote`)
 
 1. **EXACT sign-in** — `POST /api-token-auth/` with username + password returns a DRF token. Stored in `localStorage` so a refresh keeps the session. Can also be skipped by setting `VITE_EXACT_TOKEN` in `.env.local`.
