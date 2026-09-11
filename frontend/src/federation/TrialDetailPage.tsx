@@ -4,16 +4,69 @@
 // in-place by `TrialMatches` when a trial is selected — the remote owns the
 // detail view rather than re-using the host's router. Data: `GET /trials/{id}/`
 // (or `POST /trials/{id}/match/` for the inline-payload path) via
-// `useTrialDetail`. v1 is read-only: editing a patient value (CB's pencil
-// controls) and the host action buttons (I'm Interested / bookmark / share /
-// SoC) are deliberately out of scope.
+// `useTrialDetail`.
+//
+// The two controls that write live here too — the bookmark and CB's
+// "I'm Interested" — but only their rendering: everything they write goes
+// through the `state` adapter `TrialMatches` holds, which is why they arrive
+// as a `trialState` bundle of values and callbacks rather than as an adapter
+// this page talks to itself. Without one, neither is drawn.
+//
+// Still out of scope: editing a patient value (CB's pencil controls, phase 4)
+// and CB's share / Standard-of-Care buttons.
 import { useEffect } from "react";
 
-import { Field, FieldTooltip, ScorePill, SUITABILITY_HREF, asText, renderMd } from "./bits";
+import {
+  FavoriteToggle,
+  Field,
+  FieldTooltip,
+  ScorePill,
+  SUITABILITY_HREF,
+  asText,
+  renderMd,
+} from "./bits";
 import { useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import { FIELD_TOOLTIPS } from "./tooltips";
+import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
+
+/** Everything the two writing controls need, as plain values and callbacks.
+ *
+ *  The page never sees the `state` adapter itself: `TrialMatches` owns the
+ *  queries and the mutations, so it is the only place that can keep the
+ *  card's star and this one showing the same thing. Each field here is a
+ *  distinct state the reader can be in, and every one of them has to be
+ *  distinguishable on screen — "not loaded", "failed to load" and "false"
+ *  all render as an empty star otherwise. */
+export interface TrialStateControls {
+  /** `undefined` = not known (still loading, or the read failed), which
+   *  draws no control at all rather than a star that flips later. */
+  isFavorite?: boolean;
+  onToggleFavorite?: (next: boolean) => void;
+  /** A bookmark write for this trial is on the wire. */
+  favoriteBusy?: boolean;
+  /** A bookmark write was rejected. The star is painted from the server's
+   *  list, so a failed write leaves it exactly where it was — which is what
+   *  a click that never registered looks like. */
+  favoriteFailed?: boolean;
+  /** The bookmark list could not be read, so there is no star to draw and
+   *  the reader is owed a reason. */
+  favoritesUnavailable?: boolean;
+  isRegistered?: boolean;
+  onToggleRegistered?: (next: boolean) => void;
+  /** A registration write is on the wire. The button says so and ignores
+   *  further clicks: the second one would race the first. */
+  registerPending?: boolean;
+  registerFailed?: boolean;
+  registeredUnavailable?: boolean;
+  /** Set when a study team has already moved this trial's enrollment past
+   *  "registered". The control then becomes a statement rather than a
+   *  button: `listRegisteredIds` asks for `status=registered` exactly, so
+   *  such a patient reads back as not registered, and "I'm Interested"
+   *  would write `registered` over `entered` (#434). */
+  advancedStatus?: AdvancedStatus;
+}
 
 interface Props {
   apiClient: import("axios").AxiosInstance;
@@ -23,6 +76,9 @@ interface Props {
   /** Same study preferences the list used, so detail scores/units agree. */
   filters?: FilterState;
   onBack: () => void;
+  /** Absent when the host supplied no state adapter — then neither the
+   *  bookmark nor the interest control is rendered. */
+  trialState?: TrialStateControls;
 }
 
 const BackArrow = () => (
@@ -113,8 +169,133 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
         {field.uunits ?? field.units ? (
           <span className="exact-elig__units">{field.uunits ?? field.units}</span>
         ) : null}
+        {/* A mismatch was marked in red and nowhere else, while the register
+            card below tells the reader the mismatches are marked above. For
+            anyone not seeing the colour that was a promise the page did not
+            keep.
+
+            After the units, where the matched cell puts its tick: before
+            them it split the value from its unit — "12 ✕ years", read out
+            as "12, does not match, years". */}
+        {notMatched ? (
+          <span className="exact-elig__mismatch" aria-label="does not match">
+            ✕
+          </span>
+        ) : null}
       </div>
     </div>
+  );
+}
+
+/** CB's RegisterInterestCard, with CB's promise removed.
+ *
+ *  CB tells the reader "a study coordinator will reach out to discuss next
+ *  steps". Here that would be false: registering writes a status onto the
+ *  patient's enrollment row in PROMOP and nothing else happens — no mail,
+ *  no queue, nobody notified. So the copy says what the click actually does
+ *  and says explicitly what it does not do. Whether it should eventually do
+ *  more is a product decision that has not been taken.
+ *
+ *  What IS kept from CB is #4669: when the matcher says not_eligible, the
+ *  card must not open by telling someone they may be eligible — and it goes
+ *  on saying so after they register, which is when it matters most.
+ */
+function RegisterInterest({
+  advancedStatus,
+  notEligible,
+  mismatchesShown,
+  isRegistered,
+  pending,
+  failed,
+  onToggle,
+}: {
+  advancedStatus?: AdvancedStatus;
+  notEligible: boolean;
+  /** Whether the table above actually lists a mismatched row.
+   *
+   *  It often does not: `matchingType` is decided over every mapped
+   *  attribute, while the table is the filtered "potential attributes"
+   *  view, which drops admin and general groups, blank values and select
+   *  values absent from their own options. Pointing at rows that are not
+   *  there — or at an empty table, which the endpoint does return — was a
+   *  claim the page could not keep. */
+  mismatchesShown: boolean;
+  isRegistered: boolean;
+  pending: boolean;
+  failed: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  if (advancedStatus) {
+    return (
+      <section className="exact-panel exact-register is-registered">
+        <h2 className="exact-panel__title">
+          {advancedStatus === "completed"
+            ? "Your participation in this trial is recorded as completed"
+            : "You are recorded as taking part in this trial"}
+        </h2>
+        <p className="exact-register__text">
+          Your study team keeps this up to date, so it is not something to
+          change here. Speak to them if it looks wrong.
+        </p>
+      </section>
+    );
+  }
+
+  const heading = isRegistered
+    ? "You registered interest in this trial"
+    : notEligible
+      ? "You may not meet this trial's eligibility criteria"
+      : "Interested in this trial?";
+
+  // Deliberately NOT "listed on the Registered tab": that tab asks for
+  // `status=registered` exactly, so a patient a coordinator has advanced to
+  // `entered` is no longer on it (#434). Note that the same narrow query
+  // decides `isRegistered`, so such a patient does not reach this branch at
+  // all — they are invited to register for a trial they are already in.
+  // That is #434 itself and is not fixed here; what is fixed is this
+  // sentence not adding a second false claim on top of it.
+  const state = isRegistered
+    ? "It is marked in your record, and you can withdraw at any time."
+    : "Registering marks this trial in your record, where you can find it again.";
+  const mismatch = !notEligible
+    ? ""
+    : mismatchesShown
+      ? " One or more of this trial's requirements does not match your profile — the ones listed above are marked."
+      : " One or more of this trial's requirements does not match your profile.";
+
+  return (
+    <section
+      className={`exact-panel exact-register${notEligible ? " is-warning" : ""}${
+        isRegistered ? " is-registered" : ""
+      }`}
+    >
+      <h2 className="exact-panel__title">{heading}</h2>
+      <p className="exact-register__text">
+        {state}
+        {mismatch} Nothing is sent to the trial's coordinators from here.
+      </p>
+      <button
+        type="button"
+        className={`exact-register__btn${isRegistered ? " is-on" : ""}`}
+        // `aria-disabled`, not `disabled`: a control that disables itself
+        // under the pointer is blurred by the browser, dropping a keyboard
+        // user to the document body in the middle of the action they just
+        // took. Announced here, enforced in one place — `TrialMatches`'s
+        // `write` drops a click for a trial whose write is still on the
+        // wire, and two PATCHes in flight are applied in whatever order
+        // they arrive.
+        aria-disabled={pending || undefined}
+        aria-busy={pending || undefined}
+        onClick={() => onToggle(!isRegistered)}
+      >
+        {pending ? "Saving…" : isRegistered ? "Withdraw" : "I'm Interested"}
+      </button>
+      {failed ? (
+        <p className="exact-register__error" role="alert">
+          Couldn't save that. Please try again.
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -125,6 +306,7 @@ export function TrialDetailPage({
   personId,
   filters,
   onBack,
+  trialState,
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
@@ -139,6 +321,12 @@ export function TrialDetailPage({
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
+
+  // CB's own rule (#4669), and the same field: the detail endpoint scores
+  // the trial with the conflict-aware matcher and can answer not_eligible.
+  const notEligible = data?.matchingType === "not_eligible";
+  const canRegister =
+    trialState?.onToggleRegistered != null && trialState.isRegistered !== undefined;
 
   return (
     <div className="exact-root exact-detail">
@@ -159,7 +347,30 @@ export function TrialDetailPage({
 
       {data ? (
         <>
-          <h1 className="exact-detail__title">{data.briefTitle}</h1>
+          <div className="exact-detail__head">
+            <h1 className="exact-detail__title">{data.briefTitle}</h1>
+            <FavoriteToggle
+              title={data.briefTitle}
+              isFavorite={trialState?.isFavorite}
+              onToggle={trialState?.onToggleFavorite}
+              busy={trialState?.favoriteBusy}
+            />
+          </div>
+
+          {/* Same three failures the list reports, and for the same reason:
+              painted from a server list, a rejected write and a rejected read
+              both look exactly like a control that does nothing. */}
+          {trialState?.favoritesUnavailable ? (
+            <p style={{ color: "var(--exact-color-not-eligible)" }}>
+              Couldn't load your favorites, so bookmarking is unavailable right
+              now.
+            </p>
+          ) : null}
+          {trialState?.favoriteFailed ? (
+            <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+              Couldn't update your favorites. Please try again.
+            </p>
+          ) : null}
 
           <div className="exact-detail__scores">
             <ScorePill score={data.matchScore} label="Matching Score" />
@@ -231,6 +442,27 @@ export function TrialDetailPage({
               )}
             </section>
           </div>
+
+          {canRegister ? (
+            <RegisterInterest
+              advancedStatus={trialState!.advancedStatus}
+              notEligible={notEligible}
+              mismatchesShown={eligibility.some(
+                (f) => f.matchingType === "not_matched",
+              )}
+              isRegistered={trialState!.isRegistered!}
+              pending={trialState?.registerPending ?? false}
+              failed={trialState?.registerFailed ?? false}
+              onToggle={trialState!.onToggleRegistered!}
+            />
+          ) : null}
+
+          {trialState?.registeredUnavailable ? (
+            <p style={{ color: "var(--exact-color-not-eligible)" }}>
+              Couldn't load whether you have registered interest in this trial,
+              so that control is unavailable right now.
+            </p>
+          ) : null}
         </>
       ) : null}
     </div>

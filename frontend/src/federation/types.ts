@@ -144,6 +144,12 @@ export interface TrialDetailResponse {
   participationCriteria?: string | null;
   matchScore: number | null;
   goodnessScore: number | null;
+  /** The verdict for THIS patient. Unlike the list — where the queryset drops
+   *  the not-eligibles before serializing — the detail endpoint returns the
+   *  trial by id without that filter and scores it with the conflict-aware
+   *  Python matcher, so `not_eligible` really does arrive here
+   *  (`TrialDetailSerializer.to_representation`). `null` without a patient. */
+  matchingType?: MatchingType | null;
   details: Record<string, TrialDetailField[]>;
   groupNames: GroupName[];
   [key: string]: unknown;

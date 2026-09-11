@@ -40,6 +40,43 @@ describe("reading the ids", () => {
   });
 });
 
+describe("the statuses a patient must not overwrite", () => {
+  const clientFor = (byStatus: Record<string, string[]>) => {
+    const get = vi.fn((_url: string, config?: { params?: Record<string, string> }) =>
+      Promise.resolve({
+        data: { trial_ids: byStatus[config?.params?.status ?? ""] ?? [], count: 0 },
+      }),
+    );
+    return { get } as unknown as AxiosInstance & { get: ReturnType<typeof vi.fn> };
+  };
+
+  it("asks for entered and completed separately, because ?status= takes one", async () => {
+    const client = clientFor({ entered: ["1"], completed: ["2"] });
+    const map = await adapter(client).listAdvancedEnrollments();
+    expect(map).toEqual({ "1": "entered", "2": "completed" });
+    expect(client.get.mock.calls.map((c) => c[1].params.status).sort()).toEqual([
+      "completed",
+      "entered",
+    ]);
+  });
+
+  it("keeps the two apart", async () => {
+    // They are not interchangeable on screen: one says the patient is
+    // taking part, the other that they took part.
+    const client = clientFor({ entered: [], completed: ["7"] });
+    expect(await adapter(client).listAdvancedEnrollments()).toEqual({
+      "7": "completed",
+    });
+  });
+
+  it("is empty when the patient has no advanced enrollment", async () => {
+    // `{}` and not a rejection: this decides whether a WRITING control is
+    // drawn, and "no advanced rows" is a real answer, not a failure.
+    const client = clientFor({});
+    expect(await adapter(client).listAdvancedEnrollments()).toEqual({});
+  });
+});
+
 describe("writing", () => {
   it("bookmarks through the upsert, which creates the row if needed", async () => {
     // A patient may bookmark a trial they were never enrolled in, and the

@@ -182,3 +182,61 @@ export const EyeIcon = () => (
     <circle cx="12" cy="12" r="3" />
   </svg>
 );
+
+/** The bookmark toggle, drawn identically on a card and on the detail page.
+ *
+ *  One component rather than the same JSX twice, because the interesting
+ *  part is not the star but the rule about when it may be drawn at all:
+ *  only with somewhere to write (`onToggle`) AND a known answer
+ *  (`isFavorite !== undefined`). An unknown answer renders nothing rather
+ *  than an empty star that would fill in under the reader's eye a moment
+ *  later — and "unknown" covers the read having failed, not just being slow.
+ *
+ *  Written twice, the two copies drift: the card had the rule and the detail
+ *  page, added later, would have had a star that flickered.
+ */
+export function FavoriteToggle({
+  title,
+  isFavorite,
+  onToggle,
+  busy,
+}: {
+  /** The trial's title, for the accessible name — "Add <title> to
+   *  favorites" reads usefully in a list of several. */
+  title: string;
+  isFavorite?: boolean;
+  onToggle?: (next: boolean) => void;
+  /** A write for this trial is on the wire — announced, not enforced.
+   *
+   *  Dropping the second click is the caller's job and happens in exactly
+   *  one place (`TrialMatches`'s `write`), because every path to a write
+   *  goes through it and a control that enforced it too would be the same
+   *  rule written twice: a mutation test showed each copy keeping the other
+   *  one's test green.
+   *
+   *  `aria-disabled` rather than `disabled` so the control is not blurred
+   *  out from under a keyboard user mid-action. */
+  busy?: boolean;
+}) {
+  if (!onToggle || isFavorite === undefined) return null;
+  return (
+    <button
+      type="button"
+      className={`exact-fav${isFavorite ? " is-on" : ""}`}
+      aria-pressed={isFavorite}
+      aria-disabled={busy || undefined}
+      aria-busy={busy || undefined}
+      aria-label={
+        isFavorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`
+      }
+      onClick={(e) => {
+        // The card is itself a click target; without this, bookmarking would
+        // also open the trial. Harmless where nothing is listening.
+        e.stopPropagation();
+        onToggle(!isFavorite);
+      }}
+    >
+      {isFavorite ? "★" : "☆"}
+    </button>
+  );
+}

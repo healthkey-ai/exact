@@ -12,9 +12,11 @@ import type { AxiosInstance } from "axios";
 import { vi } from "vitest";
 
 import { TrialMatches } from "../federation/TrialMatches";
+import type { AdvancedStatus, TrialStateAdapter } from "../federation/state";
 import type {
   FilterState,
   PatientInfo,
+  TrialDetailResponse,
   TrialMatch,
   TrialsResponse,
 } from "../federation/types";
@@ -35,11 +37,17 @@ export interface FakeApi {
   listRequests: () => RecordedRequest[];
   /** Requests for one trial's detail. */
   detailRequests: () => RecordedRequest[];
-  /** Make the next list response a 404, as DRF's paginator does for a page
-   *  past the end. */
+  /** Make the next response — whichever request arrives first, list or
+   *  detail — fail with this status. DRF's paginator answers a page past
+   *  the end with a 404, which is the case most tests here arm it for. */
   failNextWith: (status: number) => void;
   /** Replace what the list returns from now on. */
   setResponse: (response: Partial<TrialsResponse>) => void;
+  /** Override fields on every trial's detail response from now on.
+   *  Whatever is NOT overridden follows the trial actually asked for — so
+   *  the id and title track the row that was clicked unless a test pins
+   *  them deliberately. */
+  setDetail: (detail: Partial<TrialDetailResponse>) => void;
 }
 
 export function trial(id: number, overrides: Partial<TrialMatch> = {}): TrialMatch {
@@ -73,6 +81,31 @@ export function trial(id: number, overrides: Partial<TrialMatch> = {}): TrialMat
   };
 }
 
+/** A detail response, as `GET /trials/{id}/` returns it.
+ *
+ *  The fake used to answer a detail request with the LIST payload, which has
+ *  no `briefTitle` and no `details` — so the detail page rendered blank and
+ *  any test about what it shows would have been asserting against an empty
+ *  document. */
+export function trialDetail(
+  id: number,
+  overrides: Partial<TrialDetailResponse> = {},
+): TrialDetailResponse {
+  return {
+    trialId: id,
+    studyId: `NCT${id}`,
+    briefTitle: `Trial ${id}`,
+    officialTitle: `Trial ${id}`,
+    laySummary: "A summary.",
+    matchScore: 90,
+    goodnessScore: 80,
+    matchingType: "eligible",
+    details: { trialEligibilityAttributes: [] },
+    groupNames: [],
+    ...overrides,
+  };
+}
+
 const FORM_SETTINGS = {
   trialPurpose: { options: [{ value: "", label: "ALL" }, { value: "treatment", label: "Treatment" }] },
   trialType: {
@@ -100,6 +133,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     ...initial,
   };
   let failWith: number | null = null;
+  let detailOverrides: Partial<TrialDetailResponse> = {};
 
   const respond = (url: string, body?: unknown) => {
     if (url.includes("form-settings")) return Promise.resolve({ data: FORM_SETTINGS });
@@ -111,6 +145,15 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
           response: { status },
         }),
       );
+    }
+    // A single trial, not the list: `/trials/7/` and `/trials/7/match/`.
+    // Answered FOR THE ID ASKED FOR — one id-blind object would render
+    // "Trial 1" whichever row was clicked, so a page that fetched or showed
+    // the wrong trial would look right.
+    const detailMatch = /^\/trials\/(\d+)\//.exec(url);
+    if (detailMatch) {
+      const id = Number(detailMatch[1]);
+      return Promise.resolve({ data: { ...trialDetail(id), ...detailOverrides } });
     }
     // Honour `trial_ids` the way the server does. Returning the same rows
     // for a narrowed request makes the fake agree with any implementation,
@@ -159,7 +202,68 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     setResponse: (next: Partial<TrialsResponse>) => {
       response = { ...response, ...next };
     },
+    setDetail: (next: Partial<TrialDetailResponse>) => {
+      detailOverrides = { ...detailOverrides, ...next };
+    },
   };
+}
+
+export interface FakeState {
+  adapter: TrialStateAdapter;
+  /** The stored ids, readable after a write. They are the SAME arrays the
+   *  reads return, so a test can assert that a write actually landed rather
+   *  than only that a spy was called. */
+  favorites: string[];
+  registered: string[];
+  /** Reads, counted. A write is supposed to invalidate the list it changed,
+   *  and the only externally visible sign of that is a re-read. */
+  reads: { favorites: number; registered: number };
+}
+
+/** A working adapter, backed by two arrays.
+ *
+ *  Typed as `TrialStateAdapter` rather than cast to `never` at the call
+ *  site: the tests that went through `as never` would have kept compiling
+ *  if a method were renamed, which is exactly the change that should break
+ *  them. */
+export function fakeState(
+  initial: {
+    favorites?: string[];
+    registered?: string[];
+    /** Trials a study team has moved past "registered". */
+    advanced?: Record<string, AdvancedStatus>;
+    overrides?: Partial<TrialStateAdapter>;
+  } = {},
+): FakeState {
+  const favorites = [...(initial.favorites ?? [])];
+  const registered = [...(initial.registered ?? [])];
+  const reads = { favorites: 0, registered: 0 };
+
+  const set = (list: string[], id: string, on: boolean) => {
+    const at = list.indexOf(id);
+    if (on && at === -1) list.push(id);
+    if (!on && at !== -1) list.splice(at, 1);
+  };
+
+  const adapter: TrialStateAdapter = {
+    listFavoriteIds: vi.fn(async () => {
+      reads.favorites += 1;
+      return [...favorites];
+    }),
+    listRegisteredIds: vi.fn(async () => {
+      reads.registered += 1;
+      return [...registered];
+    }),
+    setFavorite: vi.fn(async (id: string, on: boolean) => set(favorites, id, on)),
+    setRegistered: vi.fn(async (id: string, on: boolean) => set(registered, id, on)),
+    listAdvancedEnrollments: vi.fn(async () => ({ ...(initial.advanced ?? {}) })),
+    getPreferences: vi.fn(async () => ({})),
+    savePreferences: vi.fn(async () => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+    ...initial.overrides,
+  };
+
+  return { adapter, favorites, registered, reads };
 }
 
 export function renderTrialMatches(
@@ -171,6 +275,7 @@ export function renderTrialMatches(
     // checking for every test, so a typo'd filter name compiled and the
     // test asserted nothing.
     initialFilters?: FilterState;
+    state?: TrialStateAdapter;
   } = {},
 ): RenderResult {
   const queryClient = new QueryClient({
@@ -195,6 +300,7 @@ export function renderTrialMatches(
         }
         personId={props.personId}
         initialFilters={props.initialFilters}
+        state={props.state}
       />
     </QueryClientProvider>,
   );

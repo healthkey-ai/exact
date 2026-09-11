@@ -18,7 +18,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TrialMatches } from "./TrialMatches";
-import { fakeApi, renderTrialMatches, trial } from "../test/renderTrialMatches";
+import type { TrialStateAdapter } from "./state";
+import { fakeApi, fakeState, renderTrialMatches, trial } from "../test/renderTrialMatches";
 
 const listed = (api: ReturnType<typeof fakeApi>) => api.listRequests();
 
@@ -473,52 +474,18 @@ describe("without a state adapter", () => {
 });
 
 describe("with a state adapter", () => {
-  const makeState = (favorites: string[] = [], registered: string[] = []) => {
-    const calls: { setFavorite: [string, boolean][] } = { setFavorite: [] };
-    const state = {
-      listFavoriteIds: vi.fn(async () => favorites),
-      listRegisteredIds: vi.fn(async () => registered),
-      setFavorite: vi.fn(async (id: string, on: boolean) => {
-        calls.setFavorite.push([id, on]);
-        if (on) favorites.push(id);
-        else favorites = favorites.filter((f) => f !== id);
-      }),
-      setRegistered: vi.fn(async () => undefined),
-      getPreferences: vi.fn(async () => ({})),
-      savePreferences: vi.fn(async () => undefined),
-      resetPreferences: vi.fn(async () => undefined),
-    };
-    return { state, calls };
-  };
-
-  const renderWithState = (api: ReturnType<typeof fakeApi>, state: unknown) => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
-    });
-    return render(
-      <QueryClientProvider client={queryClient}>
-        <TrialMatches
-          apiClient={api.client}
-          queryClient={queryClient}
-          patientInfo={{ disease: "multiple myeloma" }}
-          state={state as never}
-        />
-      </QueryClientProvider>,
-    );
-  };
-
   it("offers the Favorites and Registered tabs, counted from the adapter", async () => {
     const api = fakeApi();
-    const { state } = makeState(["1", "2"], ["3"]);
-    renderWithState(api, state);
+    const state = fakeState({ favorites: ["1", "2"], registered: ["3"] });
+    renderTrialMatches(api, { state: state.adapter });
     await screen.findByRole("button", { name: "Favorites, 2 trials" });
     await screen.findByRole("button", { name: "Registered, 1 trials" });
   });
 
   it("narrows the list by the saved ids when the tab is opened", async () => {
     const api = fakeApi();
-    const { state } = makeState(["11", "12"]);
-    renderWithState(api, state);
+    const state = fakeState({ favorites: ["11", "12"] });
+    renderTrialMatches(api, { state: state.adapter });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
@@ -533,8 +500,8 @@ describe("with a state adapter", () => {
     // The failure this guards: `[]` collapsing into "no filter" answers an
     // empty Favorites tab with the whole registry.
     const api = fakeApi();
-    const { state } = makeState([]);
-    renderWithState(api, state);
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
@@ -553,16 +520,10 @@ describe("with a state adapter", () => {
     const pending = new Promise<string[]>((resolve) => {
       release = resolve;
     });
-    const state = {
-      listFavoriteIds: vi.fn(() => pending),
-      listRegisteredIds: vi.fn(async () => []),
-      setFavorite: vi.fn(async () => undefined),
-      setRegistered: vi.fn(async () => undefined),
-      getPreferences: vi.fn(async () => ({})),
-      savePreferences: vi.fn(async () => undefined),
-      resetPreferences: vi.fn(async () => undefined),
-    };
-    renderWithState(api, state);
+    const state = fakeState({
+      overrides: { listFavoriteIds: vi.fn(() => pending) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
     await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
 
     const before = listed(api).length;
@@ -580,19 +541,24 @@ describe("with a state adapter", () => {
 
   it("bookmarks a trial from its card", async () => {
     const api = fakeApi();
-    const { state, calls } = makeState([]);
-    renderWithState(api, state);
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
-    await waitFor(() => expect(calls.setFavorite).toEqual([["1", true]]));
+    // The stored list, not only the spy: a call with the right arguments
+    // that the adapter drops on the floor is not a bookmark. And the call
+    // count with it — the store is idempotent, so a control that fires twice
+    // per click leaves the list looking exactly right.
+    await waitFor(() => expect(state.favorites).toEqual(["1"]));
+    expect(state.adapter.setFavorite).toHaveBeenCalledTimes(1);
+    expect(state.adapter.setFavorite).toHaveBeenCalledWith("1", true);
   });
 
   it("does not open the trial when the bookmark is clicked", async () => {
     // The card is itself a click target, so the toggle has to stop the event.
     const api = fakeApi();
-    const { state } = makeState([]);
-    renderWithState(api, state);
+    renderTrialMatches(api, { state: fakeState().adapter });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
@@ -601,32 +567,8 @@ describe("with a state adapter", () => {
 });
 
 describe("the state tabs under failure and transition", () => {
-  const stateWith = (overrides: Record<string, unknown>) => ({
-    listFavoriteIds: vi.fn(async () => ["11"]),
-    listRegisteredIds: vi.fn(async () => []),
-    setFavorite: vi.fn(async () => undefined),
-    setRegistered: vi.fn(async () => undefined),
-    getPreferences: vi.fn(async () => ({})),
-    savePreferences: vi.fn(async () => undefined),
-    resetPreferences: vi.fn(async () => undefined),
-    ...overrides,
-  });
-
-  const renderWith = (api: ReturnType<typeof fakeApi>, state: unknown) => {
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
-    });
-    return render(
-      <QueryClientProvider client={queryClient}>
-        <TrialMatches
-          apiClient={api.client}
-          queryClient={queryClient}
-          patientInfo={{ disease: "multiple myeloma" }}
-          state={state as never}
-        />
-      </QueryClientProvider>,
-    );
-  };
+  const stateWith = (overrides: Partial<TrialStateAdapter>) =>
+    fakeState({ favorites: ["11"], overrides }).adapter;
 
   it("returns to the first page when a state tab is opened", async () => {
     // `queryFilters.type` is undefined for the default tab AND for both
@@ -634,7 +576,7 @@ describe("the state tabs under failure and transition", () => {
     // hashed identically and the page never reset. A reader on page 2 asked
     // for page 2 of their bookmarks.
     const api = fakeApi({ count: 3, itemsTotalCount: 25 });
-    renderWith(api, stateWith({}));
+    renderTrialMatches(api, { state: stateWith({}) });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: "2" }));
@@ -656,7 +598,7 @@ describe("the state tabs under failure and transition", () => {
         throw new Error("promop unreachable");
       }),
     });
-    renderWith(api, state);
+    renderTrialMatches(api, { state });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
@@ -671,7 +613,9 @@ describe("the state tabs under failure and transition", () => {
     // list was painted under the Favorites heading — and on a second visit,
     // with the ids already cached, from the very first render.
     const api = fakeApi({ results: [trial(1)] });
-    renderWith(api, stateWith({ listFavoriteIds: vi.fn(async () => ["99"]) }));
+    renderTrialMatches(api, {
+      state: stateWith({ listFavoriteIds: vi.fn(async () => ["99"]) }),
+    });
     await screen.findByText("Trial 1");
 
     let leaked = false;
@@ -701,7 +645,7 @@ describe("the state tabs under failure and transition", () => {
         throw new Error("nope");
       }),
     });
-    renderWith(api, state);
+    renderTrialMatches(api, { state });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
@@ -715,15 +659,7 @@ describe("when the host takes the adapter away", () => {
     // lookup would list the default tab's trials while no tab in the bar is
     // marked current — the reader would be somewhere the UI cannot name.
     const api = fakeApi();
-    const state = {
-      listFavoriteIds: vi.fn(async () => ["1"]),
-      listRegisteredIds: vi.fn(async () => []),
-      setFavorite: vi.fn(async () => undefined),
-      setRegistered: vi.fn(async () => undefined),
-      getPreferences: vi.fn(async () => ({})),
-      savePreferences: vi.fn(async () => undefined),
-      resetPreferences: vi.fn(async () => undefined),
-    };
+    const state = fakeState({ favorites: ["1"] }).adapter;
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
     });
@@ -733,7 +669,7 @@ describe("when the host takes the adapter away", () => {
           apiClient={api.client}
           queryClient={queryClient}
           patientInfo={{ disease: "multiple myeloma" }}
-          state={withState ? (state as never) : undefined}
+          state={withState ? state : undefined}
         />
       </QueryClientProvider>
     );
@@ -1029,5 +965,722 @@ describe("the failure messages stand alone", () => {
     await screen.findByText(/can show at most 500 at a time/);
     await new Promise((r) => setTimeout(r, 40));
     expect(screen.queryByText("Loading trials…")).toBeNull();
+  });
+});
+
+describe("the controls on the detail page", () => {
+  // Both write through the same adapter the list uses, which is why they
+  // live in this suite rather than in one of their own: the thing that can
+  // go wrong is not the button, it is the button and the card disagreeing.
+  /** Open the nth listed trial. Exact name: the card is itself a
+   *  `role="button"` whose accessible name contains the inner button's
+   *  text, so a regex would match both. */
+  const openDetail = async (api: ReturnType<typeof fakeApi>, nth = 0) => {
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    const cards = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.click(cards[nth]);
+    await screen.findByText("Back to all trials");
+  };
+
+  it("draws the bookmark already on, for a trial that is bookmarked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
+    await openDetail(api);
+
+    const star = await screen.findByRole("button", {
+      name: "Remove Trial 1 from favorites",
+    });
+    expect(star).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("bookmarks from the detail page, through the same adapter as the card", async () => {
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Add Trial 1 to favorites" }),
+    );
+    await waitFor(() => expect(state.favorites).toEqual(["1"]));
+  });
+
+  it("draws no bookmark while the favorites are unknown", async () => {
+    // The rule the card and the detail page have to share — one component
+    // now, because written twice they drift, and the second copy is the one
+    // that shows an empty star that fills itself in a moment later.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        listFavoriteIds: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    // Not on the card…
+    expect(screen.queryByRole("button", { name: /favorites$/ })).toBeNull();
+
+    await openDetail(api);
+    // …and not on the detail page either, which says why instead.
+    expect(screen.queryByRole("button", { name: /favorites$/ })).toBeNull();
+    await screen.findByText(/bookmarking is unavailable/);
+  });
+
+  it("registers interest, and withdraws it on a second click", async () => {
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await waitFor(() => expect(state.registered).toEqual(["1"]));
+
+    // The label changes to the act, not to the state: a button that still
+    // said "I'm Interested" would be a second registration to the reader,
+    // and one that said "Registered" would withdraw without saying so.
+    await userEvent.click(await screen.findByRole("button", { name: "Withdraw" }));
+    await waitFor(() => expect(state.registered).toEqual([]));
+  });
+
+  it("re-reads the registered ids after a write, not the favorites", async () => {
+    // `useSetTrialState` takes the list it invalidates as a parameter, so a
+    // copy-paste of "favorites" there would leave the Registered tab and its
+    // count showing the state from before the click, with nothing on screen
+    // to suggest anything was stale.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+    const before = state.reads.registered;
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await waitFor(() => expect(state.reads.registered).toBeGreaterThan(before));
+  });
+
+  it("refuses a second click while the write is on the wire", async () => {
+    // Two PATCHes in flight are applied in whatever order they arrive, so
+    // the older one can be the one that sticks — leaving the button
+    // disagreeing with the record behind it.
+    const api = fakeApi();
+    let release: () => void = () => {};
+    const state = fakeState({
+      overrides: {
+        setRegistered: vi.fn(
+          () => new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+        ),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const button = await screen.findByRole("button", { name: "I'm Interested" });
+    await userEvent.click(button);
+    const saving = await screen.findByRole("button", { name: "Saving…" });
+    // `aria-disabled`, not `disabled`: the browser blurs a control that
+    // disables itself under the pointer, which drops a keyboard user to the
+    // document body in the middle of the action they just took.
+    expect(saving).toHaveAttribute("aria-disabled", "true");
+    expect(saving).not.toBeDisabled();
+    await userEvent.click(saving);
+    expect(state.adapter.setRegistered).toHaveBeenCalledTimes(1);
+
+    release();
+  });
+
+  it("says so when the registration cannot be saved", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        setRegistered: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    // The text, not just `role="alert"`: both failure lines on this page are
+    // alerts, so the role alone would pass while a failed registration
+    // reported a favorites problem.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Couldn't save that");
+  });
+
+  it("draws no interest control when it cannot tell whether interest was registered", async () => {
+    // Drawn against an unknown answer it would open on "I'm Interested" for
+    // someone who has already registered, and a click would then withdraw
+    // the registration it appeared to be making.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        listRegisteredIds: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+    await screen.findByText(/that control is unavailable/);
+  });
+
+  it("does not offer to register a trial the study team has already advanced", async () => {
+    // `listRegisteredIds` asks for `status=registered` exactly, so a patient
+    // a coordinator moved to `entered` reads back as NOT registered — and a
+    // button saying "I'm Interested" writes `registered` over that status
+    // when clicked. The control becomes a statement instead.
+    const api = fakeApi();
+    const state = fakeState({ advanced: { "1": "entered" } });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await screen.findByText(/You are recorded as taking part in this trial/);
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
+    expect(state.adapter.setRegistered).not.toHaveBeenCalled();
+  });
+
+  it("says completed when that is what the record says", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, {
+      state: fakeState({ advanced: { "1": "completed" } }).adapter,
+    });
+    await openDetail(api);
+
+    await screen.findByText(/recorded as completed/);
+  });
+
+  it("draws no interest control until it knows whether the trial was advanced", async () => {
+    // Drawn against an unknown answer it is exactly the control that
+    // overwrites the advanced status.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { listAdvancedEnrollments: vi.fn(() => new Promise<never>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await screen.findByText("Trial 1");
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+  });
+
+  it("says so when the advanced statuses cannot be read", async () => {
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        listAdvancedEnrollments: vi.fn(async () => {
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await screen.findByText(/that control is unavailable/);
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+  });
+
+  it("withholds the interest control from an adapter that cannot answer", async () => {
+    // The method is required by the interface, but a host may be plain
+    // JavaScript. Unchecked, it throws a TypeError inside the query — the
+    // right outcome by a confusing route, and one retry-shaped detour from
+    // a control that should never have been offered.
+    const state = fakeState();
+    delete (state.adapter as Partial<typeof state.adapter>).listAdvancedEnrollments;
+    const api = fakeApi();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+    await screen.findByText(/that control is unavailable/);
+    // The bookmark does not depend on it and is still offered.
+    await screen.findByRole("button", { name: "Add Trial 1 to favorites" });
+  });
+
+  it("offers no controls at all when the trial itself could not be loaded", async () => {
+    // Reachable, and until the harness could fail a detail request it was
+    // unreachable from this suite: a bookmark or an interest button drawn
+    // beside "Failed to load trial" would be acting on nothing.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    api.failNextWith(500);
+    await userEvent.click(await screen.findByRole("button", { name: "View Trial" }));
+    await screen.findByText(/Failed to load trial/);
+    expect(screen.queryByRole("button", { name: /favorites$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+  });
+
+  it("offers neither control without an adapter", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await openDetail(api);
+
+    expect(screen.queryByRole("button", { name: /favorites$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+  });
+
+  it("un-bookmarks, and not only bookmarks", async () => {
+    // The star sends `!isFavorite`, and nothing in the suite exercised the
+    // false half: a control hard-wired to `true` — on both surfaces, since
+    // they now share one component — passed every other test here.
+    const api = fakeApi();
+    const state = fakeState({ favorites: ["1"] });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Remove Trial 1 from favorites" }),
+    );
+    await waitFor(() => expect(state.favorites).toEqual([]));
+    expect(state.adapter.setFavorite).toHaveBeenCalledWith("1", false);
+  });
+
+  it("asks for the trial that was clicked", async () => {
+    const api = fakeApi({ results: [trial(1), trial(7)] });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const cards = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.click(cards[1]);
+    await waitFor(() => expect(api.detailRequests().length).toBe(1));
+    expect(api.detailRequests()[0].url).toContain("/trials/7/");
+    await screen.findByText("Trial 7");
+  });
+
+  it("keeps a failed write on the trial it failed for", async () => {
+    // A mutation's error survives until the next `mutate()`, and this
+    // component does not unmount when the reader opens a different trial —
+    // so the failure printed itself inside the next trial's card, which
+    // names a trial and so reads as a statement about that one.
+    const api = fakeApi({ results: [trial(1), trial(7)] });
+    const state = fakeState({
+      overrides: {
+        setRegistered: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await screen.findByRole("alert");
+
+    await userEvent.click(screen.getByText("Back to all trials"));
+    const cards = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.click(cards[1]);
+    await screen.findByText("Trial 7");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not read as a failure between the write and the re-read", async () => {
+    // Every control here is painted from the id list, and the write
+    // succeeds before that list has been re-read. Left to the refetch, the
+    // reader saw "Saving…" turn back into "I'm Interested" — which reads as
+    // "it didn't take" and invites the second click the pending guard
+    // exists to stop.
+    const api = fakeApi();
+    let release: (ids: string[]) => void = () => {};
+    let reads = 0;
+    const state = fakeState({
+      overrides: {
+        listRegisteredIds: vi.fn(() => {
+          reads += 1;
+          if (reads === 1) return Promise.resolve([]);
+          // The reconciling read never comes back during this test.
+          return new Promise<string[]>((resolve) => {
+            release = resolve;
+          });
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await waitFor(() => expect(reads).toBe(2));
+    // Answered from the patched list, without waiting for the server.
+    await screen.findByRole("button", { name: "Withdraw" });
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    release(["1"]);
+    await screen.findByRole("button", { name: "Withdraw" });
+  });
+
+  it("does not hold the button open for the round trip either", async () => {
+    // The other way to close that window is to keep the mutation pending
+    // until the re-read returns. It costs the whole round trip — with the
+    // host's default retries, seconds of a disabled button after the write
+    // has already succeeded.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        listRegisteredIds: vi.fn((() => {
+          let n = 0;
+          return () => {
+            n += 1;
+            return n === 1
+              ? Promise.resolve([] as string[])
+              : new Promise<string[]>(() => {});
+          };
+        })()),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    const button = await screen.findByRole("button", { name: "Withdraw" });
+    expect(button).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("marks a mismatched value for readers who do not see the red", async () => {
+    // The card below points at the mismatches above, and they were marked
+    // in colour and nowhere else.
+    const api = fakeApi();
+    api.setDetail({
+      matchingType: "not_eligible",
+      details: {
+        trialEligibilityAttributes: [
+          {
+            name: "age",
+            label: "Age",
+            type: "number",
+            value: 18,
+            uvalue: 12,
+            units: "years",
+            matchingType: "not_matched",
+          },
+        ],
+      },
+    });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    const marker = await screen.findByLabelText("does not match");
+    await screen.findByText(/the ones listed above are marked/);
+    // After the units, where the matched cell puts its tick. Before them it
+    // split the value from its unit: "12 ✕ years", read out as
+    // "12, does not match, years".
+    expect(marker.previousElementSibling).toHaveTextContent("years");
+  });
+
+  it("keeps the control when a REFETCH fails over ids it already has", async () => {
+    // A query that errors keeps the data it had. Read as "unavailable",
+    // that printed "…so that control is unavailable right now" directly
+    // underneath a control that was rendered, populated and working.
+    const api = fakeApi();
+    let reads = 0;
+    const state = fakeState({
+      overrides: {
+        listRegisteredIds: vi.fn(async () => {
+          reads += 1;
+          if (reads === 1) return [];
+          throw new Error("promop unreachable");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    // The write patches the cache and invalidates it; the re-read rejects.
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+
+    await screen.findByRole("button", { name: "Withdraw" });
+    expect(screen.queryByText(/that control is unavailable/)).toBeNull();
+  });
+
+  it("paints the ineligibility warning as a warning, not as an invitation", async () => {
+    // It arrived in the same success green as "Interested in this trial?".
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    const { container } = renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await screen.findByText(/You may not meet this trial's eligibility criteria/);
+    expect(container.querySelector(".exact-register")).toHaveClass("is-warning");
+  });
+
+  it("keeps focus on the button it just disabled", async () => {
+    // The reason it is `aria-disabled` and not `disabled`: browsers blur a
+    // control that becomes disabled, dropping a keyboard user to the
+    // document body in the middle of the action they just took.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { setRegistered: vi.fn(() => new Promise<void>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    expect(await screen.findByRole("button", { name: "Saving…" })).toHaveFocus();
+  });
+
+  it("does not disable a different trial's button while a write is in flight", async () => {
+    const api = fakeApi({ results: [trial(1), trial(7)] });
+    const state = fakeState({
+      overrides: { setRegistered: vi.fn(() => new Promise<void>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await screen.findByRole("button", { name: "Saving…" });
+
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await openDetail(api, 1);
+    await screen.findByText("Trial 7");
+    await screen.findByRole("button", { name: "I'm Interested" });
+  });
+
+  it("does not carry one patient's failed write into the next patient", async () => {
+    // The same shape as the cache-key bug: a host can swap the patient at
+    // any moment, including while a write is on the wire, and a record that
+    // is not keyed to them becomes the next reader's error message.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        setFavorite: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (patient: Record<string, unknown>) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={patient}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui({ disease: "mm", id: 1 }));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
+    await screen.findByText(/Couldn't update your favorites/);
+
+    view.rerender(ui({ disease: "mm", id: 2 }));
+    await waitFor(() =>
+      expect(screen.queryByText(/Couldn't update your favorites/)).toBeNull(),
+    );
+  });
+
+  it("does not let a write that lands after the swap reach the new patient", async () => {
+    // The other half of the same rule: the record is dropped when the
+    // patient changes, and a callback arriving afterwards carries the key it
+    // was made under, finds it stale, and writes nothing. Dropping alone
+    // would let this rejection land in the new patient's record.
+    const api = fakeApi();
+    let reject: (e: Error) => void = () => {};
+    const state = fakeState({
+      overrides: {
+        setFavorite: vi.fn(
+          () => new Promise<void>((_resolve, r) => {
+            reject = r;
+          }),
+        ),
+      },
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, refetchOnWindowFocus: false },
+        mutations: { retry: false },
+      },
+    });
+    const ui = (patient: Record<string, unknown>) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={patient}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui({ disease: "mm", id: 1 }));
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
+
+    view.rerender(ui({ disease: "mm", id: 2 }));
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(1));
+
+    reject(new Error("nope"));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByText(/Couldn't update your favorites/)).toBeNull();
+  });
+
+  it("keeps trial A's button closed while A's write is still in flight", async () => {
+    // `useMutation` answers only for the LAST write submitted, so starting
+    // one for B made A's look settled. Reopen A and its button was live
+    // again with A's PATCH still on the wire — two writes in flight for one
+    // trial, applied in whatever order they arrive.
+    const api = fakeApi({ results: [trial(1), trial(7)] });
+    const state = fakeState({
+      overrides: { setRegistered: vi.fn(() => new Promise<void>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+
+    await openDetail(api, 0);
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await screen.findByRole("button", { name: "Saving…" });
+
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await openDetail(api, 1);
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await screen.findByRole("button", { name: "Saving…" });
+
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await openDetail(api, 0);
+    await screen.findByText("Trial 1");
+    // Still A's write, still unfinished.
+    const button = await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(button);
+    expect(state.adapter.setRegistered).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not send two bookmark writes for one trial at once", async () => {
+    // The star now sends the opposite of what the patched cache says, so a
+    // second click while the first is on the wire carries the opposite
+    // value — and the server applies whichever arrives last.
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: { setFavorite: vi.fn(() => new Promise<void>(() => {})) },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const star = await screen.findByRole("button", { name: "Add Trial 1 to favorites" });
+    await userEvent.click(star);
+    await waitFor(() => expect(star).toHaveAttribute("aria-busy", "true"));
+    await userEvent.click(star);
+    expect(state.adapter.setFavorite).toHaveBeenCalledTimes(1);
+  });
+
+  it("remembers a failed bookmark for the trial it happened on", async () => {
+    // A rejection that lands after the reader has moved on has no trial on
+    // screen to belong to, and reading the failure off the shared mutation
+    // meant the next click on any trial discarded it. Both end with a
+    // patient who was never told the write did not take.
+    const api = fakeApi({ results: [trial(1), trial(7)] });
+    const state = fakeState({
+      overrides: {
+        setFavorite: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Add Trial 1 to favorites" }),
+    );
+    await screen.findByText(/Couldn't update your favorites/);
+
+    // Not on the next trial…
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await openDetail(api, 1);
+    await screen.findByText("Trial 7");
+    expect(screen.queryByText(/Couldn't update your favorites/)).toBeNull();
+
+    // …and still there on the one it happened on.
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await openDetail(api, 0);
+    await screen.findByText(/Couldn't update your favorites/);
+  });
+
+  it("says on the list that a registration could not be saved", async () => {
+    // The reader may be back on the list by the time the PATCH is refused,
+    // and until now nothing there mentioned registrations at all — so the
+    // last thing they ever saw was "Saving…".
+    const api = fakeApi();
+    const state = fakeState({
+      overrides: {
+        setRegistered: vi.fn(async () => {
+          throw new Error("nope");
+        }),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await screen.findByText(/Couldn't save that/);
+
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await screen.findByText(/Couldn't save your interest in a trial/);
+  });
+
+  it("does not point at mismatches the table is not showing", async () => {
+    // `matchingType` is decided over every mapped attribute; the table is a
+    // filtered view that drops whole groups, blank values and select values
+    // absent from their own options. It can be empty — as it is here, which
+    // is the response the endpoint really returns — while the verdict is
+    // not_eligible. "The mismatches are marked above" then points at
+    // "No eligibility attributes to show for this trial."
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await screen.findByText(
+      /One or more of this trial's requirements does not match your profile\./,
+    );
+    expect(screen.queryByText(/marked above/)).toBeNull();
+  });
+
+  it("goes on saying the profile does not match after registering", async () => {
+    // CB #4669's point survives the click: the heading becomes a receipt,
+    // and the reason they may not be eligible must not disappear with it.
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    renderTrialMatches(api, { state: fakeState({ registered: ["1"] }).adapter });
+    await openDetail(api);
+
+    await screen.findByText(/You registered interest in this trial/);
+    await screen.findByText(
+      /One or more of this trial's requirements does not match your profile/,
+    );
+  });
+
+  it("does not claim the reader may be eligible when the matcher says otherwise", async () => {
+    // CB #4669, and the same field: unlike the list — where the queryset
+    // drops the not-eligibles before serializing — the detail endpoint
+    // scores the trial by id and really does answer not_eligible.
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible", matchScore: 0 });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await screen.findByText(/You may not meet this trial's eligibility criteria/);
+    // Still offered: CB lets someone register against a mismatch too.
+    await screen.findByRole("button", { name: "I'm Interested" });
+  });
+
+  it("promises nothing it does not do", async () => {
+    // CB's copy says a study coordinator will reach out. Here nothing is
+    // notified — registering writes a status and stops — so the card says
+    // so. This test exists to fail if CB's wording is ever pasted across.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await screen.findByText(/Nothing is sent to the trial's coordinators/);
+    expect(screen.queryByText(/coordinator will reach out/i)).toBeNull();
   });
 });
