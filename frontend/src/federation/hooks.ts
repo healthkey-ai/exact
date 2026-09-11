@@ -225,11 +225,17 @@ export function useTrialDetail({
 export function useFormSettings(
   apiClient: AxiosInstance,
   diseaseCode?: string,
+  // Off by default at the call site's discretion: the only caller today wants
+  // the option TITLES for a panel that most trials never render, and fetching
+  // a catalog for every detail view to label nothing would be a request per
+  // trial for no reader's benefit.
+  enabled = true,
 ): UseQueryResult<Record<string, { options: { value: string; label: string }[] }>> {
   return useQuery({
     queryKey: ["exact-form-settings", diseaseCode ?? null],
     queryFn: () => fetchFormSettings(apiClient, diseaseCode),
     staleTime: 5 * 60_000,
+    enabled,
   });
 }
 

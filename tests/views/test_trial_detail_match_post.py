@@ -68,3 +68,56 @@ class TestTrialDetailMatchPost:
         assert response.data['matchScore'] is not None, (
             'matchScore must be annotated on the detail path, not null'
         )
+
+    def test_response_carries_the_high_risk_mcl_breakdown(self, authed_client):
+        """The federated detail page renders a panel from this key, so its
+        shape is a contract now rather than an internal detail.
+
+        Per-criterion status is reported in ELIGIBILITY terms — on an excluded
+        criterion, confirmed absence is `matched`. The panel inverts the
+        phrasing for the reader; what must not drift is which side reports
+        which.
+        """
+        trial = TrialFactory(
+            disease='mantle cell lymphoma',
+            high_risk_mcl_criteria_required=['tp53_mutation', 'del17p'],
+            high_risk_mcl_criteria_excluded=['blastoid'],
+            high_risk_mcl_criteria_min_count=1,
+        )
+        response = authed_client.post(
+            f'/trials/{trial.id}/match/',
+            {'patient_info': {
+                'disease': 'mantle cell lymphoma',
+                'molecular_markers': 'tp53Mutation',
+                'morphologic_variant': 'classic',
+            }},
+            format='json',
+        )
+        assert response.status_code == 200
+        breakdown = response.data['highRiskMclCriteriaBreakdown']
+        assert breakdown['aggregate'] == 'matched'
+        assert breakdown['minCount'] == 1
+        assert breakdown['matchedCount'] == 1
+        assert breakdown['required'] == [
+            {'code': 'tp53_mutation', 'status': 'matched'},
+            # `unknown`, not `not_matched`: this payload carries no
+            # cytogenetics at all, so del(17p) was never ruled out — it was
+            # never looked at. The panel says so rather than showing an
+            # absence the patient could not have known about.
+            {'code': 'del17p', 'status': 'unknown'},
+        ]
+        # Clear of the exclusion, which is the good outcome and reads `matched`.
+        assert breakdown['excluded'] == [{'code': 'blastoid', 'status': 'matched'}]
+        assert breakdown['sufficientAny'] == []
+
+    def test_no_breakdown_for_a_trial_that_gates_on_no_criteria(self, authed_client):
+        """Null, not an empty skeleton — the panel keys off its absence, and an
+        empty one would render a heading over nothing for every MM trial."""
+        trial = TrialFactory(disease='Multiple Myeloma')
+        response = authed_client.post(
+            f'/trials/{trial.id}/match/',
+            {'patient_info': {'disease': 'multiple myeloma'}},
+            format='json',
+        )
+        assert response.status_code == 200
+        assert response.data['highRiskMclCriteriaBreakdown'] is None

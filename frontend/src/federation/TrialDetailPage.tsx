@@ -14,9 +14,10 @@
 //
 // Still out of scope: editing a patient value (CB's pencil controls, phase 4)
 // and CB's share / Standard-of-Care buttons.
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 import {
+  CheckIcon,
   FavoriteToggle,
   Field,
   FieldTooltip,
@@ -25,7 +26,8 @@ import {
   asText,
   renderMd,
 } from "./bits";
-import { useTrialDetail } from "./hooks";
+import { HighRiskMclPanel } from "./HighRiskMclPanel";
+import { useFormSettings, useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import { FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
@@ -98,22 +100,6 @@ const BackArrow = () => (
   </svg>
 );
 
-const CheckIcon = () => (
-  <svg
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M21.801 10A10 10 0 1 1 17 3.335" />
-    <path d="m9 11 3 3L22 4" />
-  </svg>
-);
 
 /** Resolve a field value to its display label, honouring select options.
  *  Option values may be numbers while the field value arrives as a string
@@ -326,6 +312,33 @@ export function TrialDetailPage({
   const query = useTrialDetail({ apiClient, trialId, patientInfo, personId, filters });
   const data = query.data;
 
+  // Only MCL trials that gate on the criteria carry one; for everything else
+  // the server sends null and none of the below runs.
+  const mcl = data?.highRiskMclCriteriaBreakdown ?? null;
+  const formSettings = useFormSettings(
+    apiClient,
+    typeof patientInfo?.disease === "string" ? patientInfo.disease : undefined,
+    mcl != null,
+  );
+  const mclTitle = useMemo(() => {
+    const byCode = new Map<string, string>();
+    for (const o of formSettings.data?.highRiskMclCriteria?.options ?? []) {
+      byCode.set(String(o.value), o.label);
+    }
+    // Falls back to the CODE, not to a prettified version of it. `tp53_mutation`
+    // is at least honest about being an identifier; "Tp53 Mutation" reads as a
+    // clinical label the catalog never wrote, and the catalog is the one place
+    // allowed to name these.
+    return (code: string) => byCode.get(code) ?? code;
+  }, [formSettings.data]);
+  // Held until the catalog answers — success or failure. The fetch is gated on
+  // the breakdown having already arrived, so without this the code fallback is
+  // the NORMAL first paint rather than the edge case it was written for: every
+  // reader would see `tp53_mutation` for one round-trip before it became
+  // "TP53 mutation". A failed fetch still settles, so the fallback keeps its
+  // intended meaning — the catalog does not name this code.
+  const mclNamesSettled = formSettings.isFetched;
+
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
@@ -451,6 +464,10 @@ export function TrialDetailPage({
               )}
             </section>
           </div>
+
+          {mcl && mclNamesSettled ? (
+            <HighRiskMclPanel breakdown={mcl} titleOf={mclTitle} />
+          ) : null}
 
           {canRegister ? (
             <RegisterInterest
