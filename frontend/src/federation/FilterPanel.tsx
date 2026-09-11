@@ -195,7 +195,12 @@ export function FilterPanel({
               min={0}
               className="exact-filter__input"
               placeholder="Any"
-              value={filters.distance ?? ""}
+              // An unusable value renders as empty rather than being echoed
+              // back: a host-supplied `-1` would otherwise sit visible in the
+              // box while the badge counted nothing, the units select stayed
+              // disabled and nothing went on the wire. Empty is what "no
+              // distance filter" actually looks like.
+              value={isActiveDistance(filters.distance) ? filters.distance : ""}
               onChange={(e) => {
                 // `> 0`, not just "is a number": the backend gates on
                 // `if study_info.distance:`, so a zero radius applies no

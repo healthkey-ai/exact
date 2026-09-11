@@ -162,7 +162,9 @@ describe("countryFor", () => {
   });
 
   it("is what the baseline uses, so the two cannot disagree", () => {
-    for (const patient of [undefined, "DE"]) {
+    // "" included deliberately: `??` would have kept it here and the
+    // baseline's own guard would have dropped it.
+    for (const patient of [undefined, "", "DE"]) {
       for (const initial of [undefined, {}, { country: "US" }]) {
         expect(baselineFilters(patient, initial).country).toBe(
           countryFor(patient, initial),

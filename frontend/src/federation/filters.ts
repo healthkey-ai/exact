@@ -45,12 +45,6 @@ const PANEL_FIELDS = [
 
 export type PanelField = (typeof PANEL_FIELDS)[number];
 
-/** The state the panel resets to.
- *
- *  Not simply `{}`: `country` is seeded from the patient's own profile, so
- *  clearing it would silently widen the search to every country rather than
- *  restoring the default. The baseline carries whatever the patient implies.
- */
 /** Which country the list should be scoped to.
  *
  *  The patient's own wins, because it is the more specific fact — but only
@@ -64,9 +58,21 @@ export function countryFor(
   patientCountry: string | undefined,
   initialFilters?: FilterState,
 ): string | undefined {
-  return patientCountry ?? initialFilters?.country;
+  // `||`, not `??`: an empty string is not a country. With `??` this kept
+  // `""` while the baseline's own `if (country)` dropped it — the two
+  // answers diverging again, on the one helper whose point is that they
+  // cannot. Unreachable from the component, which trims and normalizes
+  // first, but this is exported.
+  return patientCountry || initialFilters?.country;
 }
 
+/** The state the panel resets to.
+ *
+ *  Not simply `{}`: `country` is seeded from the patient's own profile, so
+ *  clearing it would silently widen the search to every country rather than
+ *  restoring the default, and a host's own initial filters are part of the
+ *  default too. The baseline carries whatever the patient and the host imply.
+ */
 export function baselineFilters(
   patientCountry: string | undefined,
   initialFilters?: FilterState,
