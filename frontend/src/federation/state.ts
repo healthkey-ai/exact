@@ -56,8 +56,10 @@ export interface TrialStateAdapter {
   getPreferences(): Promise<FilterState>;
   /** Store the filters. */
   savePreferences(filters: FilterState): Promise<void>;
-  /** Clear them. Deliberately not `savePreferences({})`: the server merges
-   *  a partial update, so "reset" has to be its own call. */
+  /** Clear them. Its own call rather than `savePreferences({})` because the
+   *  two are different requests on the PROMOP side — `reset` empties the row,
+   *  while `upsert` with `{}` is a partial update that leaves `preferences`
+   *  untouched. */
   resetPreferences(): Promise<void>;
 }
 

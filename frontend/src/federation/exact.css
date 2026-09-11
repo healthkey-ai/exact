@@ -851,6 +851,14 @@
  * out of Tailwind utilities and shadcn controls. Native controls here, so no
  * component library follows the remote into its host.
  * ------------------------------------------------------------------------- */
+/* "Shown here but not saved" — the filters work, the storing of them did not.
+   A status rather than an alert: nothing the reader has to act on. */
+.exact-root .exact-list__save-warning {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-warning-700);
+}
+
 .exact-root .exact-filters__trigger {
   display: inline-flex;
   align-items: center;

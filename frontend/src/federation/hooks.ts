@@ -10,7 +10,7 @@ import {
 import type { AxiosInstance } from "axios";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   PreferenceWriter,
@@ -257,8 +257,15 @@ export function useFormSettings(
 export function useSavedFilters(
   state: TrialStateAdapter | undefined,
   key: string,
-  onLoad: (saved: FilterState) => void,
-): { persist: (filters: FilterState) => void; reset: () => void } {
+  /** `applied` is false when the reader edited while the load was in flight:
+   *  take the keys, leave the values. */
+  onLoad: (saved: FilterState, applied: boolean) => void,
+): {
+  persist: (filters: FilterState) => void;
+  reset: () => void;
+  /** The last write did not land. */
+  failed: boolean;
+} {
   const hasAdapter = state != null;
   // Read through a ref so the memo below does not rebuild on every render —
   // a host writing `state={createPromopState(...)}` inline hands over a new
@@ -297,7 +304,31 @@ export function useSavedFilters(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAdapter, key]);
 
-  const writer = useMemo(() => new PreferenceWriter(transport), [transport]);
+  // A failed write is not a reason to fail the search, but it is a reason to
+  // say something: the transport REFUSES to write when it cannot read what it
+  // would be replacing, and without this the reader's edit simply vanishes —
+  // they come back tomorrow and their filters are last week's.
+  const [failed, setFailed] = useState(false);
+  // Which writer's verdict the message belongs to. A patient switch builds a
+  // new one while the old one's flush is still in the air, and that flush
+  // lands afterwards — under the new patient, about the previous one's row.
+  const writerRef = useRef<PreferenceWriter | null>(null);
+  const writer = useMemo(() => {
+    const built: PreferenceWriter = new PreferenceWriter(transport, {
+      onError: () => {
+        if (writerRef.current === built) setFailed(true);
+      },
+      // Cleared when a write LANDS, not when one is issued. Writes queue, so
+      // an edit made while a failing one is in flight would clear the message
+      // optimistically and then never restore it — or, the other way round,
+      // leave it standing over filters that did in fact save.
+      onSuccess: () => {
+        if (writerRef.current === built) setFailed(false);
+      },
+    });
+    writerRef.current = built;
+    return built;
+  }, [transport]);
 
   const onLoadRef = useRef(onLoad);
   onLoadRef.current = onLoad;
@@ -310,6 +341,9 @@ export function useSavedFilters(
   const editedRef = useRef(false);
   useEffect(() => {
     editedRef.current = false;
+    // The message described the PREVIOUS patient's row. Left standing it reads
+    // as a failure to save this patient's filters, which nobody has tried yet.
+    setFailed(false);
   }, [writer]);
 
   useEffect(() => {
@@ -317,22 +351,20 @@ export function useSavedFilters(
     void transport
       .get()
       .then((saved) => {
-        // Either way the load is NOT applied, which leaves the writer holding
-        // a set that is a strict SUBSET of what is stored — the reader's one
-        // edit. Telling the transport to forget what it read keeps the next
-        // save additive; without it that save reads as "these are all the
-        // filters there are" and deletes saved filters the reader never even
-        // saw. `cancelled` needs it just as much as an edit does: an unmount
-        // runs the flush against this same transport, and the read it is
-        // queued behind seeds the transport on its way through.
-        if (cancelled || editedRef.current) {
-          transport.forget();
-          return;
-        }
+        if (cancelled) return;
         // Nothing saved is the common case and must not clobber the filters
         // the host seeded, so an empty object is treated as "no opinion".
         if (!saved || Object.keys(saved).length === 0) return;
-        onLoadRef.current(saved);
+        // `applied: false` when the reader edited while this was in flight:
+        // the VALUES are dropped, because merging them over an edit visibly
+        // reverts what they just did. The KEYS are reported either way, and
+        // that distinction is load-bearing. Ownership is what makes a cleared
+        // filter clearable — `userOwnedFilters` only tombstones a field it
+        // owns — and the transport has already read these keys, so without
+        // ownership they would be in every payload with no way to remove
+        // them. The reader would clear a filter and find it again on the next
+        // mount, with only Reset able to shift it.
+        onLoadRef.current(saved, !editedRef.current);
       })
       .catch(() => {
         // Unreachable saved filters are not a reason to fail the search.
@@ -381,7 +413,8 @@ export function useSavedFilters(
         editedRef.current = true;
         writer.reset();
       },
+      failed,
     }),
-    [writer],
+    [writer, failed],
   );
 }
