@@ -405,11 +405,85 @@ class TrialAttributes:
                 out[field['name']] = field
 
         therapies = self.therapies(subform_attrs)
-        return {
+        return self.with_patient_field_names({
             **out,
             **computed_fields,
             **therapies,
-        }
+        })
+
+    @staticmethod
+    def with_patient_field_names(fields):
+        """Stamp every row with the patient attribute it is about, in snake_case.
+
+        `ufield` is camelCase for the UI, and a client that wants to WRITE
+        the value addresses PROMOP, whose API is snake_case. Deriving the
+        name client-side is a trap: PROMOP answers an unknown field with 200
+        and no change (its `partial_update` dropped the old 405 on purpose),
+        so a name converted wrongly is a save that appears to work. (That is
+        PROMOP's `dev`; its `main` still answers 405, which is the older and
+        louder behaviour — a client must not rely on either.)
+
+        The derivation is not safe even when it looks it: `p53_ihc`
+        camelizes to `p53Ihc`, and a standard snake-caser turns that back
+        into `p_53_ihc`, a field nobody has.
+
+        What this is NOT is a promise that the value can be written.
+        `upatientField` names the attribute; whether PROMOP will accept a
+        write to it — and where that write lands — is answered by
+        `GET /api/v1/patient-records/writable-fields/`, which is caller-aware
+        and moves with the vocabulary. EXACT cannot answer it: 19 of
+        its own user fields have no column on PROMOP's `PatientRecord` at
+        all, measured against its `dev` on 2026-09-12 (`mipi_risk`,
+        `high_risk_mcl_criteria`, `p53_ihc`, …), and a key here that
+        implied otherwise would put EXACT's authority behind exactly the
+        silent 200 this exists to prevent.
+
+        There is a THIRD question neither answers, and it matters as much:
+        which values EXACT itself recomputes. An edit to one of those is
+        overwritten by the next match whatever PROMOP thinks of the write —
+        `normalize.py` sets `tnbc_status` on every save and `mipi_risk` on
+        every MCL one, among a dozen others — none of them from anything
+        the reader typed.
+
+        `ureadonly` is not that answer, though it is the obvious candidate:
+        `get_field` sets it from the presence of a subform, nothing more.
+        Nor is the mapping's `is_computed_value`, which is a display flag —
+        `_normalize_mcl_derivations` overwrites four fields on consecutive
+        lines and only one of them carries it, while `meets_gelf` and
+        `meets_lugano` carry it and are plain stored booleans nothing
+        derives. A draft of this change exposed that flag as `ucomputed`
+        and would have hidden the only control that can set those two while
+        offering one over `tnbc_status`, which the next save undoes.
+
+        So EXACT does not answer it yet and this key does not pretend to:
+        making the overwrite set explicit in `normalize.py` is #449. Until
+        then an editing client should treat a value whose provenance it
+        cannot see as provisional.
+
+        Two further traps the name alone does not close, both for the
+        client: a `×ULN` row inherits the base field's `ufield`, so editing
+        it would write the raw lab value; and `None` covers two different
+        situations — a trial-only row with nothing to write ever, and a row
+        whose data exists but not under one field (the therapy lines).
+
+        Stamped here rather than in `get_field` because rows are built in
+        three places — `get_field`, `computed_general_fields`, `therapies` —
+        and a key added to one is a key the others quietly lack, which a
+        client cannot tell from "this row is about nothing".
+
+        And the name is checked, not trusted: `therapies` puts the TRIAL
+        attribute in `ufield`, so `therapiesRequired` would have become
+        `therapies_required`, which is not a patient attribute at all.
+        """
+        for field in fields.values():
+            if not isinstance(field, dict):
+                continue
+            ufield = field.get('ufield')
+            patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
+            field['upatientField'] = (
+                patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
+            )
+        return fields
 
     def computed_general_fields(self):
         computed_fields = {}
