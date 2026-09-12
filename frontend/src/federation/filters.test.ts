@@ -7,6 +7,7 @@ import {
   countryFor,
   hasActiveFilters,
   isActiveDistance,
+  sanitizeStoredFilters,
   userOwnedFilters,
 } from "./filters";
 
@@ -282,6 +283,20 @@ describe("userOwnedFilters — a units-only change", () => {
   });
 });
 
+describe("userOwnedFilters — reverting a units-only change", () => {
+  it("is saved too, or the reader cannot get back to the host's unit", () => {
+    // Switching the host's km to miles stores the miles. Switching BACK
+    // matches the baseline again, so without the sticky `owned` set
+    // nothing is written — and on a transport that only merges, the stored
+    // miles stand for ever.
+    const baseline = { distance: 50, distanceUnits: "km" as const };
+    const back = { distance: 50, distanceUnits: "km" as const };
+    expect(userOwnedFilters(back, baseline, new Set(["distanceUnits"]))).toEqual({
+      distanceUnits: "km",
+    });
+  });
+});
+
 describe("userOwnedFilters — clearing an owned field", () => {
   it("emits a tombstone rather than omitting the key", () => {
     // Both transports merge, so an absent key means "no opinion, keep what you
@@ -306,5 +321,131 @@ describe("userOwnedFilters — a cleared distance", () => {
     );
     expect("distanceUnits" in out).toBe(true);
     expect(out.distanceUnits).toBeUndefined();
+  });
+});
+
+describe("what the stored set is trusted to contain", () => {
+  it("keeps the fields it knows", () => {
+    expect(
+      sanitizeStoredFilters({ sponsor: "Acme", phase: "PHASE3", validatedOnly: true }),
+    ).toEqual({ sponsor: "Acme", phase: "PHASE3", validatedOnly: true });
+  });
+
+  it("keeps every field the panel can save", () => {
+    // By name. Six of these were carried by no test at all: a field missing
+    // from the allowlist stops surviving the round trip, and since a save
+    // writes the set the reader is holding, the filter is then deleted
+    // rather than merely ignored.
+    const everything = {
+      searchTitle: "vrd",
+      searchTreatment: "len",
+      sponsor: "Acme",
+      trialType: "drug",
+      trialPurpose: "treatment",
+      recruitmentStatus: "RECRUITING",
+      phase: "PHASE3",
+      register: "NCT",
+      lastUpdate: "2",
+      country: "US",
+      region: "EU",
+      studyType: "INTERVENTIONAL",
+      validatedOnly: true,
+      distance: 50,
+      distanceUnits: "km" as const,
+    };
+    expect(sanitizeStoredFilters(everything)).toEqual(everything);
+  });
+
+  it("drops a key it does not know", () => {
+    // Asserted here rather than through the request: `fetchTrials` forwards
+    // only the keys it recognises, so an unknown one riding in the saved
+    // set is invisible at that level — and would stay invisible right up
+    // until someone adds the matching parameter.
+    expect(sanitizeStoredFilters({ sponsor: "Acme", favouriteColour: "blue" })).toEqual({
+      sponsor: "Acme",
+    });
+  });
+
+  it("refuses a tab or a sort order smuggled in as a filter", () => {
+    expect(sanitizeStoredFilters({ type: "all", sort: "distance" })).toEqual({});
+  });
+
+  it("drops a value of the wrong type", () => {
+    expect(
+      sanitizeStoredFilters({ phase: 42, sponsor: { not: "a string" }, searchTitle: null }),
+    ).toEqual({});
+  });
+
+  it("drops an empty string, which narrows nothing", () => {
+    expect(sanitizeStoredFilters({ sponsor: "" })).toEqual({});
+  });
+
+  it("does not refuse a long value this client itself can write", () => {
+    // A pasted trial title runs past 200 characters easily, and refusing it
+    // here is not inert: `adapterPreferences` nulls every key absent from
+    // the next payload, so the filter would be DELETED from the row — while
+    // the same value survives on localStorage. Length is the server's
+    // business.
+    const long = "x".repeat(246);
+    expect(sanitizeStoredFilters({ searchTitle: long })).toEqual({ searchTitle: long });
+  });
+
+  it("keeps a lastUpdate the backend can use, and only that", () => {
+    // A range, not the panel's four options: another client — or a host —
+    // may legitimately say 4 or 10 years, and refusing a stored value does
+    // not merely ignore it, it gets nulled out of the row by the next save.
+    for (const good of ["1", "2", "4", "10", "100", "2000"]) {
+      expect(sanitizeStoredFilters({ lastUpdate: good })).toEqual({
+        lastUpdate: good,
+      });
+    }
+    // An ISO date is what CB writes into this field (#429) and the backend
+    // gets nothing out of it; `"0"` it reads as no limit at all; a few
+    // thousand years takes its date arithmetic below year 1 and 500s.
+    for (const junk of ["2020-01-01", "0", "00", "2001", "3000", ""]) {
+      expect(sanitizeStoredFilters({ lastUpdate: junk })).toEqual({});
+    }
+  });
+
+  it("keeps only a radius the backend will honour", () => {
+    expect(sanitizeStoredFilters({ distance: 50 })).toEqual({ distance: 50 });
+    expect(sanitizeStoredFilters({ distance: 0 })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: -5 })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: "50" })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: Number.NaN })).toEqual({});
+  });
+
+  it("drops the radius when its unit cannot be read", () => {
+    expect(sanitizeStoredFilters({ distance: 50, distanceUnits: "furlongs" })).toEqual({});
+    expect(sanitizeStoredFilters({ distance: 50, distanceUnits: "miles" })).toEqual({
+      distance: 50,
+      distanceUnits: "miles",
+    });
+  });
+
+  it("keeps a unit stored without a distance", () => {
+    // `userOwnedFilters` stores exactly that when the reader switches the
+    // host's 50 km to 50 miles: the number never moved, so only the unit is
+    // theirs. Dropped here, the next mount silently searches kilometres
+    // again — see "userOwnedFilters — a units-only change".
+    expect(sanitizeStoredFilters({ distanceUnits: "miles" })).toEqual({
+      distanceUnits: "miles",
+    });
+  });
+
+  it("reads a payload that is not an object as no filters", () => {
+    for (const junk of [null, undefined, "phase=3", 42]) {
+      expect(sanitizeStoredFilters(junk)).toEqual({});
+    }
+  });
+
+  it("keeps validatedOnly either way, but only as a boolean", () => {
+    // `false` is kept because the host may have seeded `true` and the
+    // reader unchecking it is a choice worth storing — the same shape of
+    // action as switching the host's kilometres to miles.
+    expect(sanitizeStoredFilters({ validatedOnly: false })).toEqual({
+      validatedOnly: false,
+    });
+    expect(sanitizeStoredFilters({ validatedOnly: "yes" })).toEqual({});
   });
 });

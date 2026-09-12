@@ -189,7 +189,15 @@ export function userOwnedFilters(
   } else if (
     isActiveDistance(filters.distance) &&
     filters.distanceUnits !== undefined &&
-    ("distance" in out || filters.distanceUnits !== baseline.distanceUnits)
+    // `owned` like every other field. Without it this was the one saved
+    // value that could not be REVERTED: switching the host's km to miles
+    // stored the miles, and switching back matched the baseline again, so
+    // nothing was written and the stored miles stood. On a transport that
+    // only merges — the localStorage one — the reader could not get back
+    // to kilometres except through Reset.
+    ("distance" in out ||
+      owned.has("distanceUnits") ||
+      filters.distanceUnits !== baseline.distanceUnits)
   ) {
     out.distanceUnits = filters.distanceUnits;
   }
@@ -203,4 +211,143 @@ export function hasActiveFilters(
   baseline: FilterState,
 ): boolean {
   return countActiveFilters(filters, baseline) > 0;
+}
+
+/** The "Updated within" choices, and the only stored field whose options
+ *  are decidable here rather than arriving per disease from
+ *  `/form-settings/`.
+ *
+ *  Exported so `FilterPanel` renders from this list rather than from a
+ *  second copy of it. It is the list of SUGGESTIONS, not the list of legal
+ *  values — validation is a range (`isUsableLastUpdate`), and the panel
+ *  adds any value outside this list to its own options so that a filter it
+ *  is sending is one the reader can see and clear. */
+export const LAST_UPDATE_OPTIONS = [
+  { value: "1", label: "the last year" },
+  { value: "2", label: "the last 2 years" },
+  { value: "3", label: "the last 3 years" },
+  { value: "5", label: "the last 5 years" },
+] as const;
+
+/** Whether an "updated within N years" value is one the backend can use.
+ *
+ *  A RANGE, not membership in the panel's four options. The backend takes
+ *  any positive count (`by_date_since` → `cast_str_to_int` → `timedelta`),
+ *  so a `lastUpdate` of "4" or "10" from a host's `initialFilters` — or
+ *  written into storage by another client — is perfectly good, and
+ *  refusing it would not merely ignore the filter: a stored value this
+ *  remote refuses is nulled out of the PROMOP row by the next save.
+ *
+ *  Two values it does exclude, both of which the backend mishandles:
+ *
+ *    - `"0"` passes its `isdigit` check and then fails
+ *      `if not since_in_years`, so it filters nothing at all while the
+ *      panel shows a filter set.
+ *    - a count large enough to take `datetime.now() - timedelta(365*n)`
+ *      below year 1, which is an OverflowError and a 500 on every search
+ *      until the value is cleared. That threshold is
+ *      `(datetime.now() - datetime.min).days // 365` — a little over 2027
+ *      today, and rising by one a year. The bound here is 2000: under it
+ *      for centuries, and past anything that means something (a registry
+ *      that starts in 2000 is fully covered by 30).
+ */
+export function isUsableLastUpdate(value: unknown): boolean {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return false;
+  // No length bound beside this: a string of ten thousand digits is
+  // `Infinity` here and fails the comparison, so a second guard would be
+  // one no test could tell from the first.
+  const years = Number(value);
+  return years >= 1 && years <= 2000;
+}
+
+/** How each stored field is checked on the way back in. `distance`,
+ *  `distanceUnits` and `lastUpdate` are handled separately below. */
+const STORED_STRING_FIELDS: readonly string[] = PANEL_FIELDS.filter(
+  (f) => f !== "distance" && f !== "validatedOnly" && f !== "lastUpdate",
+);
+
+/** What to trust from storage.
+ *
+ *  The saved set is opaque JSON wherever it is kept: PROMOP validates that
+ *  it is an object and nothing more, and the `localStorage` fallback is a
+ *  file on a disk anyone with the browser can edit. This remote is not its
+ *  only writer either — another client, or an older build of this one, may
+ *  have put something there that no longer means what it meant.
+ *
+ *  So a stored value is treated as a claim rather than as a `FilterState`.
+ *  Unknown KEYS are dropped, as are values of the wrong TYPE — which would
+ *  otherwise be handed to a control expecting a string and rendered as
+ *  `[object Object]`. `type` and `sort` go with them: they are not filters,
+ *  and `type: "all"` moves the server to the admin branch, which skips the
+ *  eligibility filter and several study preferences with it (#424).
+ *
+ *  What this does NOT catch is a value of the right type that is not one of
+ *  the options — `phase: "PHASE7"`, or a `trialType` from another disease.
+ *  Membership cannot be decided here: the options are per disease and
+ *  arrive asynchronously from `/form-settings/`, which is #444. What the
+ *  panel does instead is show such a value rather than collapse to "Any",
+ *  so a filter that is narrowing the list is one the reader can see and
+ *  clear.
+ *
+ *  Length is deliberately NOT checked. A cap here refuses a value this very
+ *  client wrote (a pasted trial title runs past 200 characters easily), and
+ *  refusing it is not inert: `adapterPreferences` nulls every key absent
+ *  from the next payload, so the filter is deleted from the row — while on
+ *  `localStorage` the same value survives. The server is where a request
+ *  too large to serve gets refused.
+ */
+export function sanitizeStoredFilters(raw: unknown): FilterState {
+  // `== null` only: a string or a number has none of these keys, so it
+  // falls out of the loop as `{}` anyway. A `typeof` check beside it would
+  // be a second mechanism no test could tell from the first.
+  if (raw == null) return {};
+  const input = raw as Record<string, unknown>;
+  const out: FilterState = {};
+
+  for (const field of STORED_STRING_FIELDS) {
+    const value = input[field];
+    if (typeof value !== "string" || value === "") continue;
+    (out as Record<string, unknown>)[field] = value;
+  }
+
+  // A count of years the backend can actually use — see
+  // `isUsableLastUpdate`. What this drops is an ISO date, which is what CB
+  // writes into this field (#429) into the same PROMOP row this remote
+  // reads: `by_date_since` gets nothing out of it, so it filters nothing
+  // while the control shows "Any".
+  if (isUsableLastUpdate(input.lastUpdate)) {
+    out.lastUpdate = input.lastUpdate as string;
+  }
+
+  if (typeof input.validatedOnly === "boolean") {
+    // `false` is kept, not treated as absent: the host may have seeded
+    // `true`, and the reader unchecking it is a choice worth storing. It
+    // does not count on the badge either way — `isInactive` reads `false`
+    // as empty.
+    out.validatedOnly = input.validatedOnly;
+  }
+
+  // The unit stands on its own. `userOwnedFilters` stores it without a
+  // distance on purpose — the reader switching the host's 50 km to 50 miles
+  // has changed nothing but the unit — so dropping it here would silently
+  // put them back on kilometres at the next mount, which is a materially
+  // different search.
+  const unit = input.distanceUnits;
+  const readableUnit = unit === "km" || unit === "miles";
+  if (readableUnit) out.distanceUnits = unit;
+
+  // Only a radius the backend will actually honour. Zero applies no limit
+  // and a negative one becomes a negative geospatial radius — an empty
+  // result set for a reason nothing on screen explains.
+  //
+  // And only with a unit that can be read, or none at all. A radius whose
+  // unit is garbled is not a radius: keeping the number looks harmless and
+  // is not, because `by_distance` compares against `miles` and treats
+  // everything else as kilometres, so a stored 50 MILES would quietly
+  // become 50 km — from a value we had just admitted we could not parse.
+  if (isActiveDistance(input.distance) && (unit === undefined || readableUnit)) {
+    out.distance = input.distance as number;
+  }
+
+  return out;
 }
