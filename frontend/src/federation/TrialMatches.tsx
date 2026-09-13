@@ -22,6 +22,7 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import { TrialsMap } from "./TrialsMap";
 import { Tabs } from "./Tabs";
 import { hasInlinePatient } from "./api";
 import {
@@ -62,6 +63,7 @@ function TrialMatchesInner({
   personId,
   initialFilters,
   onTrialSelect,
+  renderMap,
   state,
 }: Omit<TrialMatchesProps, "queryClient">) {
   useEffect(() => {
@@ -520,6 +522,15 @@ function TrialMatchesInner({
     savedFilters.reset();
   };
 
+  // List or map, over the same page of trials. The map issues no request of
+  // its own: every row already carries its closest site, so a second fetch
+  // would be a second matcher run to learn what is in hand.
+  const [mapOpen, setMapOpen] = useState(false);
+  const handleSelectFromMap = (trial: TrialMatch) => {
+    setMapOpen(false);
+    handleSelect(trial);
+  };
+
   const handleSelect = (trial: TrialMatch) => {
     setSelectedTrial(trial);
     onTrialSelect?.(trial);
@@ -627,6 +638,18 @@ function TrialMatchesInner({
       <div className="exact-list__controls">
         <SortControl value={sort} onChange={handleSortChange} />
 
+        <div className="exact-list__triggers">
+        <button
+          type="button"
+          className={`exact-filters__trigger${mapOpen ? " is-on" : ""}`}
+          // No `aria-pressed`: the label is the ACTION, not the state, and the
+          // two together announce "List, pressed" while the map is open —
+          // which says list mode is on, the opposite of what is on screen.
+          onClick={() => setMapOpen((open) => !open)}
+        >
+          {mapOpen ? "List" : "Map"}
+        </button>
+
         <button
           type="button"
           className={`exact-filters__trigger${
@@ -639,6 +662,7 @@ function TrialMatchesInner({
             ? `Filters (${activeFilterCount})`
             : "Filter Results"}
         </button>
+        </div>
       </div>
 
       {filtersOpen ? (
@@ -726,6 +750,21 @@ function TrialMatchesInner({
         ) : null}
       </div>
 
+      {mapOpen ? (
+        <TrialsMap
+          // The rows on screen, not a fresh request: every one carries its
+          // closest site already.
+          trials={trials}
+          renderMap={renderMap}
+          onSelectTrial={handleSelectFromMap}
+          onClose={() => setMapOpen(false)}
+        />
+      ) : null}
+
+      {/* The list stays. The map answers "where", the cards answer
+          "what" — CancerBot shows both at once for that reason, and the
+          sticky places panel only means something beside a list that
+          scrolls. */}
       <div
         className={`exact-list__rows${query.isPlaceholderData ? " is-stale" : ""}`}
         aria-busy={query.isPlaceholderData || undefined}

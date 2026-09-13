@@ -10,6 +10,8 @@
 import type { AxiosInstance } from "axios";
 import type { QueryClient } from "@tanstack/react-query";
 
+import type { MapRenderer } from "./TrialsMap";
+
 import type { TrialStateAdapter } from "./state";
 
 /** Sparse, schema-tolerant patient payload — mirrors EXACT's stateless
@@ -257,6 +259,15 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
+  /** Draws the map behind the List/Map toggle.
+   *
+   *  A function rather than an API key, because rendering tiles means loading
+   *  a third-party script into the HOST's page — billed to its key, subject to
+   *  its CSP, watching its document. That is the host's decision to take
+   *  explicitly. Without it the toggle still works and the places are listed;
+   *  see `TrialsMap`.
+   */
+  renderMap?: MapRenderer;
   /** Where the patient's bookmarks, registrations and saved filters live.
    *
    *  Optional, and its absence is not a degraded mode so much as a smaller
