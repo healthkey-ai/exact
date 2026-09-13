@@ -53,7 +53,7 @@ export const RESOLVE_TIMEOUT_MS = 10_000;
  *  host building its own client has today.
  *
  *  Note this diverges from the dev harness, whose `makeExactClient`
- *  (`src/dev/exactAuth.ts:76`) does set 10s on the same endpoint.
+ *  (`src/dev/exactAuth.ts`) does set 10s on the same endpoint.
  *
  *  It runs `/trials/` — a matcher call over the whole corpus, behind a service
  *  that cold-starts — and TrialMatches' QueryClient is built with no
