@@ -299,11 +299,30 @@ class TrialQuerySet(models.QuerySet):
             if study_info.distance:
                 max_distance = D(mi=study_info.distance) if str(study_info.distance_units).lower() == 'miles' else D(
                     km=study_info.distance)
+            geo_point = patient_info.geo_point if patient_info else None
             query = query.with_distance_optimized(
-                geo_point=patient_info.geo_point if patient_info else None,
+                geo_point=geo_point,
                 max_distance=max_distance,
                 recruitment_status=study_info.recruitment_status
             )
+            # The radius, here rather than in `filter_for_admin` because
+            # `by_distance` reads the annotation applied just above.
+            if geo_point and study_info.distance and study_info.distance_units:
+                query = query.by_distance(geo_point, study_info.distance, study_info.distance_units)
+            # and NOT `by_location` in the else branch, which is the one filter
+            # from the standard path this deliberately does not copy. It
+            # resolves a country by TITLE, and the catalog holds two rows for
+            # the United States — 'United States' with 18,365 site links and
+            # 'United States of America' with ONE. The federated UI seeds
+            # `country` from the patient's profile on every request, so a
+            # patient carrying the second spelling would see `?type=all`
+            # narrow from the whole corpus to a single trial: plausible,
+            # non-empty, and wrong — the exact failure this change exists to
+            # remove. Applying a filter known to do that, on the tab that
+            # promises every trial, would be a worse bug than the one being
+            # fixed. Tracked with the code-vs-title mismatch in #430; the
+            # exclusion is named in `DELIBERATELY_ADMIN_ONLY_SKIPS` so it
+            # cannot be forgotten.
 
             return query, []
 
@@ -314,6 +333,19 @@ class TrialQuerySet(models.QuerySet):
             return query, list(study_traces) + list(patient_traces)
 
     def filter_for_admin(self, study_info, patient_info):
+        """The `?type=all` path: the reader's own filters, without the
+        patient-eligibility matching.
+
+        "All" means "do not narrow by how this patient matches" — it has never
+        meant "ignore what I asked for". This applied six of the study filters
+        and silently dropped the rest, so `?type=all&sponsor=X&phase=PHASE3`
+        came back as a plausible list that honoured neither: not rejected, not
+        empty, just wrong. `favorites` and `my_trials` reach this branch too in
+        principle, but are refused earlier (#417), so `all` is the only way in.
+
+        Kept in step with `filter_by_study_info` by a test that compares the
+        two, because the way this broke was the two lists drifting apart.
+        """
         traces = []
         if not study_info:
             return self, traces
@@ -322,10 +354,16 @@ class TrialQuerySet(models.QuerySet):
 
         query = query.by_titles(study_info.search_title)
         query = query.by_study_id(study_info.study_id)
+        query = query.by_intervention_treatment(study_info.search_treatment)
         query = query.by_register(study_info.register)
         query = query.by_trial_type(study_info.trial_type)
         query = query.by_trial_purpose(study_info.trial_purpose)
         query = query.by_study_type(study_info.study_type)
+        query = query.by_sponsor(study_info.sponsor)
+        query = query.by_last_update(study_info.last_update)
+        query = query.by_first_enrolment_date(study_info.first_enrolment)
+        query = query.by_recruitment_status(study_info.recruitment_status)
+        query = query.by_phase(study_info.phase)
         query = query.by_validated_only(study_info.validated_only)
         if patient_info and patient_info.disease is not None and patient_info.disease != '':
             query = query.filter(disease__icontains=patient_info.disease.lower())
