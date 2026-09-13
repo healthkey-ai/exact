@@ -114,6 +114,18 @@ export interface TrialDetailField {
     | "not_evaluated"
     | string;
   ufield?: string | null;
+  /** The canonical patient attribute this row is about, in the spelling the
+   *  patient record uses (`hemoglobin_g_dl`), or null when the row is not
+   *  about a patient attribute at all.
+   *
+   *  Not derivable from `ufield`: that is camelCase, and un-camelising is not
+   *  mechanical here — `p53_ihc` camelises to `p53Ihc`, which a standard
+   *  snake-caser turns back into `p_53_ihc`, a field nobody has. EXACT sends
+   *  the canonical name rather than letting each client guess (#421).
+   *
+   *  It names the attribute. Whether it can be WRITTEN is a different
+   *  question, answered by PROMOP's descriptor — see `writable.ts`. */
+  upatientField?: string | null;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;

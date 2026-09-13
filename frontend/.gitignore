@@ -1,3 +1,7 @@
+# Both spellings. With the trailing slash git matches a directory only, so a
+# `node_modules` SYMLINK — which is how a worktree borrows one — is not ignored
+# by the slashed pattern and rides into `git add -A`. The bare one catches it.
+node_modules
 node_modules/
 dist/
 *.tsbuildinfo
