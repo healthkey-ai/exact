@@ -122,6 +122,123 @@ export async function fetchTrials({
   return response.data;
 }
 
+/** The marker the server writes as the last line of a file it finished.
+ *  The status code cannot carry this — headers go out before the first row —
+ *  so the last line is the only thing that distinguishes a truncated export
+ *  from a small one. Kept in step with `TrialsViewSet.EXPORT_END_MARKER`. */
+export const EXPORT_END_MARKER = "# end of export —";
+
+/** Whether the file the server sent is the whole file.
+ *
+ *  The test is for the END marker, not against the failure one. Checking for
+ *  failure only catches a stream the server was still alive to apologise for;
+ *  a proxy cutting the response, a dropped connection, or a worker killed
+ *  mid-write produce neither marker, and would have been saved as complete.
+ *
+ *  The marker has to start the last CSV RECORD, which is not the same as the
+ *  last physical line. Titles, sponsors and locations are free text written
+ *  upstream, and `csv.writer` keeps a newline inside a quoted field — so a
+ *  title containing a line break followed by this marker would vouch for a
+ *  file cut off immediately after it. Record boundaries are only decidable
+ *  from the start of the file, because whether a newline ends a record depends
+ *  on the quote state it is in.
+ *
+ *  Reading the whole blob to find one line is the cost of that, paid once on
+ *  an explicit click. Past a point it stops being worth it: a file this large
+ *  falls back to the last physical line, which is wrong only for data built to
+ *  defeat it.
+ */
+const EXPORT_SCAN_LIMIT = 64 * 1024 * 1024;
+
+export async function exportIsComplete(blob: Blob): Promise<boolean> {
+  if (blob.size > EXPORT_SCAN_LIMIT) {
+    const tail = await blob.slice(Math.max(0, blob.size - 512)).text();
+    return lastLine(tail).startsWith(EXPORT_END_MARKER);
+  }
+  const text = await blob.text();
+  let inQuotes = false;
+  // The last two record boundaries: a finished file ends with a newline, so
+  // the last "record" is empty and the one before it is the footer.
+  let lastStart = 0;
+  let prevStart = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    // A doubled quote inside a quoted field toggles twice and lands back where
+    // it started, which is the right answer for it.
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (ch === "\n" && !inQuotes) {
+      prevStart = lastStart;
+      lastStart = i + 1;
+    }
+  }
+  const last = text.slice(lastStart);
+  const record = last.trim() === "" ? text.slice(prevStart, lastStart) : last;
+  return record.trimStart().startsWith(EXPORT_END_MARKER);
+}
+
+function lastLine(text: string): string {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== "");
+  return lines[lines.length - 1] ?? "";
+}
+
+/** How long the object URL behind a download is kept alive. Long enough for a
+ *  browser that starts the download after the click handler returns, short
+ *  enough that a reader taking several exports is not holding all of them. */
+export const EXPORT_URL_LIFETIME_MS = 60_000;
+
+/** POST `/trials/export/` — the current search as a CSV file.
+ *
+ *  Always a POST, even on the `person_id` path where the list uses GET: the
+ *  server binds this action to `search`, and there is no GET form that can
+ *  carry an inline patient payload. The caller gets the bytes and saves them
+ *  itself, because a POST is not something the browser can be pointed at.
+ */
+export async function exportTrials({
+  apiClient,
+  patientInfo,
+  personId,
+  filters,
+  trialIds,
+}: Omit<FetchTrialsArgs, "page" | "limit">): Promise<{ blob: Blob; filename: string }> {
+  const params = filterStateToParams(filters);
+  const body: Record<string, unknown> = trialIds !== undefined ? { trial_ids: trialIds } : {};
+  if (hasInlinePatient(patientInfo)) {
+    body.patient_info = patientInfo;
+  } else if (personId != null) {
+    params.person_id = String(personId);
+  }
+  const response = await apiClient.post("/trials/export/", body, {
+    params,
+    responseType: "blob",
+  });
+  return {
+    blob: response.data as Blob,
+    // Cross-origin, `Content-Disposition` is readable only because EXACT
+    // exposes it (`CORS_EXPOSE_HEADERS`). A host that has not caught up still
+    // gets a file, under the fallback name.
+    filename: exportFilename(
+      (response.headers as Record<string, string> | undefined)?.["content-disposition"],
+    ),
+  };
+}
+
+/** The filename the server named the file, or a sensible one if it named
+ *  none. Parsed rather than reconstructed: the server dates the file, and a
+ *  second guess at the date here would disagree with it across midnight and
+ *  in any other timezone. */
+export function exportFilename(disposition: string | undefined): string {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition ?? "");
+  if (star) {
+    try {
+      return decodeURIComponent(star[1]);
+    } catch {
+      // A malformed encoding is not a reason to fail the download.
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(disposition ?? "");
+  return plain ? plain[1] : "trials.csv";
+}
+
 interface FetchTrialDetailArgs {
   apiClient: AxiosInstance;
   trialId: number | string;
