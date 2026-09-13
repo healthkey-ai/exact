@@ -42,36 +42,59 @@ export interface PreferenceTransport {
   get(): Promise<FilterState>;
   save(filters: FilterState): Promise<void>;
   reset(): Promise<void>;
-  /** "You no longer know what is stored — do not delete what you did not
-   *  write." Called when a load is read but deliberately NOT applied, which
-   *  leaves the caller holding a set that is a strict subset of what is
-   *  stored. Without it the next save reads as "these are all the filters
-   *  there are" and clears the rest. */
-  forget(): void;
 }
 
 /** PROMOP, through the host-supplied state adapter.
  *
- *  The endpoint MERGES a partial update, and `FilterPanel` represents a
- *  cleared control as `undefined` — which JSON drops. Left alone, clearing a
- *  filter would leave the old value on the server and it would come back on
- *  the next mount. So a key that was in the last payload and is gone from this
- *  one is sent explicitly as `null`, which the merge does overwrite, and
- *  `get` strips those nulls again so a cleared filter does not read back as a
- *  set one.
+ *  The endpoint does NOT merge key by key, which is what this module was
+ *  originally written for. `preferences` is a single JSON column and
+ *  `TrialSearchPreferencesSerializer` has no custom `update`, so DRF assigns
+ *  the whole dict: a PATCH of `{"a": 1}` followed by `{"b": 2}` leaves the row
+ *  holding only `b`. Measured, both in PROMOP's serializer and against DRF's
+ *  `partial=True` directly, because the whole design turns on it.
+ *
+ *  Two consequences, and the second is why this matters:
+ *
+ *  - sending `null` for a key that has gone away is pointless. Under a
+ *    wholesale replace a key disappears by being absent, and `FilterPanel`
+ *    represents a cleared control as `undefined`, which JSON drops for us.
+ *  - every write must carry the COMPLETE set, or it deletes what it omits.
+ *    So the transport remembers what the server holds and merges the
+ *    reader's payload over it. The case that needs this is the one where the
+ *    caller's set is a strict subset through no fault of its own: a slow load
+ *    that arrived after the reader had already edited, and was dropped rather
+ *    than revert their edit. Their saved sponsor and phase are still their
+ *    preferences — the panel simply never showed them — and a save that
+ *    omits them is not a clear, it is a loss.
+ *
+ *  A filter the reader DID clear still clears, because `userOwnedFilters`
+ *  emits it present-and-`undefined`: the merge keeps the key, JSON drops it,
+ *  and the stored dict comes back without it.
  */
 export function adapterPreferences(
   state: PreferenceMethods,
 ): PreferenceTransport {
-  // What the server is believed to hold. Seeded by `get`, not just by our own
-  // writes: clearing a filter that came FROM the server has to send that key
-  // as null too, and with an empty starting set the payload would simply omit
-  // it and the merge would keep the old value.
-  let lastSent: FilterState = {};
+  // What the server is believed to hold — seeded by `get`, kept current by
+  // every successful write. Under a wholesale replace this is not an
+  // optimisation: it is the only thing standing between a partial payload and
+  // the rest of the reader's saved filters.
+  let stored: FilterState = {};
+  // Whether that belief rests on anything. An empty `stored` because the read
+  // came back empty and an empty `stored` because the read FAILED are the same
+  // value and opposite situations: the first means there is nothing to
+  // protect, the second means we have no idea what we would be overwriting.
+  // Writing in the second case replaces the row with whatever the reader
+  // happens to be holding.
+  let seeded = false;
+  // Bumped by `reset`. A read in flight when the reader presses Reset resolves
+  // afterwards holding the values they just cleared, and seeding from it puts
+  // them in the next payload — so the row comes back. The generation says
+  // which era a read belongs to.
+  let generation = 0;
   // The first read, so a save cannot overtake it. A reader who edits inside
   // the debounce window on a slow connection would otherwise PATCH before
-  // `lastSent` was seeded, and the keys the server already held would survive
-  // the merge and reappear on the next mount.
+  // `stored` was seeded — and under a wholesale replace that payload IS the
+  // row, so everything they had saved would go with it.
   let firstRead: Promise<unknown> | null = null;
   //
   // NOT handled here, on purpose: clearing a filter the HOST seeded via
@@ -82,41 +105,85 @@ export function adapterPreferences(
   // that is a product decision about whose scope wins, not a defect.
   return {
     get: async () => {
+      const era = generation;
       const read = (async () => {
-          const stored = (await state.getPreferences()) ?? {};
+        const fromServer = (await state.getPreferences()) ?? {};
         const out: FilterState = {};
-        for (const [k, v] of Object.entries(stored)) {
+        for (const [k, v] of Object.entries(fromServer)) {
+          // A null is a key an older build cleared by writing one, not a set
+          // value. Nothing writes them any more.
           if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
         }
-        lastSent = { ...out };
+        if (era === generation) {
+          stored = { ...out };
+          seeded = true;
+        }
         return out;
       })();
       firstRead = read;
       return read;
     },
     save: async (filters) => {
-      // Serialised behind the first read — see `firstRead` above.
+      // Serialised behind the first read — see `firstRead` above. A save that
+      // overtakes it would build its payload against an empty `stored` and
+      // replace the row with the one key the reader has touched.
       if (firstRead) await firstRead.catch(() => {});
-      const payload: Record<string, unknown> = {};
-      for (const k of Object.keys(lastSent)) payload[k] = null;
+      if (!seeded) {
+        // One more attempt, because a read that failed once may not fail
+        // twice, and the alternative is losing the reader's edit.
+        const era = generation;
+        try {
+          const retry = (await state.getPreferences()) ?? {};
+          const out: FilterState = {};
+          for (const [k, v] of Object.entries(retry)) {
+            if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
+          }
+          // Same era check as `get`: a Reset during the retry wins.
+          if (era === generation) {
+            stored = out;
+            seeded = true;
+          }
+        } catch {
+          // Still blind. Refusing costs the reader this one edit, which they
+          // can make again; writing costs them every filter they ever saved,
+          // which they cannot. `PreferenceWriter` reports it through
+          // `onError` like any other failed write.
+          throw new Error("saved filters could not be read, so they were not overwritten");
+        }
+      }
+      // The reader's payload over what the server holds. A key they cleared is
+      // present-and-`undefined` and drops out on the way through JSON; a key
+      // they never saw survives.
+      const payload: Record<string, unknown> = { ...stored };
       for (const [k, v] of Object.entries(filters)) {
-        payload[k] = v === undefined ? null : v;
+        if (v === undefined) delete payload[k];
+        else payload[k] = v;
       }
       await state.savePreferences(payload as FilterState);
-      // AFTER it resolves, like `reset`. Recording the new set for a PATCH
-      // that failed means the next payload stops nulling the keys this one
-      // was meant to clear, and they come back on the next mount.
-      lastSent = { ...filters };
+      // AFTER it resolves. Recording a payload that failed means the next one
+      // is built against a row that does not exist.
+      stored = { ...payload } as FilterState;
     },
     reset: async () => {
+      generation += 1;
+      // `stored` cleared REGARDLESS of the outcome, which is the opposite of
+      // what a merging endpoint would want. Under a replace, a `stored` still
+      // full of the old values means the next save puts them all back — the
+      // reader watches their filters disappear and finds them again on the
+      // next mount. Clearing first means the next save writes only what they
+      // are holding, which repairs a reset that failed.
+      //
+      // `seeded` is NOT claimed here, though. A reset that fails on a
+      // transport that never read the row leaves us knowing nothing about it
+      // while believing we know it is empty, and the next save replaces it
+      // blind — the very thing `save` refuses to do. A reset that fails after
+      // a good read is different: the old contents are still known, and
+      // writing only what the reader holds is the repair.
+      const knew = seeded;
+      stored = {};
+      seeded = knew;
       await state.resetPreferences();
-      // AFTER it resolves. Clearing the seed first means a failed reset leaves
-      // us believing the server is empty, so the next save nulls nothing — and
-      // the filters the reader watched disappear come back on the next mount.
-      lastSent = {};
-    },
-    forget: () => {
-      lastSent = {};
+      seeded = true;
     },
   };
 }
@@ -171,10 +238,12 @@ export function localStoragePreferences(key: string): PreferenceTransport {
       try {
         const store = storage();
         if (!store) return;
-        // Merged over what is there, with an explicit null for a cleared key
-        // — the same shape the adapter sends, and for the same reason. A
-        // wholesale overwrite would delete keys the caller never knew about,
-        // which is exactly the state a deliberately-discarded load leaves it
+        // Merged over what is on disk, with an explicit null for a cleared
+        // key. Same OUTCOME as the adapter, reached differently: the adapter
+        // merges in memory and sends a complete dict because the server
+        // replaces; this one merges on disk because it is the storage. A
+        // wholesale overwrite here would delete keys the caller never knew
+        // about — exactly the state a deliberately-discarded load leaves it
         // in. `get` strips the nulls again.
         const existing = readRaw(store);
         for (const [k, v] of Object.entries(filters)) {
@@ -193,9 +262,6 @@ export function localStoragePreferences(key: string): PreferenceTransport {
         /* as above */
       }
     },
-    // Nothing to forget: every write already merges, so this transport never
-    // deletes a key it was not told about.
-    forget: () => {},
   };
 }
 
@@ -212,8 +278,9 @@ function hashKey(key: string): string {
  *  Two fields rather than one slot, because a reset and a save are not
  *  alternatives: if the reader presses Reset and then changes a filter, BOTH
  *  have to happen and in that order. Collapsing them into one slot let the
- *  later save overwrite the reset, so the partial update already on the server
- *  was never cleared and stale keys survived alongside the new edit.
+ *  later save overwrite the reset — and the reset is what empties the row and
+ *  clears the transport's memory of it, so dropping it leaves the next save
+ *  writing the old values back alongside the new edit.
  */
 interface Pending {
   reset: boolean;
@@ -228,6 +295,10 @@ export interface PreferenceWriterOptions {
   /** Reported instead of thrown: a filter that failed to save must not take
    *  down the list that is already rendered. */
   onError?: (error: unknown) => void;
+  /** Called after a write lands. The counterpart to `onError`: without it a
+   *  caller showing "couldn't save" has no way to learn that the NEXT write
+   *  succeeded, and goes on saying it. */
+  onSuccess?: () => void;
 }
 
 /**
@@ -243,6 +314,7 @@ export class PreferenceWriter {
   private readonly transport: PreferenceTransport;
   private readonly debounceMs: number;
   private readonly onError: (error: unknown) => void;
+  private readonly onSuccess: () => void;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private debounced: FilterState | null = null;
@@ -255,6 +327,7 @@ export class PreferenceWriter {
   constructor(transport: PreferenceTransport, opts: PreferenceWriterOptions = {}) {
     this.transport = transport;
     this.debounceMs = opts.debounceMs ?? FILTER_DEBOUNCE_MS;
+    this.onSuccess = opts.onSuccess ?? (() => {});
     this.onError =
       opts.onError ??
       ((error: unknown) => {
@@ -342,11 +415,18 @@ export class PreferenceWriter {
       // outside the chain it bypassed `onError`, never assigned `inFlight`,
       // and surfaced only as an unhandled rejection — while the class
       // promises that a failed write is reported, not thrown.
-      this.onError(error);
-      request = Promise.resolve();
+      //
+      // Rejected rather than reported here and resolved: a resolved
+      // substitute travels the SUCCESS path below, so the failure would be
+      // reported and then immediately announced as a success. One error path,
+      // and it is the chain's.
+      request = Promise.reject(error);
     }
 
     this.inFlight = request
+      .then(() => {
+        this.onSuccess();
+      })
       .catch((error: unknown) => {
         this.onError(error);
       })

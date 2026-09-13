@@ -40,6 +40,9 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import { TrialsGraph } from "./TrialsGraph";
+import { TrialsMap } from "./TrialsMap";
+import { EXPORT_URL_LIFETIME_MS, exportIsComplete, exportTrials } from "./api";
 import { Tabs } from "./Tabs";
 import { hasInlinePatient } from "./api";
 import {
@@ -48,7 +51,7 @@ import {
   countryFor,
   userOwnedFilters,
 } from "./filters";
-import { MAX_TRIAL_IDS } from "./state";
+import { MAX_TRIAL_IDS, canEditFields } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
@@ -60,9 +63,12 @@ import {
   canReadAdvanced,
   useAdvancedEnrollments,
   useSavedFilters,
+  useSetPatientField,
+  useWritableFields,
   useSetTrialState,
   useStateIds,
   useTrials,
+  useTrialsGraph,
 } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
@@ -80,6 +86,7 @@ function TrialMatchesInner({
   personId,
   initialFilters,
   onTrialSelect,
+  renderMap,
   state,
 }: Omit<TrialMatchesProps, "queryClient">) {
   useEffect(() => {
@@ -87,7 +94,13 @@ function TrialMatchesInner({
   }, []);
 
   const [filters, setFilters] = useState<FilterState>(initialFilters ?? {});
-  const [selectedTrial, setSelectedTrial] = useState<TrialMatch | null>(null);
+  // The id, and the list row when there is one. A trial can be opened from
+  // the graph, which draws up to fifty trials while the list holds one page —
+  // so "which trial" is always answerable and "which row" is not.
+  const [selectedTrial, setSelectedTrial] = useState<{
+    trialId: number;
+    row?: TrialMatch;
+  } | null>(null);
   // Seeded from the host's `initialFilters.type` rather than defaulted: the
   // prop is public API, and a host that mounts the remote asking for the
   // potential subset must not silently get the default tab's result set.
@@ -139,6 +152,11 @@ function TrialMatchesInner({
   // drawn for a trial whose enrollment a study team has already advanced,
   // where "I'm Interested" would write `registered` over `entered`.
   const advanced = useAdvancedEnrollments(state, stateKey);
+  // The descriptor is about the patient, not the trial, so it is read here
+  // once rather than on every detail page. Its absence is the safe state:
+  // until it arrives, no row draws a control.
+  const writableFields = useWritableFields(state, stateKey);
+  const setPatientField = useSetPatientField(state, stateKey);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -557,6 +575,108 @@ function TrialMatchesInner({
     trialIds ?? null,
   ]);
 
+
+  // The export is a file, not a view: no cache, no retry, and a status the
+  // reader can see. React Query would serve the same bytes back on a second
+  // click, which for a download means the reader gets a stale file.
+  const [exportState, setExportState] = useState<
+    "idle" | "working" | "failed" | "incomplete"
+  >("idle");
+  // Which view is on screen RIGHT NOW, for an export that settles later. A
+  // reader who exports Favorites and then switches tabs must not be handed the
+  // previous tab's rows, nor shown a failure under a view they never exported.
+  // Written during render, so by the time an in-flight export resolves it
+  // already describes where the reader is.
+  const viewKeyRef = useRef<string>("");
+  // On a state tab, `trialIds` is `undefined` in three different ways — the
+  // saved ids are still loading, the read failed, or there are more than the
+  // server will filter by. The list already refuses to search in all three.
+  // The export has to refuse too: sending no ids reaches the same endpoint
+  // with the same filters and returns the whole matched corpus, delivered as
+  // a file the tab has labelled "Favorites". That is the wrong-set answer the
+  // server's own `type=favorites` refusal exists to prevent, arrived at from
+  // the other side.
+  // Two ways the export cannot answer. A state tab whose ids are unavailable
+  // is the first. The second is no patient at all — a supported mode for the
+  // list, but the remote never sends `?type=all`, so every export in it is a
+  // guaranteed 400 surfaced as "please try again", which is advice that cannot
+  // work.
+  const exportUnavailable =
+    (stateTab != null && trialIds === undefined) ||
+    (!hasInlinePatient(patientInfo) && personId == null);
+  const exportUnavailableReason =
+    stateTab != null && trialIds === undefined
+      ? "Your saved trials aren't available right now, so this tab can't be exported."
+      : "An export needs a patient, and this view has none.";
+  const handleExport = async () => {
+    if (exportUnavailable) return;
+    setExportState("working");
+    const issuedFor = exportViewKey;
+    try {
+      const { blob, filename } = await exportTrials({
+        apiClient,
+        patientInfo,
+        personId,
+        // The filters the LIST is showing, tab included — the file has to be
+        // the answer to the question on screen, not to an unnarrowed one.
+        filters: queryFilters,
+        trialIds,
+      });
+      // The view moved while this was in flight. Dropping it costs the reader
+      // a click; handing it over downloads one tab's rows while the screen
+      // shows another's, under a filename that says neither.
+      if (viewKeyRef.current !== issuedFor) return;
+      const complete = await exportIsComplete(blob);
+      // Checked again on the far side of that await: scanning a large export
+      // takes long enough for the reader to change tabs while it runs, and the
+      // file would then be handed over under a view it does not describe.
+      if (viewKeyRef.current !== issuedFor) return;
+      if (!complete) {
+        // The server said so on the last line, because its 200 was spent
+        // before the first row. Saving it anyway hands over a file that looks
+        // complete and is not — and this one goes to an appointment.
+        setExportState("incomplete");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      // Attached before the click: Firefox has historically ignored a
+      // download click on an anchor that is not in the document.
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoked on a timer, not immediately. Some browsers — Safari the one
+      // that bites — start the download after the click handler has returned,
+      // and a URL revoked by then yields an empty or failed download. Not
+      // never, either: the blob is held for the life of the document
+      // otherwise, and an export of a few thousand trials is not small.
+      setTimeout(() => URL.revokeObjectURL(url), EXPORT_URL_LIFETIME_MS);
+      setExportState("idle");
+    } catch {
+      if (viewKeyRef.current !== issuedFor) return;
+      setExportState("failed");
+    }
+  };
+
+  // The export's idea of "the same view", which the list's does not need: WHO
+  // the rows are about. A host switching patients with the filters untouched
+  // leaves `queryKey` identical, so without this the previous patient's file
+  // passes both staleness checks and is handed over under the new patient's
+  // name — the wrong rows, about the wrong person.
+  // The same key, under the name the export code reads it by. `queryKey`
+  // already carries `stateKey`, so composing a second one would name the
+  // patient twice and tie the two spellings together for no gain.
+  const exportViewKey = queryKey;
+  viewKeyRef.current = exportViewKey;
+  // The failure belonged to the view it happened in. Left standing, it sits
+  // under a list the reader has since changed and reads as a fresh failure of
+  // what they are looking at now.
+  useEffect(() => {
+    setExportState("idle");
+  }, [exportViewKey]);
+
   // Which view the count in hand was fetched for. `queryKey` excludes the
   // page number by construction (it is what resets the page when anything
   // else changes), so "the same key" means "the same view, a different
@@ -636,16 +756,62 @@ function TrialMatchesInner({
     setFilters(baseline);
     // Reset gives the fields back to the host, so nothing is owned any more.
     ownedFields.current = new Set();
-    // `reset`, not `persist(baseline)`: the server merges a partial update, so
-    // writing the baseline would leave whatever the reader had saved for keys
-    // the baseline does not mention. It also retires a save already on the
+    // `reset`, not `persist(baseline)`: the row is meant to end up EMPTY, and
+    // writing the baseline would store the host's scope as the reader's
+    // standing preference instead. It also retires a save already on the
     // wire, which would otherwise land afterwards and restore what was
     // just cleared.
     savedFilters.reset();
   };
 
+  // Opened on demand: the graph is a second full matcher run over the same
+  // search, so it is not something to have ready just in case.
+  const [graphOpen, setGraphOpen] = useState(false);
+  // A state tab whose saved ids are unavailable — loading, failed, or over the
+  // 500 cap — cannot be mapped. Disabling the QUERY is not enough: with no ids
+  // the key is the default tab's key, so react-query would either hand back
+  // the cached whole-corpus map under a tab that says "Favorites", or, with
+  // nothing cached, sit on "Building the map…" for ever. The control is what
+  // has to refuse.
+  const graphUnavailable = stateTab != null && trialIds === undefined;
+  const graph = useTrialsGraph({
+    apiClient,
+    patientInfo,
+    personId,
+    filters: queryFilters,
+    // The same narrowing the list is under. Favorites and Registered narrow
+    // ONLY by `trial_ids` — their `type` is undefined — so without this the
+    // map drew the whole corpus under a tab that says "Favorites", and its
+    // cache key was identical to the default tab's, which meant it was served
+    // from that tab's cache without a request.
+    trialIds,
+    enabled: graphOpen && !graphUnavailable,
+  });
+  // Selecting a trial from the graph opens the same detail page the cards do.
+  // The detail page needs only the id, which is always available; the host's
+  // `onTrialSelect` wants the list ROW, which is not — the graph draws up to
+  // fifty trials and the list holds one page of ten, so off page one, or
+  // under a different sort, the row is simply not here. Opening anyway beats
+  // a click that silently does nothing; calling the host with a fabricated
+  // row would be worse than not calling it.
+  const handleSelectFromGraph = (trialId: number) => {
+    const row = (query.data?.results ?? []).find((t) => t.trialId === trialId);
+    setGraphOpen(false);
+    setSelectedTrial({ trialId, row });
+    if (row) onTrialSelect?.(row);
+  };
+
+  // List or map, over the same page of trials. The map issues no request of
+  // its own: every row already carries its closest site, so a second fetch
+  // would be a second matcher run to learn what is in hand.
+  const [mapOpen, setMapOpen] = useState(false);
+  const handleSelectFromMap = (trial: TrialMatch) => {
+    setMapOpen(false);
+    handleSelect(trial);
+  };
+
   const handleSelect = (trial: TrialMatch) => {
-    setSelectedTrial(trial);
+    setSelectedTrial({ trialId: trial.trialId, row: trial });
     onTrialSelect?.(trial);
   };
 
@@ -674,6 +840,33 @@ function TrialMatchesInner({
         trialId={selectedTrial.trialId}
         patientInfo={patientInfo}
         personId={personId}
+        // What actually withholds the controls is the descriptor itself:
+        // `fields` undefined answers "unknown" for every row, which is the
+        // page exactly as it reads today. That covers loading, a failed read
+        // and a host that never had a writer, so no extra guard is needed for
+        // any of them — and a guard claiming to provide one would be
+        // decoration.
+        //
+        // The gate below is about `save`, not about the rows: it is there so
+        // a callback that would dereference a missing `setPatientField` is
+        // never handed out at all. Nothing calls it today, because nothing
+        // draws a control without the descriptor; the queue in the next slice
+        // will hold it for longer than one click, which is when handing out a
+        // callback that cannot work starts to matter.
+        editing={
+          canEditFields(state)
+            ? {
+                fields: writableFields.data,
+                save: async (field, value) => {
+                  // Resolving means the record was re-read, not that it holds
+                  // what was sent — the write may have been canonicalised.
+                  // Only a refusal rejects, and only that is shown as an
+                  // error.
+                  await setPatientField.mutateAsync({ field, value });
+                },
+              }
+            : undefined
+        }
         // Values and callbacks, not the adapter: this component owns the id
         // lists and the mutations, so it is the only place that can keep the
         // star on the card and the star on the detail page saying the same
@@ -751,6 +944,45 @@ function TrialMatchesInner({
       <div className="exact-list__controls">
         <SortControl value={sort} onChange={handleSortChange} />
 
+        <div className="exact-list__triggers">
+        <button
+          type="button"
+          className={`exact-filters__trigger${mapOpen ? " is-on" : ""}`}
+          // No `aria-pressed`: the label is the ACTION, not the state, and the
+          // two together announce "List, pressed" while the map is open —
+          // which says list mode is on, the opposite of what is on screen.
+          onClick={() => setMapOpen((open) => !open)}
+        >
+          {mapOpen ? "List" : "Map"}
+        </button>
+
+        <button
+          type="button"
+          className={`exact-filters__trigger${graphOpen ? " is-on" : ""}`}
+          aria-expanded={graphOpen}
+          disabled={graphUnavailable}
+          title={
+            graphUnavailable
+              ? "Your saved trials aren't available right now, so this tab can't be mapped."
+              : undefined
+          }
+          onClick={() => setGraphOpen((open) => !open)}
+        >
+          Explore Trials
+        </button>
+
+        <button
+          type="button"
+          className={`exact-list__export${exportState === "working" ? " is-working" : ""}`}
+          onClick={() => void handleExport()}
+          disabled={exportState === "working" || exportUnavailable}
+          // Said out loud rather than left as a dead control: everything else
+          // in this file names why it cannot answer.
+          title={exportUnavailable ? exportUnavailableReason : undefined}
+        >
+          {exportState === "working" ? "Preparing…" : "Export CSV"}
+        </button>
+
         <button
           type="button"
           className={`exact-filters__trigger${
@@ -763,7 +995,38 @@ function TrialMatchesInner({
             ? `Filters (${activeFilterCount})`
             : "Filter Results"}
         </button>
+        </div>
       </div>
+
+      {graphOpen && !graphUnavailable ? (
+        graph.isPending ? (
+          <p className="exact-graph__status">Building the map…</p>
+        ) : graph.isError ? (
+          <p className="exact-graph__status" role="alert">
+            Couldn't build the map for this search.
+          </p>
+        ) : (
+          <TrialsGraph
+            trials={graph.data?.trials ?? []}
+            onSelectTrial={handleSelectFromGraph}
+            onClose={() => setGraphOpen(false)}
+          />
+        )
+      ) : null}
+
+      {exportState === "failed" || exportState === "incomplete" ? (
+        <p className="exact-list__export-error" role="alert">
+          {exportState === "incomplete"
+            ? "That export stopped partway, so it wasn't saved. Please try again."
+            : "Couldn't prepare that file. Please try again."}
+        </p>
+      ) : null}
+
+      {savedFilters.failed ? (
+        <p className="exact-list__save-warning" role="status">
+          Your filters are shown here but couldn't be saved for next time.
+        </p>
+      ) : null}
 
       {filtersOpen ? (
         <FilterPanel
@@ -865,6 +1128,21 @@ function TrialMatchesInner({
         ) : null}
       </div>
 
+      {mapOpen ? (
+        <TrialsMap
+          // The rows on screen, not a fresh request: every one carries its
+          // closest site already.
+          trials={trials}
+          renderMap={renderMap}
+          onSelectTrial={handleSelectFromMap}
+          onClose={() => setMapOpen(false)}
+        />
+      ) : null}
+
+      {/* The list stays. The map answers "where", the cards answer
+          "what" — CancerBot shows both at once for that reason, and the
+          sticky places panel only means something beside a list that
+          scrolls. */}
       <div
         className={`exact-list__rows${query.isPlaceholderData ? " is-stale" : ""}`}
         aria-busy={query.isPlaceholderData || undefined}
