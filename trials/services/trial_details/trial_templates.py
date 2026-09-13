@@ -58,7 +58,11 @@ class TrialTemplates:
 
         details = self._trial_attributes.details()
         patient_info = self._patient_info
-        service = UserToTrialAttrMatcher(self._trial, patient_info)
+        # No patient, no matcher — and no claim about one. The rows still carry
+        # what the trial requires; what they do not carry is a verdict, which
+        # is the honest shape for "here is a trial" as opposed to "here is how
+        # you compare to it".
+        service = UserToTrialAttrMatcher(self._trial, patient_info) if patient_info else None
         label = ''
 
         def order_weight(value):
@@ -66,9 +70,11 @@ class TrialTemplates:
                 return 10, ''
             if value['name'] == 'matchScore':
                 return 0, ''
-            return mapping_for_order.get(value['matchingType'], 5), value['label']
+            # `.get`: without a patient no row has a `matchingType` at all,
+            # and they all land on the default weight and sort by label.
+            return mapping_for_order.get(value.get('matchingType'), 5), value['label']
 
-        therapy_match_statuses = service.therapy_related_things_match_status()
+        therapy_match_statuses = service.therapy_related_things_match_status() if service else {}
 
         for field in details.values():
             if not isinstance(field, dict):
@@ -85,15 +91,18 @@ class TrialTemplates:
                 elif field_name in THERAPIES_ATTRS:
                     if field['value'] == []:
                         continue  # skip — active column (legacy or OMOP) has no criteria
-                    field['matchingType'] = therapy_match_statuses[field_name]["status"]
-                    field['uvalue'] = therapy_match_statuses[field_name]["values"]
-                    # OMOP code + title for the OMOP-mapped levels (regimen/component);
-                    # absent for legacy/type criteria. See therapy_related_things_match_status.
-                    if 'omopConcepts' in therapy_match_statuses[field_name]:
-                        field['omopConcepts'] = therapy_match_statuses[field_name]['omopConcepts']
+                    if field_name in therapy_match_statuses:
+                        field['matchingType'] = therapy_match_statuses[field_name]["status"]
+                        field['uvalue'] = therapy_match_statuses[field_name]["values"]
+                        # OMOP code + title for the OMOP-mapped levels (regimen/component);
+                        # absent for legacy/type criteria. See therapy_related_things_match_status.
+                        if 'omopConcepts' in therapy_match_statuses[field_name]:
+                            field['omopConcepts'] = therapy_match_statuses[field_name]['omopConcepts']
                     out['trialEligibilityAttributes'].append(field)
                 elif not self._trial_attributes.is_blank(field_name, field['value'], field.get('search_type')):
-                    if field['ufield']:
+                    if service is None:
+                        pass  # no patient, so no verdict — see above
+                    elif field['ufield']:
                         field['matchingType'] = service.attr_match_status(AttributeNames.get_by_camel_case(field['ufield']))
                     else:
                         field['matchingType'] = 'matched'

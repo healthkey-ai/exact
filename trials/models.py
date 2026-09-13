@@ -768,12 +768,27 @@ class Trial(TimeStampMixin):
         return UserToTrialAttrsMapper().potential_attrs_for_trial(self, counts)
 
     def get_match_score(self, patient_info):
+        """How well this trial matches that patient, or None for no patient.
+
+        `resolve_patient_info` legitimately returns None — a request with no
+        inline payload and no resolvable `person_id` is the documented
+        public-browsing path, and the list endpoint answers it with unfiltered
+        results. Asking a matcher to score against nobody is not a question
+        with an answer, so this says so rather than dereferencing None several
+        frames further down.
+        """
+        if patient_info is None:
+            return None
         return UserToTrialAttrMatcher(trial=self, patient_info=patient_info).trial_match_score()
 
     def details_and_group_names(self, patient_info, template, attrs_to_fill_in):
         return TrialTemplates(trial=self, patient_info=patient_info).details_and_group_names(template, attrs_to_fill_in)
 
     def matching_type(self, patient_info):
+        """The verdict for that patient, or None for no patient — see
+        `get_match_score`."""
+        if patient_info is None:
+            return None
         return UserToTrialAttrMatcher(trial=self, patient_info=patient_info).trial_match_status()
 
     @property
