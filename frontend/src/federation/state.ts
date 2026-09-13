@@ -16,6 +16,7 @@
 import type { AxiosInstance } from "axios";
 
 import type { FilterState } from "./types";
+import type { WritableFields } from "./writable";
 
 /** Trial ids, as PROMOP stores them — strings, because they are opaque keys
  *  to it. EXACT's `trial_ids` filter accepts numeric strings. */
@@ -59,6 +60,62 @@ export interface TrialStateAdapter {
   /** Clear them. Deliberately not `savePreferences({})`: the server merges
    *  a partial update, so "reset" has to be its own call. */
   resetPreferences(): Promise<void>;
+
+  /** Which patient attributes this caller may edit for this patient, and how.
+   *
+   *  Asked rather than derived: EXACT names the attribute a row is about but
+   *  cannot know whether PROMOP will accept a write to it — that depends on a
+   *  reviewed concept set, on the field's kind, and on who is asking. See
+   *  `writable.ts`.
+   *
+   *  Optional, and paired with `setPatientField`: a host that implements
+   *  neither gets the read-only detail page it has today. Implementing only
+   *  one is refused by `canEditFields` rather than half-honoured — a
+   *  descriptor with no writer draws pencils that lead nowhere, and a writer
+   *  with no descriptor has to guess what is writable, which is the guess this
+   *  whole seam exists to avoid. */
+  getWritableFields?(): Promise<WritableFields>;
+  /** Write one attribute. See `WriteOutcome` for why this reports three
+   *  states rather than resolving or rejecting. */
+  setPatientField?(field: string, value: unknown): Promise<WriteOutcome>;
+}
+
+/** What the record showed after a write.
+ *
+ *  Three states, because PROMOP's `PATCH /patient-records/{id}/` answers 200
+ *  for a field it did not write: unknown and read-only fields are dropped
+ *  silently (the older 405 was removed deliberately). A seam that reported
+ *  that as success would let the page say "saved" over a value the record
+ *  never took — the exact failure this phase is here to prevent.
+ *
+ *  `differs` is deliberately NOT called "rejected", because most of the time
+ *  it is not. The record is a projection re-derived from the OMOP facts the
+ *  write produced, and the derivation canonicalises on the way back: free
+ *  light chains return in mg/L whatever unit they were entered in, WBC units
+ *  are normalised, a date comes back as a datetime, and clearing a field may
+ *  echo `null` where `""` was sent. All of those are successful writes whose
+ *  stored value is not character-for-character what was posted. `differs`
+ *  means re-read the record, not tell the reader they failed.
+ *
+ *  `unconfirmed` means the response did not mention the field at all, which
+ *  is rare — the endpoint returns the whole serialized record — but is not a
+ *  failure either.
+ *
+ *  None of the three covers a REFUSED write: the call rejects for those.
+ *  403 for a caller without write access, 404 for an unknown person, 400 for
+ *  a value the serializer will not take (too many decimal places, an
+ *  unrecognised choice). Every caller needs a catch. */
+export type WriteOutcome =
+  | { status: "saved"; value: unknown }
+  | { status: "differs"; value: unknown }
+  | { status: "unconfirmed" };
+
+/** Both halves, or neither. Mirrors `canPersistFilters`. */
+export function canEditFields(
+  adapter: TrialStateAdapter | undefined,
+): adapter is TrialStateAdapter &
+  Required<Pick<TrialStateAdapter, "getWritableFields" | "setPatientField">> {
+  return Boolean(adapter?.getWritableFields && adapter?.setPatientField);
 }
 
 interface PromopStateArgs {
@@ -84,6 +141,7 @@ export function createPromopState({
   const person = String(personId);
   const enrollments = `${basePath}/trial-enrollments`;
   const preferences = `${basePath}/trial-search-preferences`;
+  const records = `${basePath}/patient-records`;
 
   const ids = async (params: Record<string, string>): Promise<TrialId[]> => {
     const response = await client.get<{ trial_ids: TrialId[]; count: number }>(
@@ -153,5 +211,105 @@ export function createPromopState({
       client
         .patch(`${preferences}/reset/`, {}, { params: { person_id: person } })
         .then(() => undefined),
+
+    // `person_id` is not optional here even though the endpoint accepts its
+    // absence. Without it the answer describes the deployment — "could
+    // someone write this" — and an analyst holding read-only access to every
+    // patient would be handed a typeable box whose every save is refused.
+    getWritableFields: async () => {
+      const response = await client.get<WritableFields>(
+        `${records}/writable-fields/`,
+        { params: { person_id: person } },
+      );
+      return response.data ?? {};
+    },
+
+    // No `person_id` param here, unlike the calls above: this endpoint takes
+    // the person in the path and reads nothing from the query string, so
+    // sending it would encode the same id twice with only one of them
+    // consulted.
+    setPatientField: async (field, value) => {
+      const response = await client.patch<Record<string, unknown>>(
+        `${records}/${person}/`,
+        { [field]: value },
+      );
+      const body = response.data;
+      if (!body || typeof body !== "object" || !(field in body)) {
+        return { status: "unconfirmed" };
+      }
+      const echoed = body[field];
+      // Stringified, because the wire does not preserve the distinction: a
+      // number sent as 12 comes back as "12" from a decimal column, and an
+      // option sent as a string may return as one of several equal spellings
+      // of the same value. Both are the value the record took.
+      return sameValue(echoed, value)
+        ? { status: "saved", value: echoed }
+        : { status: "differs", value: echoed };
+    },
   };
+}
+
+/** Loose equality for a value that has been through JSON and a database.
+ *
+ *  Element-wise for lists, position included. Wrapping is normalised in ONE
+ *  direction only — see the function.
+ *
+ *  Objects compare structurally rather than through `String`, which renders
+ *  every one of them as "[object Object]" and would have called any two of
+ *  them equal. That is not academic: the record has 62 JSON columns, several
+ *  of them writable — `genetic_mutations`, `sct_eligibility`,
+ *  `active_malignancies`, the `genomics_*` family — and PROMOP handles some
+ *  of those specially on the way in, so they are the fields most likely to
+ *  come back as something other than what was sent. */
+function sameValue(echoed: unknown, sent: unknown): boolean {
+  // One direction only, and the arguments are named so it stays that way. A
+  // single value written to a multi-valued column comes back wrapped, and
+  // that is the same value. The reverse is not: a list that comes back as a
+  // scalar means the record holds a different shape than was sent, which is
+  // worth re-reading rather than confirming.
+  if (Array.isArray(echoed) && !Array.isArray(sent) && echoed.length === 1) {
+    return sameValue(echoed[0], sent);
+  }
+  if (Array.isArray(echoed) !== Array.isArray(sent)) return false;
+  if (Array.isArray(echoed) && Array.isArray(sent)) {
+    // Position included: the record echoes what it stored, and a reordered
+    // list is not proof the write landed as sent.
+    return echoed.length === sent.length
+      && echoed.every((v, i) => sameValue(v, sent[i]));
+  }
+  if (echoed == null || sent == null) return echoed == null && sent == null;
+  if (isObject(echoed) || isObject(sent)) {
+    return isObject(echoed) && isObject(sent) && canonical(echoed) === canonical(sent);
+  }
+  if (isNumeric(echoed) && isNumeric(sent)) return Number(echoed) === Number(sent);
+  return String(echoed) === String(sent);
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** JSON with the keys sorted, so two objects that differ only in key order
+ *  compare equal — Postgres `jsonb` does not preserve the order they arrived
+ *  in, so insisting on it would report every JSON write as differing. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (isObject(v)) {
+    const keys = Object.keys(v).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+/** A number, or a string that is one.
+ *
+ *  Booleans and empty strings are deliberately excluded even though `Number`
+ *  is happy to convert them: `Number(false)` is 0 and `Number("")` is 0, so
+ *  admitting either would make `false` equal to "0" and an emptied field equal
+ *  to zero. For a lab value that is the difference between "not measured" and
+ *  "measured as none". */
+function isNumeric(v: unknown): boolean {
+  if (typeof v === "number") return Number.isFinite(v);
+  if (typeof v !== "string" || v.trim() === "") return false;
+  return Number.isFinite(Number(v));
 }
