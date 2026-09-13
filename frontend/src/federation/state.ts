@@ -16,6 +16,7 @@
 import type { AxiosInstance } from "axios";
 
 import type { FilterState } from "./types";
+import { splitJoined } from "./writable";
 import type { WritableFields } from "./writable";
 
 /** Trial ids, as PROMOP stores them — strings, because they are opaque keys
@@ -262,6 +263,15 @@ export function createPromopState({
  *  of those specially on the way in, so they are the fields most likely to
  *  come back as something other than what was sent. */
 function sameValue(echoed: unknown, sent: unknown): boolean {
+  // A list written to a multi-valued column comes back as one comma-joined
+  // string — PROMOP's serializer joins on read whatever the write sent — so
+  // comparing the two shapes directly would report every such write as
+  // differing, and send the page for a re-read it does not need.
+  if (!Array.isArray(echoed) && typeof echoed === "string" && Array.isArray(sent)) {
+    const parts = splitJoined(echoed);
+    return parts.length === sent.length
+      && parts.every((v, i) => sameValue(v, sent[i]));
+  }
   // One direction only, and the arguments are named so it stays that way. A
   // single value written to a multi-valued column comes back wrapped, and
   // that is the same value. The reverse is not: a list that comes back as a

@@ -27,12 +27,17 @@ export type WritableKind =
 export interface WritableFieldEntry {
   kind: WritableKind | (string & {});
   writable: boolean;
-  /** Why, in words fit to show a reader.
+  /** Why, in PROMOP's words — which are not always fit to show a reader.
    *
-   *  NOT only on refusals. PROMOP attaches a `reason` to plenty of writable
-   *  entries too — "Written directly to PatientRecord. No OMOP mapping yet.",
-   *  or `relapse_count`'s "Inferred by default; enter a value to override".
-   *  Rendering it as an error message would be wrong; it is a note. */
+   *  Some are written for whoever is integrating: one points at
+   *  `docs/omop_to_patientrecord.md`. Showing them raw to a patient would be
+   *  worse than saying nothing, so this is carried, not rendered.
+   *
+   *  It is also NOT only on refusals. PROMOP attaches a `reason` to plenty of
+   *  writable entries — "Written directly to PatientRecord. No OMOP mapping
+   *  yet.", or `relapse_count`'s "Inferred by default; enter a value to
+   *  override". Treating its presence as an error would withhold controls
+   *  that work. */
   reason?: string;
   /** The field this one mirrors. Usually an `alias`, but not only: PROMOP
    *  sets it on `refractory_status`, which is `direct` and writable. */
@@ -192,4 +197,26 @@ export function editabilityOf(
     return { can: "no", field: patientField, entry, why };
   }
   return { can: "edit", field: patientField, entry, control: controlFor(entry) };
+}
+
+/** Split a multi-valued text column back into its values.
+ *
+ *  PROMOP stores the one field that takes several answers — `cytogenetic_markers`
+ *  — as a TextField, and its serializer ALWAYS reads it back comma-joined:
+ *  `to_representation` returns `", ".join(...)`, never a list, whatever the
+ *  write sent. A multiselect seeded from the raw string would therefore show
+ *  one option nobody offers and nothing selected.
+ *
+ *  Commas inside parentheses do not separate, mirroring PROMOP's own
+ *  `re.split(r',\s*(?![^()]*\))', ...)`. Marker names carry them:
+ *  `inv(3)(q21,q26)` is one marker, and splitting it would produce two the
+ *  record has never heard of.
+ */
+export function splitJoined(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((v) => String(v ?? "")).filter((v) => v !== "");
+  if (value == null || value === "") return [];
+  return String(value)
+    .split(/,\s*(?![^()]*\))/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
 }

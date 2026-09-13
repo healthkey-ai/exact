@@ -126,6 +126,14 @@ export interface TrialDetailField {
    *  It names the attribute. Whether it can be WRITTEN is a different
    *  question, answered by PROMOP's descriptor — see `writable.ts`. */
   upatientField?: string | null;
+  /** Whether EXACT recomputes this attribute on every match.
+   *
+   *  If it does, a value written upstream does not survive: it is replaced
+   *  from the inputs before the matcher sees it. PROMOP will still ACCEPT the
+   *  write — the two answer different questions — so a client that asks only
+   *  PROMOP offers a box whose effect is undone with no error anywhere
+   *  (#449). */
+  upatientRecomputed?: boolean;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;
