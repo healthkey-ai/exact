@@ -3,11 +3,13 @@
 // because the remote ships no component library and must not pull one into
 // whichever host mounts it.
 //
-// One field is deliberately absent: CB's trial-purpose control is a
-// multiselect (CB #4663) and this line's backend parses `trialPurpose` as a
-// single value (`_str`, not `_str_list`, in study_preferences.py), so a
-// multiselect here would send several values and the server would keep one
-// without saying which. Single-select until that parser is ported — #428.
+// Trial purpose is a multiselect, matching CB #4663: the backend's `_str_list`
+// parser takes several codes and `by_trial_purpose` answers with their union
+// (#428). It is `<details>` + checkboxes rather than a `<select multiple>`,
+// which is unusable on touch and renders as a fixed-height scroll box on the
+// desktop — CB's own control is a popover with checkboxes, and `<details>` is
+// the native element that behaves like one without a library.
+import { useEffect, useId, useRef } from "react";
 import type { AxiosInstance } from "axios";
 
 import { DISTANCE_UNITS, isActiveDistance } from "./filters";
@@ -96,6 +98,128 @@ function SelectFilter({
   );
 }
 
+/** Several codes at once, for a field where the server answers with the union.
+ *
+ *  No selection means no filter, so there is no "Any" entry to pick: clearing
+ *  every box IS Any, and an explicit one would be a fourth state to keep in
+ *  sync with the other three. The server's own empty-valued "ALL" option is
+ *  dropped for the same reason — as a checkbox it would read as a purpose.
+ */
+function MultiSelectFilter({
+  label,
+  values,
+  options,
+  onChange,
+}: {
+  label: string;
+  values: string[] | undefined;
+  options: Option[];
+  onChange: (next: string[] | undefined) => void;
+}) {
+  const labelId = useId();
+  const selected = values ?? [];
+  const choices = options.filter((option) => option.value !== "");
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+
+  // `/form-settings/` may still be in flight, or have failed, in which case
+  // `choices` is empty. A selected code the options do not describe still gets
+  // a row, labelled by its own value: showing it only in the summary would
+  // name a filter the reader cannot untick, leaving Reset — which clears every
+  // other filter too — as the only way out of it.
+  const rows = [
+    ...choices,
+    ...selected
+      .filter((value) => !choices.some((option) => option.value === value))
+      .map((value) => ({ value, label: value })),
+  ];
+  const chosen = selected.map(
+    (value) => rows.find((option) => option.value === value)?.label ?? value,
+  );
+  const summary =
+    chosen.length === 0
+      ? "Any"
+      : chosen.length <= 2
+        ? chosen.join(", ")
+        : `${chosen.length} selected`;
+
+  // `<details>` is not a popover: it has no light dismiss, so without these
+  // the open list sits over the two filters below it until the summary is
+  // clicked again.
+  useEffect(() => {
+    const element = detailsRef.current;
+    if (!element) return;
+    const closeIfOutside = (event: MouseEvent) => {
+      if (!element.contains(event.target as Node)) element.open = false;
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || !element.open) return;
+      element.open = false;
+      // Focus goes back to the control the reader opened, not to the document.
+      element.querySelector("summary")?.focus();
+    };
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
+
+  const toggle = (value: string) => {
+    const next = new Set(selected);
+    if (!next.delete(value)) next.add(value);
+    // Canonical order — the server's own option order, with anything it does
+    // not offer kept in the order it arrived. Click order would put the same
+    // selection on the wire two ways, which is two react-query cache entries
+    // and two round-trips for one answer, while `sameValue` treats them as
+    // the same search.
+    const known = choices.map((option) => option.value).filter((v) => next.has(v));
+    const unknown = selected.filter(
+      (v) => next.has(v) && !choices.some((option) => option.value === v),
+    );
+    const codes = [...known, ...unknown];
+    // `undefined` rather than `[]` when the last box is cleared: the filter
+    // helpers treat both as inactive, but `undefined` is what every other
+    // control emits and what a cleared field is persisted as.
+    onChange(codes.length ? codes : undefined);
+  };
+
+  return (
+    <div className="exact-filter">
+      <span className="exact-filter__label" id={labelId}>
+        {label}
+      </span>
+      <details className="exact-filter__multi" ref={detailsRef}>
+        {/* `aria-labelledby` on the summary, not only on the group: the
+            summary is the focusable control, and without it the whole field
+            is announced as just its own value. */}
+        <summary
+          className="exact-filter__input exact-filter__multi-summary"
+          aria-labelledby={`${labelId} ${labelId}-value`}
+        >
+          <span id={`${labelId}-value`}>{summary}</span>
+        </summary>
+        <div
+          className="exact-filter__multi-list"
+          role="group"
+          aria-labelledby={labelId}
+        >
+          {rows.map((option) => (
+            <label key={option.value} className="exact-filter__multi-option">
+              <input
+                type="checkbox"
+                checked={selected.includes(option.value)}
+                onChange={() => toggle(option.value)}
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 export function FilterPanel({
   apiClient,
   filters,
@@ -120,9 +244,9 @@ export function FilterPanel({
           onChange={(v) => set({ searchTitle: v })}
         />
 
-        <SelectFilter
+        <MultiSelectFilter
           label="Trial purpose"
-          value={filters.trialPurpose}
+          values={filters.trialPurpose}
           options={options("trialPurpose")}
           onChange={(v) => set({ trialPurpose: v })}
         />

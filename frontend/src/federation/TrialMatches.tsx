@@ -28,6 +28,7 @@ import {
   baselineFilters,
   countActiveFilters,
   countryFor,
+  normalizeFilterState,
   userOwnedFilters,
 } from "./filters";
 import { MAX_TRIAL_IDS } from "./state";
@@ -68,7 +69,12 @@ function TrialMatchesInner({
     injectStyles();
   }, []);
 
-  const [filters, setFilters] = useState<FilterState>(initialFilters ?? {});
+  // Normalized on the way in: a host compiles separately, so a pre-#428
+  // `trialPurpose` string in `initialFilters` is not caught by `tsc` here
+  // and would spread into its own letters on the first click (#428).
+  const [filters, setFilters] = useState<FilterState>(() =>
+    normalizeFilterState(initialFilters),
+  );
   const [selectedTrial, setSelectedTrial] = useState<TrialMatch | null>(null);
   // Seeded from the host's `initialFilters.type` rather than defaulted: the
   // prop is public API, and a host that mounts the remote asking for the
@@ -228,7 +234,10 @@ function TrialMatchesInner({
     // to expire a type picked for someone else — would mask the very type
     // just loaded, and a later edit would overwrite it.
     if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
-    setFilters((current) => ({ ...current, ...saved }));
+    // Normalized for the same reason as the initial state, and the more
+    // likely source: this is what the PREVIOUS build of this remote saved,
+    // when `trialPurpose` was a single string.
+    setFilters((current) => normalizeFilterState({ ...current, ...saved }));
   });
   // Ownership is per patient: what the previous one had saved is not evidence
   // about this one. Kept in step with `stateKey` — the same key the saved-set

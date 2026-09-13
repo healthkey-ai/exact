@@ -45,6 +45,43 @@ const PANEL_FIELDS = [
 
 export type PanelField = (typeof PANEL_FIELDS)[number];
 
+/** Filter fields that hold several values. Listed rather than inferred: the
+ *  coercion below has to know what SHOULD be an array, not what happens to be
+ *  one in the value it was handed. */
+const MULTI_FIELDS = ["trialPurpose"] as const;
+
+/** Coerce a FilterState that came from outside this build.
+ *
+ *  `trialPurpose` was a single string until CB #4663 (#428). Two sources still
+ *  hold the old shape and neither is under our control:
+ *
+ *  * saved filters — `userOwnedFilters` persisted `trialPurpose: "treatment"`
+ *    to localStorage or, through the state adapter, to PROMOP. The PROMOP copy
+ *    is per person and survives clearing the browser.
+ *  * a host's `initialFilters` — `FilterState` is a published type, and a host
+ *    compiles separately, so `tsc` here never sees its value.
+ *
+ *  Read back unchanged, a string reaches `filterStateToParams` with a truthy
+ *  `.length` and throws on `.join` — the trial list then errors on every
+ *  mount, and re-saves the string, so it does not heal itself. In the panel it
+ *  is worse than a crash: `"treatment".includes("treatment")` is true, so the
+ *  box renders ticked, and one click spreads the string into its own letters.
+ *
+ *  Split on commas because that is the wire form this build emits, so a value
+ *  round-tripped through a URL comes back as the list it went out as. */
+export function normalizeFilterState(filters?: FilterState): FilterState {
+  const out: FilterState = { ...filters };
+  for (const field of MULTI_FIELDS) {
+    const value = out[field] as unknown;
+    if (value === undefined || value === null) continue;
+    const codes = (Array.isArray(value) ? value : String(value).split(","))
+      .map((code) => String(code).trim())
+      .filter(Boolean);
+    (out as Record<string, unknown>)[field] = codes.length ? codes : undefined;
+  }
+  return out;
+}
+
 /** Which country the list should be scoped to.
  *
  *  The patient's own wins, because it is the more specific fact — but only
@@ -80,14 +117,40 @@ export function baselineFilters(
   // The host's own initial filters are part of the baseline, not something
   // Reset throws away: a host that mounts the remote already scoped to a
   // register or a recruitment status means that scope to survive the button.
-  const base: FilterState = { ...initialFilters };
+  const base: FilterState = normalizeFilterState(initialFilters);
   const country = countryFor(patientCountry, initialFilters);
   if (country) base.country = country;
   return base;
 }
 
 function isEmpty(value: unknown): boolean {
+  // An empty array is a filter nobody set. Without this line the multiselect
+  // `trialPurpose` (#428) would read as active from the moment the control
+  // initialised it to `[]`, so the Filters badge would open at 1 and Reset
+  // would offer to clear a filter that was never applied.
+  if (Array.isArray(value)) return value.length === 0;
   return value === undefined || value === null || value === "" || value === false;
+}
+
+/** Whether two filter values mean the same search.
+ *
+ *  `===` on a multi-value field compares array IDENTITY, so two equal
+ *  selections read as different and every render would count the field as
+ *  changed. Order-insensitive because the server answers with the union —
+ *  `by_trial_purpose` ORs the codes — so a reordering is not a different
+ *  search and must not light up the badge. Case-insensitive for the same
+ *  reason: the codes are matched `iexact`. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const left = Array.isArray(a) ? a : [];
+    const right = Array.isArray(b) ? b : [];
+    if (left.length !== right.length) return false;
+    const norm = (list: unknown[]) =>
+      list.map((v) => String(v).toLowerCase()).sort();
+    const [l, r] = [norm(left), norm(right)];
+    return l.every((value, index) => value === r[index]);
+  }
+  return a === b;
 }
 
 /** Whether a distance is a radius the backend will actually honour.
@@ -123,7 +186,7 @@ export function countActiveFilters(
     const value = filters[field];
     const base = baseline[field];
     if (isInactive(field, value) && isInactive(field, base)) return count;
-    return value === base ? count : count + 1;
+    return sameValue(value, base) ? count : count + 1;
   }, 0);
 }
 
@@ -166,7 +229,7 @@ export function userOwnedFilters(
       (out as Record<string, unknown>)[field] = undefined;
       continue;
     }
-    if (value === base && !owned.has(field)) continue;
+    if (sameValue(value, base) && !owned.has(field)) continue;
     (out as Record<string, unknown>)[field] = value;
   }
   // `distanceUnits` is not a PANEL_FIELD — it qualifies `distance` rather than

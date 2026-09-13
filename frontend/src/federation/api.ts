@@ -212,7 +212,26 @@ export function filterStateToParams(filters?: FilterState): Record<string, strin
   if (filters.country) out.country = filters.country;
   if (filters.region) out.region = filters.region;
   if (filters.trialType) out.trialType = filters.trialType;
-  if (filters.trialPurpose) out.trialPurpose = filters.trialPurpose;
+  // Comma-separated rather than a repeated param. Repetition is the
+  // query-string convention and `_str_list` reads it, but axios's default
+  // serializer spells an array `trialPurpose[]=a&trialPurpose[]=b`, and
+  // Django's `getlist('trialPurpose')` does not see the bracketed key.
+  // Overriding `paramsSerializer` is not available here: the axios
+  // instance belongs to the host. `_str_list` accepts the comma form for
+  // exactly this reason, and purpose codes are taxonomy slugs with no
+  // commas in them.
+  // `Array.isArray` rather than `.join` on trust: this is the last gate before
+  // the wire, and a `trialPurpose` string persisted by the pre-#428 build would
+  // throw here — taking the whole trial list down — rather than filter. The
+  // state is normalized on the way in (`normalizeFilterState`); this is the
+  // second lock on the same door, because a host reaches `fetchTrials` through
+  // paths that do not pass through the panel.
+  const purposes = Array.isArray(filters.trialPurpose)
+    ? filters.trialPurpose
+    : filters.trialPurpose
+      ? [filters.trialPurpose as string]
+      : [];
+  if (purposes.length) out.trialPurpose = purposes.join(",");
   if (filters.studyType) out.studyType = filters.studyType;
   // Only a radius the server will honour goes on the wire: zero is ignored
   // by `if study_info.distance:`, and a negative one passes that check and

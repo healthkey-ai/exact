@@ -7,6 +7,7 @@ import {
   countryFor,
   hasActiveFilters,
   isActiveDistance,
+  normalizeFilterState,
   userOwnedFilters,
 } from "./filters";
 
@@ -306,5 +307,144 @@ describe("userOwnedFilters — a cleared distance", () => {
     );
     expect("distanceUnits" in out).toBe(true);
     expect(out.distanceUnits).toBeUndefined();
+  });
+});
+
+describe("a multi-value filter (trialPurpose, #428)", () => {
+  // `countActiveFilters` and `userOwnedFilters` compared with `===` and tested
+  // emptiness with `=== ""`. Neither holds for an array: `[] === ""` is false,
+  // so an empty selection read as an active filter, and `["a"] === ["a"]` is
+  // false, so an unchanged selection read as a changed one on every render.
+
+  it("an empty selection is not a filter", () => {
+    expect(countActiveFilters({ trialPurpose: [] }, {})).toBe(0);
+    expect(hasActiveFilters({ trialPurpose: [] }, {})).toBe(false);
+  });
+
+  it("...and neither is an absent one", () => {
+    expect(countActiveFilters({}, {})).toBe(0);
+  });
+
+  it("a selection counts once, however many codes are in it", () => {
+    // Once: it is one control and one filter. Counting per code would make
+    // the badge read 3 for a single field the reader touched once.
+    expect(countActiveFilters({ trialPurpose: ["treatment"] }, {})).toBe(1);
+    expect(
+      countActiveFilters({ trialPurpose: ["treatment", "prevention"] }, {}),
+    ).toBe(1);
+  });
+
+  it("an unchanged selection is not a change", () => {
+    const baseline = { trialPurpose: ["treatment"] };
+    // A fresh array with the same contents — what a re-render produces.
+    expect(countActiveFilters({ trialPurpose: ["treatment"] }, baseline)).toBe(0);
+  });
+
+  it("reordering is not a change, because the server takes the union", () => {
+    const baseline = { trialPurpose: ["treatment", "prevention"] };
+    expect(
+      countActiveFilters({ trialPurpose: ["prevention", "treatment"] }, baseline),
+    ).toBe(0);
+  });
+
+  it("...nor is a different spelling, because the codes match iexact", () => {
+    const baseline = { trialPurpose: ["treatment"] };
+    expect(countActiveFilters({ trialPurpose: ["TREATMENT"] }, baseline)).toBe(0);
+  });
+
+  it("adding a code IS a change", () => {
+    // Non-vacuity for every assertion above: an equality broad enough to call
+    // these equal would make the badge permanently 0.
+    const baseline = { trialPurpose: ["treatment"] };
+    expect(
+      countActiveFilters({ trialPurpose: ["treatment", "prevention"] }, baseline),
+    ).toBe(1);
+    expect(countActiveFilters({ trialPurpose: ["prevention"] }, baseline)).toBe(1);
+  });
+
+  it("clearing a host-seeded selection IS a change", () => {
+    const baseline = { trialPurpose: ["treatment"] };
+    expect(countActiveFilters({ trialPurpose: [] }, baseline)).toBe(1);
+    expect(countActiveFilters({}, baseline)).toBe(1);
+  });
+
+  it("is saved when the reader chose it, and not when the host seeded it", () => {
+    const baseline = { trialPurpose: ["treatment"] };
+    expect(
+      userOwnedFilters({ trialPurpose: ["treatment"] }, baseline),
+    ).toEqual({});
+    expect(
+      userOwnedFilters({ trialPurpose: ["treatment", "prevention"] }, baseline),
+    ).toEqual({ trialPurpose: ["treatment", "prevention"] });
+  });
+
+  it("a cleared selection the reader owns is saved as a tombstone", () => {
+    // `undefined`, not absent: the merge transports read an absent key as "no
+    // opinion, keep what you have", so a cleared filter would survive on disk
+    // and be applied again on the next mount.
+    const saved = userOwnedFilters({ trialPurpose: [] }, {}, new Set(["trialPurpose"]));
+    expect("trialPurpose" in saved).toBe(true);
+    expect(saved.trialPurpose).toBeUndefined();
+  });
+});
+
+describe("normalizeFilterState — reading a pre-#428 trialPurpose", () => {
+  // `trialPurpose` was a single string until CB #4663. Two sources still hold
+  // that shape and neither recompiles with this build: saved filters (written
+  // by the PREVIOUS build of this remote, to localStorage or through the state
+  // adapter to PROMOP, where they are per person and survive clearing the
+  // browser) and a host's `initialFilters`.
+
+  it("a bare string becomes the one code it names", () => {
+    expect(normalizeFilterState({ trialPurpose: "treatment" as never })).toEqual({
+      trialPurpose: ["treatment"],
+    });
+  });
+
+  it("a comma-joined string round-trips as the list it went out as", () => {
+    // This build puts `?trialPurpose=a,b` on the wire, so a value that came
+    // back through a URL is exactly this shape.
+    expect(
+      normalizeFilterState({ trialPurpose: "treatment, prevention" as never }),
+    ).toEqual({ trialPurpose: ["treatment", "prevention"] });
+  });
+
+  it("an empty string is no filter, not a filter on nothing", () => {
+    expect(normalizeFilterState({ trialPurpose: "" as never }).trialPurpose)
+      .toBeUndefined();
+    expect(normalizeFilterState({ trialPurpose: [] }).trialPurpose)
+      .toBeUndefined();
+  });
+
+  it("an array is left alone, blanks aside", () => {
+    expect(
+      normalizeFilterState({ trialPurpose: ["treatment", "", " prevention "] }),
+    ).toEqual({ trialPurpose: ["treatment", "prevention"] });
+  });
+
+  it("leaves every other field exactly as it found it", () => {
+    // Non-vacuity, and a guard on the coercion reaching past its one field.
+    const filters = {
+      country: "US",
+      distance: 50,
+      distanceUnits: "miles" as const,
+      validatedOnly: true,
+      type: "eligible" as const,
+    };
+    expect(normalizeFilterState(filters)).toEqual(filters);
+  });
+
+  it("is safe on an empty or absent state", () => {
+    expect(normalizeFilterState()).toEqual({});
+    expect(normalizeFilterState({})).toEqual({});
+  });
+
+  it("the baseline coerces the host's filters too", () => {
+    // `baselineFilters` spreads `initialFilters` straight in, and the result is
+    // what every filter is COMPARED against — an uncoerced string there would
+    // make the badge count the field on every render.
+    expect(
+      baselineFilters(undefined, { trialPurpose: "treatment" as never }),
+    ).toEqual({ trialPurpose: ["treatment"] });
   });
 });
