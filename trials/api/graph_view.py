@@ -30,6 +30,9 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         # behind a PATCH that answers 200 and changes nothing. The count
         # and the reasoning live at `TrialAttributes.with_patient_field_names`.
         "patientFieldCanonical": item.get("upatientField"),
+        # Whether EXACT recomputes it, i.e. whether a write upstream
+        # survives to the next match (#449).
+        "patientFieldRecomputed": item.get("upatientRecomputed"),
         # Carried for the same reason as the name: this endpoint rebuilds
         # the row, so a client here would otherwise not know the value sits
         # behind a subform.
