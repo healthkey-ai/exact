@@ -54,10 +54,12 @@ class TrialMatchExplainer:
     actionable information (disqualifiers, then data gaps) appears first.
     """
 
-    def __init__(self, trial, patient_info):
+    def __init__(self, trial, patient_info, matcher=None):
         self.trial = trial
         self.patient_info = patient_info
-        self._matcher = UserToTrialAttrMatcher(trial, patient_info)
+        # Reuse a caller-supplied matcher when given (avoids rebuilding it) — e.g.
+        # the detail serializer already constructed one for this (trial, patient).
+        self._matcher = matcher if matcher is not None else UserToTrialAttrMatcher(trial, patient_info)
         self._pi_attrs = PatientInfoAttributes(patient_info)
 
     def explain(self):

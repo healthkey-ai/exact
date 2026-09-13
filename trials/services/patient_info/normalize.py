@@ -40,6 +40,8 @@ def normalize_patient_info(pi) -> None:
     if sct:
         pi.stem_cell_transplant_history = [sct]
     pi.renal_adequacy_status = attr.renal_adequacy_status
+    pi.hepatic_adequacy_status = attr.hepatic_adequacy_status
+    pi.haematological_adequacy_status = attr.haematological_adequacy_status
     egfr = EgfrCalculator.call(pi)
     if egfr:
         pi.estimated_glomerular_filtration_rate = egfr
@@ -233,7 +235,10 @@ def _normalize_mcl_derivations(pi) -> None:
     patient_info.py:215). Skips non-MCL patients so other diseases keep
     whatever defaults / inputs they had.
     """
-    if str(pi.disease).lower() != 'mantle cell lymphoma':
+    # Whitespace/None-tolerant, consistent with PatientInfoAttributes.disease_code
+    # (CB #4323): else a padded 'mantle cell lymphoma ' would resolve to disease_code
+    # 'MCL' (MCL attrs matched) yet skip derivation here (MCL matched on blank values).
+    if (pi.disease or '').strip().lower() != 'mantle cell lymphoma':
         return
 
     # Late import: PatientInfoAttributes imports normalize indirectly via
@@ -242,7 +247,7 @@ def _normalize_mcl_derivations(pi) -> None:
     attr = PatientInfoAttributes(pi)
     pi.mipi_risk = attr.mipi_risk
     pi.mipi_c_risk = attr.mipi_c_risk
-    # Defensive copy: bulky_disease_criteria is a cached_property; without
-    # copying, downstream mutation of pi.bulky_disease_criteria would also
-    # mutate the cached property's stored list.
-    pi.bulky_disease_criteria = list(attr.bulky_disease_criteria)
+    # bulky_disease_criteria and high_risk_mcl_criteria are comma-joined
+    # strings (or None), per CB.
+    pi.bulky_disease_criteria = attr.bulky_disease_criteria
+    pi.high_risk_mcl_criteria = attr.high_risk_mcl_criteria

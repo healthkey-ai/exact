@@ -36,7 +36,7 @@ def _strip_tls_policy_query(redis_url):
     return urlunsplit(parts._replace(query=urlencode(kept)))
 
 
-def build_caches(*, redis_url, debug, environment, redis_ca_certs=None):
+def build_caches(*, redis_url, debug, environment, force_redis=False, redis_ca_certs=None):
     """Return the Django ``CACHES`` dict.
 
     ``redis_url`` must be the *raw* ``REDIS_URL`` env value (None/empty when
@@ -51,12 +51,16 @@ def build_caches(*, redis_url, debug, environment, redis_ca_certs=None):
     deployed env without ``REDIS_URL`` also falls back to LocMem: degraded
     (per-worker) but never crashing.
 
+    Set ``force_redis=True`` (via ``CACHE_BACKEND=redis`` env var) to opt in to
+    Redis even in local/debug mode — useful when docker-compose guarantees Redis
+    is always available and you want to test shared-cache behaviour locally.
+
     For ``rediss://`` URLs the TLS cert policy mirrors the Celery config
     (#157): verification is required in deployed envs; ``redis_ca_certs``
     points at a private CA bundle when provided.
     """
     redis_url = (redis_url or "").strip()
-    local = debug or environment == "local"
+    local = (debug or environment == "local") and not force_redis
     if not redis_url or local:
         return {"default": {"BACKEND": LOCMEM_BACKEND}}
 

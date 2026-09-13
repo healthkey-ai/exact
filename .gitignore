@@ -8,6 +8,16 @@ trials/management/commands/load_trials_from_cancerbot.py
 !.env.example
 env/
 
+# Python virtualenvs
+venv/
+.venv/
+
+# gstack tooling / scratch
+.gstack/
+
+# Local data
+data/
+
 # Secrets / credentials — NEVER commit (this repo is PUBLIC)
 serviceAccountKeys/
 *serviceAccount*.json
@@ -41,14 +51,10 @@ scripts/*.zip
 scripts/cache/
 *.csv
 !scripts/evaluator/ground_truth.csv
+!docs/omop/mapping/therapy_omop_mapping.csv
 
 # Local-only management commands and tests
 trials/management/commands/evaluate_ethalon_live.py
 tests/management/test_evaluate_ethalon_live.py
 scripts/evaluator/evaluate_live.sh
 republish_latest.sh
-.gstack/
-
-# Python virtualenvs (local dev)
-.venv/
-venv/

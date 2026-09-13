@@ -24,9 +24,10 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
+        sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
         sudo apt-get -qq update && \
         sudo apt-get -yqq install \
           gcc \
@@ -36,7 +37,17 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      run: pip install -r requirements.txt
+      # The runner's cached/toolcache pip is a broken 24.1+ mix: importing pip
+      # itself raises `ImportError: cannot import name 'get_runnable_pip'`, so
+      # even `python -m pip install "pip<24.1"` can't run. Repair pip first with
+      # the stdlib `ensurepip` bootstrap (it unpacks a bundled wheel without
+      # importing the broken pip), THEN pin pip < 24.1 — a build-isolation path
+      # in `pip install -r requirements.txt` still imports get_runnable_pip,
+      # which 24.1 removed. Deterministic fix until the build backend is fixed.
+      run: |
+        python -m ensurepip --upgrade
+        python -m pip install "pip<24.1"
+        pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
@@ -67,9 +78,10 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
+        sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
         sudo apt-get -qq update && \
         sudo apt-get -yqq install \
           gcc \

@@ -1,0 +1,298 @@
+level,cb_code,cb_title,omop_concept_id,omop_name,omop_vocab,match
+component,st._john's_wort,St. John's Wort,,,,needs_review
+component,liposomal_doxorubicin,Liposomal Doxorubicin,1338512,doxorubicin,RxNorm,llm
+component,thalidomide,Thalidomide,19137042,thalidomide,RxNorm,auto
+component,elranatamab,Elranatamab (Elrexfio),746391,elranatamab,RxNorm,auto
+component,talquetamab,Talquetamab (Talvey),746340,talquetamab,RxNorm,auto
+component,belantamab_mafodotin,Belantamab Mafodotin (Blenrep),37002419,belantamab mafodotin,RxNorm,auto
+component,idecabtagene_vicleucel,Idecabtagene vicleucel (Abecma),36026868,idecabtagene vicleucel,RxNorm,auto
+component,ciltacabtagene_autoleucel,Ciltacabtagene autoleucel (Carvykti),779144,ciltacabtagene autoleucel,RxNorm,auto
+component,panobinostat,Panobinostat (Farydak),46221435,panobinostat,RxNorm,auto
+component,asct,Autologous Stem Cell Transplant (ASCT),,,,no_omop
+component,agsct,Allogeneic Stem Cell Transplant,,,,no_omop
+component,esas,Erythropoiesis-Stimulating Agents (ESAs),,,,needs_review
+component,selinexor,Selinexor,1361191,selinexor,RxNorm,auto
+component,dexamethasone,Dexamethasone,1518254,dexamethasone,RxNorm,auto
+component,idecabtagene_vicleucel_(abecma),Idecabtagene vicleucel (Abecma),36026868,idecabtagene vicleucel,RxNorm,auto
+component,breyanzi_(lisocabtagene_maraleucel),Breyanzi (lisocabtagene maraleucel),739856,lisocabtagene maraleucel,RxNorm,llm
+component,tecartus_(brexucabtagene_autoleucel),Tecartus (brexucabtagene autoleucel),37002369,brexucabtagene autoleucel,RxNorm,llm
+component,ciltacabtagene_autoleucel_(carvykti),Ciltacabtagene autoleucel (Carvykti),779144,ciltacabtagene autoleucel,RxNorm,auto
+component,catumaxomab,Catumaxomab,35802946,Catumaxomab,HemOnc,auto
+component,blinatumomab,Blinatumomab,45892531,blinatumomab,RxNorm,auto
+component,mosunetuzumab,Mosunetuzumab,1301307,mosunetuzumab,RxNorm,auto
+component,tebentafusp,Tebentafusp,1758886,tebentafusp,RxNorm,auto
+component,amivantamab,Amivantamab,1536935,amivantamab,RxNorm,auto
+component,cadonilimab,Cadonilimab,37561559,Cadonilimab,HemOnc,auto
+component,glofitamab,Glofitamab,1201501,glofitamab,RxNorm,auto
+component,doxorubicin,Doxorubicin,1338512,doxorubicin,RxNorm,auto
+component,vincristine,Vincristine,1308290,vincristine,RxNorm,auto
+component,prednisone,Prednisone,1551099,prednisone,RxNorm,auto
+component,umbralisib,Umbralisib,739804,umbralisib,RxNorm,auto
+component,daratumumab,Daratumumab,35605744,daratumumab,RxNorm,auto
+component,carfilzomib,Carfilzomib,42873638,carfilzomib,RxNorm,auto
+component,pomalidomide,Pomalidomide,43014237,pomalidomide,RxNorm,auto
+component,isatuximab,Isatuximab,37498969,isatuximab,RxNorm,auto
+component,elotuzumab,Elotuzumab,35604032,elotuzumab,RxNorm,auto
+component,axicabtagene_ciloleucel_(yescarta),Axicabtagene Ciloleucel (Yescarta),792844,axicabtagene ciloleucel,RxNorm,auto
+component,teclistamab,Teclistamab,741578,teclistamab,RxNorm,auto
+component,cyclophosphamide,Cyclophosphamide,1310317,cyclophosphamide,RxNorm,auto
+component,tisagenlecleucel_(kymriah),Tisagenlecleucel (Kymriah),792737,tisagenlecleucel,RxNorm,auto
+component,genomic_testing,Genomic Testing,,,,no_omop
+component,sacituzumab_govitecan,Sacituzumab Govitecan,35803306,Sacituzumab govitecan,HemOnc,auto
+component,eribulin,Eribulin,40230712,eribulin,RxNorm,auto
+component,vinorelbine,Vinorelbine,1343346,vinorelbine,RxNorm,auto
+component,gemcitabine,Gemcitabine,1314924,gemcitabine,RxNorm,auto
+component,paclitaxel,Paclitaxel,1378382,paclitaxel,RxNorm,auto
+component,docetaxel,Docetaxel,1315942,docetaxel,RxNorm,auto
+component,tucatinib,Tucatinib,1145571,tucatinib,RxNorm,auto
+component,capecitabine,Capecitabine,1337620,capecitabine,RxNorm,auto
+component,lapatinib,Lapatinib,1359548,lapatinib,RxNorm,auto
+component,neratinib,Neratinib,793846,neratinib,RxNorm,auto
+component,margetuximab,Margetuximab,739518,margetuximab,RxNorm,auto
+component,trastuzumab_emtansine,Trastuzumab Emtansine,35802866,Trastuzumab emtansine,HemOnc,auto
+component,atezolizumab,Atezolizumab,42629079,atezolizumab,RxNorm,auto
+component,nab_paclitaxel,Nab-Paclitaxel,1378382,paclitaxel,RxNorm,curated
+component,pembrolizumab,Pembrolizumab,45775965,pembrolizumab,RxNorm,auto
+component,olaparib,Olaparib,45892579,olaparib,RxNorm,auto
+component,talazoparib,Talazoparib,35201068,talazoparib,RxNorm,auto
+component,carboplatin,Carboplatin,1344905,carboplatin,RxNorm,auto
+component,cisplatin,Cisplatin,1397599,cisplatin,RxNorm,auto
+component,alpelisib,Alpelisib,1396423,alpelisib,RxNorm,auto
+component,capivasertib,Capivasertib,747200,capivasertib,RxNorm,auto
+component,larotrectinib,Larotrectinib,1355705,larotrectinib,RxNorm,auto
+component,entrectinib,Entrectinib,37496447,entrectinib,RxNorm,auto
+component,posaconazole,Posaconazole,1704139,posaconazole,RxNorm,auto
+component,fluoxetine,Fluoxetine,755695,fluoxetine,RxNorm,auto
+component,paroxetine,Paroxetine,722031,paroxetine,RxNorm,auto
+component,fluvoxamine,Fluvoxamine,751412,fluvoxamine,RxNorm,auto
+component,sertraline,Sertraline,739138,sertraline,RxNorm,auto
+component,bupropion,Bupropion,750982,bupropion,RxNorm,auto
+component,carbamazepine,Carbamazepine,740275,carbamazepine,RxNorm,auto
+component,phenytoin,Phenytoin,740910,phenytoin,RxNorm,auto
+component,phenobarbital,Phenobarbital,734275,phenobarbital,RxNorm,auto
+component,topiramate,Topiramate,742267,topiramate,RxNorm,auto
+component,grapefruit_juice,Grapefruit juice,43533099,grapefruit juice,RxNorm,auto
+component,pamidronate,Pamidronate,1511646,pamidronate,RxNorm,auto
+component,zoledronic_acid,Zoledronic Acid,1524674,zoledronic acid,RxNorm,auto
+component,denosumab,Denosumab,40222444,denosumab,RxNorm,auto
+component,growth_factor,Growth Factor,,,,needs_review
+component,palbociclib,Palbociclib,45892075,palbociclib,RxNorm,auto
+component,ribociclib,Ribociclib,1592911,ribociclib,RxNorm,auto
+component,abemaciclib,Abemaciclib,792649,abemaciclib,RxNorm,auto
+component,estrogen,Estrogen,21603814,Estrogens,ATC,llm
+component,tamoxifen,Tamoxifen,1436678,tamoxifen,RxNorm,auto
+component,anastrozole,Anastrozole,1348265,anastrozole,RxNorm,auto
+component,letrozole,Letrozole,1315946,letrozole,RxNorm,auto
+component,ibritumomab_tiuxetan,Ibritumomab tiuxetan,19068830,ibritumomab tiuxetan,RxNorm,auto
+component,plasmapheresis,Plasmapheresis,,,,no_omop
+component,bortezomib,Bortezomib,1336825,bortezomib,RxNorm,auto
+component,ixazomib,Ixazomib,35606214,ixazomib,RxNorm,auto
+component,tazemetostat,Tazemetostat,37498602,tazemetostat,RxNorm,auto
+component,venetoclax,Venetoclax,35604205,venetoclax,RxNorm,auto
+component,obinutuzumab,Obinutuzumab,44507676,obinutuzumab,RxNorm,auto
+component,bendamustine,Bendamustine,19015523,bendamustine,RxNorm,auto
+component,polatuzumab_vedotin,Polatuzumab Vedotin,1396729,polatuzumab vedotin,RxNorm,auto
+component,idelalisib,Idelalisib,45776944,idelalisib,RxNorm,auto
+component,copanlisib,Copanlisib,792499,copanlisib,RxNorm,auto
+component,duvelisib,Duvelisib,35200763,duvelisib,RxNorm,auto
+component,ide_cel,Ide-cel,36026868,idecabtagene vicleucel,RxNorm,curated
+component,cilta_cel,Cilta-cel,779144,ciltacabtagene autoleucel,RxNorm,curated
+component,belantamab_mafodotin_(blenrep),Belantamab Mafodotin (Blenrep),37002419,belantamab mafodotin,RxNorm,auto
+component,melphalan,Melphalan,1301267,melphalan,RxNorm,auto
+component,lumpectomy,Lumpectomy,,,,no_omop
+component,mastectomy,Mastectomy,,,,no_omop
+component,aromatase_inhibitor,Aromatase Inhibitor,35807245,Aromatase inhibitor,HemOnc,llm
+component,pertuzumab,Pertuzumab,42801287,pertuzumab,RxNorm,auto
+component,everolimus,Everolimus,19011440,everolimus,RxNorm,auto
+component,capisertib,Capisertib,747200,capivasertib,RxNorm,llm
+component,platinum_based_chemotherapy,Platinum-Based Chemotherapy,35807315,Platinum agent,HemOnc,llm
+component,parp_inhibitors,PARP Inhibitors,35807419,PARP inhibitor,HemOnc,llm
+component,other_chemotherapy,Other Chemotherapy,,,,needs_review
+component,surgery,surgery,,,,no_omop
+component,fulvestrant,Fulvestrant,1304044,fulvestrant,RxNorm,auto
+component,elacestrant,Elacestrant,1301646,elacestrant,RxNorm,auto
+component,megestrol_acetate,Megestrol acetate,1300978,megestrol,RxNorm,curated
+component,trastuzumab_deruxtecan,Trastuzumab Deruxtecan,42542260,Trastuzumab deruxtecan,HemOnc,auto
+component,trastuzumab,Trastuzumab,1387104,trastuzumab,RxNorm,auto
+component,chemotherapy,Chemotherapy,,,,needs_review
+component,immune_checkpoint_inhibitor,Immune Checkpoint Inhibitor,,,,needs_review
+component,radiotherapy,Radiotherapy,,,,no_omop
+component,clarithromycin,Clarithromycin,1750500,clarithromycin,RxNorm,auto
+component,erythromycin,Erythromycin,1746940,erythromycin,RxNorm,auto
+component,ciprofloxacin,Ciprofloxacin,1797513,ciprofloxacin,RxNorm,auto
+component,rifampin,Rifampin,1763204,rifampin,RxNorm,auto
+component,rifabutin,Rifabutin,1777417,rifabutin,RxNorm,auto
+component,itraconazole,Itraconazole,1703653,itraconazole,RxNorm,auto
+component,ketoconazole,Ketoconazole,985708,ketoconazole,RxNorm,auto
+component,fluconazole,Fluconazole,1754994,fluconazole,RxNorm,auto
+component,voriconazole,Voriconazole,1714277,voriconazole,RxNorm,auto
+component,st._john_s_wort,St. John's Wort,,,,needs_review
+component,exemestane,Exemestane,1398399,exemestane,RxNorm,auto
+component,rituximab,Rituximab,1314273,rituximab,RxNorm,auto
+component,lenalidomide,Lenalidomide,19026972,lenalidomide,RxNorm,auto
+regimen,vrd,VRd,35806260,RVD,HemOnc,curated
+regimen,dara_vrd,Dara-VRd,911993,Dara-RVd,HemOnc,curated
+regimen,dara_rd,Dara-Rd,35806311,Dara-Rd,HemOnc,auto
+regimen,vrd_lite,VRd Lite,,,,needs_review
+regimen,krd,KRd,35806284,KRd,HemOnc,auto
+regimen,isa_vrd,Isa-VRd,37557069,Isa-RVd,HemOnc,curated
+regimen,isa_krd,Isa-KRd,,,,needs_review
+regimen,kpd,KPd,35806324,KPD,HemOnc,auto
+regimen,epd,EPd,,,,needs_review
+regimen,svd,SVd,905768,SVd,HemOnc,auto
+regimen,cy_bor_d,CyBorD,,,,needs_review
+regimen,car_t,CAR-T Cell Therapy,35807448,Chimeric antigen receptor T-cell,HemOnc,llm
+regimen,ba,Bispecific Antibodies,35807364,Bispecific antibody medication,HemOnc,llm
+regimen,ww,Watchful Waiting (Active Surveillance),37561232,Watchful waiting,HemOnc,auto
+regimen,rm,Rituximab Monotherapy,35803432,Rituximab monotherapy,HemOnc,auto
+regimen,r_chop,R-CHOP,35805028,R-CHOP,HemOnc,auto
+regimen,r_cvp,R-CVP,35805630,R-CVP,HemOnc,auto
+regimen,br,R-Bendamustine (BR),,,,needs_review
+regimen,ifrt,Involved-Field Radiotherapy (IFRT),,,,needs_review
+regimen,obr,Obinutuzumab-Based Regimens,44507676,obinutuzumab,RxNorm,llm
+regimen,rm_rt,Rituximab Maintenance or Re-Treatment,1314273,rituximab,RxNorm,llm
+regimen,pi3k,PI3K Inhibitors,35807303,PI3K inhibitor,HemOnc,llm
+regimen,tazemetostat,Tazemetostat (Tazverik),37498602,tazemetostat,RxNorm,auto
+regimen,hdc_asct,High-Dose Chemotherapy with Autologous Stem Cell Transplant (ASCT),,,,needs_review
+regimen,lbr,Lenalidomide-Based Regimens,19026972,lenalidomide,RxNorm,llm
+regimen,ldr,Low-Dose Radiotherapy,,,,needs_review
+regimen,daratumumab,Daratumumab (Darzalex/Darzalex Faspro) Monotherapy,35806063,Daratumumab monotherapy,HemOnc,auto
+regimen,carfilzomib,Carfilzomib (Kyprolis) Monotherapy,35806280,Carfilzomib monotherapy,HemOnc,auto
+regimen,lenalidomide,Lenalidomide (Revlimid) Monotherapy,35803596,Lenalidomide monotherapy,HemOnc,auto
+regimen,pomalidomide,Pomalidomide (Pomalyst) Monotherapy,35806317,Pomalidomide monotherapy,HemOnc,auto
+regimen,bortezomib,Bortezomib (Velcade) Monotherapy,35804520,Bortezomib monotherapy,HemOnc,auto
+regimen,isatuximab,Isatuximab (Sarclisa) Monotherapy,37498969,isatuximab,RxNorm,auto
+regimen,elotuzumab,Elotuzumab (Empliciti) Monotherapy,35604032,elotuzumab,RxNorm,auto
+regimen,cyclophosphamide,Cyclophosphamide Monotherapy,35803690,Cyclophosphamide monotherapy,HemOnc,auto
+regimen,venetoclax,Venetoclax Monotherapy,35804617,Venetoclax monotherapy,HemOnc,auto
+regimen,obinutuzumab,Obinutuzumab (Gazyva) Monotherapy,35804583,Obinutuzumab monotherapy,HemOnc,auto
+regimen,rituximab,Rituximab (Rituxan) Monotherapy,35803432,Rituximab monotherapy,HemOnc,auto
+regimen,lr,Lenalidomide (Revlimid) + Rituximab (R2),,,,needs_review
+regimen,bendamustine,Bendamustine Monotherapy,35804017,Bendamustine monotherapy,HemOnc,auto
+regimen,polatuzumab_vedotin,Polatuzumab Vedotin Monotherapy,1396729,polatuzumab vedotin,RxNorm,auto
+regimen,idelalisib,Idelalisib (Zydelig) Monotherapy,35804613,Idelalisib monotherapy,HemOnc,auto
+regimen,copanlisib,Copanlisib (Aliqopa) Monotherapy,35805647,Copanlisib monotherapy,HemOnc,auto
+regimen,duvelisib,Duvelisib (Copiktra) Monotherapy,35804603,Duvelisib monotherapy,HemOnc,auto
+regimen,axicabtagene_ciloleucel,Axicabtagene Ciloleucel (Yescarta) Monotherapy,35805074,Axicabtagene ciloleucel monotherapy,HemOnc,auto
+regimen,clinical_trials,Clinical Trials,,,,needs_review
+regimen,teclistamab,Teclistamab (Tecvayli) Monotherapy,37557075,Teclistamab monotherapy,HemOnc,auto
+regimen,ide_cel,Ide-cel (Abecma) Monotherapy,36026868,idecabtagene vicleucel,RxNorm,llm
+regimen,cilta_cel,Cilta-cel (Carvykti) Monotherapy,779144,ciltacabtagene autoleucel,RxNorm,llm
+regimen,belantamab_mafodotin,Belantamab Mafodotin (Blenrep) Monotherapy,911956,Belantamab mafodotin monotherapy,HemOnc,auto
+regimen,radiotherapy,Radiotherapy,,,,no_omop
+regimen,lumpectomy,Lumpectomy,,,,no_omop
+regimen,mastectomy,Mastectomy,,,,no_omop
+regimen,aromatase_inhibitors,Aromatase Inhibitors,35807245,Aromatase inhibitor,HemOnc,llm
+regimen,chemotherapy,Chemotherapy,35803401,Chemotherapy,HemOnc,auto
+regimen,trastuzumab,Trastuzumab,1387104,trastuzumab,RxNorm,auto
+regimen,pertuzumab,Pertuzumab,42801287,pertuzumab,RxNorm,auto
+regimen,genomic_testing,Genomic Testing,,,,no_omop
+regimen,fulvestrant,Fulvestrant,1304044,fulvestrant,RxNorm,auto
+regimen,exemestane_everolimus,Exemestane + Everolimus,,,,needs_review
+regimen,capisertib,Capisertib,747200,capivasertib,RxNorm,llm
+regimen,atezolizumab,Atezolizumab,42629079,atezolizumab,RxNorm,auto
+regimen,sacituzumab_govitecan,Sacituzumab Govitecan,35803306,Sacituzumab govitecan,HemOnc,auto
+regimen,platinum_based_chemotherapy,Platinum-Based Chemotherapy,35807315,Platinum agent,HemOnc,llm
+regimen,parp_inhibitors,PARP Inhibitors,35807419,PARP inhibitor,HemOnc,llm
+regimen,other_chemotherapy,Other Chemotherapy,,,,needs_review
+regimen,surgery,surgery,,,,no_omop
+regimen,alpelisib_fulvestrant,Alpelisib + Fulvestrant,,,,needs_review
+regimen,capivasertib_fulvestrant,Capivasertib + Fulvestrant,,,,needs_review
+regimen,elacestrant,Elacestrant,1301646,elacestrant,RxNorm,auto
+regimen,tamoxifen,Tamoxifen,1436678,tamoxifen,RxNorm,auto
+regimen,megestrol_acetate,Megestrol acetate,1300978,megestrol,RxNorm,llm
+regimen,capecitabine,Capecitabine,1337620,capecitabine,RxNorm,auto
+regimen,eribulin,Eribulin,40230712,eribulin,RxNorm,auto
+regimen,vinorelbine,Vinorelbine,1343346,vinorelbine,RxNorm,auto
+regimen,gemcitabine,Gemcitabine,1314924,gemcitabine,RxNorm,auto
+regimen,paclitaxel,Paclitaxel,1378382,paclitaxel,RxNorm,auto
+regimen,docetaxel,Docetaxel,1315942,docetaxel,RxNorm,auto
+regimen,trastuzumab_deruxtecan,Trastuzumab Deruxtecan,42542260,Trastuzumab deruxtecan,HemOnc,auto
+regimen,tucatinib_trastuzumab_capecitabine,Tucatinib + Trastuzumab + Capecitabine,,,,needs_review
+regimen,lapatinib,Lapatinib,1359548,lapatinib,RxNorm,auto
+regimen,neratinib,Neratinib,793846,neratinib,RxNorm,auto
+regimen,margetuximab,Margetuximab,739518,margetuximab,RxNorm,auto
+regimen,trastuzumab_emtansine,Trastuzumab Emtansine,35802866,Trastuzumab emtansine,HemOnc,auto
+regimen,atezolizumab_nab_paclitaxel,Atezolizumab + Nab-Paclitaxel,,,,needs_review
+regimen,pembrolizumab_chemotherapy,Pembrolizumab + Chemotherapy,,,,needs_review
+regimen,olaparib,Olaparib,45892579,olaparib,RxNorm,auto
+regimen,talazoparib,Talazoparib,35201068,talazoparib,RxNorm,auto
+regimen,carboplatin,Carboplatin,1344905,carboplatin,RxNorm,auto
+regimen,cisplatin,Cisplatin,1397599,cisplatin,RxNorm,auto
+regimen,alpelisib,Alpelisib,1396423,alpelisib,RxNorm,auto
+regimen,capivasertib,Capivasertib,747200,capivasertib,RxNorm,auto
+regimen,larotrectinib,Larotrectinib,1355705,larotrectinib,RxNorm,auto
+regimen,entrectinib,Entrectinib,37496447,entrectinib,RxNorm,auto
+regimen,immune_checkpoint_inhibitors,Immune Checkpoint Inhibitors,,,,needs_review
+regimen,systemic_corticosteroids_lt_5_mg_day,"systemic corticosteroids (e.g., prednisone) =< 5 mg/day",,,,needs_review
+regimen,systemic_corticosteroids_gt_5_mg_day,"systemic corticosteroids (e.g., prednisone) > 5 mg/day",,,,needs_review
+regimen,systemic_corticosteroids_gt_10_mg_day,"systemic corticosteroids (e.g., prednisone) > 10 mg/day",,,,needs_review
+regimen,systemic_corticosteroids_gt_20_mg_day,"systemic corticosteroids (e.g., prednisone) > 20 mg/day",,,,needs_review
+regimen,mineralocorticoids,"mineralocorticoids (e.g., fludrocortisone)",,,,needs_review
+regimen,inhaled_corticosteroids,Inhaled corticosteroids,,,,needs_review
+regimen,topical_corticosteroids,Topical corticosteroids,,,,needs_review
+regimen,intranasal_corticosteroids,Intranasal corticosteroid,,,,needs_review
+regimen,immunosuppressant,Immunosuppressant,21603890,IMMUNOSUPPRESSANTS,ATC,llm
+regimen,hormonal_therapy,Hormonal therapy,,,,needs_review
+regimen,immunoglobulin_replacement_therapy,Immunoglobulin replacement therapy,19119921,Immunoglobulins,RxNorm,llm
+regimen,antiviral,antiviral,,,,needs_review
+regimen,warfarin_anticoagulant,warfarin - anticoagulant,1310149,warfarin,RxNorm,auto
+regimen,heparin_anticoagulant,heparin - anticoagulant,1367571,heparin,RxNorm,auto
+regimen,aspirin_lt_81mg_daily,Aspirin =< 81mg daily,1112807,aspirin,RxNorm,llm
+regimen,aspirin_gt_81mg_daily,Aspirin > 81mg daily,1112807,aspirin,RxNorm,llm
+regimen,chronic_opioid_therapy,Chronic opioid therapy,,,,needs_review
+regimen,nsaids,NSAIDs,,,,needs_review
+regimen,herbal_supplements,"Herbal supplements (e.g., echinacea, ginseng, ginkgo biloba, high-dose turmeric)",,,,needs_review
+regimen,local_palliative_radiotherapy,Local palliative radiotherapy,,,,needs_review
+regimen,clarithromycin,Clarithromycin (Biaxin) - antibiotic,1750500,clarithromycin,RxNorm,auto
+regimen,erythromycin,Erythromycin - antibiotic,1746940,erythromycin,RxNorm,auto
+regimen,ciprofloxacin,Ciprofloxacin (Cipro) - antibiotic,1797513,ciprofloxacin,RxNorm,auto
+regimen,rifampin,"Rifampin (Rifadin, Rimactane) - antibiotic",1763204,rifampin,RxNorm,auto
+regimen,rifabutin,Rifabutin (Mycobutin) - antibiotic,1777417,rifabutin,RxNorm,auto
+regimen,itraconazole,Itraconazole (Sporanox) - antifungal,1703653,itraconazole,RxNorm,auto
+regimen,ketoconazole,Ketoconazole - antifungal,985708,ketoconazole,RxNorm,auto
+regimen,fluconazole,Fluconazole (Diflucan) - antifungal,1754994,fluconazole,RxNorm,auto
+regimen,voriconazole,Voriconazole (Vfend) - antifungal,1714277,voriconazole,RxNorm,auto
+regimen,posaconazole,Posaconazole (Noxafil) - antifungal,1704139,posaconazole,RxNorm,auto
+regimen,asct,Autologous Stem Cell Transplant (ASCT),,,,no_omop
+regimen,selinexor,Selinexor (Xpovio),1361191,selinexor,RxNorm,auto
+regimen,ixazomib,Ixazomib (Ninlaro),35606214,ixazomib,RxNorm,auto
+regimen,cyclophosphamide_or_melphalan,Cyclophosphamide or Melphalan Monotherapy,,,,needs_review
+regimen,tisagenlecleucel,Tisagenlecleucel Monotherapy,35804066,Tisagenlecleucel monotherapy,HemOnc,auto
+regimen,agsct,Allogeneic Stem Cell Transplant,,,,no_omop
+regimen,hiv_antiretroviral_therapy,HIV antiretroviral therapy,,,,needs_review
+regimen,fluoxetine,Fluoxetine (Prozac) - antidepressant,755695,fluoxetine,RxNorm,auto
+regimen,paroxetine,Paroxetine (Paxil) - antidepressant,722031,paroxetine,RxNorm,auto
+regimen,fluvoxamine,Fluvoxamine (Luvox) - antidepressant,751412,fluvoxamine,RxNorm,auto
+regimen,sertraline,Sertraline (Zoloft) - antidepressant,739138,sertraline,RxNorm,auto
+regimen,bupropion,Bupropion (Wellbutrin) - antidepressant,750982,bupropion,RxNorm,auto
+regimen,carbamazepine,Carbamazepine (Tegretol) - anticonvulsant,740275,carbamazepine,RxNorm,auto
+regimen,phenytoin,Phenytoin (Dilantin) - anticonvulsant,740910,phenytoin,RxNorm,auto
+regimen,phenobarbital,Phenobarbital - anticonvulsant,734275,phenobarbital,RxNorm,auto
+regimen,topiramate,Topiramate (Topamax) - anticonvulsant,742267,topiramate,RxNorm,auto
+regimen,st_john_s_wort,St. John's Wort,,,,needs_review
+regimen,grapefruit_juice,Grapefruit juice,43533099,grapefruit juice,RxNorm,auto
+regimen,pamidronate,Pamidronate,1511646,pamidronate,RxNorm,auto
+regimen,zoledronic_acid,Zoledronic Acid,1524674,zoledronic acid,RxNorm,auto
+regimen,denosumab,Denosumab (Xgeva),40222444,denosumab,RxNorm,auto
+regimen,g_csf,Granulocyte-Colony Stimulating factor (G-CSFs),35807374,Granulocyte colony-stimulating factor,HemOnc,llm
+regimen,gm_csf,Granulocyte–Macrophage Colony-Stimulating Factor (GM-CSF),35807436,Granulocyte macrophage colony-stimulating factor,HemOnc,llm
+regimen,esa,Erythropoiesis-Stimulating Agent (ESA),,,,needs_review
+regimen,her2_targeted_therapies,HER2-targeted therapies,35807402,Anti-HER2 medication,HemOnc,llm
+regimen,lhrh_gnrh_agonists,"LHRH/GnRH agonists (e.g., goserelin, leuprolide, triptorelin, buserelin)",21603823,Gonadotropin releasing hormone analogues,ATC,llm
+regimen,palbociclib,Palbociclib (Ibrance),45892075,palbociclib,RxNorm,auto
+regimen,ribociclib,Ribociclib (Kisqali),1592911,ribociclib,RxNorm,auto
+regimen,abemaciclib,Abemaciclib (Verzenio),792649,abemaciclib,RxNorm,auto
+regimen,hrt,HRT (Estrogen-containing medication),21603814,Estrogens,ATC,llm
+regimen,contraceptives,contraceptives (Estrogen-containing medication),,,,needs_review
+regimen,tamoxifen_maintenance,Tamoxifen Maintenance,1436678,tamoxifen,RxNorm,auto
+regimen,anastrozole_maintenance,Anastrozole Maintenance,1348265,anastrozole,RxNorm,auto
+regimen,letrozole_maintenance,Letrozole Maintenance,1315946,letrozole,RxNorm,auto
+regimen,exemestane_maintenance,Exemestane Maintenance,1398399,exemestane,RxNorm,auto
+regimen,rituximab_maintenance_therapy,Rituximab maintenance therapy,1314273,rituximab,RxNorm,llm
+regimen,lenalidomide_maintenance,Lenalidomide maintenance,19026972,lenalidomide,RxNorm,auto
+regimen,ibritumomab_tiuxetan_radioimmunotherapy,Ibritumomab tiuxetan radioimmunotherapy,19068830,ibritumomab tiuxetan,RxNorm,llm
+regimen,ivig,IVIG (intravenous immunoglobulin),,,,needs_review
+regimen,plasmapheresis,Plasmapheresis,,,,no_omop
+regimen,bortezomib_maintenance,Bortezomib (maintenance),1336825,bortezomib,RxNorm,auto
+regimen,ixazomib_maintenance,Ixazomib (maintenance),35606214,ixazomib,RxNorm,auto

@@ -152,6 +152,8 @@ export interface FilterState {
   register?: string;
   /** Free-text title search — server matches `briefTitle` / `officialTitle`. */
   searchTitle?: string;
+  /** Free-text intervention/treatment keyword search. */
+  searchTreatment?: string;
   /** "type" param — narrows to `eligible` / `potential` server-side. */
   type?: "eligible" | "potential";
   /** Sort key. Defaults to `goodnessScore`. */

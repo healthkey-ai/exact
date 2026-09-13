@@ -309,8 +309,8 @@ Reference: Hoster et al., Blood 2008.`,
   "mipiRisk": `The MIPI (Mantle Cell Lymphoma International Prognostic Index) risk category, computed from age, ECOG performance status, LDH level, and WBC count.
 
 Low risk: MIPI score < 5.7
-Intermediate risk: 5.7 ≤ MIPI < 6.5
-High risk: MIPI ≥ 6.5
+Intermediate risk: 5.7 ≤ MIPI < 6.2
+High risk: MIPI ≥ 6.2
 
 Reference: Hoster et al., Blood 2008.`,
   "molecularMarkers": `t(11;14):

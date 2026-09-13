@@ -25,6 +25,8 @@ ATTR_FALSE_VALUE_IS_BLANK = [
     'noPlasmaCellLeukemiaRequired',
     'plasmaCellLeukemiaRequired',
     'renalAdequacyRequired',
+    'hepaticAdequacyRequired',
+    'haematologicalAdequacyRequired',
     'abnormalKappaLambdaRatio',
     'kappaLambdaAbnormalRequired',
     'meetsCRAB',
@@ -34,7 +36,6 @@ ATTR_FALSE_VALUE_IS_BLANK = [
     'pulmonaryFunctionTestResultRequired',
     'boneImagingResultRequired',
     'noGeographicExposureRiskRequired',
-    'metastaticRequired',
     'boneOnlyMetastasisRequired',
     'measurableDiseaseByRecistRequired',
     'measurableDiseaseImwgRequired',
@@ -105,6 +106,8 @@ ATTR_DEPS_MAPPING = {
     'stemCellTransplantHistory': ['priorTherapy', 'laterTherapies', 'laterTherapy', 'secondLineTherapy', 'firstLineTherapy'],
     'estimatedGlomerularFiltrationRate': ['serumCreatinineLevel', 'patientAge', 'gender'],
     'renalAdequacyStatus': ['estimatedGlomerularFiltrationRate', 'creatinineClearanceRate'],
+    'hepaticAdequacyStatus': ['liverEnzymeLevelsAst', 'liverEnzymeLevelsAlt', 'serumBilirubinLevelTotal', 'ethnicity', 'gender'],
+    'haematologicalAdequacyStatus': ['absoluteNeutrophileCount', 'plateletCount', 'hemoglobinLevel'],
     'hrStatus': ['estrogenReceptorStatus', 'progesteroneReceptorStatus'],
     'tnbcStatus': ['estrogenReceptorStatus', 'progesteroneReceptorStatus', 'her2Status'],
     'tp53Disruption': ['cytogenicMarkers', 'molecularMarkers'],
@@ -112,7 +115,6 @@ ATTR_DEPS_MAPPING = {
 
     # Computed in pre_save signal
     'flipiScore': ['flipiScoreOptions'],
-    'metastaticStatus': ['disease', 'stage'],
     'measurableDiseaseImwg': ['monoclonalProteinSerum', 'monoclonalProteinUrine', 'kappaFLC', 'lambdaFLC'],
     'lastTreatment': ['laterDate', 'secondLineDate', 'firstLineDate'],
     'geoPoint': ['country', 'postalCode', 'longitude', 'latitude'],
@@ -262,7 +264,6 @@ SUBFORM_ATTRS_MAPPING = {
     'meets_slim': ['clonal_plasma_cells', 'kappa_flc', 'lambda_flc', 'bone_lesions'],
     'hr_statuses_required': ['estrogen_receptor_status', 'progesterone_receptor_status'],
     'tnbc_status': ['estrogen_receptor_status', 'progesterone_receptor_status', 'her2_status'],
-    'metastatic_status': ['stage'],
     'measurable_disease_imwg': ['monoclonal_protein_serum', 'monoclonal_protein_urine', 'kappa_flc', 'lambda_flc'],
 }
 
@@ -396,7 +397,6 @@ ATTR_GROUP_MAPPING = {
     'tumorGradeMax': 'disease',
 
     'menopausalStatus': 'disease',
-    'metastaticRequired': 'disease',
     'toxicityGradeMax': 'disease',
 
     'histologicTypesRequired': 'disease',
@@ -527,6 +527,8 @@ ATTR_GROUP_MAPPING = {
     'estimatedGlomerularFiltrationRateMin': 'blood',
     'estimatedGlomerularFiltrationRateMax': 'blood',
     'renalAdequacyRequired': 'blood',
+    'hepaticAdequacyRequired': 'blood',
+    'haematologicalAdequacyRequired': 'blood',
     'liverEnzymeLevelAstAbsMin': 'blood',
     'liverEnzymeLevelAstAbsMax': 'blood',
     'liverEnzymeLevelAstUlnMin': 'blood',

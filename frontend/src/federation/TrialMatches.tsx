@@ -3,7 +3,18 @@
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
 // CB contract) or `personId` (CTOMOP federation path added in #102).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
+
+function useDebounced<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState<T>(value);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setDebounced(value), delay);
+    return () => { if (timer.current) clearTimeout(timer.current); };
+  }, [value, delay]);
+  return debounced;
+}
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { FilterBar } from "./FilterBar";
@@ -73,7 +84,16 @@ function TrialMatchesInner({
     setFilters((prev) => ({ ...prev, country: patientCountry }));
   }, [patientCountry, filters.country]);
 
-  const query = useTrials({ apiClient, patientInfo, personId, filters });
+  const debouncedTitle = useDebounced(filters.searchTitle, 400);
+  const debouncedTreatment = useDebounced(filters.searchTreatment, 400);
+  const debouncedDistance = useDebounced(filters.distance, 400);
+  const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400);
+  const queryFilters = useMemo(
+    () => ({ ...filters, searchTitle: debouncedTitle, searchTreatment: debouncedTreatment, distance: debouncedDistance, distanceUnits: debouncedDistanceUnits }),
+    [filters, debouncedTitle, debouncedTreatment, debouncedDistance, debouncedDistanceUnits],
+  );
+
+  const query = useTrials({ apiClient, patientInfo, personId, filters: queryFilters });
 
   const allTrials = useMemo(
     () => query.data?.pages.flatMap((p) => p.results) ?? [],
