@@ -137,8 +137,9 @@ export function countActiveFilters(
  *  stale one saved and the overlay would win.
  *
  *  A field the reader cleared back to nothing is present with `undefined`, not
- *  absent, so the transport can clear it on the server rather than leaving the
- *  old value behind a merge.
+ *  absent. The transport carries what the server already holds and writes the
+ *  reader's set over it, so a key that is merely missing keeps its stored
+ *  value; a key that is present-and-undefined is the one that goes.
  *
  *  `owned` names fields already known to be the reader's — what a previous
  *  mount loaded from storage, plus everything persisted since. Ownership is
@@ -158,10 +159,10 @@ export function userOwnedFilters(
     const base = baseline[field];
     if (isInactive(field, value) && isInactive(field, base)) {
       // An OWNED field that is now empty is emitted as `undefined` — a
-      // tombstone, not an omission. The merge transports both treat a key
-      // that is simply absent as "no opinion, keep what you have", so a
-      // cleared filter would survive on disk and be applied again on the
-      // next mount.
+      // tombstone, not an omission. Both transports treat a key that is
+      // simply absent as "no opinion, keep what you have", so a cleared
+      // filter would survive storage and be applied again on the next
+      // mount.
       if (!owned.has(field)) continue;
       (out as Record<string, unknown>)[field] = undefined;
       continue;
@@ -183,8 +184,8 @@ export function userOwnedFilters(
   // back as 50 km.
   if ("distance" in out && out.distance === undefined) {
     // The units leave with the distance they qualified — the panel treats them
-    // that way, and a merge transport would otherwise keep the old unit on
-    // disk, to be applied to whatever radius comes next.
+    // that way, and the unit would otherwise be kept in storage and applied
+    // to whatever radius comes next.
     out.distanceUnits = undefined;
   } else if (
     isActiveDistance(filters.distance) &&

@@ -34,7 +34,6 @@ function controllable() {
       calls.push({ kind: "reset" });
       return hold();
     },
-    forget: () => {},
   };
   return {
     transport,
@@ -174,7 +173,6 @@ describe("PreferenceWriter", () => {
         throw new Error("503");
       },
       reset: async () => {},
-      forget: () => {},
     };
     const w = new PreferenceWriter(transport, { onError });
 
@@ -198,7 +196,6 @@ describe("PreferenceWriter", () => {
         }
       },
       reset: async () => {},
-      forget: () => {},
     };
     const w = new PreferenceWriter(transport, { onError: () => {} });
 
@@ -339,18 +336,19 @@ describe("adapterPreferences", () => {
     };
   }
 
-  it("sends a cleared key explicitly, because the endpoint merges", async () => {
-    // `FilterPanel` represents a cleared control as `undefined`, which JSON
-    // drops — so under merge semantics the old value would survive and come
-    // back on the next mount.
+  it("drops a cleared key from the payload, because the endpoint replaces", async () => {
+    // The stored dict is assigned wholesale, so a key disappears by being
+    // absent. `FilterPanel` represents a cleared control as `undefined` and
+    // JSON drops it, which is exactly the behaviour wanted — what must NOT
+    // happen is the key surviving in the payload as a null.
     const a = fakeAdapter();
     const t = adapterPreferences(a.methods);
 
     await t.save({ searchTitle: "vrd", distance: 50 });
-    await t.save({ distance: 50 });
+    await t.save({ distance: 50, searchTitle: undefined });
 
     expect(a.saved[0]).toEqual({ searchTitle: "vrd", distance: 50 });
-    expect(a.saved[1]).toEqual({ searchTitle: null, distance: 50 });
+    expect(a.saved[1]).toEqual({ distance: 50 });
   });
 
   it("does not read a cleared key back as a set one", async () => {
@@ -372,8 +370,9 @@ describe("adapterPreferences", () => {
 
 describe("adapterPreferences — clearing what the server already held", () => {
   it("clears a key that came from the server, not just one it sent", async () => {
-    // `lastSent` starts empty, so without seeding it from `get()` the payload
-    // would simply omit the key and the merge would keep the old value.
+    // The key has to reach the payload before it can be left out of it: the
+    // transport merges over what it read, so a cleared value must arrive as
+    // present-and-`undefined` to cancel what the read put there.
     const saved: Array<Record<string, unknown>> = [];
     const t = adapterPreferences({
       getPreferences: async () => ({ searchTitle: "vrd" }) as never,
@@ -384,17 +383,19 @@ describe("adapterPreferences — clearing what the server already held", () => {
     });
 
     expect(await t.get()).toEqual({ searchTitle: "vrd" });
-    await t.save({}); // the reader cleared it, having changed nothing else
+    // `userOwnedFilters` emits a cleared owned field present-and-undefined.
+    await t.save({ searchTitle: undefined });
 
-    expect(saved[0]).toEqual({ searchTitle: null });
+    expect(saved[0]).toEqual({});
   });
 });
 
 describe("adapterPreferences — a save that overtakes the first read", () => {
   it("waits for the read, so the seed is in place before the payload is built", async () => {
     // A slow preference load plus an edit inside the debounce window. Without
-    // serialising, the PATCH is built against an empty `lastSent` and the keys
-    // the server already held survive the merge.
+    // serialising, the payload is built against an empty memory — and since
+    // the endpoint replaces the stored dict, that payload deletes everything
+    // the reader had saved.
     const saved: Array<Record<string, unknown>> = [];
     let release!: () => void;
     const gate = new Promise<void>((r) => {
@@ -419,16 +420,17 @@ describe("adapterPreferences — a save that overtakes the first read", () => {
     await read;
     await write;
 
-    expect(saved[0]).toEqual({ searchTitle: null, distance: 50 });
+    expect(saved[0]).toEqual({ searchTitle: "vrd", distance: 50 });
   });
 });
 
-describe("adapterPreferences — what it does NOT know about", () => {
-  it("stops nulling keys once it is told to forget them", async () => {
+describe("adapterPreferences — what the reader is not holding", () => {
+  it("carries the keys it read but was never given back", async () => {
     // A load that was read and deliberately discarded leaves the caller with a
-    // strict subset of what is stored. Without `forget` the next save reads as
-    // "these are all the filters there are" and clears the rest — filters the
-    // reader never saw, on a slow connection only.
+    // strict subset of what is stored, and the endpoint REPLACES the stored
+    // dict rather than merging into it — so a save carrying only the reader's
+    // one edit deletes the rest: filters they never saw, on a slow connection
+    // only. The transport merges its payload over what it read instead.
     const saved: Array<Record<string, unknown>> = [];
     const t = adapterPreferences({
       getPreferences: async () => ({ sponsor: "Janssen", phase: "2" }) as never,
@@ -439,17 +441,16 @@ describe("adapterPreferences — what it does NOT know about", () => {
     });
 
     await t.get();
-    t.forget();
     await t.save({ searchTitle: "dara" });
 
-    expect(saved[0]).toEqual({ searchTitle: "dara" });
+    expect(saved[0]).toEqual({ sponsor: "Janssen", phase: "2", searchTitle: "dara" });
   });
 
-  it("keeps its seed when a reset fails", async () => {
-    // Clearing the seed before the request resolves means a failed reset
-    // leaves us believing the server is empty. The next save then nulls
-    // nothing, and what the reader watched disappear is back on the next
-    // mount.
+  it("forgets what the row held even when the reset fails", async () => {
+    // The opposite of what a merging endpoint would want. Under a replace, a
+    // memory still full of the old values means the next save puts them all
+    // back: the reader watches their filters disappear and finds them again on
+    // the next mount. Clearing first makes the next save repair the reset.
     const saved: Array<Record<string, unknown>> = [];
     const t = adapterPreferences({
       getPreferences: async () => ({ sponsor: "Janssen" }) as never,
@@ -465,7 +466,7 @@ describe("adapterPreferences — what it does NOT know about", () => {
     await expect(t.reset()).rejects.toThrow("503");
     await t.save({ searchTitle: "dara" });
 
-    expect(saved[0]).toEqual({ sponsor: null, searchTitle: "dara" });
+    expect(saved[0]).toEqual({ searchTitle: "dara" });
   });
 });
 
@@ -504,7 +505,6 @@ describe("localStoragePreferences", () => {
   it("merges rather than replacing, and reads a cleared key as unset", async () => {
     const t = localStoragePreferences("p1");
     await t.save({ sponsor: "Janssen", searchTitle: "vrd" });
-    t.forget();
     await t.save({ searchTitle: "dara" });
     // `sponsor` was never mentioned by the second write, so it survives...
     expect(await t.get()).toEqual({ sponsor: "Janssen", searchTitle: "dara" });
@@ -525,6 +525,7 @@ describe("PreferenceWriter — a transport that throws synchronously", () => {
     // `onError` entirely and never assigned `inFlight`, while the class
     // promises a failed write is reported, not thrown.
     const onError = vi.fn();
+    const onSuccess = vi.fn();
     const w = new PreferenceWriter(
       {
         get: async () => ({}),
@@ -532,9 +533,8 @@ describe("PreferenceWriter — a transport that throws synchronously", () => {
           throw new Error("no client");
         },
         reset: async () => {},
-        forget: () => {},
       },
-      { onError },
+      { onError, onSuccess },
     );
 
     w.save({ distance: 1 });
@@ -542,13 +542,17 @@ describe("PreferenceWriter — a transport that throws synchronously", () => {
     await w.settled();
 
     expect(onError).toHaveBeenCalledOnce();
+    // And NOT as a success as well: a resolved substitute for the throw would
+    // travel the success path and announce the write that just failed.
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 });
 
 describe("adapterPreferences — a save that fails", () => {
   it("does not record the payload as if it had landed", async () => {
     // The failed PATCH was the one meant to clear `sponsor`. Believing it
-    // succeeded, the next payload stops nulling it and it comes back.
+    // succeeded, the next payload is built against a row that does not exist
+    // — and the row still holds the sponsor.
     const saved: Array<Record<string, unknown>> = [];
     let fail = true;
     const t = adapterPreferences({
@@ -565,8 +569,184 @@ describe("adapterPreferences — a save that fails", () => {
 
     await t.get();
     await expect(t.save({ searchTitle: "dara" })).rejects.toThrow("503");
-    await t.save({ searchTitle: "dara" });
+    // A DIFFERENT second edit, or the two payloads come out identical whether
+    // the failed one was recorded or not and the test proves nothing.
+    await t.save({ phase: "2" });
 
-    expect(saved[1]).toEqual({ sponsor: null, searchTitle: "dara" });
+    // Built against what the server actually holds — the failed write did not
+    // become part of the picture.
+    expect(saved[1]).toEqual({ sponsor: "Janssen", phase: "2" });
+  });
+});
+
+describe("adapterPreferences — when it cannot read what it would be replacing", () => {
+  it("refuses to write rather than replace the row blind", async () => {
+    // An empty memory because the row is empty and an empty memory because the
+    // READ failed are the same value and opposite situations. Under a replace,
+    // writing in the second case costs the reader every filter they ever
+    // saved; refusing costs them one edit they can make again.
+    const saved: Array<Record<string, unknown>> = [];
+    const t = adapterPreferences({
+      getPreferences: async () => {
+        throw new Error("503");
+      },
+      savePreferences: async (f: never) => {
+        saved.push(f as Record<string, unknown>);
+      },
+      resetPreferences: async () => {},
+    });
+
+    await expect(t.get()).rejects.toThrow("503");
+    await expect(t.save({ distance: 50 })).rejects.toThrow(/could not be read/);
+    expect(saved).toEqual([]);
+  });
+
+  it("writes once a retry tells it what is there", async () => {
+    // A read that failed once may not fail twice, and the reader's edit is
+    // worth one more attempt before it is dropped.
+    const saved: Array<Record<string, unknown>> = [];
+    let attempts = 0;
+    const t = adapterPreferences({
+      getPreferences: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("503");
+        return { sponsor: "Janssen" } as never;
+      },
+      savePreferences: async (f: never) => {
+        saved.push(f as Record<string, unknown>);
+      },
+      resetPreferences: async () => {},
+    });
+
+    await expect(t.get()).rejects.toThrow("503");
+    await t.save({ distance: 50 });
+
+    expect(saved[0]).toEqual({ sponsor: "Janssen", distance: 50 });
+  });
+
+  it("treats a row that is genuinely empty as something it can write to", async () => {
+    const saved: Array<Record<string, unknown>> = [];
+    const t = adapterPreferences({
+      getPreferences: async () => ({}) as never,
+      savePreferences: async (f: never) => {
+        saved.push(f as Record<string, unknown>);
+      },
+      resetPreferences: async () => {},
+    });
+
+    await t.get();
+    await t.save({ distance: 50 });
+    expect(saved[0]).toEqual({ distance: 50 });
+  });
+});
+
+describe("adapterPreferences — a read that lands after a Reset", () => {
+  it("does not put back what the reader just cleared", async () => {
+    // The read was in flight when they pressed Reset, so it resolves holding
+    // the values they had just watched disappear. Seeding from it puts them in
+    // the next payload, and under a replace that payload is the row.
+    const saved: Array<Record<string, unknown>> = [];
+    let release!: (v: Record<string, unknown>) => void;
+    const gate = new Promise<Record<string, unknown>>((r) => {
+      release = r;
+    });
+    const t = adapterPreferences({
+      getPreferences: () => gate as never,
+      savePreferences: async (f: never) => {
+        saved.push(f as Record<string, unknown>);
+      },
+      resetPreferences: async () => {},
+    });
+
+    const read = t.get();
+    await t.reset();
+    release({ sponsor: "Janssen", phase: "2" });
+    await read;
+
+    await t.save({ searchTitle: "dara" });
+    expect(saved[0]).toEqual({ searchTitle: "dara" });
+  });
+});
+
+describe("PreferenceWriter — recovering from a failed write", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("reports the write that lands, not only the one that failed", async () => {
+    // Writes queue, so a caller showing "couldn't save" has no way to learn
+    // that the NEXT one succeeded unless it is told. Clearing the message when
+    // a write is ISSUED does not work either: an edit made while a failing
+    // write is in flight clears it before that failure arrives.
+    const seen: string[] = [];
+    let fail = true;
+    const w = new PreferenceWriter(
+      {
+        get: async () => ({}),
+        save: async () => {
+          if (fail) {
+            fail = false;
+            throw new Error("503");
+          }
+        },
+        reset: async () => {},
+      },
+      { onError: () => seen.push("error"), onSuccess: () => seen.push("success") },
+    );
+
+    w.save({ distance: 1 });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await w.settled();
+    expect(seen).toEqual(["error"]);
+
+    w.save({ distance: 2 });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await w.settled();
+    expect(seen).toEqual(["error", "success"]);
+  });
+});
+
+describe("adapterPreferences — a reset that fails before anything was read", () => {
+  it("still refuses the next save rather than replacing the row blind", async () => {
+    // Clearing the memory on a failed reset is right; claiming to KNOW the row
+    // is empty is not. With no successful read behind it, the next save would
+    // replace whatever is there with the one filter the reader is holding.
+    const saved: Array<Record<string, unknown>> = [];
+    const t = adapterPreferences({
+      getPreferences: async () => {
+        throw new Error("503");
+      },
+      savePreferences: async (f: never) => {
+        saved.push(f as Record<string, unknown>);
+      },
+      resetPreferences: async () => {
+        throw new Error("503");
+      },
+    });
+
+    await expect(t.get()).rejects.toThrow("503");
+    await expect(t.reset()).rejects.toThrow("503");
+    await expect(t.save({ distance: 50 })).rejects.toThrow(/could not be read/);
+    expect(saved).toEqual([]);
+  });
+
+  it("repairs a failed reset when the row WAS known", async () => {
+    const saved: Array<Record<string, unknown>> = [];
+    const t = adapterPreferences({
+      getPreferences: async () => ({ sponsor: "Janssen" }) as never,
+      savePreferences: async (f: never) => {
+        saved.push(f as Record<string, unknown>);
+      },
+      resetPreferences: async () => {
+        throw new Error("503");
+      },
+    });
+
+    await t.get();
+    await expect(t.reset()).rejects.toThrow("503");
+    await t.save({ distance: 50 });
+
+    // Only what the reader is holding: the reset the server refused is carried
+    // out by the next write.
+    expect(saved[0]).toEqual({ distance: 50 });
   });
 });
