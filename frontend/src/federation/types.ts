@@ -10,6 +10,8 @@
 import type { AxiosInstance } from "axios";
 import type { QueryClient } from "@tanstack/react-query";
 
+import type { MapRenderer } from "./TrialsMap";
+
 import type { TrialStateAdapter } from "./state";
 
 /** Sparse, schema-tolerant patient payload — mirrors EXACT's stateless
@@ -118,6 +120,26 @@ export interface TrialDetailField {
     | "not_evaluated"
     | string;
   ufield?: string | null;
+  /** The canonical patient attribute this row is about, in the spelling the
+   *  patient record uses (`hemoglobin_g_dl`), or null when the row is not
+   *  about a patient attribute at all.
+   *
+   *  Not derivable from `ufield`: that is camelCase, and un-camelising is not
+   *  mechanical here — `p53_ihc` camelises to `p53Ihc`, which a standard
+   *  snake-caser turns back into `p_53_ihc`, a field nobody has. EXACT sends
+   *  the canonical name rather than letting each client guess (#421).
+   *
+   *  It names the attribute. Whether it can be WRITTEN is a different
+   *  question, answered by PROMOP's descriptor — see `writable.ts`. */
+  upatientField?: string | null;
+  /** Whether EXACT recomputes this attribute on every match.
+   *
+   *  If it does, a value written upstream does not survive: it is replaced
+   *  from the inputs before the matcher sees it. PROMOP will still ACCEPT the
+   *  write — the two answer different questions — so a client that asks only
+   *  PROMOP offers a box whose effect is undone with no error anywhere
+   *  (#449). */
+  upatientRecomputed?: boolean;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;
@@ -153,6 +175,51 @@ export interface HighRiskMclCriteriaBreakdown {
   required: MclCriterion[];
   excluded: MclCriterion[];
   sufficientAny: MclCriterion[];
+}
+
+/** One eligibility attribute inside a graph trial's `match` buckets. */
+export interface GraphMatchItem {
+  trialField?: string | null;
+  patientField?: string | null;
+  /** The same patient attribute in its canonical snake_case form (#421).
+   *  Named by the server because deriving it here is not safe — `p53_ihc`
+   *  camelizes to `p53Ihc`, which a standard snake-caser turns back into
+   *  `p_53_ihc`, a field nobody has. */
+  patientFieldCanonical?: string | null;
+  /** Whether the value is edited through a subform. `null` where there is no
+   *  patient field to edit at all, which is not the same as `false`. */
+  patientFieldHasSubform?: boolean | null;
+  label?: string | null;
+  trialValue?: unknown;
+  patientValue?: unknown;
+  dependencies?: string[];
+  dependencies_labels?: string[];
+}
+
+/** One trial node from `/trials-graph/graph/`. The three buckets describe the
+ *  PATIENT against this trial's requirements: met, contradicted, and not
+ *  known. An attribute the trial never constrained is in none of them. */
+export interface GraphTrialNode {
+  nodeId: string;
+  trialId: number;
+  studyId: string;
+  studyUrl?: string | null;
+  briefTitle?: string | null;
+  recruitmentStatus?: string | null;
+  sponsorName?: string | null;
+  link?: string | null;
+  goodnessScore?: number | null;
+  matchScore?: number | null;
+  match: {
+    matched: GraphMatchItem[];
+    notMatched: GraphMatchItem[];
+    missing: GraphMatchItem[];
+  };
+}
+
+export interface TrialsGraphResponse {
+  patient: Record<string, unknown>;
+  trials: GraphTrialNode[];
 }
 
 export interface GroupName {
@@ -261,6 +328,15 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
+  /** Draws the map behind the List/Map toggle.
+   *
+   *  A function rather than an API key, because rendering tiles means loading
+   *  a third-party script into the HOST's page — billed to its key, subject to
+   *  its CSP, watching its document. That is the host's decision to take
+   *  explicitly. Without it the toggle still works and the places are listed;
+   *  see `TrialsMap`.
+   */
+  renderMap?: MapRenderer;
   /** Where the patient's bookmarks, registrations and saved filters live.
    *
    *  Optional, and its absence is not a degraded mode so much as a smaller
