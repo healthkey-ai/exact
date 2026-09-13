@@ -21,10 +21,6 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-v1
         restore-keys: |
           ${{ runner.os }}-pip-
-    - uses: actions/cache@v4
-      with:
-        path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
     - name: Install system dependencies
       run: |
         sudo apt-get -qq update && \
@@ -36,7 +32,39 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      run: pip install -r requirements.txt
+      # This job exists to fail fast on a bad `requirements.txt`, and to fill
+      # `~/.cache/pip` before the three `test` jobs start — otherwise they
+      # race to save the same key and two of them lose.
+      #
+      # It does NOT hand its `site-packages` to `test` any more, and on this
+      # branch that is the whole point: `test` had NO install step of its own.
+      # It restored `build`'s installed tree and ran on it, so anything that
+      # kept the entry from being there left the job with zero dependencies.
+      #
+      # That is not hypothetical. Run 32647557900 (2026-08-23) logged
+      # `Failed to save: Unable to reserve cache with key ... another job may
+      # be creating this cache` in `build`, and its three `test` jobs got a
+      # hit only because a push 38 seconds earlier had written the key. On
+      # its own it would have died at `makemigrations` with a bare
+      # ModuleNotFoundError.
+      #
+      # The second hazard is subtler and is what broke the feature branches:
+      # `actions/cache` untars OVER an existing tree rather than replacing
+      # it, so a restored entry and the image are unioned, not swapped. There
+      # they had pinned pip down inside the cached directory, and the union
+      # put 26.2.1's `build_env/` package beside 24.0's `build_env.py`; the
+      # package won the import and asked the overwritten `cli/spinners.py`
+      # for `open_rich_spinner`, so every `python -m pip` died. This branch
+      # never downgraded pip, so its entry has matched the image so far.
+      # Note the key embeds the interpreter's patch path, so a new image
+      # usually MISSES rather than unions — the union needs pip to change
+      # under an unchanged 3.12.x, which a toolcache rebuild can do.
+      #
+      # Both hazards end the same way: don't ship one job's installed tree to
+      # another. Only `~/.cache/pip` is left, which is downloads and not an
+      # installed tree.
+      run: |
+        python -m pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
@@ -64,10 +92,13 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    - uses: actions/cache@v4
+    - name: Cache pip
+      uses: actions/cache@v4
       with:
-        path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v1
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-v1
+        restore-keys: |
+          ${{ runner.os }}-pip-
     - name: Install system dependencies
       run: |
         sudo apt-get -qq update && \
@@ -79,6 +110,12 @@ jobs:
           libgeos-dev \
           libgeos-c1v5 \
           postgresql-client
+    - name: Install Python dependencies
+      # Its own, not `build`'s — see the comment there for what happened
+      # when this job had no install step at all and ran on a cached
+      # `site-packages`.
+      run: |
+        python -m pip install -r requirements.txt
     - name: Set environment
       run: |
         echo "SECRET_KEY=ci-secret-key-not-used-in-prod" >> $GITHUB_ENV
