@@ -113,6 +113,22 @@ trial-search request.
 > **Terminology note**: the per-trial match result is called `matchingType` in
 > JSON responses and `match status` in prose. The `type` query param filters by
 > this value (`eligible`, `potential`, `not_eligible`).
+>
+> `matchingType` is **`null` when the request carried no patient context**:
+> `eligible` states that a patient qualifies, and a request that named nobody
+> supports no such statement (#456). Narrow the value before comparing —
+> treating "not `eligible`" as potential reads a patient-less row as a weak
+> match rather than as no answer.
+>
+> On the **list** endpoints (`/trials/`, `/trials/search/` and their POST
+> aliases) that is the behaviour today. The **detail** endpoint is written the
+> same way but does not reach it: a patient-less `GET /trials/{id}/` currently
+> raises before serializing (#455). Until that lands, do not read a detail
+> response as the authority on what a patient-less verdict looks like.
+>
+> One gap, tracked as #466: a `patient_info` payload none of whose keys EXACT
+> recognises is treated as a blank patient rather than as no patient, and is
+> answered `eligible` with a score of 100. An empty object is read correctly.
 
 | Param | Type | Description |
 |---|---|---|
@@ -189,6 +205,10 @@ instead — `sort` is read only there.
   ]
 }
 ```
+
+The example above is a request that carried a patient. Without one,
+`matchingType` and `matchScore` are both `null` — see the terminology note
+under [Study preferences](#study-preferences).
 
 #### `matchReasons` — per-criterion explanation (`?explain=true`)
 

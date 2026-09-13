@@ -61,7 +61,11 @@ export interface TrialMatch {
   patientBurdenScore: number | null;
   goodnessScore: number | null;
   matchScore: number | null;
-  matchingType: MatchingType;
+  /** `null` when the request carried no patient: `eligible` is a claim
+   *  about a person, and with nobody named there is nothing to claim
+   *  (#456). Narrow before comparing — `!== "eligible"` reads a
+   *  patient-less row as potential. */
+  matchingType: MatchingType | null;
   /** Stringified human-friendly stages — `"Stage I, Stage II"`. */
   stage: string;
   attributesToFillIn: AttributeToFillIn[];

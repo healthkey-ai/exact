@@ -92,7 +92,30 @@ class TrialSerializer(serializers.ModelSerializer):
                 response['distance'] = None
                 response['distanceUnits'] = None
 
-        response['matchingType'] = 'eligible' if not attrs_to_fill_in else 'potential'
+        # `eligible` is a claim about a PERSON: that this patient qualifies.
+        # There is no patient in the expression above it, so with none supplied
+        # `attrs_to_fill_in` is empty and every trial in the corpus came back
+        # `eligible` — a false statement, in a word the reader takes literally,
+        # about somebody the request never named (#456).
+        #
+        # `null` instead. That is also where the detail endpoint is headed on
+        # this path — its no-patient branch already sets `matchingType = None`
+        # — but it does not get there yet: on this base every patient-less
+        # detail request raises before reaching that branch (#455). So this
+        # does not YET make the two agree; it stops the list from being the
+        # one that speaks and claims the stronger thing.
+        #
+        # Only covers a request with no `patient_info`. A payload EXACT
+        # recognises no key of resolves to a blank PatientInfo — not None —
+        # and still answers `eligible` here and on the detail endpoint. That
+        # belongs at the resolver, where all three of `matchingType`,
+        # `matchScore` and `tabCounts` can agree at once, and is blocked on
+        # #455 for the same reason: #466.
+        response['matchingType'] = (
+            None
+            if patient_info is None
+            else ('eligible' if not attrs_to_fill_in else 'potential')
+        )
 
         if self.context.get('explain') and patient_info:
             from trials.services.trial_match_explainer import TrialMatchExplainer
