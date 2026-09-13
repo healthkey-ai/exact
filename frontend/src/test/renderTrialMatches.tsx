@@ -52,6 +52,9 @@ export interface FakeApi {
   /** Leave `/form-settings/` unanswered, to see what renders while the option
    *  catalog is still in flight. */
   holdFormSettings: () => void;
+  /** Replace the graph payload's trials. Each entry is merged over the node
+   *  the fake would have built for that trial. */
+  setGraph: (trials: Array<Record<string, unknown>>) => void;
   /** Answer the next export with a file whose last line says it stopped
    *  early — what a stream that died halfway delivers when the server was
    *  still alive to say so. */
@@ -178,6 +181,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   let cutInsideQuote = false;
   let heldExport: { release: () => void } | null = null;
   let detailOverrides: Partial<TrialDetailResponse> = {};
+  let graphOverrides: Array<Record<string, unknown>> | null = null;
   let heldDetail: { release: () => void } | null = null;
 
   const respond = (url: string, body?: unknown) => {
@@ -224,6 +228,27 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
         });
       }
       return Promise.resolve(answer);
+    }
+    if (url.includes("/trials-graph/graph/")) {
+      return Promise.resolve({
+        data: {
+          patient: { disease: "multiple myeloma" },
+          trials: response.results.map((t) => ({
+            nodeId: `trial:${t.trialId}`,
+            trialId: t.trialId,
+            studyId: t.studyId,
+            briefTitle: t.briefTitle,
+            matchScore: t.matchScore,
+            goodnessScore: t.goodnessScore,
+            match: {
+              matched: [{ patientField: "disease", label: "Disease" }],
+              missing: [{ patientField: "ecog", label: "ECOG" }],
+              notMatched: [],
+            },
+            ...(graphOverrides?.find((o) => o.trialId === t.trialId) ?? {}),
+          })),
+        },
+      });
     }
     // A single trial, not the list: `/trials/7/` and `/trials/7/match/`.
     // Answered FOR THE ID ASKED FOR — one id-blind object would render
@@ -296,6 +321,9 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     },
     setDetail: (next: Partial<TrialDetailResponse>) => {
       detailOverrides = { ...detailOverrides, ...next };
+    },
+    setGraph: (trials: Array<Record<string, unknown>>) => {
+      graphOverrides = trials;
     },
     holdFormSettings: () => {
       holdSettings = true;
