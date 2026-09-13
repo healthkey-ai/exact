@@ -331,13 +331,30 @@ describe("writing one attribute", () => {
       .toBe("saved");
   });
 
-  it("does not accept the reverse: a list sent, a scalar echoed", async () => {
-    // Wrapping is normalised one way. A list that comes back as a scalar
-    // means the record holds a different shape than was sent — worth a
-    // re-read, not a confirmation.
-    const client = patching({ cytogenetic_markers: "del17p" });
-    expect((await adapter(client).setPatientField!("cytogenetic_markers", ["del17p"])).status)
-      .toBe("differs");
+  it("accepts a list echoed back comma-joined, which is how it is stored", async () => {
+    // `cytogenetic_markers` is a TextField, and its serializer reads it back
+    // `", ".join(...)` whatever the write sent. Comparing the shapes directly
+    // would report every multiselect write as differing.
+    const client = patching({ cytogenetic_markers: "del17p, t(4;14)" });
+    expect((await adapter(client).setPatientField!(
+      "cytogenetic_markers", ["del17p", "t(4;14)"],
+    )).status).toBe("saved");
+  });
+
+  it("splits that echo the way PROMOP does — not on commas inside brackets", async () => {
+    // `inv(3)(q21,q26)` is ONE marker. Splitting on every comma would make it
+    // two the record has never heard of, and report a good write as differing.
+    const client = patching({ cytogenetic_markers: "del17p, inv(3)(q21,q26)" });
+    expect((await adapter(client).setPatientField!(
+      "cytogenetic_markers", ["del17p", "inv(3)(q21,q26)"],
+    )).status).toBe("saved");
+  });
+
+  it("still notices when the joined echo holds different markers", async () => {
+    const client = patching({ cytogenetic_markers: "del17p, t(11;14)" });
+    expect((await adapter(client).setPatientField!(
+      "cytogenetic_markers", ["del17p", "t(4;14)"],
+    )).status).toBe("differs");
   });
 
   it("treats clearing a field as saved when the server agrees it is empty", async () => {

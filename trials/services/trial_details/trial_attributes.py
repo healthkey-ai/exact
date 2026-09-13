@@ -6,6 +6,7 @@ import re
 from django.db import models
 from django.db.models import Q
 
+from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
@@ -482,6 +483,15 @@ class TrialAttributes:
             patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
             field['upatientField'] = (
                 patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
+            )
+            # Whether a stored value for it survives. EXACT recomputes these
+            # on every match from the inputs it was given, so a write upstream
+            # is replaced before the matcher ever sees it — accepted, then
+            # undone, with no error anywhere (#449). A client that offers an
+            # edit box for one of them is offering a control that does
+            # nothing, which is worse than offering none.
+            field['upatientRecomputed'] = (
+                field['upatientField'] in RECOMPUTED_ATTRIBUTES
             )
         return fields
 

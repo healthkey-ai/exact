@@ -30,7 +30,7 @@ import {
   countryFor,
   userOwnedFilters,
 } from "./filters";
-import { MAX_TRIAL_IDS } from "./state";
+import { MAX_TRIAL_IDS, canEditFields } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
@@ -42,6 +42,8 @@ import {
   canReadAdvanced,
   useAdvancedEnrollments,
   useSavedFilters,
+  useSetPatientField,
+  useWritableFields,
   useSetTrialState,
   useStateIds,
   useTrials,
@@ -212,6 +214,11 @@ function TrialMatchesInner({
   // drawn for a trial whose enrollment a study team has already advanced,
   // where "I'm Interested" would write `registered` over `entered`.
   const advanced = useAdvancedEnrollments(state, stateKey);
+  // The descriptor is about the patient, not the trial, so it is read here
+  // once rather than on every detail page. Its absence is the safe state:
+  // until it arrives, no row draws a control.
+  const writableFields = useWritableFields(state, stateKey);
+  const setPatientField = useSetPatientField(state, stateKey);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -550,6 +557,33 @@ function TrialMatchesInner({
         trialId={selectedTrial.trialId}
         patientInfo={patientInfo}
         personId={personId}
+        // What actually withholds the controls is the descriptor itself:
+        // `fields` undefined answers "unknown" for every row, which is the
+        // page exactly as it reads today. That covers loading, a failed read
+        // and a host that never had a writer, so no extra guard is needed for
+        // any of them — and a guard claiming to provide one would be
+        // decoration.
+        //
+        // The gate below is about `save`, not about the rows: it is there so
+        // a callback that would dereference a missing `setPatientField` is
+        // never handed out at all. Nothing calls it today, because nothing
+        // draws a control without the descriptor; the queue in the next slice
+        // will hold it for longer than one click, which is when handing out a
+        // callback that cannot work starts to matter.
+        editing={
+          canEditFields(state)
+            ? {
+                fields: writableFields.data,
+                save: async (field, value) => {
+                  // Resolving means the record was re-read, not that it holds
+                  // what was sent — the write may have been canonicalised.
+                  // Only a refusal rejects, and only that is shown as an
+                  // error.
+                  await setPatientField.mutateAsync({ field, value });
+                },
+              }
+            : undefined
+        }
         // Values and callbacks, not the adapter: this component owns the id
         // lists and the mutations, so it is the only place that can keep the
         // star on the card and the star on the detail page saying the same
