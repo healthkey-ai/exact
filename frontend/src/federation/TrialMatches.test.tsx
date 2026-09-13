@@ -1751,8 +1751,8 @@ describe("saved filters", () => {
   });
 
   it("resets through resetPreferences, not by saving the baseline", async () => {
-    // The server merges a partial update, so writing the baseline would leave
-    // whatever was saved for keys the baseline does not mention.
+    // The row is meant to end up EMPTY. Writing the baseline would store the
+    // host's mount-time scope as the reader's standing preference instead.
     const api = fakeApi();
     const state = adapter({ searchTitle: "daratumumab" });
     renderIt(api, state);
@@ -1965,10 +1965,10 @@ describe("a slow load that is discarded", () => {
   it("does not delete the saved filters it decided not to apply", async () => {
     // The reader has sponsor and phase saved. On a slow connection the load
     // arrives after they have already typed a title, so it is dropped — which
-    // is right, reverting a visible edit is worse. But the save that follows
-    // carries only the title, and a transport that saw the load will null
-    // every other key it knows about: two filters destroyed, never shown, on
-    // a slow connection only.
+    // is right, reverting a visible edit is worse. But the endpoint REPLACES
+    // the stored dict, so a save carrying only the title destroys the other
+    // two: filters they never saw, on a slow connection only. The payload has
+    // to carry what the reader is not holding.
     const api = fakeApi();
     let release: (v: Record<string, unknown>) => void = () => {};
     const state = mk(
@@ -1998,19 +1998,31 @@ describe("a slow load that is discarded", () => {
     await userEvent.type(await screen.findByLabelText("Title"), "dara");
 
     release({ sponsor: "Janssen", phase: "2" });
-
     await waitFor(() => expect(state.savePreferences).toHaveBeenCalled());
-    for (const call of state.savePreferences.mock.calls) {
-      expect(call[0]).not.toHaveProperty("sponsor");
-      expect(call[0]).not.toHaveProperty("phase");
-    }
+    const before = state.savePreferences.mock.calls.length;
+
+    // One more keystroke AFTER the load landed, which is where this last went
+    // wrong: granting ownership for a load whose values were dropped made
+    // those keys tombstone-eligible, and the next edit deleted them.
+    await userEvent.type(await screen.findByLabelText("Title"), "x");
+
+    // The call count first — asserting on `.at(-1)` alone passes against the
+    // PREVIOUS save while the new one is still behind the debounce.
+    await waitFor(() =>
+      expect(state.savePreferences.mock.calls.length).toBeGreaterThan(before),
+    );
+    expect(state.savePreferences.mock.calls.at(-1)?.[0]).toMatchObject({
+      sponsor: "Janssen",
+      phase: "2",
+    });
   });
 
   it("does not delete them when the reader leaves before the load lands", async () => {
     // Same wipe, reached the other way. The unmount cancels the load AND runs
     // the flush against this same transport, so the save is queued behind a
-    // read that seeds the transport on its way through — while the set being
-    // saved is only what the reader typed.
+    // read whose result reaches the transport on its way through — which is
+    // what keeps the payload complete when the set being saved is only what
+    // the reader typed.
     const api = fakeApi();
     let release: (v: Record<string, unknown>) => void = () => {};
     const state = mk(
@@ -2044,8 +2056,7 @@ describe("a slow load that is discarded", () => {
 
     await waitFor(() => expect(state.savePreferences).toHaveBeenCalled());
     for (const call of state.savePreferences.mock.calls) {
-      expect(call[0]).not.toHaveProperty("sponsor");
-      expect(call[0]).not.toHaveProperty("phase");
+      expect(call[0]).toMatchObject({ sponsor: "Janssen", phase: "2" });
     }
   });
 });
@@ -2077,5 +2088,107 @@ describe("leaving the page without unmounting", () => {
     expect(remove.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(1);
     add.mockRestore();
     remove.mockRestore();
+  });
+});
+
+// NOT tested: the case where a key the transport read is unowned and therefore
+// un-clearable. The hook now reports the loaded KEYS even when it drops their
+// values, which removes the hazard by construction — but every path I could
+// construct to reach it re-owns the field on the way: a value visible in the
+// panel came from the baseline (excluded from ownership on purpose), from an
+// applied load (owned), or from an edit (owned by the edit). A test that
+// cannot fail without the fix would claim coverage it does not have.
+
+describe("when the filters cannot be saved", () => {
+  it("says they are shown but not stored, rather than failing silently", async () => {
+    // The transport refuses to write when it cannot read what it would be
+    // replacing — the right call, but invisible without this: the reader's
+    // edit works on screen and is simply not there tomorrow.
+    const api = fakeApi();
+    const state = {
+      listFavoriteIds: vi.fn(async () => []),
+      listRegisteredIds: vi.fn(async () => []),
+      listAdvancedEnrollments: vi.fn(async () => ({})),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => {
+        throw new Error("promop unreachable");
+      }),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId="p1"
+          state={state as never}
+        />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "dara");
+
+    await screen.findByText(/couldn't be saved for next time/);
+    // And nothing was written, which is the point of the refusal.
+    expect(state.savePreferences).not.toHaveBeenCalled();
+  });
+});
+
+describe("the save warning belongs to the patient it happened under", () => {
+  it("does not follow the reader to the next patient", async () => {
+    // A patient switch builds a new writer while the old one's flush is still
+    // in the air. The message describes the previous patient's row, and left
+    // standing it reads as a failure to save this patient's filters — which
+    // nobody has tried yet.
+    const api = fakeApi();
+    const mk = (readFails: boolean) => ({
+      listFavoriteIds: vi.fn(async () => []),
+      listRegisteredIds: vi.fn(async () => []),
+      listAdvancedEnrollments: vi.fn(async () => ({})),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => {
+        if (readFails) throw new Error("promop unreachable");
+        return {} as Record<string, unknown>;
+      }),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    });
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (personId: string, state: unknown) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          personId={personId}
+          state={state as never}
+        />
+      </QueryClientProvider>
+    );
+
+    const view = render(ui("p1", mk(true)));
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "dara");
+    await screen.findByText(/couldn't be saved for next time/);
+
+    view.rerender(ui("p2", mk(false)));
+
+    await waitFor(() =>
+      expect(screen.queryByText(/couldn't be saved for next time/)).toBeNull(),
+    );
   });
 });

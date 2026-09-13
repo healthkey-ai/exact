@@ -992,6 +992,14 @@
  * out of Tailwind utilities and shadcn controls. Native controls here, so no
  * component library follows the remote into its host.
  * ------------------------------------------------------------------------- */
+/* "Shown here but not saved" — the filters work, the storing of them did not.
+   A status rather than an alert: nothing the reader has to act on. */
+.exact-root .exact-list__save-warning {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-warning-700);
+}
+
 .exact-root .exact-filters__trigger {
   display: inline-flex;
   align-items: center;
@@ -1245,4 +1253,82 @@
   margin: 0.5rem 0 0;
   color: var(--exact-color-not-eligible);
   font-size: 0.875rem;
+}
+
+/* Inline editing of "Your Value" (#421).
+
+   The pencil sits in the flow after the value rather than floating over it:
+   absolute placement put it on top of the mismatch mark on narrow screens,
+   where the two are the same size and the reader cannot tell which they are
+   about to press. */
+.exact-root .exact-elig__edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--exact-color-text-tertiary);
+  cursor: pointer;
+}
+.exact-root .exact-elig__edit:hover:not(:disabled) {
+  color: var(--exact-color-primary);
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-elig__edit:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+.exact-root .exact-elig__editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.exact-root .exact-elig__input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 4px;
+  font: inherit;
+  /* Not `inherit`: the cell carries the row's status colour, so an inherited
+     input would be red in a mismatched row and green in a matched one. */
+  color: var(--exact-color-text);
+  background: var(--exact-color-surface);
+}
+.exact-root .exact-elig__input--multi {
+  min-height: 5rem;
+}
+.exact-root .exact-elig__save,
+.exact-root .exact-elig__cancel {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--exact-color-border);
+  font: inherit;
+  cursor: pointer;
+}
+.exact-root .exact-elig__save {
+  border-color: var(--exact-color-primary);
+  background: var(--exact-color-primary);
+  color: var(--exact-color-on-brand);
+}
+.exact-root .exact-elig__cancel {
+  background: transparent;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-elig__save:disabled,
+.exact-root .exact-elig__cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Its own line, so a long message does not squeeze the box it is about. */
+.exact-root .exact-elig__error {
+  flex: 1 0 100%;
+  color: var(--exact-color-not-eligible);
+  font-size: 0.8125rem;
 }
