@@ -108,6 +108,11 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_ALL_ORIGINS = (
     os.environ.get('CORS_ALLOW_ALL_ORIGINS', 'false').lower() == 'true'
 )
+# `Content-Disposition` is not a CORS-safelisted response header, so without
+# this the federated remote — which runs on the HOST's origin — cannot read
+# the name the CSV export gave the file, and every download would be saved
+# under a name the client guessed.
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
 
 # ---------------------------------------------------------------------------
 # Security headers (deployed environments)
