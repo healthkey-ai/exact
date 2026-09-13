@@ -14,7 +14,7 @@
 //
 // Still out of scope: editing a patient value (CB's pencil controls, phase 4)
 // and CB's share / Standard-of-Care buttons.
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   CheckIcon,
@@ -32,6 +32,9 @@ import { injectStyles } from "./injectStyles";
 import { FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
+import { FieldEdit } from "./FieldEdit";
+import { editabilityOf } from "./writable";
+import type { WritableFields } from "./writable";
 
 /** Everything the two writing controls need, as plain values and callbacks.
  *
@@ -81,6 +84,10 @@ interface Props {
   /** Absent when the host supplied no state adapter — then neither the
    *  bookmark nor the interest control is rendered. */
   trialState?: TrialStateControls;
+  /** Absent when the host supplied no writer, or while the descriptor is on
+   *  its way — then no row draws an edit control and the table reads exactly
+   *  as it does today. */
+  editing?: RowEditing;
 }
 
 const BackArrow = () => (
@@ -120,7 +127,60 @@ function formatValue(value: unknown, options?: TrialDetailField["options"]): str
   return labelOf(value, options);
 }
 
-function EligibilityRow({ field }: { field: TrialDetailField }) {
+/** What the page knows about editing, handed down to every row.
+ *
+ *  `fields` undefined means the answer has not arrived (or the host supplied
+ *  no writer): no row draws a control, and the table reads exactly as it does
+ *  today. */
+export interface RowEditing {
+  fields?: WritableFields;
+  /** Rejects when the write was refused. */
+  save: (field: string, value: unknown) => Promise<void>;
+}
+
+/** Which rows may carry an edit control.
+ *
+ *  Two rows in three can name the same patient attribute, because `ufield` is
+ *  copied verbatim onto every row a config entry produces — a min and a max,
+ *  and a "× upper limit of normal" pair beside them. Left alone that draws
+ *  several pencils for one value, and the ×ULN one is actively wrong: the
+ *  number on screen is a RATIO, so editing "2.5" would write 2.5 into the
+ *  absolute lab column.
+ *
+ *  `ureadonly` marks exactly the rows that must not take a plain box — the
+ *  ×ULN pair sets it outright, and it is otherwise true for a computed row or
+ *  one whose value is composed in a subform (those need the dialog, which is
+ *  the next slice). Of what is left, the first row to name an attribute keeps
+ *  the control and the rest go back to reading as they do today; a min and a
+ *  max show the same value, so which one wins does not matter, only that one
+ *  does.
+ */
+function editableRowNames(fields: TrialDetailField[]): Set<string> {
+  const taken = new Set<string>();
+  const rows = new Set<string>();
+  for (const field of fields) {
+    const attribute = field.upatientField;
+    // `upatientRecomputed` is the one refusal PROMOP cannot give: it will
+    // take the write, and EXACT will replace the value from its inputs before
+    // the next match is scored. Accepted, undone, no error — which reads to
+    // the patient as an edit that did nothing.
+    if (!attribute || field.ureadonly || field.upatientRecomputed) continue;
+    if (taken.has(attribute)) continue;
+    taken.add(attribute);
+    rows.add(field.name);
+  }
+  return rows;
+}
+
+function EligibilityRow({
+  field,
+  editing,
+  editableHere,
+}: {
+  field: TrialDetailField;
+  editing?: RowEditing;
+  editableHere?: boolean;
+}) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
   // The trial placed no constraint on this attribute, so it was never
@@ -132,6 +192,16 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
   const required = formatValue(field.value, field.options);
   const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
+  // Only `edit` puts anything on screen. `no` carries a reason, but PROMOP's
+  // reasons are written for whoever is integrating — one of them points at
+  // `docs/omop_to_patientrecord.md` — so showing them raw to a patient would
+  // be worse than the silence. Surfacing them needs curated wording, and that
+  // is a decision, not an oversight.
+  const [editorOpen, setEditorOpen] = useState(false);
+  const editable =
+    editing && editableHere
+      ? editabilityOf(field.upatientField, editing.fields)
+      : ({ can: "unknown" } as const);
 
   return (
     <div className="exact-elig__row">
@@ -160,10 +230,18 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
         data-col="yours"
       >
         <span className="exact-elig__colhdr">Your Value</span>
-        <span className="exact-elig__val">{renderMd(yours)}</span>
-        {field.uunits ?? field.units ? (
-          <span className="exact-elig__units">{field.uunits ?? field.units}</span>
-        ) : null}
+        {/* The editor stands in for the value while it is open, rather than
+            beside it: this column can be a few characters wide, and showing
+            the old value next to the box that is replacing it is a question
+            nobody should have to answer. */}
+        {editorOpen ? null : (
+          <>
+            <span className="exact-elig__val">{renderMd(yours)}</span>
+            {field.uunits ?? field.units ? (
+              <span className="exact-elig__units">{field.uunits ?? field.units}</span>
+            ) : null}
+          </>
+        )}
         {/* A mismatch was marked in red and nowhere else, while the register
             card below tells the reader the mismatches are marked above. For
             anyone not seeing the colour that was a promise the page did not
@@ -172,10 +250,22 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
             After the units, where the matched cell puts its tick: before
             them it split the value from its unit — "12 ✕ years", read out
             as "12, does not match, years". */}
-        {notMatched ? (
+        {notMatched && !editorOpen ? (
           <span className="exact-elig__mismatch" aria-label="does not match">
             ✕
           </span>
+        ) : null}
+        {editable.can === "edit" && editing ? (
+          <FieldEdit
+            field={editable.field}
+            label={field.label}
+            entry={editable.entry}
+            control={editable.control}
+            value={field.uvalue}
+            units={field.uunits ?? field.units}
+            onSave={(value) => editing.save(editable.field, value)}
+            onOpenChange={setEditorOpen}
+          />
         ) : null}
       </div>
     </div>
@@ -302,6 +392,7 @@ export function TrialDetailPage({
   filters,
   onBack,
   trialState,
+  editing,
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
@@ -340,6 +431,7 @@ export function TrialDetailPage({
   const mclNamesSettled = formSettings.isFetched;
 
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
+  const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
@@ -454,7 +546,12 @@ export function TrialDetailPage({
                     <div className="exact-elig__thead-col">Your Value</div>
                   </div>
                   {eligibility.map((field) => (
-                    <EligibilityRow key={field.name} field={field} />
+                    <EligibilityRow
+                      key={field.name}
+                      field={field}
+                      editing={editing}
+                      editableHere={editableRows.has(field.name)}
+                    />
                   ))}
                 </div>
               ) : (

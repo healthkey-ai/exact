@@ -98,6 +98,16 @@ BULKY_DISEASE_CRITERIA_SOURCES = {
 
 
 class PatientInfoAttributes:
+    """The patient side of a comparison — or the shape of one, with no patient.
+
+    `patient_info` may be None: `resolve_patient_info` returns None on the
+    public-browsing path, and the trial-detail view still has to describe what
+    the trial requires. Every accessor then answers None, which is what "there
+    is no patient" means about a patient's value. Nothing infers from those
+    Nones that a patient HAS nothing — `UserToTrialAttrMatcher` refuses to be
+    built without one, so no verdict is computed from them.
+    """
+
     def __init__(self, patient_info):
         self.patient_info = patient_info
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
@@ -146,6 +156,11 @@ class PatientInfoAttributes:
         return is_blank
 
     def get_value(self, attr_name):
+        # No patient, no value. See the class docstring: this is the shape of a
+        # comparison rather than one, and the trial-detail view needs the shape
+        # to describe what the trial asks for.
+        if self.patient_info is None:
+            return None
         if attr_name == 'pre_existing_condition_categories':
             if self.patient_info.no_pre_existing_conditions is True:
                 return ['none']
@@ -233,6 +248,8 @@ class PatientInfoAttributes:
 
     @cached_property
     def disease_code(self):
+        if self.patient_info is None:
+            return None
         # Tolerate surrounding whitespace + None/empty (CB #4323): a bare
         # str(None).lower() would be 'none'. Kept consistent with the MCL disease
         # gate in normalize._normalize_mcl_derivations so a padded title can't

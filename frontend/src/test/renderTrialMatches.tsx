@@ -12,7 +12,13 @@ import type { AxiosInstance } from "axios";
 import { vi } from "vitest";
 
 import { TrialMatches } from "../federation/TrialMatches";
-import type { AdvancedStatus, TrialStateAdapter } from "../federation/state";
+import type { MapRenderer } from "../federation/TrialsMap";
+import type {
+  AdvancedStatus,
+  TrialStateAdapter,
+  WriteOutcome,
+} from "../federation/state";
+import type { WritableFields } from "../federation/writable";
 import type {
   FilterState,
   PatientInfo,
@@ -46,6 +52,28 @@ export interface FakeApi {
   /** Leave `/form-settings/` unanswered, to see what renders while the option
    *  catalog is still in flight. */
   holdFormSettings: () => void;
+  /** Replace the graph payload's trials. Each entry is merged over the node
+   *  the fake would have built for that trial. */
+  setGraph: (trials: Array<Record<string, unknown>>) => void;
+  /** Answer the next export with a file whose last line says it stopped
+   *  early — what a stream that died halfway delivers when the server was
+   *  still alive to say so. */
+  truncateNextExport: () => void;
+  /** Answer the next export with a file that just STOPS — no end marker and
+   *  no apology, which is what a proxy cutting the response leaves behind. */
+  cutNextExport: () => void;
+  /** Cut the next export in the one place that looks finished: inside a quoted
+   *  title holding a newline and the completion marker, so the file's last
+   *  PHYSICAL line is the marker while its last RECORD is a half-written
+   *  row. */
+  cutNextExportInsideAQuotedMarker: () => void;
+  /** Hold the next export open, and hand back the release. */
+  holdNextExport: () => () => void;
+  /** Hold the NEXT detail response open, and return the release. Lets a test
+   *  see the page during a re-read rather than only after it: whether a save
+   *  waits for the record it claims to have re-read is invisible once the
+   *  refetch has already landed. */
+  holdNextDetail: () => () => void;
   /** Override fields on every trial's detail response from now on.
    *  Whatever is NOT overridden follows the trial actually asked for — so
    *  the id and title track the row that was clicked unless a test pins
@@ -148,7 +176,13 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   };
   let failWith: number | null = null;
   let holdSettings = false;
+  let truncateExport = false;
+  let cutExport = false;
+  let cutInsideQuote = false;
+  let heldExport: { release: () => void } | null = null;
   let detailOverrides: Partial<TrialDetailResponse> = {};
+  let graphOverrides: Array<Record<string, unknown>> | null = null;
+  let heldDetail: { release: () => void } | null = null;
 
   const respond = (url: string, body?: unknown) => {
     if (url.includes("form-settings")) {
@@ -167,6 +201,55 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
         }),
       );
     }
+    if (url.includes("/trials/export/")) {
+      const body = cutInsideQuote
+        ? 'Study ID,Title\nNCT1,"a title\n# end of export — not really'
+        : cutExport
+        ? // Cut mid-row, and the row before it holds a title with a NEWLINE
+          // followed by the completion marker — `csv.writer` keeps a line
+          // break inside a quoted field, so the marker starts a physical line
+          // without starting a record.
+          'Study ID,Title\nNCT1,"a title\n# end of export — not really"\nNCT2,Part'
+        : truncateExport
+          ? "Study ID\nNCT1\n# EXPORT INCOMPLETE — this file stopped early after 1 trials\n"
+          : "Study ID\nNCT1\n# end of export — 1 trials\n";
+      truncateExport = false;
+      cutExport = false;
+      cutInsideQuote = false;
+      const answer = {
+        data: new Blob([body], { type: "text/csv" }),
+        headers: { "content-disposition": 'attachment; filename="trials-2026-09-11.csv"' },
+      };
+      if (heldExport) {
+        const held = heldExport;
+        heldExport = null;
+        return new Promise((resolve) => {
+          held.release = () => resolve(answer);
+        });
+      }
+      return Promise.resolve(answer);
+    }
+    if (url.includes("/trials-graph/graph/")) {
+      return Promise.resolve({
+        data: {
+          patient: { disease: "multiple myeloma" },
+          trials: response.results.map((t) => ({
+            nodeId: `trial:${t.trialId}`,
+            trialId: t.trialId,
+            studyId: t.studyId,
+            briefTitle: t.briefTitle,
+            matchScore: t.matchScore,
+            goodnessScore: t.goodnessScore,
+            match: {
+              matched: [{ patientField: "disease", label: "Disease" }],
+              missing: [{ patientField: "ecog", label: "ECOG" }],
+              notMatched: [],
+            },
+            ...(graphOverrides?.find((o) => o.trialId === t.trialId) ?? {}),
+          })),
+        },
+      });
+    }
     // A single trial, not the list: `/trials/7/` and `/trials/7/match/`.
     // Answered FOR THE ID ASKED FOR — one id-blind object would render
     // "Trial 1" whichever row was clicked, so a page that fetched or showed
@@ -174,7 +257,15 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     const detailMatch = /^\/trials\/(\d+)\//.exec(url);
     if (detailMatch) {
       const id = Number(detailMatch[1]);
-      return Promise.resolve({ data: { ...trialDetail(id), ...detailOverrides } });
+      const answer = { data: { ...trialDetail(id), ...detailOverrides } };
+      if (heldDetail) {
+        const gate = heldDetail;
+        heldDetail = null;
+        return new Promise((resolve) => {
+          gate.release = () => resolve(answer);
+        });
+      }
+      return Promise.resolve(answer);
     }
     // Honour `trial_ids` the way the server does. Returning the same rows
     // for a narrowed request makes the fake agree with any implementation,
@@ -223,11 +314,33 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     setResponse: (next: Partial<TrialsResponse>) => {
       response = { ...response, ...next };
     },
+    holdNextDetail: () => {
+      const gate: { release: () => void } = { release: () => {} };
+      heldDetail = gate;
+      return () => gate.release();
+    },
     setDetail: (next: Partial<TrialDetailResponse>) => {
       detailOverrides = { ...detailOverrides, ...next };
     },
+    setGraph: (trials: Array<Record<string, unknown>>) => {
+      graphOverrides = trials;
+    },
     holdFormSettings: () => {
       holdSettings = true;
+    },
+    truncateNextExport: () => {
+      truncateExport = true;
+    },
+    cutNextExport: () => {
+      cutExport = true;
+    },
+    cutNextExportInsideAQuotedMarker: () => {
+      cutInsideQuote = true;
+    },
+    holdNextExport: () => {
+      const slot = { release: () => {} };
+      heldExport = slot;
+      return () => slot.release();
     },
   };
 }
@@ -241,7 +354,11 @@ export interface FakeState {
   registered: string[];
   /** Reads, counted. A write is supposed to invalidate the list it changed,
    *  and the only externally visible sign of that is a re-read. */
-  reads: { favorites: number; registered: number };
+  reads: { favorites: number; registered: number; writable: number };
+  /** What the patient record holds, after any writes. The same object the
+   *  fake echoes back, so a test can assert the value landed rather than
+   *  only that a spy was called. */
+  record: Record<string, unknown>;
 }
 
 /** A working adapter, backed by two arrays.
@@ -256,12 +373,18 @@ export function fakeState(
     registered?: string[];
     /** Trials a study team has moved past "registered". */
     advanced?: Record<string, AdvancedStatus>;
+    /** The writable-fields descriptor. Absent means the host supplies no
+     *  editing pair at all — which is the default, so every test that does
+     *  not opt in keeps proving the page stays read-only. */
+    writable?: WritableFields;
+    record?: Record<string, unknown>;
     overrides?: Partial<TrialStateAdapter>;
   } = {},
 ): FakeState {
   const favorites = [...(initial.favorites ?? [])];
   const registered = [...(initial.registered ?? [])];
-  const reads = { favorites: 0, registered: 0 };
+  const reads = { favorites: 0, registered: 0, writable: 0 };
+  const record: Record<string, unknown> = { ...(initial.record ?? {}) };
 
   const set = (list: string[], id: string, on: boolean) => {
     const at = list.indexOf(id);
@@ -284,10 +407,25 @@ export function fakeState(
     getPreferences: vi.fn(async () => ({})),
     savePreferences: vi.fn(async () => undefined),
     resetPreferences: vi.fn(async () => undefined),
+    // Only when the test asked for it. The pair is all-or-nothing, so a fake
+    // that always had it would never exercise the read-only path that every
+    // host without a writer gets.
+    ...(initial.writable
+      ? {
+          getWritableFields: vi.fn(async () => {
+            reads.writable += 1;
+            return initial.writable!;
+          }),
+          setPatientField: vi.fn(async (field: string, value: unknown) => {
+            record[field] = value;
+            return { status: "saved", value } as WriteOutcome;
+          }),
+        }
+      : {}),
     ...initial.overrides,
   };
 
-  return { adapter, favorites, registered, reads };
+  return { adapter, favorites, registered, reads, record };
 }
 
 export function renderTrialMatches(
@@ -299,6 +437,7 @@ export function renderTrialMatches(
     // checking for every test, so a typo'd filter name compiled and the
     // test asserted nothing.
     initialFilters?: FilterState;
+    renderMap?: MapRenderer;
     state?: TrialStateAdapter;
   } = {},
 ): RenderResult {
@@ -324,6 +463,7 @@ export function renderTrialMatches(
         }
         personId={props.personId}
         initialFilters={props.initialFilters}
+        renderMap={props.renderMap}
         state={props.state}
       />
     </QueryClientProvider>,

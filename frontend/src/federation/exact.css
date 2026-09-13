@@ -503,6 +503,247 @@
   }
 }
 
+/* Explore Trials — the knowledge graph */
+.exact-root .exact-graph {
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-graph__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exact-root .exact-graph__sub,
+.exact-root .exact-graph__stats,
+.exact-root .exact-graph__status,
+.exact-root .exact-graph__empty {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__truncated {
+  color: var(--exact-color-warning-700);
+}
+
+.exact-root .exact-graph__close,
+.exact-root .exact-graph__more {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The picture scrolls inside its own box; the page never scrolls sideways. */
+.exact-root .exact-graph__scroll {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.exact-root .exact-graph__svg {
+  max-width: none;
+}
+
+.exact-root .exact-graph__trial {
+  cursor: pointer;
+}
+
+.exact-root .exact-graph__trial:focus-visible circle {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+.exact-root .exact-graph__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: baseline;
+}
+
+/* The same content as the picture, in text. Not a fallback — the picture is
+   the quick read and this is the one that survives a screen reader, a narrow
+   window, and a label longer than the space beside its dot. */
+.exact-root .exact-graph__list {
+  margin: 12px 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__list > li + li {
+  margin-top: 8px;
+}
+
+.exact-root .exact-graph__list button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--exact-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.exact-root .exact-graph__score {
+  color: var(--exact-color-text-tertiary);
+}
+
+/* Map view — the places these trials are */
+.exact-root .exact-map {
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-map__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exact-root .exact-map__sub,
+.exact-root .exact-map__empty,
+.exact-root .exact-map__note {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-map__close {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.exact-root .exact-map__body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Side by side once there is room for both; the panel scrolls on its own so
+   the map stays put while the reader works down the places. */
+@media (min-width: 900px) {
+  /* Two columns only when there is a map to put in the first one. Without a
+     renderer the places are the whole panel, and a lone list in a 1.6fr/1fr
+     grid leaves a third of it blank. */
+  .exact-root .exact-map__body.has-map {
+    grid-template-columns: 1.6fr 1fr;
+    align-items: start;
+  }
+
+  .exact-root .exact-map__body.has-map .exact-map__places {
+    position: sticky;
+    top: 12px;
+    max-height: 32rem;
+    overflow-y: auto;
+  }
+}
+
+.exact-root .exact-map__canvas {
+  min-height: 20rem;
+  border-radius: var(--exact-border-radius);
+  overflow: hidden;
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-map__places {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exact-root .exact-map__place + .exact-map__place {
+  border-top: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-map__place-head {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exact-root .exact-map__place.is-open .exact-map__place-name {
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-map__place-name {
+  font-weight: 600;
+}
+
+.exact-root .exact-map__place-count,
+.exact-root .exact-map__distance {
+  font-size: 0.75rem;
+  color: var(--exact-color-text-tertiary);
+  white-space: nowrap;
+}
+
+.exact-root .exact-map__place-trials {
+  margin: 0 0 8px;
+  padding-left: 1rem;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.exact-root .exact-map__place-trials li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.exact-root .exact-map__place-trials button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--exact-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
 /* Field tooltip: "?" icon + floating text box on hover/focus */
 .exact-root .exact-tooltip__wrap {
   position: relative;
@@ -685,6 +926,15 @@
   margin-bottom: 0.75rem;
 }
 
+/* The triggers travel together at the right. `space-between` was written for
+   two children — the sort and the filter — and a third lands in the middle of
+   the row rather than beside the one it belongs with. */
+.exact-root .exact-list__triggers {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .exact-root .exact-sort {
   display: inline-flex;
   align-items: center;
@@ -851,6 +1101,51 @@
  * out of Tailwind utilities and shadcn controls. Native controls here, so no
  * component library follows the remote into its host.
  * ------------------------------------------------------------------------- */
+/* Export CSV: the same chrome as the filter trigger — it sits beside it and
+   two differently-drawn buttons in one row read as two kinds of control. */
+.exact-root .exact-list__export {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.exact-root .exact-list__export:disabled {
+  /* `not-allowed`, not `progress`: the button is also disabled when the export
+     CANNOT run, and a spinner cursor over a dead control asserts work that is
+     not happening. */
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.exact-root .exact-list__export.is-working:disabled {
+  cursor: progress;
+}
+
+.exact-root .exact-list__export-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--exact-color-not-eligible);
+}
+
+/* "Shown here but not saved" — the filters work, the storing of them did not.
+   A status rather than an alert: nothing the reader has to act on. */
+.exact-root .exact-list__save-warning {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-warning-700);
+}
+
 .exact-root .exact-filters__trigger {
   display: inline-flex;
   align-items: center;
@@ -1104,4 +1399,82 @@
   margin: 0.5rem 0 0;
   color: var(--exact-color-not-eligible);
   font-size: 0.875rem;
+}
+
+/* Inline editing of "Your Value" (#421).
+
+   The pencil sits in the flow after the value rather than floating over it:
+   absolute placement put it on top of the mismatch mark on narrow screens,
+   where the two are the same size and the reader cannot tell which they are
+   about to press. */
+.exact-root .exact-elig__edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--exact-color-text-tertiary);
+  cursor: pointer;
+}
+.exact-root .exact-elig__edit:hover:not(:disabled) {
+  color: var(--exact-color-primary);
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-elig__edit:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+.exact-root .exact-elig__editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.exact-root .exact-elig__input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 4px;
+  font: inherit;
+  /* Not `inherit`: the cell carries the row's status colour, so an inherited
+     input would be red in a mismatched row and green in a matched one. */
+  color: var(--exact-color-text);
+  background: var(--exact-color-surface);
+}
+.exact-root .exact-elig__input--multi {
+  min-height: 5rem;
+}
+.exact-root .exact-elig__save,
+.exact-root .exact-elig__cancel {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--exact-color-border);
+  font: inherit;
+  cursor: pointer;
+}
+.exact-root .exact-elig__save {
+  border-color: var(--exact-color-primary);
+  background: var(--exact-color-primary);
+  color: var(--exact-color-on-brand);
+}
+.exact-root .exact-elig__cancel {
+  background: transparent;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-elig__save:disabled,
+.exact-root .exact-elig__cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Its own line, so a long message does not squeeze the box it is about. */
+.exact-root .exact-elig__error {
+  flex: 1 0 100%;
+  color: var(--exact-color-not-eligible);
+  font-size: 0.8125rem;
 }
