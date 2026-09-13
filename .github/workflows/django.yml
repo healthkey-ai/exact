@@ -21,10 +21,6 @@ jobs:
         key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-v1
         restore-keys: |
           ${{ runner.os }}-pip-
-    - uses: actions/cache@v4
-      with:
-        path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
     - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
@@ -37,17 +33,34 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      # The runner's cached/toolcache pip is a broken 24.1+ mix: importing pip
-      # itself raises `ImportError: cannot import name 'get_runnable_pip'`, so
-      # even `python -m pip install "pip<24.1"` can't run. Repair pip first with
-      # the stdlib `ensurepip` bootstrap (it unpacks a bundled wheel without
-      # importing the broken pip), THEN pin pip < 24.1 — a build-isolation path
-      # in `pip install -r requirements.txt` still imports get_runnable_pip,
-      # which 24.1 removed. Deterministic fix until the build backend is fixed.
+      # This job exists to fail fast on a bad `requirements.txt`, and to fill
+      # `~/.cache/pip` before the three `test` jobs start — otherwise they
+      # race to save the same key and two of them lose.
+      #
+      # It does NOT hand its `site-packages` to `test` any more. That is what
+      # broke CI on the feature branches. The step used to pin pip down to
+      # 24.0 INSIDE the directory the workflow cached, so the saved entry
+      # could never agree with the image it was restored onto (26.2.1), and
+      # `actions/cache` untars OVER a tree rather than replacing it. The
+      # union was neither version: 26.2.1's `build_env/` package survived
+      # beside 24.0's `build_env.py` and won the import, then asked 24.0's
+      # overwritten `cli/spinners.py` for `open_rich_spinner`. Every
+      # `python -m pip` died there.
+      #
+      # No image upgrade was involved, which is why it read as random:
+      # entries are scoped per `refs/pull/N/merge`, so each PR poisoned only
+      # itself — first run missed, passed, saved; second run hit what it had
+      # written and failed. PR #432, eleven minutes apart on one image: run
+      # 34570074256 missed and passed, run 34570854589 hit and died.
+      #
+      # The pin goes with it. `get_runnable_pip` was never removed in 24.1 —
+      # it sits in `build_env.py` in 24.0 and 24.1 and moved to
+      # `utils/misc.py` by 26.2.1 — so the ImportError the pin was added for
+      # was this same mixed tree read from the other side. The image's own
+      # pip installs this file: docker run 33601218069 does it under 26.2.1,
+      # psycopg2's sdist build isolation included.
       run: |
-        python -m ensurepip --upgrade
-        python -m pip install "pip<24.1"
-        pip install -r requirements.txt
+        python -m pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
@@ -75,10 +88,13 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-    - uses: actions/cache@v4
+    - name: Cache pip
+      uses: actions/cache@v4
       with:
-        path: ${{ env.pythonLocation }}
-        key: ${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('requirements.txt') }}-v2
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}-v1
+        restore-keys: |
+          ${{ runner.os }}-pip-
     - name: Install system dependencies
       run: |
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
@@ -91,6 +107,12 @@ jobs:
           libgeos-dev \
           libgeos-c1v5 \
           postgresql-client
+    - name: Install Python dependencies
+      # Its own, not `build`'s — see the comment there for what happened
+      # when this job had no install step at all and ran on a cached
+      # `site-packages`.
+      run: |
+        python -m pip install -r requirements.txt
     - name: Set environment
       run: |
         echo "SECRET_KEY=ci-secret-key-not-used-in-prod" >> $GITHUB_ENV
