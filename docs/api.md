@@ -129,8 +129,8 @@ trial-search request.
 | `postalCode` | string | Override postal code for distance calculation |
 | `studyId` | string | Filter by study ID (e.g. NCT number) |
 | `phase` | string | Keep trials at this phase or later (`EARLY_PHASE1` … `PHASE4`); trials with no ingested phase are excluded |
-| `lastUpdate` | date | Filter trials updated after this date |
-| `firstEnrolment` | date | Filter trials with first enrolment after this date |
+| `lastUpdate` | date or integer | Updated ON OR AFTER a date (`2026-01-01`, or the `T`/`Z` forms), or within the last N years (`2`). A trial with no update date passes either way. See the note below. |
+| `firstEnrolment` | date or integer | First enrolment on or after a date, or within the last N years. Same two spellings. |
 
 ---
 
