@@ -1,8 +1,12 @@
+import csv
+import io as _io
 import logging
 import re
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import F, Prefetch, QuerySet
+from django.http import StreamingHttpResponse
+from django.utils import timezone
 from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -11,6 +15,7 @@ from rest_framework.exceptions import APIException
 from rest_framework.views import APIView
 
 from trials.api.pagination import TrialsPagination
+from trials.api.utils import csv_safe_cell
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
 from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
 from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
@@ -19,6 +24,135 @@ from trials.services.study_preferences import StudyPreferences, study_preference
 from trials.services.value_options import ValueOptions
 
 logger = logging.getLogger(__name__)
+
+
+#: Excel refuses a cell past 32,767 characters, and a trial with several
+#: hundred sites — ordinary — can produce one. Cut well short of the limit so
+#: the suffix explaining the cut fits inside it too.
+EXPORT_CELL_LIMIT = 30_000
+
+
+def _clip(text: str) -> str:
+    """One cell, short enough for a spreadsheet to accept.
+
+    Applies to scalars as much as to joined lists: `brief_title` and
+    `official_title` are unbounded `TextField`s, and one long enough takes the
+    whole file down with it. Saying the cell was cut matters for the same
+    reason the export's own sentinel does — silently shorter reads as
+    genuinely shorter.
+    """
+    if len(text) <= EXPORT_CELL_LIMIT:
+        return text
+    dropped = len(text) - EXPORT_CELL_LIMIT
+    return text[:EXPORT_CELL_LIMIT] + f' … and {dropped} more characters'
+
+
+def _export_cell(value):
+    """One serialized field, as a CSV cell.
+
+    Lists are joined rather than written as their Python repr: `phase` and
+    `location` arrive as arrays, and `['PHASE2']` in a spreadsheet column is
+    not something a reader can do anything with. `None` is an empty cell, not
+    the string "None" — a spreadsheet reads the latter as data.
+
+    Free text goes through `csv_safe_cell`; numbers are handed back as numbers
+    so the spreadsheet can still sum them, and so a negative one is not quoted
+    into text by its leading `-`.
+    """
+    if value is None:
+        return ''
+    if isinstance(value, (list, tuple)):
+        # Each element neutralised before the join, not the joined string: a
+        # payload in the SECOND location would otherwise sail through.
+        parts = [str(csv_safe_cell(v)) for v in value if v is not None]
+        joined = '; '.join(parts)
+        if len(joined) <= EXPORT_CELL_LIMIT:
+            return joined
+        # Cut, and SAYING it was cut. A cell that Excel refuses takes the whole
+        # file down with it; one that quietly ends mid-list reads as a trial
+        # with fewer sites than it has.
+        kept: list[str] = []
+        length = 0
+        for part in parts:
+            if length + len(part) + 2 > EXPORT_CELL_LIMIT:
+                break
+            kept.append(part)
+            length += len(part) + 2
+        return '; '.join(kept) + f'; … and {len(parts) - len(kept)} more'
+
+    if isinstance(value, bool):
+        return 'yes' if value else 'no'
+    if isinstance(value, (int, float)):
+        return value
+    # Clipped BEFORE neutralising, so the apostrophe a formula-looking value
+    # gains is not what pushes the cell over the limit.
+    return csv_safe_cell(_clip(value if isinstance(value, str) else str(value)))
+
+
+def _export_mcl_cell(trial, patient_info) -> str:
+    """The high-risk MCL rule, flattened into one cell.
+
+    Only for a trial that names criteria — the matcher is built per row here,
+    and constructing one for every trial in an export to be told "no criteria"
+    is a cost paid on the disease's whole corpus. The three lists are plain
+    columns, so the question is answered before the matcher exists.
+    """
+    if patient_info is None:
+        return ''
+    if not any((
+        trial.high_risk_mcl_criteria_required,
+        trial.high_risk_mcl_criteria_excluded,
+        trial.high_risk_mcl_criteria_sufficient_any,
+    )):
+        return ''
+    from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+    breakdown = UserToTrialAttrMatcher(trial=trial, patient_info=patient_info).high_risk_mcl_criteria_breakdown()
+    if not breakdown:
+        return ''
+    required = breakdown.get('required') or []
+    sufficient = breakdown.get('sufficientAny') or []
+    excluded = breakdown.get('excluded') or []
+
+    def inclusion(code_status):
+        # The server reports in ELIGIBILITY terms and this file has no legend,
+        # so the words are the reader's: `matched` here means they have it.
+        return {
+            'matched': 'you have this',
+            'not_matched': 'you do not have this',
+            'unknown': 'not known from your data',
+        }.get(code_status['status'], code_status['status'])
+
+    def exclusion(code_status):
+        # The inverse, which is the whole reason this is not one shared map:
+        # on an excluded criterion `matched` means CONFIRMED ABSENT, so
+        # printing the raw word tells the reader the opposite of the truth.
+        return {
+            'matched': 'you are clear of this',
+            'not_matched': 'you have this — it rules this trial out',
+            'unknown': 'not known from your data',
+        }.get(code_status['status'], code_status['status'])
+
+    parts = [f"verdict={breakdown['aggregate']}"]
+    if required:
+        # "Either" when the trial also names alternatives, because the server
+        # ORs the two inclusion rules — calling it a requirement would tell a
+        # patient who qualifies through the alternatives that they failed
+        # something.
+        head = 'either' if sufficient else 'requires'
+        parts.append(
+            f"{head} at least {breakdown.get('minCount', 1)} of these "
+            f"(you have {breakdown.get('matchedCount', 0)}): "
+            + ', '.join(f"{c['code']} — {inclusion(c)}" for c in required)
+        )
+    if sufficient:
+        head = 'or any one of these' if required else 'any one of these qualifies'
+        parts.append(f"{head}: " + ', '.join(f"{c['code']} — {inclusion(c)}" for c in sufficient))
+    if excluded:
+        parts.append(
+            'rules the trial out: '
+            + ', '.join(f"{c['code']} — {exclusion(c)}" for c in excluded)
+        )
+    return ' | '.join(parts)
 
 #: A trial id as it may appear in a JSON string: ASCII digits, nothing else,
 #: and at most as many as a bigint can hold. `str.isdigit()` is not
@@ -400,6 +534,9 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.order_by(*order)
 
         if self.action in ['list', 'search']:
+            # `export` binds itself to 'search', so it is prefetched here too —
+            # without it the stream issues a query per row for the locations
+            # the serializer sorts by distance.
             queryset = queryset.prefetch_related(
                 Prefetch('locationtrial_set',
                          queryset=LocationTrial.objects.select_related('location'))
@@ -578,6 +715,169 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         """
         self.action = 'search'
         return self.search(request, *args, **kwargs)
+
+    #: What a row of the export holds, as (header, key into the serialized
+    #: trial). The keys are the serializer's own, so the file says what the
+    #: list said — a column that drifts from the screen is worse than a column
+    #: that is missing, because nobody checks it against anything.
+    EXPORT_COLUMNS = (
+        ('Trial ID', 'trialId'),
+        ('Study ID', 'studyId'),
+        ('Title', 'briefTitle'),
+        ('Official title', 'officialTitle'),
+        ('Match', 'matchingType'),
+        ('Matching score', 'matchScore'),
+        ('Suitability score', 'goodnessScore'),
+        ('Status', 'recruitingStatus'),
+        ('Phase', 'phase'),
+        ('Trial type', 'trialType'),
+        ('Disease', 'disease'),
+        ('Stage', 'stage'),
+        ('Treatments', 'interventionTreatments'),
+        ('Sponsor', 'sponsor'),
+        ('Locations', 'location'),
+        ('Distance', 'distance'),
+        ('Distance units', 'distanceUnits'),
+        ('Enrolment', 'enrollmentCount'),
+        ('Posted', 'postedDate'),
+        ('Last update', 'lastUpdateDate'),
+        ('First enrolment', 'firstEnrolment'),
+        ('Link', 'link'),
+    )
+
+    #: Computed per row rather than read from the serializer, and only for the
+    #: disease that has them. Appended after the columns above.
+    EXPORT_MCL_COLUMN = 'High-risk MCL criteria'
+
+    #: Rows fetched per round trip while streaming. Bounds the memory the
+    #: response holds at once without making a query per row.
+    EXPORT_CHUNK = 200
+
+    #: The last line of a complete file, and of one that stopped early. The
+    #: status code cannot carry either — it was sent before the first row.
+    #: Comma-free on purpose: a sentinel the csv writer has to quote is one
+    #: nobody can grep for.
+    EXPORT_END_MARKER = '# end of export —'
+    EXPORT_INCOMPLETE_MARKER = '# EXPORT INCOMPLETE — this file stopped early'
+
+    def _reject_unnarrowed_export(self):
+        """Refuse an export that names nothing to export.
+
+        A search with no patient and no filters is a page of rows; the same
+        export is the entire table, uncapped, once per request. The three
+        things that make it a real question — a patient, a set of ids, or an
+        explicit `type=all` — are exactly the three an intentional caller
+        already sends, so this refuses the accident rather than the use.
+        """
+        if self.request.query_params.get('type') == 'all':
+            return
+        if self._resolve_trial_ids() is not None:
+            return
+        if self._resolve_patient_info() is not None:
+            return
+        raise serializers.ValidationError({
+            'detail': [
+                'An export needs something to narrow it: a patient '
+                '(`patient_info` in the body, or `?person_id=`), a `trial_ids` '
+                'list, or an explicit `?type=all` for the whole catalog.'
+            ]
+        })
+
+    @action(methods=['post'], detail=False, url_path='export')
+    def export(self, request, *args, **kwargs):
+        """The current search, as a CSV file.
+
+        POST, like every other action that needs a patient: GET-with-body is
+        forbidden by the Fetch spec and dropped by axios, and the inline
+        `patient_info` payload is the federated remote's default path. The
+        cost is that the browser cannot simply follow a link — the caller
+        reads the body and saves it — which is the same trade already made
+        for `match` and `search-match`.
+
+        Bound to `search`, so the file is the list: the same filters, the same
+        `?sort=`, the same `trial_ids` narrowing for a Favorites export, and
+        the same 400 on `type=favorites` / `type=my_trials` — those name a
+        search type that narrows nothing here, and a CSV headed "your
+        bookmarks" holding the whole corpus is the worst place to answer a
+        question with the wrong set.
+
+        Streamed rather than assembled: an unfiltered export is the whole
+        corpus, and building that in memory to hand back at once is how an
+        export endpoint takes a server down. Nothing is capped — a truncated
+        file that does not say it was truncated reads as a complete one, and
+        this is a file someone takes to an appointment. Which is also why the
+        last line says the file ended: the response headers go out before the
+        first row, so a failure halfway through arrives as a 200 with a short
+        file, indistinguishable from a small result. The sentinel is how a
+        reader — or a script — can tell the difference.
+        """
+        self.action = 'search'
+        self._reject_unnarrowed_export()
+        queryset = self.filter_queryset(self.get_queryset())
+        # The locations are prefetched by the `search` branch; the trial type
+        # is a plain FK the serializer reads per row, which on a page is one
+        # extra query and on an uncapped export is one per trial.
+        queryset = queryset.select_related('trial_type')
+        # One serializer for the whole stream: `to_representation` reads only
+        # `self.context`, and rebuilding the field map per trial is the
+        # dominant cost on a corpus-sized export.
+        context = self.get_serializer_context()
+        # `explain` reaches this from the query string and would run
+        # `TrialMatchExplainer` for every row — three queries each, measured —
+        # to produce a `matchReasons` the CSV has no column for. On the one
+        # endpoint that is uncapped by design, that is the per-row-query
+        # problem walking back in through a parameter.
+        context['explain'] = False
+        serializer = self.get_serializer_class()(context=context)
+
+        def rows():
+            buffer = _io.StringIO()
+            writer = csv.writer(buffer)
+
+            def flush():
+                value = buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+                return value
+
+            writer.writerow(
+                [header for header, _ in self.EXPORT_COLUMNS] + [self.EXPORT_MCL_COLUMN]
+            )
+            # A BOM, because the audience is someone opening this in Excel —
+            # which ignores `charset=utf-8` on a saved file and decodes as the
+            # system codepage, turning every accented sponsor and location into
+            # mojibake. `utf-8-sig` on the reading side strips it.
+            yield '\ufeff' + flush()
+
+            patient_info = context.get('patient_info')
+            written = 0
+            try:
+                for trial in queryset.iterator(chunk_size=self.EXPORT_CHUNK):
+                    row = serializer.to_representation(trial)
+                    writer.writerow(
+                        [_export_cell(row.get(key)) for _, key in self.EXPORT_COLUMNS]
+                        + [_export_cell(_export_mcl_cell(trial, patient_info))]
+                    )
+                    written += 1
+                    yield flush()
+            except Exception:
+                # The 200 is already spent. All that is left is to say the file
+                # is short — and to log it, since the client sees a success.
+                logger.exception('trials export failed after %s rows', written)
+                writer.writerow([f'{self.EXPORT_INCOMPLETE_MARKER} after {written} trials'])
+                yield flush()
+                return
+            writer.writerow([f'{self.EXPORT_END_MARKER} {written} trials'])
+            yield flush()
+
+        filename = f'trials-{timezone.now():%Y-%m-%d}.csv'
+        response = StreamingHttpResponse(rows(), content_type='text/csv; charset=utf-8')
+        # `filename*` as well as `filename`: the name is ASCII today, and a
+        # reader whose browser honours only one of the two still gets it.
+        response['Content-Disposition'] = (
+            f'attachment; filename="{filename}"; filename*=UTF-8\'\'{filename}'
+        )
+        return response
 
 
 # ---------------------------------------------------------------------------
