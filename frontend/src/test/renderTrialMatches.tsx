@@ -12,6 +12,7 @@ import type { AxiosInstance } from "axios";
 import { vi } from "vitest";
 
 import { TrialMatches } from "../federation/TrialMatches";
+import type { MapRenderer } from "../federation/TrialsMap";
 import type {
   AdvancedStatus,
   TrialStateAdapter,
@@ -408,6 +409,7 @@ export function renderTrialMatches(
     // checking for every test, so a typo'd filter name compiled and the
     // test asserted nothing.
     initialFilters?: FilterState;
+    renderMap?: MapRenderer;
     state?: TrialStateAdapter;
   } = {},
 ): RenderResult {
@@ -433,6 +435,7 @@ export function renderTrialMatches(
         }
         personId={props.personId}
         initialFilters={props.initialFilters}
+        renderMap={props.renderMap}
         state={props.state}
       />
     </QueryClientProvider>,
