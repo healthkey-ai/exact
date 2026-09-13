@@ -127,7 +127,7 @@ trial-search request.
 | `country` | string | Filter by country code |
 | `region` | string | Filter by region |
 | `postalCode` | string | Override postal code for distance calculation |
-| `studyId` | string | Filter by study ID (e.g. NCT number) |
+| `studyId` | string | Filter by study ID (e.g. NCT number). Case-insensitive, surrounding whitespace ignored |
 | `phase` | string | Keep trials at this phase or later (`EARLY_PHASE1` … `PHASE4`); trials with no ingested phase are excluded |
 | `lastUpdate` | date | Filter trials updated after this date |
 | `firstEnrolment` | date | Filter trials with first enrolment after this date |
@@ -243,9 +243,15 @@ study-preference query params as `GET /trials/`, plus:
 **`type=all` takes a different branch.** Omitting `type` runs the eligibility
 filter and the full study-preference set. `all` routes through the admin
 branch instead, which skips eligibility *and* the `phase`, `recruitmentStatus`,
-`sponsor`, `searchTreatment`, `country`/`region` and date filters — while being
-the only branch that applies `studyId`. Filters silently do nothing on that
-path rather than erroring (issue #424).
+`sponsor`, `searchTreatment`, `country`/`region`, `distance` and date filters.
+`distance` still *annotates* each row there, so trials carry a distance while
+the radius narrows nothing. Filters
+silently do nothing on that path rather than erroring (issue #424 — a fix is
+open, after which only `country`/`region` will differ, and #430 is why).
+
+`studyId` is applied on **both** branches. It used to be `all`-only, so an
+ordinary search naming one trial answered with every trial the patient matched
+(#458).
 
 **Response extra key — `tabCounts`:**
 

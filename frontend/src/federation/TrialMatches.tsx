@@ -30,7 +30,7 @@ import {
   countryFor,
   userOwnedFilters,
 } from "./filters";
-import { MAX_TRIAL_IDS } from "./state";
+import { MAX_TRIAL_IDS, canEditFields } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
@@ -42,6 +42,8 @@ import {
   canReadAdvanced,
   useAdvancedEnrollments,
   useSavedFilters,
+  useSetPatientField,
+  useWritableFields,
   useSetTrialState,
   useStateIds,
   useTrials,
@@ -212,6 +214,11 @@ function TrialMatchesInner({
   // drawn for a trial whose enrollment a study team has already advanced,
   // where "I'm Interested" would write `registered` over `entered`.
   const advanced = useAdvancedEnrollments(state, stateKey);
+  // The descriptor is about the patient, not the trial, so it is read here
+  // once rather than on every detail page. Its absence is the safe state:
+  // until it arrives, no row draws a control.
+  const writableFields = useWritableFields(state, stateKey);
+  const setPatientField = useSetPatientField(state, stateKey);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -221,7 +228,16 @@ function TrialMatchesInner({
   // it a saved field that happens to equal the current baseline would look
   // like host scope on the next edit and be dropped. See `userOwnedFilters`.
   const ownedFields = useRef<Set<string>>(new Set());
-  const savedFilters = useSavedFilters(state, stateKey, (saved) => {
+  const savedFilters = useSavedFilters(state, stateKey, (saved, applied) => {
+    // Ownership ONLY for values that were actually applied. Granting it for a
+    // discarded load looks like the fix for "a key the transport read cannot
+    // be cleared", and is the opposite: ownership makes a field
+    // tombstone-eligible, and a field that is owned, empty on screen and empty
+    // in the baseline is emitted as `undefined` — which the save then deletes.
+    // The reader's next keystroke would destroy the saved filters the merge
+    // exists to protect. The un-clearable key is the lesser problem, and I
+    // could not construct a path that reaches it.
+    if (!applied) return;
     for (const field of Object.keys(saved)) ownedFields.current.add(field);
     // A saved trial type came from THIS patient's storage, so it is this
     // patient's choice. Without claiming it the staleness rule — which exists
@@ -512,9 +528,9 @@ function TrialMatchesInner({
     setFilters(baseline);
     // Reset gives the fields back to the host, so nothing is owned any more.
     ownedFields.current = new Set();
-    // `reset`, not `persist(baseline)`: the server merges a partial update, so
-    // writing the baseline would leave whatever the reader had saved for keys
-    // the baseline does not mention. It also retires a save already on the
+    // `reset`, not `persist(baseline)`: the row is meant to end up EMPTY, and
+    // writing the baseline would store the host's scope as the reader's
+    // standing preference instead. It also retires a save already on the
     // wire, which would otherwise land afterwards and restore what was
     // just cleared.
     savedFilters.reset();
@@ -550,6 +566,33 @@ function TrialMatchesInner({
         trialId={selectedTrial.trialId}
         patientInfo={patientInfo}
         personId={personId}
+        // What actually withholds the controls is the descriptor itself:
+        // `fields` undefined answers "unknown" for every row, which is the
+        // page exactly as it reads today. That covers loading, a failed read
+        // and a host that never had a writer, so no extra guard is needed for
+        // any of them — and a guard claiming to provide one would be
+        // decoration.
+        //
+        // The gate below is about `save`, not about the rows: it is there so
+        // a callback that would dereference a missing `setPatientField` is
+        // never handed out at all. Nothing calls it today, because nothing
+        // draws a control without the descriptor; the queue in the next slice
+        // will hold it for longer than one click, which is when handing out a
+        // callback that cannot work starts to matter.
+        editing={
+          canEditFields(state)
+            ? {
+                fields: writableFields.data,
+                save: async (field, value) => {
+                  // Resolving means the record was re-read, not that it holds
+                  // what was sent — the write may have been canonicalised.
+                  // Only a refusal rejects, and only that is shown as an
+                  // error.
+                  await setPatientField.mutateAsync({ field, value });
+                },
+              }
+            : undefined
+        }
         // Values and callbacks, not the adapter: this component owns the id
         // lists and the mutations, so it is the only place that can keep the
         // star on the card and the star on the detail page saying the same
@@ -640,6 +683,12 @@ function TrialMatchesInner({
             : "Filter Results"}
         </button>
       </div>
+
+      {savedFilters.failed ? (
+        <p className="exact-list__save-warning" role="status">
+          Your filters are shown here but couldn't be saved for next time.
+        </p>
+      ) : null}
 
       {filtersOpen ? (
         <FilterPanel
