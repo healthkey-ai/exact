@@ -51,3 +51,25 @@ class TestGraphRowShape:
         # stamped: the key must be absent-as-None, not derived here.
         row = _normalize_item_for_ui({'name': 'x', 'ufield': 'someField', 'label': 'X'})
         assert row['patientFieldCanonical'] is None
+
+    def test_it_does_not_claim_a_subform_where_there_is_no_field(self):
+        """`therapies()` hardcodes `ureadonly: True` on every therapy row and
+        puts the TRIAL attribute in `ufield`, so the canonical name comes back
+        null while the subform flag says true.
+
+        A client reading that flag to decide whether to offer a subform
+        affordance offers one for a row with no patient field to write —
+        which is the silent no-op the canonical name exists to prevent,
+        reached through the key beside it.
+        """
+        row = _normalize_item_for_ui({
+            'name': 'therapiesRequired',
+            'ufield': 'therapiesRequired',
+            'upatientField': None,
+            'label': 'Therapies',
+            'value': ['vrd'],
+            'uvalue': None,
+            'ureadonly': True,
+        })
+        assert row['patientFieldCanonical'] is None
+        assert row['patientFieldHasSubform'] is None

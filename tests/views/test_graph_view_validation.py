@@ -75,6 +75,41 @@ class TestGraphPostAlias:
         assert resp.status_code == 400
         assert 'patient' in str(resp.data).lower()
 
+    def test_it_draws_for_a_patient_who_has_a_location(self, authed_client):
+        """Every other test here uses a patient with no location, and that is
+        how the endpoint kept a 500 through two reviews: `normalize` turns
+        latitude and longitude into a GEOS `Point`, and the renderer raises on
+        it. Location is a first-class filter, so a real caller has one."""
+        from tests.factories import TrialFactory
+
+        TrialFactory(disease='multiple myeloma')
+        resp = authed_client.post(
+            '/trials-graph/graph/match/',
+            {'patient_info': {
+                'disease': 'multiple myeloma',
+                'latitude': 40.7,
+                'longitude': -74.0,
+            }},
+            format='json',
+        )
+        assert resp.status_code == 200, resp.data
+        assert resp.data['patient']['latitude'] == 40.7
+
+    def test_it_draws_for_a_patient_located_by_postcode(self, authed_client):
+        from tests.factories import TrialFactory
+
+        TrialFactory(disease='multiple myeloma')
+        resp = authed_client.post(
+            '/trials-graph/graph/match/',
+            {'patient_info': {
+                'disease': 'multiple myeloma',
+                'country': 'US',
+                'postal_code': '10001',
+            }},
+            format='json',
+        )
+        assert resp.status_code == 200, resp.data
+
     def test_it_honours_n_and_the_filters(self, authed_client):
         from tests.factories import TrialFactory
 

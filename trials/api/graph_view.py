@@ -44,7 +44,16 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         # say arrives as `null` rather than `false`. `bool(...)` would turn
         # "unsaid" into "no subform", which is the wrong direction to fail
         # in and the opposite of what the key beside it does.
-        "patientFieldHasSubform": item.get("ureadonly"),
+        # Suppressed when there is no patient field to write. `therapies()`
+        # hardcodes `ureadonly: True` on every therapy row and puts the TRIAL
+        # attribute in `ufield`, so those rows arrive as "behind a subform"
+        # with nothing behind it — and a client reading this to decide whether
+        # to offer a subform affordance would offer one for a row that has no
+        # patient field at all. That is the silent-no-op the canonical name
+        # exists to prevent, reached through the key beside it.
+        "patientFieldHasSubform": (
+            item.get("ureadonly") if item.get("upatientField") else None
+        ),
         "label": item.get("label"),
         "trialValue": item.get("value"),
         "patientValue": item.get("uvalue"),

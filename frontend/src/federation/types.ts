@@ -155,6 +155,14 @@ export interface HighRiskMclCriteriaBreakdown {
 export interface GraphMatchItem {
   trialField?: string | null;
   patientField?: string | null;
+  /** The same patient attribute in its canonical snake_case form (#421).
+   *  Named by the server because deriving it here is not safe — `p53_ihc`
+   *  camelizes to `p53Ihc`, which a standard snake-caser turns back into
+   *  `p_53_ihc`, a field nobody has. */
+  patientFieldCanonical?: string | null;
+  /** Whether the value is edited through a subform. `null` where there is no
+   *  patient field to edit at all, which is not the same as `false`. */
+  patientFieldHasSubform?: boolean | null;
   label?: string | null;
   trialValue?: unknown;
   patientValue?: unknown;

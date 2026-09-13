@@ -43,8 +43,17 @@ class PatientInfoSerializer:
     def data(self):
         return self.to_representation(self.instance)
 
+    #: Derived values that are not JSON, and whose source IS. `geo_point` is a
+    #: GEOS `Point` that `normalize_patient_info` builds from `latitude` and
+    #: `longitude` — or from `country` + `postal_code` — and both of those stay
+    #: on the instance, so dropping it costs a client nothing and leaving it in
+    #: costs them the whole response: `JSONRenderer` raises on it, which is a
+    #: 500 for every patient who has a location. Location is a first-class
+    #: filter here, so that is most of them.
+    DERIVED_NOT_JSON = ('geo_point',)
+
     def to_representation(self, instance):
-        skip = _cached_property_names(type(instance))
+        skip = set(_cached_property_names(type(instance))) | set(self.DERIVED_NOT_JSON)
         d = {
             k: v for k, v in vars(instance).items()
             if not k.startswith('_') and k not in skip

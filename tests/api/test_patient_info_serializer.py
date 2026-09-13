@@ -70,3 +70,25 @@ def test_the_output_does_not_depend_on_what_has_been_read():
     warm = PatientInfoSerializer(warm_patient).data
 
     assert set(cold) == set(warm)
+
+
+@pytest.mark.django_db
+def test_a_patient_with_a_location_still_renders():
+    """`geo_point` is a GEOS `Point`, built by `normalize_patient_info` from
+    the latitude and longitude that stay on the instance beside it.
+
+    It is not a `cached_property`, so the rule above does not touch it — and
+    `JSONRenderer` raises on it, which is a 500 for every patient who has a
+    location. Location is a first-class filter here, so that is most of them.
+    The tests that missed this all used patients with no location.
+    """
+    pi = PatientInfo(disease='multiple myeloma', latitude=40.7, longitude=-74.0)
+    normalize_patient_info(pi)
+    assert pi.geo_point is not None
+
+    data = PatientInfoSerializer(pi).data
+    JSONRenderer().render(data)
+    assert 'geo_point' not in data
+    # And nothing is lost: the coordinates it was derived from are still here.
+    assert data['latitude'] == 40.7
+    assert data['longitude'] == -74.0
