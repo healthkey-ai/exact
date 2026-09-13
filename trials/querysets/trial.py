@@ -345,6 +345,33 @@ class TrialQuerySet(models.QuerySet):
         if add_traces:
             count = query.count()
 
+        # `studyId` was applied ONLY on the admin branch, so an ordinary
+        # search carrying it answered with the whole matched corpus — measured
+        # at 3114 rows against 1 for the same id with `?type=all`. Not
+        # rejected, not narrowed: the caller named one trial and got every
+        # trial. Same shape as #424, in the other direction (#458).
+        #
+        # Before the patient filter, with the rest of the study preferences:
+        # this is a search, so "the trial I named, if this patient can be in
+        # it" is the question it answers.
+        #
+        # A caller who wants the trial regardless of the patient uses
+        # `?type=all&studyId=…`, which skips the eligibility filter. NOT
+        # `GET /trials/{id}/`, which this comment said first and which is
+        # keyed on the internal primary key — someone holding an NCT number
+        # cannot reach it without resolving the id through a search, and
+        # search was the thing sending them there.
+        query = query.by_study_id(study_info.study_id)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.study_id',
+                'val': study_info.study_id,
+                'records': new_count,
+                'dropped': count-new_count
+            })
+            count = new_count
+
         query = query.by_titles(study_info.search_title)
         if add_traces:
             new_count = query.count()
@@ -522,10 +549,28 @@ class TrialQuerySet(models.QuerySet):
         return query, traces
 
     def by_study_id(self, study_id):
+        """Narrow to one trial by its registry id.
+
+        Case-insensitive and whitespace-tolerant, which it was not while this
+        was reachable only through `?type=all`. Strictness was cheap there —
+        a missed match meant the whole corpus came back, an obviously wrong
+        answer. On the ordinary search path the same miss returns NOTHING, and
+        "no trials" reads as "that trial does not exist" rather than "you typed
+        it in lower case". Every sibling text filter here is already lenient:
+        `by_sponsor` is `icontains`, `by_study_type` and `by_titles` fold case.
+
+        `__iexact` costs the `study_id` btree on a lookup that is neither hot
+        nor large — a scan over a few thousand rows — and buys a caller who
+        pasted an id with a trailing space the answer they asked for.
+        """
         if not study_id:
             return self
 
-        return self.filter(study_id=study_id)
+        study_id = str(study_id).strip()
+        if not study_id:
+            return self
+
+        return self.filter(study_id__iexact=study_id)
 
     def by_titles(self, search_title):
         if not search_title or search_title == '':
