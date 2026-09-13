@@ -297,8 +297,9 @@ describe("userOwnedFilters — clearing an owned field", () => {
 
 describe("userOwnedFilters — a cleared distance", () => {
   it("takes its unit with it", () => {
-    // Otherwise the old unit survives on disk under a merge transport and
-    // becomes the unit for the next radius the reader enters.
+    // Otherwise the old unit survives in storage — both transports keep a key
+    // that is merely absent — and becomes the unit for the next radius the
+    // reader enters.
     const out = userOwnedFilters(
       { distance: undefined, distanceUnits: "miles" as const },
       {},
