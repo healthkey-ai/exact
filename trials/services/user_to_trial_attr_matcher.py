@@ -149,13 +149,34 @@ def _resolve_omop_concepts(concept_id_values):
 
 class UserToTrialAttrMatcher:
     def __init__(self, trial: 'Trial', patient_info: 'PatientInfo') -> None:
+        if patient_info is None:
+            # `resolve_patient_info` returns None for a request with no inline
+            # payload and no resolvable `person_id` — the documented
+            # public-browsing path, which the list endpoint answers with
+            # unfiltered results. Every question this class exists to answer
+            # is "how does THIS patient compare", so with nobody to compare
+            # there is no answer to give, and the caller has to decide what to
+            # render instead.
+            #
+            # Said here rather than discovered five frames down as
+            # `'NoneType' object has no attribute 'prior_therapy'`, which is
+            # what the detail endpoint did for three separately-filed issues
+            # (#362, #374, #423).
+            raise ValueError(
+                'UserToTrialAttrMatcher needs a patient to match against; '
+                'callers with no patient context must not build one.'
+            )
         self.trial = trial
         self.patient_info = patient_info
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
         self.patient_info_attr = PatientInfoAttributes(patient_info)
         self.disease_code: Optional[str] = self.get_disease_code_from_trial(trial)
 
-    def get_disease_code_from_trial(self, trial: 'Trial') -> Optional[str]:
+    # Static: it reads nothing but the trial, and the trial-detail view needs
+    # it with no matcher in hand — that is the only disease code available when
+    # there is no patient to take one from.
+    @staticmethod
+    def get_disease_code_from_trial(trial: 'Trial') -> Optional[str]:
         disease = str(trial.disease).lower()
         if disease == 'multiple myeloma':
             return 'MM'
