@@ -134,8 +134,16 @@ function formatValue(value: unknown, options?: TrialDetailField["options"]): str
  *  today. */
 export interface RowEditing {
   fields?: WritableFields;
-  /** Rejects when the write was refused. */
-  save: (field: string, value: unknown) => Promise<void>;
+  /** Queue it. Returns at once and never rejects — what happened arrives
+   *  through `outstanding` and `failed`. */
+  save: (field: string, value: unknown) => void;
+  /** What the reader chose, for fields whose write has not come back. The row
+   *  shows this instead of the record's value, because the record does not
+   *  hold it yet and showing the old one reads as an edit that did nothing. */
+  outstanding: Record<string, unknown>;
+  /** The value that was refused, by field — so the editor can open on what
+   *  the reader typed rather than making them find it again. */
+  failed: Record<string, unknown>;
 }
 
 /** Which rows may carry an edit control.
@@ -190,7 +198,26 @@ function EligibilityRow({
   // not a requirement at all.
   const notEvaluated = field.matchingType === "not_evaluated";
   const required = formatValue(field.value, field.options);
-  const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
+  // The reader's own value wins over the record's while a write is out. Not
+  // cosmetic: the record genuinely does not hold it yet, and showing the old
+  // one for as long as that takes reads as a save that did not take.
+  // Only the row that carries the control carries its optimistic value. The
+  // others name the same attribute — a min, a max, and a "× upper limit of
+  // normal" pair — and the ×ULN row shows a RATIO, so painting the written
+  // number there would put a clinically false figure on screen, briefly, in a
+  // table a patient reads.
+  const attribute = editableHere ? field.upatientField : null;
+  const pendingValue =
+    attribute && editing && attribute in editing.outstanding
+      ? editing.outstanding[attribute]
+      : undefined;
+  const writePending = attribute != null && editing != null
+    && attribute in editing.outstanding;
+  const writeFailed = Boolean(attribute && editing && attribute in editing.failed);
+  const yours = formatValue(
+    writePending ? pendingValue : field.uvalue,
+    field.uoptions ?? field.options,
+  );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
   // Only `edit` puts anything on screen. `no` carries a reason, but PROMOP's
   // reasons are written for whoever is integrating — one of them points at
@@ -255,13 +282,30 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
+        {writePending ? (
+          <span className="exact-elig__saving">Saving…</span>
+        ) : null}
+        {writeFailed ? (
+          <span className="exact-elig__error" role="alert">
+            Couldn't save that. Your value is not in the record.
+          </span>
+        ) : null}
         {editable.can === "edit" && editing ? (
           <FieldEdit
             field={editable.field}
             label={field.label}
             entry={editable.entry}
             control={editable.control}
-            value={field.uvalue}
+            // A refused value wins over the record's: the reader is about to
+            // try again, and the thing they want in the box is what they
+            // typed.
+            value={
+              writeFailed && attribute
+                ? editing.failed[attribute]
+                : writePending
+                  ? pendingValue
+                  : field.uvalue
+            }
             units={field.uunits ?? field.units}
             onSave={(value) => editing.save(editable.field, value)}
             onOpenChange={setEditorOpen}

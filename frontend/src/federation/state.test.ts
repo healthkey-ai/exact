@@ -202,50 +202,24 @@ describe("asking what may be edited", () => {
   });
 });
 
-describe("writing one attribute", () => {
+describe("writing", () => {
   const patching = (data: unknown) => {
     const patch = vi.fn().mockResolvedValue({ data });
     return { patch } as unknown as AxiosInstance & { patch: ReturnType<typeof vi.fn> };
   };
+  const one = async (
+    client: AxiosInstance,
+    field: string,
+    value: unknown,
+  ) => (await adapter(client).setPatientFields!({ [field]: value }))[field];
 
-  it("patches the record with just that field", async () => {
+  it("patches the record with just the fields it was given", async () => {
     const client = patching({ hemoglobin_g_dl: 12 });
-    await adapter(client).setPatientField!("hemoglobin_g_dl", 12);
+    await adapter(client).setPatientFields!({ hemoglobin_g_dl: 12 });
     expect(client.patch).toHaveBeenCalledWith(
       "/api/v1/patient-records/9001/",
       { hemoglobin_g_dl: 12 },
     );
-  });
-
-  it("reports a value the server echoed back as saved", async () => {
-    const client = patching({ hemoglobin_g_dl: 12 });
-    expect(await adapter(client).setPatientField!("hemoglobin_g_dl", 12))
-      .toEqual({ status: "saved", value: 12 });
-  });
-
-  it("accepts the number the database returns as a string", async () => {
-    const client = patching({ hemoglobin_g_dl: "12.5" });
-    expect((await adapter(client).setPatientField!("hemoglobin_g_dl", 12.5)).status)
-      .toBe("saved");
-  });
-
-  it("accepts a decimal column's trailing scale", async () => {
-    // `numeric(5,2)` answers "12.50" for the 12.5 that was sent. Compared as
-    // text those differ, and the page would report a successful write as
-    // dropped. This is the case the test above only looked like it covered.
-    const client = patching({ hemoglobin_g_dl: "12.50" });
-    expect((await adapter(client).setPatientField!("hemoglobin_g_dl", 12.5)).status)
-      .toBe("saved");
-  });
-
-  it("does not let the numeric comparison swallow false or an emptied field", async () => {
-    // `Number(false)` and `Number("")` are both 0, so a careless numeric path
-    // makes "no" equal "0" and an erased value equal zero — for a lab result,
-    // the difference between not measured and measured as none.
-    expect((await adapter(patching({ meets_crab: "0" }))
-      .setPatientField!("meets_crab", false)).status).toBe("differs");
-    expect((await adapter(patching({ hemoglobin_g_dl: 0 }))
-      .setPatientField!("hemoglobin_g_dl", "")).status).toBe("differs");
   });
 
   it("sends the person in the path only, not twice", async () => {
@@ -253,113 +227,145 @@ describe("writing one attribute", () => {
     // string, so a `person_id` param would encode the same id a second time
     // with only one of the two consulted.
     const client = patching({ hemoglobin_g_dl: 12 });
-    await adapter(client).setPatientField!("hemoglobin_g_dl", 12);
+    await adapter(client).setPatientFields!({ hemoglobin_g_dl: 12 });
     expect(client.patch.mock.calls[0][2]).toBeUndefined();
+  });
+
+  it("sends several fields as one request", async () => {
+    // Every write re-derives the projection and rescores the match, so a
+    // reader filling two gaps should not pay for two of each.
+    const client = patching({ hemoglobin_g_dl: 12, platelet_count: 200 });
+    await adapter(client).setPatientFields!({
+      hemoglobin_g_dl: 12,
+      platelet_count: 200,
+    });
+    expect(client.patch).toHaveBeenCalledTimes(1);
+    expect(client.patch.mock.calls[0][1]).toEqual({
+      hemoglobin_g_dl: 12,
+      platelet_count: 200,
+    });
+  });
+
+  it("judges each field on its own", async () => {
+    // One field the record kept differently says nothing about the others,
+    // and a batch verdict would make a row of good writes look wrong.
+    const client = patching({ hemoglobin_g_dl: 12, platelet_count: 999 });
+    const outcomes = await adapter(client).setPatientFields!({
+      hemoglobin_g_dl: 12,
+      platelet_count: 200,
+    });
+    expect(outcomes.hemoglobin_g_dl.status).toBe("saved");
+    expect(outcomes.platelet_count).toEqual({ status: "differs", value: 999 });
+  });
+
+  it("reports a value the server echoed back as saved", async () => {
+    expect(await one(patching({ hemoglobin_g_dl: 12 }), "hemoglobin_g_dl", 12))
+      .toEqual({ status: "saved", value: 12 });
+  });
+
+  it("accepts a decimal column's trailing scale", async () => {
+    // `numeric(5,2)` answers "12.50" for the 12.5 that was sent. Compared as
+    // text those differ, and the page would report a successful write as
+    // dropped.
+    expect((await one(patching({ hemoglobin_g_dl: "12.50" }), "hemoglobin_g_dl", 12.5)).status)
+      .toBe("saved");
+  });
+
+  it("does not let the numeric comparison swallow false or an emptied field", async () => {
+    // `Number(false)` and `Number("")` are both 0, so a careless numeric path
+    // makes "no" equal "0" and an erased value equal zero — for a lab result,
+    // the difference between not measured and measured as none.
+    expect((await one(patching({ meets_crab: "0" }), "meets_crab", false)).status)
+      .toBe("differs");
+    expect((await one(patching({ hemoglobin_g_dl: 0 }), "hemoglobin_g_dl", "")).status)
+      .toBe("differs");
   });
 
   it("catches the silent no-op: 200, unchanged value", async () => {
     // PROMOP drops a read-only or unknown field without complaint — the older
     // 405 was removed deliberately. Reported as success, the page would say
     // "saved" over a value the record never took.
-    const client = patching({ bmi: 24 });
-    expect(await adapter(client).setPatientField!("bmi", 31))
+    expect(await one(patching({ bmi: 24 }), "bmi", 31))
       .toEqual({ status: "differs", value: 24 });
   });
 
-  it("says unconfirmed when the response does not mention the field", async () => {
+  it("says unconfirmed for a field the response does not mention, and only it", async () => {
     // Not a failure: the record is a projection re-derived from the OMOP facts
-    // the write produced, so silence is not the same as refusal.
-    const client = patching({ person_id: 9001 });
-    expect(await adapter(client).setPatientField!("hemoglobin_g_dl", 12))
-      .toEqual({ status: "unconfirmed" });
-    expect(await adapter(patching(null)).setPatientField!("x", 1))
-      .toEqual({ status: "unconfirmed" });
-  });
-
-  it("compares a list by its members, in order", async () => {
-    const client = patching({ cytogenetic_markers: ["del17p", "t(4;14)"] });
-    expect((await adapter(client).setPatientField!(
-      "cytogenetic_markers", ["del17p", "t(4;14)"],
-    )).status).toBe("saved");
-    const shorter = patching({ cytogenetic_markers: ["del17p"] });
-    expect((await adapter(shorter).setPatientField!(
-      "cytogenetic_markers", ["del17p", "t(4;14)"],
-    )).status).toBe("differs");
-    // Same length, different members — the case a length check would wave
-    // through, and the one that matters: the record kept a marker the patient
-    // did not choose and dropped one they did.
-    const swapped = patching({ cytogenetic_markers: ["del17p", "t(11;14)"] });
-    expect((await adapter(swapped).setPatientField!(
-      "cytogenetic_markers", ["del17p", "t(4;14)"],
-    )).status).toBe("differs");
-    // Order is part of it too: the record echoes what it stored, and a
-    // reordered list is not proof the write landed as sent.
-    const reordered = patching({ cytogenetic_markers: ["t(4;14)", "del17p"] });
-    expect((await adapter(reordered).setPatientField!(
-      "cytogenetic_markers", ["del17p", "t(4;14)"],
-    )).status).toBe("differs");
+    // the write produced, so silence is not the same as refusal — and one
+    // silent field says nothing about the others.
+    const client = patching({ hemoglobin_g_dl: 12 });
+    const outcomes = await adapter(client).setPatientFields!({
+      hemoglobin_g_dl: 12,
+      platelet_count: 200,
+    });
+    expect(outcomes.hemoglobin_g_dl.status).toBe("saved");
+    expect(outcomes.platelet_count).toEqual({ status: "unconfirmed" });
   });
 
   it("compares JSON values structurally, not as [object Object]", async () => {
     // `String({...})` is "[object Object]" for every object alive, so a
     // stringified comparison calls any two of them equal. The record has 62
-    // JSON columns and several are writable, so this is the difference
-    // between noticing a dropped write and announcing it as saved.
-    const changed = patching({ sct_eligibility: { eligible: false } });
-    expect((await adapter(changed).setPatientField!(
+    // JSON columns and several are writable.
+    expect((await one(
+      patching({ sct_eligibility: { eligible: false } }),
       "sct_eligibility", { eligible: true },
     )).status).toBe("differs");
-
-    const same = patching({ sct_eligibility: { eligible: true, note: "x" } });
-    expect((await adapter(same).setPatientField!(
-      // Key order differs: jsonb does not preserve the order it was given, so
-      // insisting on it would report every JSON write as differing.
+    // Key order differs: jsonb does not preserve the order it was given, so
+    // insisting on it would report every JSON write as differing.
+    expect((await one(
+      patching({ sct_eligibility: { eligible: true, note: "x" } }),
       "sct_eligibility", { note: "x", eligible: true },
     )).status).toBe("saved");
   });
 
   it("compares a list of objects element by element", async () => {
-    const client = patching({ genetic_mutations: [{ gene: "TP53" }] });
-    expect((await adapter(client).setPatientField!(
+    expect((await one(
+      patching({ genetic_mutations: [{ gene: "TP53" }] }),
       "genetic_mutations", [{ gene: "BRCA1" }],
     )).status).toBe("differs");
   });
 
-  it("accepts a single value echoed back wrapped in a list", async () => {
-    const client = patching({ cytogenetic_markers: ["del17p"] });
-    expect((await adapter(client).setPatientField!("cytogenetic_markers", "del17p")).status)
-      .toBe("saved");
-  });
-
   it("accepts a list echoed back comma-joined, which is how it is stored", async () => {
-    // `cytogenetic_markers` is a TextField, and its serializer reads it back
-    // `", ".join(...)` whatever the write sent. Comparing the shapes directly
-    // would report every multiselect write as differing.
-    const client = patching({ cytogenetic_markers: "del17p, t(4;14)" });
-    expect((await adapter(client).setPatientField!(
+    // `cytogenetic_markers` is a TextField whose serializer reads it back
+    // `", ".join(...)` whatever the write sent.
+    expect((await one(
+      patching({ cytogenetic_markers: "del17p, t(4;14)" }),
       "cytogenetic_markers", ["del17p", "t(4;14)"],
     )).status).toBe("saved");
   });
 
   it("splits that echo the way PROMOP does — not on commas inside brackets", async () => {
-    // `inv(3)(q21,q26)` is ONE marker. Splitting on every comma would make it
-    // two the record has never heard of, and report a good write as differing.
-    const client = patching({ cytogenetic_markers: "del17p, inv(3)(q21,q26)" });
-    expect((await adapter(client).setPatientField!(
+    // `inv(3)(q21,q26)` is ONE marker.
+    expect((await one(
+      patching({ cytogenetic_markers: "del17p, inv(3)(q21,q26)" }),
       "cytogenetic_markers", ["del17p", "inv(3)(q21,q26)"],
     )).status).toBe("saved");
   });
 
   it("still notices when the joined echo holds different markers", async () => {
-    const client = patching({ cytogenetic_markers: "del17p, t(11;14)" });
-    expect((await adapter(client).setPatientField!(
+    expect((await one(
+      patching({ cytogenetic_markers: "del17p, t(11;14)" }),
       "cytogenetic_markers", ["del17p", "t(4;14)"],
     )).status).toBe("differs");
   });
 
+  it("accepts a single value echoed back wrapped in a list", async () => {
+    expect((await one(
+      patching({ cytogenetic_markers: ["del17p"] }), "cytogenetic_markers", "del17p",
+    )).status).toBe("saved");
+  });
+
+  it("does not accept the reverse: a list sent, a scalar echoed", async () => {
+    // Wrapping is normalised one way. A list that comes back as a scalar
+    // means the record holds a different shape than was sent.
+    expect((await one(
+      patching({ cytogenetic_markers: "del17p, t(4;14)" }),
+      "cytogenetic_markers", [["del17p", "t(4;14)"]],
+    )).status).toBe("differs");
+  });
+
   it("treats clearing a field as saved when the server agrees it is empty", async () => {
-    const client = patching({ hemoglobin_g_dl: null });
-    expect((await adapter(client).setPatientField!("hemoglobin_g_dl", null)).status)
+    expect((await one(patching({ hemoglobin_g_dl: null }), "hemoglobin_g_dl", null)).status)
       .toBe("saved");
   });
 });
@@ -372,12 +378,12 @@ describe("the editing pair is all or nothing", () => {
   });
 
   it("is off for a host that implements neither", () => {
-    const { getWritableFields, setPatientField, ...rest } = base;
+    const { getWritableFields, setPatientFields, ...rest } = base;
     expect(canEditFields(rest as typeof base)).toBe(false);
   });
 
   it("is off for a descriptor with no writer — pencils that lead nowhere", () => {
-    const { setPatientField, ...rest } = base;
+    const { setPatientFields, ...rest } = base;
     expect(canEditFields(rest as typeof base)).toBe(false);
   });
 

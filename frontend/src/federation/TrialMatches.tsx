@@ -63,7 +63,7 @@ import {
   canReadAdvanced,
   useAdvancedEnrollments,
   useSavedFilters,
-  useSetPatientField,
+  useQueuedPatientFields,
   useWritableFields,
   useSetTrialState,
   useStateIds,
@@ -156,7 +156,7 @@ function TrialMatchesInner({
   // once rather than on every detail page. Its absence is the safe state:
   // until it arrives, no row draws a control.
   const writableFields = useWritableFields(state, stateKey);
-  const setPatientField = useSetPatientField(state, stateKey);
+  const patientFields = useQueuedPatientFields(state, stateKey);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -848,22 +848,17 @@ function TrialMatchesInner({
         // decoration.
         //
         // The gate below is about `save`, not about the rows: it is there so
-        // a callback that would dereference a missing `setPatientField` is
-        // never handed out at all. Nothing calls it today, because nothing
-        // draws a control without the descriptor; the queue in the next slice
-        // will hold it for longer than one click, which is when handing out a
-        // callback that cannot work starts to matter.
+        // a callback that would dereference a missing `setPatientFields` is
+        // never handed out at all. It matters now in a way it did not before
+        // the queue — the callback is held across renders and fired from a
+        // timer, long after the render that produced it.
         editing={
           canEditFields(state)
             ? {
                 fields: writableFields.data,
-                save: async (field, value) => {
-                  // Resolving means the record was re-read, not that it holds
-                  // what was sent — the write may have been canonicalised.
-                  // Only a refusal rejects, and only that is shown as an
-                  // error.
-                  await setPatientField.mutateAsync({ field, value });
-                },
+                save: patientFields.save,
+                outstanding: patientFields.outstanding,
+                failed: patientFields.failed,
               }
             : undefined
         }
