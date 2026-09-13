@@ -12,7 +12,12 @@ import type { AxiosInstance } from "axios";
 import { vi } from "vitest";
 
 import { TrialMatches } from "../federation/TrialMatches";
-import type { AdvancedStatus, TrialStateAdapter } from "../federation/state";
+import type {
+  AdvancedStatus,
+  TrialStateAdapter,
+  WriteOutcome,
+} from "../federation/state";
+import type { WritableFields } from "../federation/writable";
 import type {
   FilterState,
   PatientInfo,
@@ -60,6 +65,11 @@ export interface FakeApi {
   cutNextExportInsideAQuotedMarker: () => void;
   /** Hold the next export open, and hand back the release. */
   holdNextExport: () => () => void;
+  /** Hold the NEXT detail response open, and return the release. Lets a test
+   *  see the page during a re-read rather than only after it: whether a save
+   *  waits for the record it claims to have re-read is invisible once the
+   *  refetch has already landed. */
+  holdNextDetail: () => () => void;
   /** Override fields on every trial's detail response from now on.
    *  Whatever is NOT overridden follows the trial actually asked for — so
    *  the id and title track the row that was clicked unless a test pins
@@ -167,6 +177,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   let cutInsideQuote = false;
   let heldExport: { release: () => void } | null = null;
   let detailOverrides: Partial<TrialDetailResponse> = {};
+  let heldDetail: { release: () => void } | null = null;
 
   const respond = (url: string, body?: unknown) => {
     if (url.includes("form-settings")) {
@@ -220,7 +231,15 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     const detailMatch = /^\/trials\/(\d+)\//.exec(url);
     if (detailMatch) {
       const id = Number(detailMatch[1]);
-      return Promise.resolve({ data: { ...trialDetail(id), ...detailOverrides } });
+      const answer = { data: { ...trialDetail(id), ...detailOverrides } };
+      if (heldDetail) {
+        const gate = heldDetail;
+        heldDetail = null;
+        return new Promise((resolve) => {
+          gate.release = () => resolve(answer);
+        });
+      }
+      return Promise.resolve(answer);
     }
     // Honour `trial_ids` the way the server does. Returning the same rows
     // for a narrowed request makes the fake agree with any implementation,
@@ -269,6 +288,11 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     setResponse: (next: Partial<TrialsResponse>) => {
       response = { ...response, ...next };
     },
+    holdNextDetail: () => {
+      const gate: { release: () => void } = { release: () => {} };
+      heldDetail = gate;
+      return () => gate.release();
+    },
     setDetail: (next: Partial<TrialDetailResponse>) => {
       detailOverrides = { ...detailOverrides, ...next };
     },
@@ -301,7 +325,11 @@ export interface FakeState {
   registered: string[];
   /** Reads, counted. A write is supposed to invalidate the list it changed,
    *  and the only externally visible sign of that is a re-read. */
-  reads: { favorites: number; registered: number };
+  reads: { favorites: number; registered: number; writable: number };
+  /** What the patient record holds, after any writes. The same object the
+   *  fake echoes back, so a test can assert the value landed rather than
+   *  only that a spy was called. */
+  record: Record<string, unknown>;
 }
 
 /** A working adapter, backed by two arrays.
@@ -316,12 +344,18 @@ export function fakeState(
     registered?: string[];
     /** Trials a study team has moved past "registered". */
     advanced?: Record<string, AdvancedStatus>;
+    /** The writable-fields descriptor. Absent means the host supplies no
+     *  editing pair at all — which is the default, so every test that does
+     *  not opt in keeps proving the page stays read-only. */
+    writable?: WritableFields;
+    record?: Record<string, unknown>;
     overrides?: Partial<TrialStateAdapter>;
   } = {},
 ): FakeState {
   const favorites = [...(initial.favorites ?? [])];
   const registered = [...(initial.registered ?? [])];
-  const reads = { favorites: 0, registered: 0 };
+  const reads = { favorites: 0, registered: 0, writable: 0 };
+  const record: Record<string, unknown> = { ...(initial.record ?? {}) };
 
   const set = (list: string[], id: string, on: boolean) => {
     const at = list.indexOf(id);
@@ -344,10 +378,25 @@ export function fakeState(
     getPreferences: vi.fn(async () => ({})),
     savePreferences: vi.fn(async () => undefined),
     resetPreferences: vi.fn(async () => undefined),
+    // Only when the test asked for it. The pair is all-or-nothing, so a fake
+    // that always had it would never exercise the read-only path that every
+    // host without a writer gets.
+    ...(initial.writable
+      ? {
+          getWritableFields: vi.fn(async () => {
+            reads.writable += 1;
+            return initial.writable!;
+          }),
+          setPatientField: vi.fn(async (field: string, value: unknown) => {
+            record[field] = value;
+            return { status: "saved", value } as WriteOutcome;
+          }),
+        }
+      : {}),
     ...initial.overrides,
   };
 
-  return { adapter, favorites, registered, reads };
+  return { adapter, favorites, registered, reads, record };
 }
 
 export function renderTrialMatches(
