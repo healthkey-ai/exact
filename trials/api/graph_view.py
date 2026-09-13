@@ -36,15 +36,26 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         #
         # Named for the mechanism, not for permission. `patientFieldReadOnly`
         # was the first spelling, and `false` there reads as "you may edit
-        # this" — which is the answer EXACT has just finished explaining it
-        # does not have (#449): `renal_adequacy_status` has no subform and
-        # is still overwritten by `normalize.py` on every match.
+        # this" — which this key cannot say: `renal_adequacy_status` has no
+        # subform and is still overwritten by `normalize.py` on every match.
+        # That part is `patientFieldOverwritten` below, not this.
         #
         # Passed through rather than coerced, so a builder that did not
         # say arrives as `null` rather than `false`. `bool(...)` would turn
         # "unsaid" into "no subform", which is the wrong direction to fail
         # in and the opposite of what the key beside it does.
         "patientFieldHasSubform": item.get("ureadonly"),
+        # Whether EXACT recomputes the value, from `normalize.py`'s register
+        # (#449). Carried here for the same reason as the other two: this
+        # endpoint rebuilds the row from a whitelist, so a key left out is a
+        # key its consumer cannot tell from "this row is about nothing".
+        #
+        # `null` means EXACT leaves the value alone — which is NOT permission
+        # to write it either. That is PROMOP's `writable-fields`, and the two
+        # come apart in both directions. `{'when': 'never-stored'}` is the
+        # third answer and the sharpest: the value is computed on read, so
+        # there is nothing to write in the first place.
+        "patientFieldOverwritten": item.get("uoverwritten"),
         "label": item.get("label"),
         "trialValue": item.get("value"),
         "patientValue": item.get("uvalue"),

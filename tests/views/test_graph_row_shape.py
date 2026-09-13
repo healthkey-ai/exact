@@ -51,3 +51,46 @@ class TestGraphRowShape:
         # stamped: the key must be absent-as-None, not derived here.
         row = _normalize_item_for_ui({'name': 'x', 'ufield': 'someField', 'label': 'X'})
         assert row['patientFieldCanonical'] is None
+
+
+class TestGraphRowCarriesTheOverwriteAnswer:
+    """`patientFieldOverwritten` — whether EXACT recomputes the value (#449).
+
+    Named here because this endpoint rebuilds each row from a whitelist. The
+    header above says why that matters; this key is the one whose absence is
+    hardest to notice, because `null` is also what an un-overwritten field
+    answers. A client would read "EXACT leaves this alone" for every row.
+    """
+
+    def test_an_always_overwritten_field_says_so(self):
+        row = _normalize_item_for_ui({
+            'name': 'meetsCRAB', 'ufield': 'meetsCRAB',
+            'upatientField': 'meets_crab', 'label': 'Meets CRAB',
+            'value': True, 'uvalue': None, 'ureadonly': True,
+            'uoverwritten': {'when': 'always'},
+        })
+        assert row['patientFieldOverwritten'] == {'when': 'always'}
+
+    def test_a_conditional_one_carries_its_condition(self):
+        row = _normalize_item_for_ui({
+            'name': 'mipiRisk', 'ufield': 'mipiRisk',
+            'upatientField': 'mipi_risk', 'label': 'MIPI',
+            'value': None, 'uvalue': None, 'ureadonly': False,
+            'uoverwritten': {'when': 'sometimes', 'condition': 'for MCL'},
+        })
+        assert row['patientFieldOverwritten']['condition'] == 'for MCL'
+
+    def test_a_field_exact_leaves_alone_says_nothing(self):
+        # The non-vacuity half: a whitelist entry hard-coded to a truthy
+        # value would pass both tests above and hide every editable control.
+        row = _normalize_item_for_ui({
+            'name': 'hemoglobinLevelMin', 'ufield': 'hemoglobinLevel',
+            'upatientField': 'hemoglobin_level', 'label': 'Hb',
+            'value': 5, 'uvalue': None, 'ureadonly': False,
+            'uoverwritten': None,
+        })
+        assert row['patientFieldOverwritten'] is None
+
+    def test_an_upstream_that_never_said_arrives_as_null(self):
+        row = _normalize_item_for_ui({'name': 'x', 'ufield': 'f', 'label': 'X'})
+        assert row['patientFieldOverwritten'] is None

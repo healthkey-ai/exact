@@ -442,23 +442,43 @@ class TrialAttributes:
         which values EXACT itself recomputes. An edit to one of those is
         overwritten by the next match whatever PROMOP thinks of the write —
         `normalize.py` sets `tnbc_status` on every save and `mipi_risk` on
-        every MCL one, among a dozen others — none of them from anything
-        the reader typed.
+        every MCL one, among 34 others — none of them from anything the
+        reader typed.
 
-        `ureadonly` is not that answer, though it is the obvious candidate:
-        `get_field` sets it from the presence of a subform, nothing more.
-        Nor is the mapping's `is_computed_value`, which is a display flag —
+        `uoverwritten` answers it, from a register declared in `normalize.py`
+        beside the code that does the writing and held to it by a test that
+        parses the module (#449):
+
+            None                                 EXACT leaves the value alone
+            {'when': 'always'}                   rewritten on every match
+            {'when': 'sometimes', 'condition'}   rewritten under that condition
+            {'when': 'never-stored'}             computed on read; there is
+                                                 nothing to write at all
+
+        The condition is prose because a client shows it to a reader:
+        "overwritten when serum creatinine, its units, age and gender are all
+        present" is a different thing to be told than "always".
+
+        `never-stored` covers `abnormal_kappa_lambda_ratio` and
+        `meets_meas_or_bone_status`, which are mapped attributes and reach a
+        row, and are properties with no column and no setter. They answered
+        `None` in the first draft — "this value is the reader's", over a field
+        an edit cannot reach at all.
+
+        Neither of the two flags that look like the answer is one.
+        `ureadonly` is set by `get_field` from the presence of a subform,
+        nothing more. The mapping's `is_computed_value` is a display flag —
         `_normalize_mcl_derivations` overwrites four fields on consecutive
         lines and only one of them carries it, while `meets_gelf` and
         `meets_lugano` carry it and are plain stored booleans nothing
-        derives. A draft of this change exposed that flag as `ucomputed`
-        and would have hidden the only control that can set those two while
+        derives. A draft of this change exposed that flag as `ucomputed` and
+        would have hidden the only control that can set those two while
         offering one over `tnbc_status`, which the next save undoes.
 
-        So EXACT does not answer it yet and this key does not pretend to:
-        making the overwrite set explicit in `normalize.py` is #449. Until
-        then an editing client should treat a value whose provenance it
-        cannot see as provisional.
+        What `uoverwritten` still does NOT say is whether the write would be
+        accepted — that is PROMOP's `writable-fields`, above. A value can be
+        writable and overwritten (the edit is accepted and then reverted), or
+        neither. They are two questions and the client needs both.
 
         Two further traps the name alone does not close, both for the
         client: a `×ULN` row inherits the base field's `ufield`, so editing
@@ -475,6 +495,8 @@ class TrialAttributes:
         attribute in `ufield`, so `therapiesRequired` would have become
         `therapies_required`, which is not a patient attribute at all.
         """
+        from trials.services.patient_info.normalize import overwrite_note
+
         for field in fields.values():
             if not isinstance(field, dict):
                 continue
@@ -482,6 +504,21 @@ class TrialAttributes:
             patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
             field['upatientField'] = (
                 patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
+            )
+            # Keyed on `upatientField` rather than on `ufield` for the one
+            # case that differs: `therapies` puts the TRIAL attribute in
+            # `ufield`, so `therapiesRequired` resolves to a name no patient
+            # has, and a note about it would be an answer about nothing.
+            # (A `×ULN` row is NOT that case — it inherits the base field's
+            # `ufield`, which resolves to the base patient field, so it
+            # reports the base field's note either way. That is correct, and
+            # it is not what this check is for.)
+            #
+            # A row with nothing to write about gets `None`, which is also
+            # what "this value is the reader's" looks like — the client tells
+            # them apart by `upatientField`, `None` only in this case.
+            field['uoverwritten'] = (
+                overwrite_note(patient_field) if field['upatientField'] else None
             )
         return fields
 

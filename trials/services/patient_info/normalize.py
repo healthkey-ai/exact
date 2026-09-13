@@ -49,6 +49,169 @@ def normalize_patient_info(pi) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The overwrite register (#449)
+# ---------------------------------------------------------------------------
+#
+# Which patient values this module writes. Declared here, next to the code
+# that does the writing, because the question it answers is asked somewhere
+# else entirely: an editing client deciding whether to draw a pencil next to a
+# value (`uoverwritten` on an eligibility row). A value EXACT recomputes is
+# accepted by PROMOP, saved, and then silently reverted by the next match — so
+# "PROMOP will take this write" and "this write will survive" are different
+# questions, and only this module knows the second one.
+#
+# Two flags already looked like the answer and are not. `ureadonly` is set
+# from the presence of a subform, nothing more. `is_computed_value` in
+# USER_TO_TRIAL_ATTRS_MAPPING is a display flag: `_normalize_mcl_derivations`
+# below writes four fields on consecutive lines and only one of them carries
+# it, while `meets_gelf` and `meets_lugano` carry it and are plain stored
+# BooleanFields nothing derives. Measured against the 133 mapped attributes:
+# it flags 12, four of which nothing overwrites, and misses 16 that this
+# module does — 20 disagreements either way.
+#
+# `tests/services/patient_info/test_overwrite_register.py` parses this module
+# and fails if the two ever drift — in either direction, so the register can
+# neither miss a new write nor keep an entry for one that was removed. That
+# test is the only reason this is a register rather than a comment.
+#
+# SCOPE: this module, which is the derivation stage. Two other stages also
+# write patient values and are NOT covered — `ctomop_adapter` derives
+# `prior_therapy` and `metastatic_status` from CTOMOP columns on the
+# `?person_id=` path, and `resolve._coerce_*` drops malformed items from the
+# JSON list fields. Tracked in #471; until it closes, a client reading
+# `uoverwritten: null` is being told "the DERIVATION stage leaves this alone",
+# which is the whole answer only on the inline-payload path.
+
+#: Written on every call, whatever the caller supplied.
+OVERWRITTEN_ALWAYS = frozenset({
+    'bmi',
+    'haematological_adequacy_status',
+    'hepatic_adequacy_status',
+    'hr_status',
+    'last_treatment',
+    'measurable_disease_imwg',
+    'meets_crab',
+    'meets_slim',
+    'metastatic_status',
+    'renal_adequacy_status',
+    'tnbc_status',
+    'tp53_disruption',
+    'treatment_refractory_status',
+})
+
+#: Written only when the condition holds. The condition is prose because a
+#: client shows it to a reader: "overwritten when height and weight are both
+#: present" is a different thing to be told than "always".
+OVERWRITTEN_WHEN = {
+    'bulky_disease_criteria': 'for a mantle cell lymphoma patient',
+    'country': 'cleared when the value names no country EXACT can resolve',
+    'estimated_glomerular_filtration_rate': (
+        'when serum creatinine and age are present and non-zero, the gender is '
+        'M or F, and the creatinine units convert'
+    ),
+    'first_line_date': "cleared when prior therapy is 'None' or blank",
+    'first_line_outcome': "cleared when prior therapy is 'None' or blank",
+    'first_line_therapy': "cleared when prior therapy is 'None' or blank",
+    'flipi_score': (
+        'when at least one recognised FLIPI option is selected — age, stage, '
+        'hemoglobin, nodalAreas or ldh; anything else scores nothing'
+    ),
+    'geo_point': (
+        'when a country or postal code is supplied, or a non-zero latitude and '
+        'longitude (a zero coordinate is dropped — #470)'
+    ),
+    'high_risk_mcl_criteria': 'for a mantle cell lymphoma patient',
+    'later_date': (
+        "cleared when prior therapy is 'Two lines', 'One line', 'None' or "
+        'blank'
+    ),
+    'later_outcome': (
+        "cleared when prior therapy is 'Two lines', 'One line', 'None' or "
+        'blank'
+    ),
+    'later_therapies': (
+        "cleared when prior therapy is 'Two lines', 'One line', 'None' or "
+        'blank'
+    ),
+    'later_therapy': (
+        "cleared when prior therapy is 'Two lines', 'One line', 'None' or "
+        'blank'
+    ),
+    'mipi_c_risk': 'for a mantle cell lymphoma patient',
+    'mipi_risk': 'for a mantle cell lymphoma patient',
+    'postal_code': (
+        'cleared when a postal code is supplied without a country, or when the '
+        'country and postal code resolve to no point'
+    ),
+    'progression': (
+        'set to active when either CRAB or SLIM is met; set to smoldering when '
+        'both are known and unmet and nothing was supplied — an unknown '
+        'leaves it alone'
+    ),
+    'second_line_date': "cleared when prior therapy is 'One line', 'None' or blank",
+    'second_line_outcome': "cleared when prior therapy is 'One line', 'None' or blank",
+    'second_line_therapy': "cleared when prior therapy is 'One line', 'None' or blank",
+    'stem_cell_transplant_history': (
+        "when the therapy lines imply a transplant, or when prior therapy is 'None'"
+    ),
+    'supportive_therapies': "cleared when prior therapy is 'None' or blank",
+    'supportive_therapy_date': "cleared when prior therapy is 'None' or blank",
+}
+
+#: Every field this module writes, however conditionally.
+OVERWRITTEN_FIELDS = OVERWRITTEN_ALWAYS | frozenset(OVERWRITTEN_WHEN)
+
+
+def _is_computed_on_read(field):
+    """Whether `field` is a property recomputed on access, with no setter.
+
+    A different way for a reader's value not to survive, and a worse one: the
+    value is not stored at all. `_build_in_memory` filters an inbound payload
+    to `_meta.get_fields()`, so a supplied value is dropped before it reaches
+    the instance, and `setattr` would raise if it got there.
+
+    Late import: `patient_info` reaches this module through `configs`, so
+    resolving it at module load is a cycle.
+    """
+    from trials.services.patient_info.patient_info import PatientInfo
+
+    attribute = getattr(PatientInfo, field, None)
+    return isinstance(attribute, property) and attribute.fset is None
+
+
+def overwrite_note(field):
+    """Whether a value the reader supplies for `field` survives, and how not.
+
+    Three answers, and `None` is the fourth:
+
+        {'when': 'always'}                 this module rewrites it every match
+        {'when': 'sometimes', 'condition'} it rewrites it under that condition
+        {'when': 'never-stored'}           it is computed on read; there is
+                                           nothing to write in the first place
+        None                               EXACT leaves it alone
+
+    `never-stored` is not a register entry, because the register is about what
+    THIS module writes and these it does not: `abnormal_kappa_lambda_ratio` and
+    `meets_meas_or_bone_status` are properties with no column and no setter.
+    Review caught them answering `None` — which a client reads as "this value
+    is the reader's", over a field an edit cannot reach at all. Same false
+    negative #449 exists to remove, one stage further along.
+
+    `None` still does not mean writable. That is PROMOP's question
+    (`writable-fields`), it is caller-aware, and the two come apart in both
+    directions.
+    """
+    if field in OVERWRITTEN_ALWAYS:
+        return {'when': 'always'}
+    condition = OVERWRITTEN_WHEN.get(field)
+    if condition is not None:
+        return {'when': 'sometimes', 'condition': condition}
+    if field and _is_computed_on_read(field):
+        return {'when': 'never-stored'}
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Individual normalizers
 # ---------------------------------------------------------------------------
 
