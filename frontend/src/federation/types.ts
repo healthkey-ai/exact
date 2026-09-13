@@ -136,6 +136,21 @@ export interface TrialDetailField {
    *  PROMOP offers a box whose effect is undone with no error anywhere
    *  (#449). */
   upatientRecomputed?: boolean;
+  /** The same answer with its reason.
+   *
+   *  `upatientRecomputed` is true for three different situations and is no
+   *  longer a safe sole input: `always` (a write is overwritten), `sometimes`
+   *  (it may be, under `condition`) and `never-stored` (the value is computed
+   *  on read, so the write is not even accepted).
+   *
+   *  A control gated on the boolean alone hides `mipiRisk` from every
+   *  non-MCL patient, whose `mipiRisk` EXACT never touches. `condition` is
+   *  prose written for a reader — show it, do not parse it. */
+  upatientRecomputedWhen?:
+    | { when: "always" }
+    | { when: "never-stored" }
+    | { when: "sometimes"; condition: string }
+    | null;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;

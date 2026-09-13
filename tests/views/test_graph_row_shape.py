@@ -73,3 +73,48 @@ class TestGraphRowShape:
         })
         assert row['patientFieldCanonical'] is None
         assert row['patientFieldHasSubform'] is None
+
+
+class TestGraphRowCarriesTheReason:
+    """`patientFieldRecomputedWhen` — the boolean beside it with its reason.
+
+    Named here because this endpoint rebuilds each row from a whitelist, and
+    `null` is also what an un-recomputed field answers: a missing key would
+    read as "every value is the reader's" rather than as a gap.
+    """
+
+    def test_it_carries_the_condition(self):
+        row = _normalize_item_for_ui({
+            'name': 'mipiRisk', 'ufield': 'mipiRisk',
+            'upatientField': 'mipi_risk', 'label': 'MIPI',
+            'value': None, 'uvalue': None, 'ureadonly': False,
+            'upatientRecomputed': True,
+            'upatientRecomputedWhen': {'when': 'sometimes', 'condition': 'for MCL'},
+        })
+        assert row['patientFieldRecomputed'] is True
+        assert row['patientFieldRecomputedWhen']['condition'] == 'for MCL'
+
+    def test_it_carries_never_stored(self):
+        row = _normalize_item_for_ui({
+            'name': 'abnormalKappaLambdaRatio', 'ufield': 'abnormalKappaLambdaRatio',
+            'upatientField': 'abnormal_kappa_lambda_ratio', 'label': 'K/L',
+            'value': None, 'uvalue': None, 'ureadonly': False,
+            'upatientRecomputed': True,
+            'upatientRecomputedWhen': {'when': 'never-stored'},
+        })
+        assert row['patientFieldRecomputedWhen'] == {'when': 'never-stored'}
+
+    def test_a_field_exact_leaves_alone_says_nothing(self):
+        # Non-vacuity: a whitelist entry hard-coded truthy would pass both of
+        # the above and hide every editable control.
+        row = _normalize_item_for_ui({
+            'name': 'hemoglobinLevelMin', 'ufield': 'hemoglobinLevel',
+            'upatientField': 'hemoglobin_level', 'label': 'Hb',
+            'value': 5, 'uvalue': None, 'ureadonly': False,
+            'upatientRecomputed': False, 'upatientRecomputedWhen': None,
+        })
+        assert row['patientFieldRecomputedWhen'] is None
+
+    def test_an_upstream_that_never_said_arrives_as_null(self):
+        row = _normalize_item_for_ui({'name': 'x', 'ufield': 'f', 'label': 'X'})
+        assert row['patientFieldRecomputedWhen'] is None
