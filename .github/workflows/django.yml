@@ -37,16 +37,30 @@ jobs:
           libgeos-dev \
           postgresql-client
     - name: Install Python dependencies
-      # The runner's cached/toolcache pip is a broken 24.1+ mix: importing pip
-      # itself raises `ImportError: cannot import name 'get_runnable_pip'`, so
-      # even `python -m pip install "pip<24.1"` can't run. Repair pip first with
-      # the stdlib `ensurepip` bootstrap (it unpacks a bundled wheel without
-      # importing the broken pip), THEN pin pip < 24.1 — a build-isolation path
-      # in `pip install -r requirements.txt` still imports get_runnable_pip,
-      # which 24.1 removed. Deterministic fix until the build backend is fixed.
+      # The toolcache pip on a hosted runner can be internally broken: 26.2.1
+      # ships a `build_env/installer.py` that imports `open_rich_spinner` from
+      # its own `cli/spinners.py`, which does not define it. Any `python -m pip`
+      # then raises ImportError before doing anything.
+      #
+      # `ensurepip --upgrade` does NOT repair that, which is what this step used
+      # to rely on: it compares versions, sees a NEWER pip installed, reports
+      # "Requirement already satisfied" and installs nothing — leaving the next
+      # line to run the broken one. That is the failure on every runner carrying
+      # the bad image.
+      #
+      # Bootstrapping from ensurepip's bundled WHEEL does repair it. Running
+      # `python <wheel>/pip` executes pip from inside the zip without importing
+      # the installed package at all, so a broken install cannot stop it, and
+      # `--force-reinstall` replaces the newer-but-broken version rather than
+      # skipping it.
+      #
+      # The `pip<24.1` pin stays: a build-isolation path in
+      # `pip install -r requirements.txt` imports `get_runnable_pip`, which
+      # 24.1 removed.
       run: |
-        python -m ensurepip --upgrade
-        python -m pip install "pip<24.1"
+        PIP_WHEEL="$(python -c 'import ensurepip, glob, pathlib; print(glob.glob(str(pathlib.Path(ensurepip.__file__).parent / "_bundled" / "pip-*.whl"))[0])')"
+        python "$PIP_WHEEL/pip" install --force-reinstall "pip<24.1"
+        python -m pip --version
         pip install -r requirements.txt
 
   test:
