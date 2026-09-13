@@ -164,11 +164,13 @@ export function FilterPanel({
           onChange={(v) => set({ phase: v })}
         />
 
-        {/* A years count, not a date — `by_date_since` runs the value
-            through `cast_str_to_int`, which takes digits only. CB renders
-            this as a date picker and PATCHes an ISO string, which that
-            helper drops on the floor, so CB's own control filters nothing
-            (#429). Offer what the backend actually implements. */}
+        {/* A years count. The backend takes an ISO date too as of #429 — it
+            used to run every value through `cast_str_to_int` and drop
+            anything that was not digits, which is why CB's own date picker
+            has never filtered anything — so a date control is now possible
+            here and is deliberately not this change: it needs `filters.ts`,
+            which is open in another branch. The count is what this control
+            has always sent and it keeps working. */}
         <SelectFilter
           label="Updated within"
           value={filters.lastUpdate}

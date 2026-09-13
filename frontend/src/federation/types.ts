@@ -214,10 +214,16 @@ export interface FilterState {
    *  phase was never ingested drop out of every value, including the
    *  lowest (EXACT #417). */
   phase?: string;
-  /** How many YEARS back to accept, as digits — not a date. `by_date_since`
-   *  runs it through `cast_str_to_int`, which takes digits only, so an ISO
-   *  date is silently dropped and nothing is filtered (#429). It also keeps
-   *  trials whose `last_update_date` is null. */
+  /** Either an ISO date — `2026-01-01`, or the `T`/`Z` forms — meaning "on or
+   *  after that day", or digits meaning how many YEARS back to accept.
+   *
+   *  The date spelling was silently dropped until #429: `by_date_since` read
+   *  the value through `cast_str_to_int`, which takes digits only, so a date
+   *  became `None` and nothing was filtered. Both work now. A bare four-digit
+   *  value is still read as a COUNT, so `2026` means "within 2026 years", not
+   *  the year 2026 — send `2026-01-01` for that.
+   *
+   *  Either way, trials whose `last_update_date` is null are kept. */
   lastUpdate?: string;
   /** "type" param. `eligible` / `potential` narrow server-side; `all`
    *  switches to the admin corpus, which skips the eligibility filter and

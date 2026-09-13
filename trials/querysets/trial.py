@@ -707,17 +707,104 @@ class TrialQuerySet(models.QuerySet):
         return self.by_date_since('first_enrolment_date', value)
 
     def by_date_since(self, attr_name, value):
-        since_in_years = cast_str_to_int(value)
+        """Narrow to rows dated on or after a point in time.
 
-        if not since_in_years:
+        Two spellings, because two kinds of caller exist and only one of them
+        was being served:
+
+        * a COUNT OF YEARS — `2` means "within the last two years". The
+          original contract, and what `?lastUpdate=` has always meant here.
+        * an ISO DATE — `2026-01-01` means "on or after that day". A date
+          picker is the natural control for this question, and CancerBot's
+          panel has always rendered one and PATCHed the ISO value... into
+          `value.isdigit()`, which is False for a date. The value became None
+          and the filter returned everything. CB's "Last updated after" has
+          never filtered anything, and neither had ours for that input.
+
+        Additive on purpose: a digits-only value keeps its exact meaning, so
+        nothing that filters today filters differently. The only inputs whose
+        behaviour changes are the ones that currently do NOTHING — a request
+        that was silently ignored now gets the answer it asked for.
+
+        A bare four-digit number stays a year COUNT rather than a calendar
+        year, because reading it as a date would silently re-point any caller
+        who meant the count. Only a value with separators is read as a date,
+        which cannot be confused with one.
+
+        That is not the same as saying such a value is harmless. `docs/api.md`
+        has always documented these params as dates, so a caller typing a
+        calendar year is the natural mistake — and `365 * 2030` days before
+        now is not a representable date. It used to raise `OverflowError`
+        straight out of the endpoint as a 500. A count that cannot name a real
+        instant now means "no filter", like every other value this cannot make
+        sense of.
+        """
+        date_since = self._date_since_from(value)
+        if date_since is None:
             return self
-
-        days = 365 * since_in_years
-        date_since = dt.datetime.now() - dt.timedelta(days=days)
 
         return self.filter(
             Q(**{f'{attr_name}__gte': date_since}) | Q(**{f'{attr_name}__isnull': True})
         )
+
+    @staticmethod
+    def _date_since_from(value):
+        """The cut-off a `by_date_since` value names, or None for "no filter"."""
+        if isinstance(value, (dt.date, dt.datetime)):
+            return value
+
+        # Stripped once, before either reading: `cast_str_to_int` uses a bare
+        # `isdigit()`, so ' 5 ' was ignored while ' 2026-01-01 ' was honoured —
+        # the same stray whitespace off a query string, two different answers.
+        if isinstance(value, str):
+            value = value.strip()
+
+        try:
+            since_in_years = cast_str_to_int(value)
+        except ValueError:
+            # Python refuses to parse an integer past a digit limit (4300 by
+            # default), so a long enough digit string makes `int()` raise —
+            # and stripping the whitespace above is what lets such a value
+            # reach it at all, since `' 9…9 '.isdigit()` is False. The same
+            # limit already bit `_TRIAL_ID_RE` elsewhere in this file. A value
+            # this cannot read means no filter, like every other one.
+            return None
+        # `> 0`, not truthy. A NEGATIVE count puts the cut-off in the future,
+        # so `-1` returned only the undated trials — while `'-1'`, the spelling
+        # a query string actually delivers, was ignored, because
+        # `cast_str_to_int` uses a bare `isdigit()`. Two spellings of one
+        # intent, answering oppositely. "Within the last minus one years" is
+        # not a question anyone asks, so both now mean no filter, which is
+        # where `0` already sat.
+        #
+        # This is the ONE input whose behaviour changes from filtering to being
+        # ignored; everything else that filters today filters identically.
+        if since_in_years and since_in_years > 0:
+            try:
+                return dt.datetime.now() - dt.timedelta(days=365 * since_in_years)
+            except (OverflowError, OSError):
+                # Past roughly the year 2026 as a COUNT, the cut-off is not a
+                # representable date. This used to leave the endpoint as a 500.
+                return None
+
+        if isinstance(value, str):
+            try:
+                # `fromisoformat`, not `strptime('%Y-%m-%d')`: the remote is
+                # TypeScript and `toISOString()` is its default serialization,
+                # so `2026-01-01T00:00:00Z` is one UI change away. Python 3.12
+                # takes the bare date, the `T` form and a trailing `Z` alike.
+                parsed = dt.datetime.fromisoformat(value)
+                # Naive, to compare with a `DateField` the way the count arm
+                # does — an aware value would compare fine here but differ in
+                # kind from the other arm for no reason.
+                return parsed.replace(tzinfo=None)
+            except ValueError:
+                # Not a date either. Unparseable input has always meant "no
+                # filter" rather than "no results", and a 400 here would reject
+                # requests that work today.
+                return None
+
+        return None
 
     def by_recruitment_status(self, recruitment_status):
         if recruitment_status is None or str(recruitment_status) == '':
