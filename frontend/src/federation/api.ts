@@ -19,6 +19,7 @@ import type {
   FilterState,
   PatientInfo,
   TrialDetailResponse,
+  TrialsGraphResponse,
   TrialsResponse,
 } from "./types";
 
@@ -119,6 +120,47 @@ export async function fetchTrials({
     params.person_id = String(personId);
   }
   const response = await apiClient.get<TrialsResponse>("/trials/search/", { params });
+  return response.data;
+}
+
+/** POST `/trials-graph/graph/match/` — the knowledge graph for this patient.
+ *
+ *  The POST alias, not the GET form: the graph refuses to draw without a
+ *  patient, and an inline payload only travels in a body. The `?person_id=`
+ *  route exists but is gated off outside DEBUG, because it would let any
+ *  authenticated caller read another patient's record.
+ */
+export async function fetchTrialsGraph({
+  apiClient,
+  patientInfo,
+  personId,
+  filters,
+  trialIds,
+  limit,
+}: {
+  apiClient: AxiosInstance;
+  patientInfo?: PatientInfo | null;
+  personId?: string | number | null;
+  filters?: FilterState;
+  trialIds?: string[];
+  limit?: number;
+}): Promise<TrialsGraphResponse> {
+  const params = filterStateToParams(filters);
+  if (limit != null) params.n = String(limit);
+  // `!== undefined`, never a truthiness test: `[]` is a filter that matches
+  // nothing, not the absence of one.
+  const body: Record<string, unknown> =
+    trialIds !== undefined ? { trial_ids: trialIds } : {};
+  if (hasInlinePatient(patientInfo)) {
+    body.patient_info = patientInfo;
+  } else if (personId != null) {
+    params.person_id = String(personId);
+  }
+  const response = await apiClient.post<TrialsGraphResponse>(
+    "/trials-graph/graph/match/",
+    body,
+    { params },
+  );
   return response.data;
 }
 

@@ -151,6 +151,51 @@ export interface HighRiskMclCriteriaBreakdown {
   sufficientAny: MclCriterion[];
 }
 
+/** One eligibility attribute inside a graph trial's `match` buckets. */
+export interface GraphMatchItem {
+  trialField?: string | null;
+  patientField?: string | null;
+  /** The same patient attribute in its canonical snake_case form (#421).
+   *  Named by the server because deriving it here is not safe — `p53_ihc`
+   *  camelizes to `p53Ihc`, which a standard snake-caser turns back into
+   *  `p_53_ihc`, a field nobody has. */
+  patientFieldCanonical?: string | null;
+  /** Whether the value is edited through a subform. `null` where there is no
+   *  patient field to edit at all, which is not the same as `false`. */
+  patientFieldHasSubform?: boolean | null;
+  label?: string | null;
+  trialValue?: unknown;
+  patientValue?: unknown;
+  dependencies?: string[];
+  dependencies_labels?: string[];
+}
+
+/** One trial node from `/trials-graph/graph/`. The three buckets describe the
+ *  PATIENT against this trial's requirements: met, contradicted, and not
+ *  known. An attribute the trial never constrained is in none of them. */
+export interface GraphTrialNode {
+  nodeId: string;
+  trialId: number;
+  studyId: string;
+  studyUrl?: string | null;
+  briefTitle?: string | null;
+  recruitmentStatus?: string | null;
+  sponsorName?: string | null;
+  link?: string | null;
+  goodnessScore?: number | null;
+  matchScore?: number | null;
+  match: {
+    matched: GraphMatchItem[];
+    notMatched: GraphMatchItem[];
+    missing: GraphMatchItem[];
+  };
+}
+
+export interface TrialsGraphResponse {
+  patient: Record<string, unknown>;
+  trials: GraphTrialNode[];
+}
+
 export interface GroupName {
   value: string;
   label: string;

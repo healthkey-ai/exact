@@ -22,6 +22,7 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import { TrialsGraph } from "./TrialsGraph";
 import { Tabs } from "./Tabs";
 import { hasInlinePatient } from "./api";
 import {
@@ -45,6 +46,7 @@ import {
   useSetTrialState,
   useStateIds,
   useTrials,
+  useTrialsGraph,
 } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
@@ -69,7 +71,13 @@ function TrialMatchesInner({
   }, []);
 
   const [filters, setFilters] = useState<FilterState>(initialFilters ?? {});
-  const [selectedTrial, setSelectedTrial] = useState<TrialMatch | null>(null);
+  // The id, and the list row when there is one. A trial can be opened from
+  // the graph, which draws up to fifty trials while the list holds one page —
+  // so "which trial" is always answerable and "which row" is not.
+  const [selectedTrial, setSelectedTrial] = useState<{
+    trialId: number;
+    row?: TrialMatch;
+  } | null>(null);
   // Seeded from the host's `initialFilters.type` rather than defaulted: the
   // prop is public API, and a host that mounts the remote asking for the
   // potential subset must not silently get the default tab's result set.
@@ -520,8 +528,45 @@ function TrialMatchesInner({
     savedFilters.reset();
   };
 
+  // Opened on demand: the graph is a second full matcher run over the same
+  // search, so it is not something to have ready just in case.
+  const [graphOpen, setGraphOpen] = useState(false);
+  // A state tab whose saved ids are unavailable — loading, failed, or over the
+  // 500 cap — cannot be mapped. Disabling the QUERY is not enough: with no ids
+  // the key is the default tab's key, so react-query would either hand back
+  // the cached whole-corpus map under a tab that says "Favorites", or, with
+  // nothing cached, sit on "Building the map…" for ever. The control is what
+  // has to refuse.
+  const graphUnavailable = stateTab != null && trialIds === undefined;
+  const graph = useTrialsGraph({
+    apiClient,
+    patientInfo,
+    personId,
+    filters: queryFilters,
+    // The same narrowing the list is under. Favorites and Registered narrow
+    // ONLY by `trial_ids` — their `type` is undefined — so without this the
+    // map drew the whole corpus under a tab that says "Favorites", and its
+    // cache key was identical to the default tab's, which meant it was served
+    // from that tab's cache without a request.
+    trialIds,
+    enabled: graphOpen && !graphUnavailable,
+  });
+  // Selecting a trial from the graph opens the same detail page the cards do.
+  // The detail page needs only the id, which is always available; the host's
+  // `onTrialSelect` wants the list ROW, which is not — the graph draws up to
+  // fifty trials and the list holds one page of ten, so off page one, or
+  // under a different sort, the row is simply not here. Opening anyway beats
+  // a click that silently does nothing; calling the host with a fabricated
+  // row would be worse than not calling it.
+  const handleSelectFromGraph = (trialId: number) => {
+    const row = (query.data?.results ?? []).find((t) => t.trialId === trialId);
+    setGraphOpen(false);
+    setSelectedTrial({ trialId, row });
+    if (row) onTrialSelect?.(row);
+  };
+
   const handleSelect = (trial: TrialMatch) => {
-    setSelectedTrial(trial);
+    setSelectedTrial({ trialId: trial.trialId, row: trial });
     onTrialSelect?.(trial);
   };
 
@@ -629,6 +674,21 @@ function TrialMatchesInner({
 
         <button
           type="button"
+          className={`exact-filters__trigger${graphOpen ? " is-on" : ""}`}
+          aria-expanded={graphOpen}
+          disabled={graphUnavailable}
+          title={
+            graphUnavailable
+              ? "Your saved trials aren't available right now, so this tab can't be mapped."
+              : undefined
+          }
+          onClick={() => setGraphOpen((open) => !open)}
+        >
+          Explore Trials
+        </button>
+
+        <button
+          type="button"
           className={`exact-filters__trigger${
             filtersOpen || activeFilterCount > 0 ? " is-on" : ""
           }`}
@@ -640,6 +700,22 @@ function TrialMatchesInner({
             : "Filter Results"}
         </button>
       </div>
+
+      {graphOpen && !graphUnavailable ? (
+        graph.isPending ? (
+          <p className="exact-graph__status">Building the map…</p>
+        ) : graph.isError ? (
+          <p className="exact-graph__status" role="alert">
+            Couldn't build the map for this search.
+          </p>
+        ) : (
+          <TrialsGraph
+            trials={graph.data?.trials ?? []}
+            onSelectTrial={handleSelectFromGraph}
+            onClose={() => setGraphOpen(false)}
+          />
+        )
+      ) : null}
 
       {filtersOpen ? (
         <FilterPanel

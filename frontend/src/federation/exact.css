@@ -503,6 +503,115 @@
   }
 }
 
+/* Explore Trials — the knowledge graph */
+.exact-root .exact-graph {
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-graph__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exact-root .exact-graph__sub,
+.exact-root .exact-graph__stats,
+.exact-root .exact-graph__status,
+.exact-root .exact-graph__empty {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__truncated {
+  color: var(--exact-color-warning-700);
+}
+
+.exact-root .exact-graph__close,
+.exact-root .exact-graph__more {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The picture scrolls inside its own box; the page never scrolls sideways. */
+.exact-root .exact-graph__scroll {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.exact-root .exact-graph__svg {
+  max-width: none;
+}
+
+.exact-root .exact-graph__trial {
+  cursor: pointer;
+}
+
+.exact-root .exact-graph__trial:focus-visible circle {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+.exact-root .exact-graph__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: baseline;
+}
+
+/* The same content as the picture, in text. Not a fallback — the picture is
+   the quick read and this is the one that survives a screen reader, a narrow
+   window, and a label longer than the space beside its dot. */
+.exact-root .exact-graph__list {
+  margin: 12px 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__list > li + li {
+  margin-top: 8px;
+}
+
+.exact-root .exact-graph__list button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--exact-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.exact-root .exact-graph__score {
+  color: var(--exact-color-text-tertiary);
+}
+
 /* Field tooltip: "?" icon + floating text box on hover/focus */
 .exact-root .exact-tooltip__wrap {
   position: relative;
