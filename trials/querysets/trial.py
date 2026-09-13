@@ -9,7 +9,7 @@ from django.contrib.postgres.search import SearchVector, SearchQuery
 from django.db import models
 from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, QuerySet, Min, Subquery
 from django.db.models.expressions import RawSQL
-from django.db.models.functions import Coalesce, Least
+from django.db.models.functions import Coalesce, Least, Lower
 from django.contrib.gis.geos import Point
 from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField
 
@@ -48,6 +48,104 @@ def cast_str_to_int(value):
 
     if type(value) == str and value.isdigit():
         return int(value)
+
+
+#: Titles that name the same country. The catalog holds a row per title and
+#: nothing links them, so a search for one misses every site filed under the
+#: other — and once the code translation below works, that stops being
+#: harmless: it becomes a filter that narrows to PART of a country while
+#: looking like it worked.
+#:
+#: Measured in the corpus (location counts), which is why this is a table and
+#: not a rule. Normalising titles by stripping ", Republic of" or a
+#: parenthetical would merge `Korea, South` with a `Korea, Democratic People's
+#: Republic of` that a later import may well add — two different countries, one
+#: answer, in a clinical tool.
+#:
+#:     United States (9427)            + United States of America (1)
+#:     Czechia (197)                   + Czech Republic (51)
+#:     Korea, Republic of (295)        + South Korea (240) + Korea, South (1)
+#:     Russian Federation (282)        + Russia (231)
+#:     Turkey (Türkiye) (231)          + Turkey (194)
+#:     Iran, Islamic Republic of (14)  + Iran (17)
+#:     North Macedonia (3)             + Macedonia, The Former Yugoslav … (2)
+#:     Moldova, Republic of (1)        + Moldova (1)
+#:     Syrian Arab Republic (1)        + Syria (1)
+#:
+#: A table rather than a data migration: merging catalog rows changes what
+#: every other consumer reads, and the duplicates are recorded in #430 for
+#: whoever owns the catalog. This makes the FILTER right without touching them.
+_COUNTRY_TITLE_ALIASES = (
+    {'united states', 'united states of america', 'usa'},
+    {'czechia', 'czech republic'},
+    {'korea, republic of', 'south korea', 'korea, south'},
+    {'russia', 'russian federation'},
+    {'turkey', 'turkey (türkiye)', 'türkiye'},
+    {'iran', 'iran, islamic republic of'},
+    {'north macedonia', 'macedonia, the former yugoslav republic of'},
+    {'moldova', 'moldova, republic of'},
+    {'syria', 'syrian arab republic'},
+)
+
+#: An option in the list that is not a country. It resolves to no catalog row,
+#: which would leave the search unnarrowed while 30 of its 31 neighbours
+#: narrow — the #430 symptom preserved for one value. Named so the behaviour is
+#: a decision: "Other" cannot be expressed as a set of countries without
+#: inverting the whole catalog, and quietly ignoring it is the honest answer
+#: until someone decides what it should mean.
+_COUNTRY_NOT_A_COUNTRY = {'other'}
+
+
+def _country_ids_for(value):
+    """Every `Country` id the given country value can mean.
+
+    Takes a code from the options list (`US`), a title (`Germany`), or any of
+    the spellings in `_COUNTRY_TITLE_ALIASES`. Empty when the value names
+    nothing this catalog holds, which the caller treats as "no filter".
+    """
+    from trials.models import Country, PreferredCountry
+
+    value = str(value or '').strip()
+    if not value or value.lower() in _COUNTRY_NOT_A_COUNTRY:
+        return []
+
+    titles = {value}
+    # A code is what the options list emits, and it is not a title.
+    titles.update(
+        PreferredCountry.objects.filter(code__iexact=value).values_list('title', flat=True)
+    )
+
+    # To a fixed point: a value can enter through one spelling and the group it
+    # joins can carry a spelling belonging to another group. One pass over an
+    # ordered tuple would apply part of the merge and leave the rest, which is
+    # a partially resolved country — the outcome this table exists to prevent.
+    #
+    # `probe` is lowercase because the table is, and it is used ONLY to decide
+    # membership. What gets queried is `titles`, which keeps the value exactly
+    # as it arrived.
+    grew = True
+    while grew:
+        grew = False
+        probe = {t.lower() for t in titles}
+        for group in _COUNTRY_TITLE_ALIASES:
+            if probe & group and not group <= probe:
+                titles |= group
+                grew = True
+
+    # Case folding happens in SQL, on both sides, and the value is NOT folded
+    # in Python on the way there. The two are not the same operation: this
+    # database is `LC_CTYPE=C` (so is the corpus), where Postgres `upper()`
+    # leaves non-ASCII alone and Python's `.lower()` does not. Lowering
+    # `Åland Islands` to `åland islands` first hands `iexact` an `å` that
+    # `upper()` returns unchanged, and the catalog's own `Å` stops matching —
+    # the exact spelling the catalog ships being the one a caller is likeliest
+    # to send. The alias literals are safe to add lowercase because they are
+    # spelled as the catalog spells them (`türkiye` already carries `ü`).
+    match = Q()
+    for title in titles:
+        match |= Q(title__iexact=title)
+
+    return list(Country.objects.filter(match).values_list('id', flat=True))
 
 
 def get_recruitment_status_filter_values(recruitment_status):
@@ -612,24 +710,56 @@ class TrialQuerySet(models.QuerySet):
         return self.filter(sponsor_name__icontains=str(value).lower())
 
     def by_location(self, country, state):
-        from trials.models import Country, State
+        """Narrow to trials with a site in that country, and state if given.
+
+        The country arrives as whatever the options list offers, which is a
+        CODE — `US`, `GB` — while `Country` rows carry only a title. So the
+        filter matched nothing and, returning `self`, narrowed nothing: the
+        control was decoration (#430).
+
+        Three things had to line up, not one:
+
+        * a code has to be translated. `PreferredCountry` holds the code→title
+          pair the options list is built from, and 30 of its 31 entries match
+          a `Country` title exactly.
+        * the last entry is the one that matters: `US` names "United States of
+          America", and the catalog ALSO holds "United States" — with 18,365
+          site links against the other's one. Translating the code and stopping
+          at the first match would have narrowed a US search to a single
+          trial, which is worse than the filter doing nothing.
+        * so every row that means the country is used, not `.first()`.
+
+        A raw title still works, so a caller who was not reading the options
+        list is unaffected.
+        """
+        from trials.models import State
 
         if not state and not country:
             return self
 
-        if country:
-            country_by_name = Country.objects.filter(title__iexact=country).first()
-            if not country_by_name:
-                return self
+        if not country:
+            return self
 
-            if state:
-                state_by_name = State.objects.filter(country=country_by_name, title__iexact=state).first()
-                if state_by_name:
-                    return self.filter(locationtrial__location__state_id=state_by_name.id).distinct()
+        country_ids = _country_ids_for(country)
+        if not country_ids:
+            return self
 
-            return self.filter(locationtrial__location__country_id=country_by_name.id).distinct()
+        if state:
+            # Every matching state row, for the same reason as the country: a
+            # country split across two catalog rows has its states split too,
+            # so "New York" exists under each and `.first()` picks one
+            # arbitrarily — dropping the trials filed under the other.
+            state_ids = list(
+                State.objects.filter(
+                    country_id__in=country_ids, title__iexact=state
+                ).values_list('id', flat=True)
+            )
+            if state_ids:
+                return self.filter(
+                    locationtrial__location__state_id__in=state_ids
+                ).distinct()
 
-        return self
+        return self.filter(locationtrial__location__country_id__in=country_ids).distinct()
 
     def by_distance(self, geo_point, distance, distance_units):
         if not geo_point or not distance or distance <= 0 or not distance_units:  # skip
