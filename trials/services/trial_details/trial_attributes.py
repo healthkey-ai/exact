@@ -865,6 +865,9 @@ class TrialAttributes:
                 pi_field_names = data
 
             for pi_field_name in pi_field_names:
+                # Once per entry, the way the row site does it, rather than
+                # once for the boolean and again for the note.
+                entry_note = recompute_note(pi_field_name)
                 if pi_field_name in out:
                     continue
 
@@ -918,8 +921,8 @@ class TrialAttributes:
                     # the set alone answers `false` for one, which a client
                     # takes as "this is yours to edit" over a field an edit
                     # cannot reach.
-                    'upatientRecomputed': recompute_note(pi_field_name) is not None,
-                    'upatientRecomputedWhen': recompute_note(pi_field_name),
+                    'upatientRecomputed': entry_note is not None,
+                    'upatientRecomputedWhen': entry_note,
                 }
 
                 # The unit the PATIENT's value is stored in, the same way a row

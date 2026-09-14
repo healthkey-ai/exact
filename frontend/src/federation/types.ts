@@ -99,11 +99,21 @@ export interface TrialsResponse {
   tabCounts?: TabCounts;
 }
 
-/** One row in a trial-detail `details` group. Mirrors EXACT's
- *  `TrialTemplates` field shape (built server-side, camelCased on the wire).
- *  `value` is the trial's required value; `uvalue` is the patient's value;
- *  `matchingType` is the per-attribute verdict. Permissive — the server adds
- *  fields as the templates evolve. Source: `trials/services/trial_details/`. */
+/** Whether a value the reader supplies survives, and how not.
+ *
+ *  `always` — a write is overwritten on the next match. `sometimes` — it may
+ *  be, under `condition`. `never-stored` — the value is computed on read, so
+ *  the write is not even accepted. `null` or absent — EXACT leaves it alone,
+ *  which is NOT the same as PROMOP accepting the write.
+ *
+ *  `condition` is prose written for a reader: show it, do not parse it. */
+export type RecomputedWhen =
+  | { when: "always" }
+  | { when: "never-stored" }
+  | { when: "sometimes"; condition: string }
+  | null;
+
+
 /** One value a composite row is computed from.
  *
  *  Sent under `subform_details` — snake_case, because EXACT does not camelise
@@ -128,6 +138,15 @@ export interface SubformEntry {
   upatientField?: string | null;
   /** Whether EXACT recomputes it — see `TrialDetailField.upatientRecomputed`. */
   upatientRecomputed?: boolean;
+  /** The same answer with its reason — see
+   *  `TrialDetailField.upatientRecomputedWhen`.
+   *
+   *  Declared because the server sends it here too, and this interface has no
+   *  index signature: without the field the key is simply unreachable from
+   *  the component that would render it. The server side and this interface
+   *  were written on either side of a merge, and neither half was wrong on
+   *  its own. */
+  upatientRecomputedWhen?: RecomputedWhen;
   /** The unit the trial's threshold is in. */
   units?: string;
   /** The unit the PATIENT's value is stored in — the one to show and to type
@@ -135,6 +154,11 @@ export interface SubformEntry {
   uunits?: string;
 }
 
+/** One row in a trial-detail `details` group. Mirrors EXACT's
+ *  `TrialTemplates` field shape (built server-side, camelCased on the wire).
+ *  `value` is the trial's required value; `uvalue` is the patient's value;
+ *  `matchingType` is the per-attribute verdict. Permissive — the server adds
+ *  fields as the templates evolve. Source: `trials/services/trial_details/`. */
 export interface TrialDetailField {
   name: string;
   label: string;
@@ -181,11 +205,7 @@ export interface TrialDetailField {
    *  A control gated on the boolean alone hides `mipiRisk` from every
    *  non-MCL patient, whose `mipiRisk` EXACT never touches. `condition` is
    *  prose written for a reader — show it, do not parse it. */
-  upatientRecomputedWhen?:
-    | { when: "always" }
-    | { when: "never-stored" }
-    | { when: "sometimes"; condition: string }
-    | null;
+  upatientRecomputedWhen?: RecomputedWhen;
   /** The values this row is computed from, when it is computed from any.
    *  Snake_case on the wire. */
   subform_details?: SubformEntry[] | null;
