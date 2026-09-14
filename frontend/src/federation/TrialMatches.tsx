@@ -49,6 +49,7 @@ import {
   baselineFilters,
   countActiveFilters,
   countryFor,
+  normalizeFilterState,
   userOwnedFilters,
 } from "./filters";
 import { MAX_TRIAL_IDS, canEditFields } from "./state";
@@ -93,7 +94,12 @@ function TrialMatchesInner({
     injectStyles();
   }, []);
 
-  const [filters, setFilters] = useState<FilterState>(initialFilters ?? {});
+  // Normalized on the way in: a host compiles separately, so a pre-#428
+  // `trialPurpose` string in `initialFilters` is not caught by `tsc` here
+  // and would spread into its own letters on the first click (#428).
+  const [filters, setFilters] = useState<FilterState>(() =>
+    normalizeFilterState(initialFilters),
+  );
   // The id, and the list row when there is one. A trial can be opened from
   // the graph, which draws up to fifty trials while the list holds one page —
   // so "which trial" is always answerable and "which row" is not.
@@ -173,7 +179,10 @@ function TrialMatchesInner({
     // to expire a type picked for someone else — would mask the very type
     // just loaded, and a later edit would overwrite it.
     if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
-    setFilters((current) => ({ ...current, ...saved }));
+    // Normalized for the same reason as the initial state, and the more
+    // likely source: this is what the PREVIOUS build of this remote saved,
+    // when `trialPurpose` was a single string.
+    setFilters((current) => normalizeFilterState({ ...current, ...saved }));
   });
 
   // Whether the panel has been touched since the last time a saved set

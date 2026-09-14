@@ -270,7 +270,10 @@ export interface FilterState {
   country?: string;
   region?: string;
   trialType?: string;
-  trialPurpose?: string;
+  /** A list since CB #4663 made the control a multiselect; the server
+   *  answers with the union. Sent as one comma-separated `trialPurpose`
+   *  param — see `filterStateToParams`. */
+  trialPurpose?: string[];
   studyType?: string;
   distance?: number;
   distanceUnits?: "km" | "miles";

@@ -2712,7 +2712,10 @@ describe("what the gate holds back besides the request", () => {
 
     for (const label of ["Title", "Treatment", "Sponsor"]) {
       const before = listed(api).length;
-      await userEvent.type(await screen.findByLabelText(label), "ab");
+      // By role as well as label: since #428 the trial-purpose control is a
+      // list of checkboxes, one of which is also called "Treatment", so the
+      // label alone no longer names one thing.
+      await userEvent.type(await screen.findByRole("textbox", { name: label }), "ab");
       expect(listed(api).length).toBe(before);
       await waitFor(() => expect(listed(api).length).toBe(before + 1), {
         timeout: 2000,

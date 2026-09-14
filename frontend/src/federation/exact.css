@@ -1243,6 +1243,75 @@
   outline-offset: -1px;
 }
 
+/* Trial purpose is several codes at once (#428). `<details>` is the native
+   popover: no library, keyboard- and screen-reader-navigable as shipped. The
+   summary is styled as an input so the control does not look like a different
+   species from the selects beside it. */
+.exact-root .exact-filter__multi {
+  position: relative;
+  min-width: 0;
+}
+
+.exact-root .exact-filter__multi-summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Safari draws its own disclosure triangle through `list-style: none`. */
+.exact-root .exact-filter__multi-summary::-webkit-details-marker {
+  display: none;
+}
+
+.exact-root .exact-filter__multi-summary::after {
+  content: "";
+  margin-left: auto;
+  padding-left: 0.5rem;
+  border: 0.3rem solid transparent;
+  border-top-color: var(--exact-color-text-tertiary);
+  transform: translateY(0.15rem);
+}
+
+.exact-root .exact-filter__multi[open] .exact-filter__multi-summary::after {
+  transform: translateY(-0.15rem) rotate(180deg);
+}
+
+/* Absolute so opening the list does not reflow the filter grid under it. */
+.exact-root .exact-filter__multi-list {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  margin-top: 0.25rem;
+  padding: 0.375rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+}
+
+.exact-root .exact-filter__multi-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+  cursor: pointer;
+}
+
+.exact-root .exact-filter__multi-option:hover {
+  background: var(--exact-color-surface-2);
+}
+
 .exact-root .exact-filter__pair {
   display: flex;
   gap: 0.5rem;
