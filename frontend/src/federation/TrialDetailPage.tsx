@@ -118,7 +118,7 @@ function labelOf(value: unknown, options?: TrialDetailField["options"]): string 
   return match ? match.label : String(value);
 }
 
-function formatValue(value: unknown, options?: TrialDetailField["options"]): string {
+export function formatValue(value: unknown, options?: TrialDetailField["options"]): string {
   if (value == null || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) {
@@ -181,14 +181,35 @@ function editableRowNames(fields: TrialDetailField[]): Set<string> {
   return rows;
 }
 
+/** Which rows may offer the subform door.
+ *
+ *  One per attribute, for the reason the pencils are: a ULN group is three
+ *  rows — the pair and the range — carrying the SAME `subform_details`, so
+ *  left alone the reader is offered the same dialog three times in a column
+ *  and has to wonder which one is theirs.
+ */
+function subformRowNames(fields: TrialDetailField[]): Set<string> {
+  const taken = new Set<string>();
+  const rows = new Set<string>();
+  for (const field of fields) {
+    const attribute = field.upatientField;
+    if (!attribute || !field.subform_details?.length || taken.has(attribute)) continue;
+    taken.add(attribute);
+    rows.add(field.name);
+  }
+  return rows;
+}
+
 function EligibilityRow({
   field,
   editing,
   editableHere,
+  subformHere,
 }: {
   field: TrialDetailField;
   editing?: RowEditing;
   editableHere?: boolean;
+  subformHere?: boolean;
 }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
@@ -227,7 +248,8 @@ function EligibilityRow({
   // is a decision, not an oversight.
   const [editorOpen, setEditorOpen] = useState(false);
   const [subformOpen, setSubformOpen] = useState(false);
-  const canOpenSubform = subformCanBeEdited(field.subform_details, editing);
+  const canOpenSubform =
+    Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
       ? editabilityOf(field.upatientField, editing.fields)
@@ -502,6 +524,7 @@ export function TrialDetailPage({
 
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
   const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
+  const subformRows = useMemo(() => subformRowNames(eligibility), [eligibility]);
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
@@ -621,6 +644,7 @@ export function TrialDetailPage({
                       field={field}
                       editing={editing}
                       editableHere={editableRows.has(field.name)}
+                      subformHere={subformRows.has(field.name)}
                     />
                   ))}
                 </div>

@@ -106,6 +106,61 @@ describe("when the door is offered", () => {
     expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
   });
 
+  it("does not offer it when the only writable inputs are demographics", async () => {
+    // Found by /qa on 2026-09-14. Six ULN groups are [the lab, gender,
+    // ethnicity]: the lab is an `alias` in PROMOP and not writable, while
+    // gender and ethnicity are — so the door opened onto a dialog captioned
+    // "the values it is computed from" whose only two controls change the
+    // patient's demographics, record-wide, from a threshold row.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        composite({
+          label: "ALT ×ULN",
+          upatientField: "liver_enzyme_level_alt_uln_min",
+          subform_details: [
+            entry({
+              name: "liverEnzymeLevelsAlt",
+              label: "ALT",
+              value: 75,
+              upatientField: "liver_enzyme_levels_alt",
+            }),
+            entry({ name: "gender", label: "Gender", value: "M", upatientField: "gender" }),
+            entry({
+              name: "ethnicity",
+              label: "Ethnicity",
+              value: "caucasian_or_european",
+              upatientField: "ethnicity",
+            }),
+          ],
+        }),
+      ]),
+    );
+    renderTrialMatches(api, {
+      state: fakeState({
+        writable: {
+          // What PROMOP really says about these three.
+          liver_enzyme_levels_alt: {
+            kind: "alias", writable: false, canonical: "alt_u_l",
+            reason: "Mirrors alt_u_l; edit that field instead.",
+          },
+          gender: {
+            kind: "direct", writable: true, value_kind: "string",
+            projection_target: "person", options: [{ value: "M" }, { value: "F" }],
+          },
+          ethnicity: {
+            kind: "direct", writable: true, value_kind: "string",
+            projection_target: "person",
+          },
+        },
+      }).adapter,
+    });
+    await open();
+
+    expect(await screen.findByText("ALT ×ULN")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
+  });
+
   it("does not offer it when PROMOP will not take the inputs either", async () => {
     const api = fakeApi();
     api.setDetail(detailWith([composite()]));
@@ -199,6 +254,100 @@ describe("inside the dialog", () => {
     expect(
       screen.getByRole("button", { name: /Change what TNBC Status/ }),
     ).toHaveFocus();
+  });
+
+  it("does not close when Escape cancels a field editor inside it", async () => {
+    // Found by /qa on 2026-09-14. The dialog listens on the document, and the
+    // editor's Escape did not stop propagating — so one keystroke discarded
+    // the draft AND shut the dialog around it.
+    await openDialog();
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Edit Estrogen receptor status" }),
+    );
+    await userEvent.keyboard("{Escape}");
+
+    expect(
+      within(dialog).queryByRole("combobox", { name: "Estrogen receptor status" }),
+    ).toBeNull();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("shows a value the way the row does, not as a raw code", async () => {
+    // Found by /qa on 2026-09-14: the dialog printed `String(value)`, so a
+    // code appeared where the row shows a label, `false` where it shows "No",
+    // and "[object Object]" for the JSON entries.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        composite({
+          subform_details: [
+            entry({
+              value: "er_minus",
+              options: [
+                { value: "er_minus", label: "ER-" },
+                { value: "er_plus", label: "ER+" },
+              ],
+            }),
+            entry({
+              name: "boneOnly",
+              label: "Bone only",
+              type: "boolean",
+              value: false,
+              options: null,
+              upatientField: "bone_only_metastasis_status",
+            }),
+          ],
+        }),
+      ]),
+    );
+    renderTrialMatches(api, { state: fakeState({ writable: WRITABLE }).adapter });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("ER-")).toBeInTheDocument();
+    expect(within(dialog).queryByText("er_minus")).toBeNull();
+    expect(within(dialog).getByText("No")).toBeInTheDocument();
+  });
+
+  it("shows the unit the patient's value is stored in", async () => {
+    // Found by /qa on 2026-09-14: the subform carried no unit at all, so a
+    // lab was shown and typed bare — and CRAB converts through the stored
+    // unit, so the wrong scale flips the composite silently.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        composite({
+          subform_details: [
+            entry({
+              name: "serumCalciumLevel",
+              label: "Serum calcium",
+              type: "number",
+              value: 10.4,
+              options: null,
+              upatientField: "serum_calcium_level",
+              uunits: "mg/dL",
+            }),
+          ],
+        }),
+      ]),
+    );
+    renderTrialMatches(api, {
+      state: fakeState({
+        writable: {
+          serum_calcium_level: { kind: "direct", writable: true, value_kind: "number" },
+        },
+      }).adapter,
+    });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+
+    expect(within(screen.getByRole("dialog")).getByText("mg/dL")).toBeInTheDocument();
   });
 
   it("stays open when the reader clicks inside it", async () => {

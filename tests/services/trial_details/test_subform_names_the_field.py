@@ -28,10 +28,11 @@ def _groups(patient_info):
     # recomputed entry appears: every statically listed subform input — the
     # receptor statuses, the labs, height and weight — is raw data EXACT
     # leaves alone, which is the point of a subform. `get_treatment_attrs`
-    # is the exception, and it returns `first_line_therapy` and its siblings,
-    # which `normalize.py` derives from the therapy lines. Without a prior
-    # therapy set, that group is not built and the flag could be hardcoded
-    # false without any assertion noticing.
+    # is the exception, and among what it returns `first_line_therapy` and
+    # its date and outcome ARE derived (`prior_therapy`, in the same group,
+    # is not — the group is mixed). Without a prior therapy set that group is
+    # not built at all, and the flag could be hardcoded false without any
+    # assertion noticing.
     pi.prior_therapy = 'More than two lines of therapy'
     pi.first_line_therapy = 'vrd'
     normalize_patient_info(pi)
@@ -63,9 +64,10 @@ class TestSubformEntriesNameTheirField:
             assert [e['upatientField'] for e in entries] == list(wanted)
 
     def test_an_entry_says_whether_a_write_to_it_survives(self, patient_info):
-        # The subform is the writable half of a computed row — except where an
-        # entry is itself computed, which is not rare: `creatinine_clearance_rate`
-        # sits under CRAB and EXACT derives it.
+        # The subform is the writable half of a computed row — except where
+        # an entry is itself computed. Only the therapy groups have one:
+        # `first_line_therapy` and its siblings are derived from the therapy
+        # lines, and everything statically listed is raw data.
         for entries in _groups(patient_info).values():
             for entry in entries:
                 assert entry['upatientRecomputed'] == (

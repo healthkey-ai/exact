@@ -113,8 +113,9 @@ export interface TrialsResponse {
  *  EXACT derives TNBC status from the receptor statuses, CRAB from calcium
  *  and creatinine and the rest, so writing the row would be undone by the
  *  next match. The entries beside it are those inputs, and they are raw data
- *  — with one exception worth knowing, the therapy groups, whose entries
- *  EXACT derives as well and which therefore say so. */
+ *  — with one exception worth knowing: the therapy groups, where
+ *  `first_line_therapy` and its date and outcome are derived as well and
+ *  therefore say so. */
 export interface SubformEntry {
   /** camelCase, for display and for React keys. */
   name: string;
@@ -127,6 +128,11 @@ export interface SubformEntry {
   upatientField?: string | null;
   /** Whether EXACT recomputes it — see `TrialDetailField.upatientRecomputed`. */
   upatientRecomputed?: boolean;
+  /** The unit the trial's threshold is in. */
+  units?: string;
+  /** The unit the PATIENT's value is stored in — the one to show and to type
+   *  in, because the composite above converts through it. */
+  uunits?: string;
 }
 
 export interface TrialDetailField {

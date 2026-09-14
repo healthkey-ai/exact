@@ -253,6 +253,10 @@ export function FieldEdit({
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.preventDefault();
+          // And no further: the subform dialog listens for Escape on the
+          // document, so without this one keystroke discards the draft AND
+          // shuts the dialog the reader was working in.
+          e.stopPropagation();
           cancel();
           return;
         }
