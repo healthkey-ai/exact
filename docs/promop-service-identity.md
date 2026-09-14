@@ -67,9 +67,11 @@ using `PATIENT_DATABASE_URL`, bypassing the API, the service identity and
 PRomop's audit trail entirely: `fetch_exact_for_patients`,
 `search_trials_for_patients`, `explain_trial_match`, `compare_status_equivalence`,
 `compare_trials`, `probe_eligibility`. Separately, `docker/init_patients_db.sh`
-*populates* a local patients database — it drops the public schema and restores
-a dump downloaded from `PATIENT_DATABASE_BACKUP_URL` — so that URL is a third
-credential-bearing setting alongside the database URL itself.
+*populates* a local patients database: it probes `public.patient_info` for rows
+(a guard against restoring over a populated database), then drops the public
+schema and restores a dump downloaded from `PATIENT_DATABASE_BACKUP_URL` — so
+that URL is a third credential-bearing setting alongside the database URL
+itself.
 
 These are developer/evaluation tooling, not the deployed request path, and
 PRomop's enforcement release does not constrain them. Retiring the shared API

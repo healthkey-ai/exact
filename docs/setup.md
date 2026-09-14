@@ -376,6 +376,7 @@ environment variables — never commit secret values to git.
 | `PROMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | PRomop OAuth2 client credentials; **both or neither** — half a pair refuses every patient request |
 | `PROMOP_OAUTH_SCOPE` | `patient/*.read` | Scope requested for the patient client. EXACT never writes — keep it read-only |
 | `PROMOP_OAUTH_TOKEN_URL` | `{PROMOP_BASE}/o/token/` | Token endpoint override |
+| `PROMOP_API_BASE` | _(empty)_ | PRomop API base; the fallback the vocabulary mirror uses before `PROMOP_BASE` |
 | `PROMOP_VOCAB_BASE` | falls back to `PROMOP_API_BASE` / `PROMOP_BASE` | Base URL for the vocabulary mirror |
 | `PROMOP_VOCAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | Vocabulary OAuth2 credentials — a **separate service credential** from the patient client's; both or neither |
 | `PROMOP_VOCAB_OAUTH_SCOPE` | `system/*.read` | Scope for the vocabulary mirror |

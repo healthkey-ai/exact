@@ -39,6 +39,7 @@ class TestResolvePatientInfoDispatch:
         req.query_params = {}
         assert resolve_patient_info(req) is None
 
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_query_param_person_id_routes_to_promop(self):
         req = _mock_request(query_params={'person_id': '9001'})
         with patch(
@@ -55,6 +56,7 @@ class TestResolvePatientInfoDispatch:
         mock_build.assert_called_once_with({'person_id': 9001})
         assert result == 'pi_object'
 
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_camelcase_personid_query_param_also_routes(self):
         req = _mock_request(query_params={'personId': '9002'})
         with patch(
@@ -67,6 +69,7 @@ class TestResolvePatientInfoDispatch:
             resolve_patient_info(req)
         MockClient.return_value.fetch_patient.assert_called_once_with('9002')
 
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_body_person_id_routes_to_promop(self):
         req = _mock_request(data={'person_id': 9003})
         with patch(
@@ -136,6 +139,7 @@ class TestResolvePatientInfoDispatch:
         assert pi.patient_age == 51            # not None
         assert pi.gender == 'F'                # not None
 
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_unfetchable_person_id_is_an_error_not_a_patientless_search(self):
         """Client failure (network, 4xx/5xx, malformed JSON, or — since #448 —
         no usable credential) must NOT resolve to None: the caller named a

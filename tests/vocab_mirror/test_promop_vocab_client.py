@@ -149,6 +149,7 @@ class TestVocabCredential:
             'trials.services.patient_info.promop_client.requests.post', fake_post)
         client = PromopVocabClient(base_url='http://promop', oauth_client_id='cid',
                                    oauth_client_secret='sec',
+                                   oauth_scope='system/*.read',
                                    oauth_token_url='http://promop/o/token/')
         try:
             assert client._authorization() == 'Bearer vt'
@@ -204,4 +205,3 @@ class TestVocabCredential:
         assert captured['kwargs'].get('data') is None
         assert not captured['kwargs'].get('params')
         assert '?' not in captured['url']
-

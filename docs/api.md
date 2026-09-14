@@ -386,10 +386,12 @@ Requests with `limit` < 1, > 200, non-integer, or empty return
 
 | Status | When |
 |---|---|
-| `400 Bad Request` | Validation error in request body or query params |
+| `400 Bad Request` | Validation error in request body or query params — including a `person_id` that isn't a positive integer |
 | `401 Unauthorized` | Missing or invalid auth token |
+| `403 Forbidden` | `person_id` lookup while `EXACT_ALLOW_PERSON_ID_LOOKUP` is off (the default outside local/DEBUG, #150/#108) — send an inline `patientInfo` payload instead |
 | `404 Not Found` | Record not found |
 | `500 Internal Server Error` | Unexpected server error |
+| `502 Bad Gateway` | A `person_id` was named but PROMOP could not supply the patient. No trial results are returned for an unresolved patient (#448) |
 
 Error body:
 ```json

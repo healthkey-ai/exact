@@ -24,9 +24,10 @@ means no request, never an anonymous one.
 
 Either way `fetch_patient(person_id)` returns the flat row dict (the shape
 `normalize_promop_row` expects) or `None` on any error path (network failure,
-4xx/5xx, malformed JSON, missing config, OAuth token failure). Returning `None`
-rather than raising lets the resolver treat the failure like a missing payload —
-the caller can proceed without patient context (e.g. public trial browsing).
+4xx/5xx, malformed JSON, missing config, OAuth token failure). `None` is this
+client's only failure vocabulary; deciding what it means for the HTTP response
+belongs to the resolver, which turns it into a 502 rather than a patientless
+search (#448) — see `resolve.py`.
 
 Config comes from Django settings (each read from the matching env var, empty
 defaults): `PROMOP_BASE`, `PROMOP_SERVICE_TOKEN` (legacy), and
@@ -206,8 +207,9 @@ class PromopClient:
         Returns None when: `PROMOP_BASE` is unset; no usable credential is
         configured (an empty static token, a half-configured OAuth pair, or an
         OAuth token that can't be minted — #448); the network call fails; the
-        status is non-2xx; or the body isn't a JSON object. Logs at WARNING so
-        failures surface without short-circuiting the caller.
+        status is non-2xx; or the body isn't a JSON object. Logs at WARNING —
+        that log is where an operator tells these apart, because the caller only
+        ever sees `None`.
         """
         if not self.base_url:
             logger.warning(

@@ -54,7 +54,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
 
@@ -68,9 +68,10 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     Resolution order:
       1. Inline `patient_info` payload (existing contract — unchanged).
-      2. `person_id` query param or body field — fetch from PROMOP. A named
-         patient that can't be fetched raises `PatientContextUnavailable`
-         (502); it never degrades into case 3.
+      2. `person_id` query param or body field — fetch from PROMOP. A
+         malformed `person_id` is a 400; a well-formed one whose patient can't
+         be fetched raises `PatientContextUnavailable` (502). Neither ever
+         degrades into case 3.
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
@@ -125,12 +126,19 @@ def _extract_person_id(request) -> Optional[Any]:
 
 
 class PatientContextUnavailable(APIException):
-    """A `person_id` was named but its patient could not be fetched.
+    """A well-formed `person_id` was named but its patient could not be fetched.
 
-    502, not 404 or 500: every reason `fetch_patient` gives up on — an
-    unreachable PROMOP, a non-2xx status, a body that isn't a row, or (since
-    #448) no usable credential at all — is a failure of the upstream hop or of
-    our own configuration, and none of them tells us the patient doesn't exist.
+    502 rather than 404: `fetch_patient` collapses every failure to None, and
+    this code deliberately does not take them apart. PROMOP's 404 would say the
+    patient doesn't exist — reporting that back would turn this route into a
+    patient-existence oracle, on a route whose whole problem is that a service
+    credential can read any patient (the IDOR the gate exists for, #150/#108).
+    One conservative code for "we could not get them", whatever the reason:
+    unreachable PROMOP, non-2xx, a body that isn't a row, or (since #448) no
+    usable credential. Operators diagnose the real cause from the WARNING the
+    client logs, which does distinguish them.
+
+    A malformed `person_id` is NOT this error — see `_reject_malformed_person_id`.
     """
     status_code = 502
     default_detail = ('Could not fetch the requested patient from PROMOP. '
@@ -138,7 +146,25 @@ class PatientContextUnavailable(APIException):
     default_code = 'patient_context_unavailable'
 
 
-def _resolve_from_promop(person_id: Any) -> Optional['PatientInfo']:
+def _reject_malformed_person_id(person_id: Any) -> None:
+    """400 for a `person_id` that isn't a positive integer, before any fetch.
+
+    `PromopClient.fetch_patient` also rejects these — without a network call, as
+    a URL-injection guard — but it reports the rejection as None, which here
+    would read as "PROMOP could not give us the patient" and answer 502. Blaming
+    an upstream that was never called turns a permanently-unsatisfiable client
+    mistake into a 5xx: alert noise, and a retry loop in any client that retries
+    5xx. The shape check belongs to whoever can still tell the caller.
+    """
+    try:
+        value = int(person_id)
+    except (TypeError, ValueError, OverflowError):
+        raise ValidationError({'person_id': 'Must be a positive integer.'})
+    if value <= 0:
+        raise ValidationError({'person_id': 'Must be a positive integer.'})
+
+
+def _resolve_from_promop(person_id: Any) -> 'PatientInfo':
     """Fetch the PROMOP row and adapt it to a PatientInfo.
 
     Raises `PatientContextUnavailable` rather than returning None when the row
@@ -155,6 +181,7 @@ def _resolve_from_promop(person_id: Any) -> Optional['PatientInfo']:
     )
     from trials.services.patient_info.promop_client import PromopClient
 
+    _reject_malformed_person_id(person_id)
     row = PromopClient().fetch_patient(person_id)
     if not row:
         raise PatientContextUnavailable()

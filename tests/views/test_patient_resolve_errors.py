@@ -85,6 +85,37 @@ class TestPatientResolveErrors:
         assert 'patient' in str(resp.data).lower()
 
     @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    @pytest.mark.parametrize('bad_id', ['abc', '0', '-1', '1.5'])
+    def test_malformed_person_id_is_400_and_never_reaches_promop(
+            self, authed_client, bad_id):
+        """A person_id the *client* got wrong must not be reported as an
+        upstream failure: 502 would blame a PROMOP that was never called, and
+        any client or LB that retries 5xx would retry a permanently
+        unsatisfiable request forever."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.requests.get',
+        ) as mock_get:
+            resp = authed_client.get(f'/trials/?person_id={bad_id}')
+        assert resp.status_code == 400
+        assert 'person_id' in str(resp.data).lower()
+        mock_get.assert_not_called()
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    def test_unfetchable_person_id_costs_one_upstream_round_trip(self, authed_client):
+        """The failure is memoized like a success: get_queryset and
+        get_serializer_context both resolve, and an unreachable PROMOP must not
+        cost a timeout per call site (#159/#160)."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.PromopClient.fetch_patient',
+            return_value=None,
+        ) as mock_fetch:
+            resp = authed_client.get('/trials/?person_id=9001')
+        assert resp.status_code == 502
+        assert mock_fetch.call_count == 1
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_no_person_id_is_still_a_patientless_search(self, authed_client):
         """The complement: the 502 above is about a patient who was *named*.
         A request that names nobody is public browsing and still answers 200."""

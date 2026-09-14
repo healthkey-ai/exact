@@ -209,8 +209,12 @@ def _token_response(access_token='svc-tok', expires_in=3600, status_code=200):
 
 
 def _oauth_client():
+    # Scope passed explicitly: it otherwise comes from PROMOP_OAUTH_SCOPE in the
+    # environment, which makes every scope assertion below a statement about the
+    # developer's shell. The unconfigured-fallback case is tested separately.
     return PromopClient(base_url='https://promop.example.com',
-                        oauth_client_id='cid', oauth_client_secret='sec')
+                        oauth_client_id='cid', oauth_client_secret='sec',
+                        oauth_scope='patient/*.read')
 
 
 class TestOAuthV1:
@@ -334,7 +338,6 @@ class TestOAuthV1:
             assert client.fetch_patient(9001) is None
         mpost.assert_not_called()
         mget.assert_not_called()
-
 
     def test_settings_drive_oauth_config(self, settings):
         settings.PROMOP_BASE = 'https://s.example.com'
