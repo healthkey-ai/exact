@@ -40,6 +40,7 @@ Re-enabling it in production requires BOTH:
 Tracked as #150/#108.
 """
 import ast
+import re
 import datetime as dt
 import json
 from decimal import Decimal, InvalidOperation
@@ -363,6 +364,9 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     _coerce_json_fields(filtered, PatientInfo)
     # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
     _normalize_structured_json_fields(filtered)
+    # After the JSON coercion above, since CTOMOP can send this field as a
+    # string holding the JSON rather than as a list.
+    _normalize_stem_cell_transplant_history(filtered)
 
     pi = PatientInfo(**filtered)
 
@@ -443,6 +447,196 @@ def _coerce_numerics(data: dict, model_cls):
                 data[f.name] = Decimal(val)
             except (InvalidOperation, TypeError):
                 data[f.name] = None
+
+
+#: Procedure-name patterns, mapped to the vocabulary codes this service
+#: matches on (`value_options.stem_cell_transplant_history`). Ported from
+#: SoC's `core/pipeline/_transplant_codes.py`, which solved the same problem
+#: against the same CTOMOP field and anchored these patterns on HT's own
+#: `procedureMappings` vocabulary — including the ones that name no type
+#: explicitly ("Myeloablative Allotransplant", "Allograft of cord blood") but
+#: are unambiguously allogeneic.
+#:
+#: Type-specific tokens first, so a string naming both breaks the tie the same
+#: way every time.
+_SCT_PROCEDURE_PATTERNS = (
+    ('autologous', 'completedASCT'),
+    ('autograft', 'completedASCT'),
+    ('autotransplant', 'completedASCT'),
+    ('auto-sct', 'completedASCT'),
+    ('ahct', 'completedASCT'),
+    ('asct', 'completedASCT'),
+    ('allogeneic', 'completedAllogeneicSCT'),
+    ('allogenic', 'completedAllogeneicSCT'),   # the common misspelling
+    ('allograft', 'completedAllogeneicSCT'),
+    ('allotransplant', 'completedAllogeneicSCT'),
+    ('allo-sct', 'completedAllogeneicSCT'),
+    ('allohct', 'completedAllogeneicSCT'),
+)
+
+
+#: Words that describe a transplant which has NOT happened. Substring
+#: matching cannot read them — "ASCT-ineligible" contains "asct" — so a row
+#: carrying one is unclassifiable and discards the whole history, the same
+#: conservative answer this module gives a name it does not recognise.
+#:
+#: Not mapped to the status codes this vocabulary also has
+#: (`ineligibleForASCT`, `preASCT`): the loader only writes a row when
+#: `has_transplant` is true, so a row that then says "ineligible" contradicts
+#: its own presence, and picking a winner is the confident wrong answer this
+#: module exists to avoid.
+_SCT_NOT_YET_WORDS = (
+    'eligib', 'planned', 'candidate', 'intended', 'pre-', 'prior to',
+    'consideration', 'workup', 'evaluation',
+)
+
+#: Negations, matched against the TYPE TOKEN rather than the whole string.
+#: A first version discarded any row containing "non-", which is wrong twice
+#: over: "Non-myeloablative allogeneic stem cell transplant" is a standard
+#: name for a transplant that DID happen — the negation attaches to
+#: "myeloablative", not to "allogeneic" — and the same name without the hyphen
+#: classified fine, so the answer depended on spelling. One such row voided
+#: every other row in the history too. Review caught it.
+_SCT_NEGATIONS = ('non-', 'non ', 'not ', 'no ')
+
+
+def _names(haystack, pattern):
+    """Whether `haystack` uses `pattern` as a word, not inside another one.
+
+    The short acronyms are the reason: `asct`, `ahct`, `allohct` would
+    otherwise match wherever those letters happen to fall, and this classifies
+    a completed transplant. A boundary is anything that is not a letter or a
+    digit, so the hyphenated forms (`auto-sct`) still match their own hyphen.
+    """
+    return re.search(r'(?<![a-z0-9])' + re.escape(pattern) + r'(?![a-z0-9])', haystack) is not None
+
+
+def _is_negated(haystack, pattern):
+    """Whether `pattern` is immediately preceded by a negation in `haystack`.
+
+    "non-autologous" is negated; "non-myeloablative allogeneic" is not, because
+    the negation sits against a different word.
+    """
+    start = 0
+    while True:
+        at = haystack.find(pattern, start)
+        if at < 0:
+            return False
+        before = haystack[:at]
+        if any(before.endswith(word) for word in _SCT_NEGATIONS):
+            return True
+        start = at + 1
+
+
+def _sct_codes_in(procedures_text):
+    """The codes a comma-separated procedure string names, first seen first.
+
+    Empty when the text says the transplant has not happened, or negates the
+    type it names — so the caller discards the history rather than recording a
+    transplant that was refused, planned or ruled out as one that took place.
+    """
+    haystack = procedures_text.lower()
+    if any(word in haystack for word in _SCT_NOT_YET_WORDS):
+        return []
+    found = []
+    for pattern, code in _SCT_PROCEDURE_PATTERNS:
+        if not _names(haystack, pattern) or code in found:
+            continue
+        if _is_negated(haystack, pattern):
+            # "non-autologous transplant" asserts the opposite of what the
+            # substring says. Discard the row rather than guess the type.
+            return []
+        found.append(code)
+    return found
+
+
+def _sct_vocabulary():
+    """The codes this service offers for a transplant history."""
+    from trials.services.value_options import ValueOptions
+
+    return set(ValueOptions().stem_cell_transplant_history)
+
+
+def _normalize_stem_cell_transplant_history(data: dict):
+    """Flatten CTOMOP's structured transplant rows into vocabulary codes.
+
+    CTOMOP's loader writes one dict per line of therapy:
+
+        [{"line_number": 1, "procedures": "Autologous stem cell transplant"}]
+
+    while everything downstream expects a list of hashable vocabulary codes:
+    `eligible_for_stem_cell_transplant_history` does
+    `SCT_HISTORY_EXCLUDED_MAPPING.get(item, [item])`, which raises
+    `TypeError: unhashable type: 'dict'` on a row — a 500 on every
+    patient-context endpoint for any patient CTOMOP knows a transplant for
+    (#141). Both BigQuery-sourced and seeded patients carry this shape.
+
+    Normalised here rather than in the matcher deliberately: the matcher and
+    the queryset are ~95% shared with CancerBot, which never sees this shape,
+    and `docs/porting-from-cancerbot.md` makes divergence there expensive. The
+    shape gymnastics belong at the integration boundary. The ticket recommends
+    the same, and SoC's adapter took that route.
+
+    AN UNCLASSIFIABLE ROW DISCARDS THE WHOLE HISTORY, and that is the
+    important part. `procedures` is free text, so a row can say "Stem Cell
+    Transplant" — true, and unclassifiable. Emitting the rows we DID classify
+    would turn "this patient had an autologous transplant and something we
+    could not read" into "this patient had an autologous transplant", and a
+    trial that EXCLUDES allogeneic transplants would go from unknown to
+    eligible for a patient whose unreadable row may well have been allogeneic.
+    Discarding the lot leaves the field blank, which the matcher reports as
+    `unknown` and the queryset does not filter on — Potential rather than a
+    confident wrong answer. SoC's module documents the same failure and makes
+    the same call.
+    """
+    value = data.get('stem_cell_transplant_history')
+    if not isinstance(value, list) or not value:
+        return
+    if not any(isinstance(item, dict) for item in value):
+        # Already the canonical shape — a list of codes — PROVIDED every item
+        # is one. A list of lists carries no dict, so an "is it structured?"
+        # test alone waved it through to the queryset and the very
+        # `unhashable type` this function exists to prevent, with `list` in
+        # place of `dict`.
+        if not all(isinstance(item, str) for item in value):
+            data['stem_cell_transplant_history'] = None
+        return
+
+    codes = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            # A bare code alongside structured rows is kept — but only if it
+            # IS one. An unrecognised string beside CTOMOP rows is a third
+            # thing nobody can account for, and keeping it would leave a value
+            # the matcher silently ignores sitting inside a history this
+            # function is otherwise being careful about. Discard, like any
+            # other row it cannot read.
+            #
+            # A list holding ONLY strings is left alone further up: that is
+            # the canonical shape from a caller who knows the vocabulary, and
+            # validating it here would be a contract change for every
+            # non-CTOMOP client rather than a fix for this one.
+            if not isinstance(entry, str) or entry not in _sct_vocabulary():
+                data['stem_cell_transplant_history'] = None
+                return
+            if entry not in codes:
+                codes.append(entry)
+            continue
+        procedures = entry.get('procedures')
+        if not isinstance(procedures, str) or not procedures.strip():
+            # The loader only writes a row when `has_transplant` is true, so
+            # an empty name is a transplant we cannot classify, not an absence.
+            data['stem_cell_transplant_history'] = None
+            return
+        detected = _sct_codes_in(procedures)
+        if not detected:
+            data['stem_cell_transplant_history'] = None
+            return
+        for code in detected:
+            if code not in codes:
+                codes.append(code)
+
+    data['stem_cell_transplant_history'] = codes or None
 
 
 def _normalize_structured_json_fields(data: dict):
