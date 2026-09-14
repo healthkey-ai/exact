@@ -13,8 +13,17 @@ otherwise. To create a token for a user:
 python manage.py drf_create_token <username>
 ```
 
-JSON payloads and responses use **camelCase** keys (converted by
-`djangorestframework-camel-case`).
+Responses use **camelCase** keys.
+
+Request bodies are read as **snake_case**, with one exception that matters:
+the inline patient payload is accepted under either `patient_info` or
+`patientInfo`, because this document has always shown the second while the
+parser only ever read the first. Its INNER keys were always accepted in
+either spelling.
+
+`djangorestframework-camel-case` is in `requirements.txt` but is **not** wired
+into `REST_FRAMEWORK`, so no general camelCase parsing happens on request
+bodies. Send snake_case.
 
 ---
 
@@ -126,9 +135,21 @@ trial-search request.
 > raises before serializing (#455). Until that lands, do not read a detail
 > response as the authority on what a patient-less verdict looks like.
 >
-> One gap, tracked as #466: a `patient_info` payload none of whose keys EXACT
-> recognises is treated as a blank patient rather than as no patient, and is
-> answered `eligible` with a score of 100. An empty object is read correctly.
+> How an inline `patient_info` payload is read, in three states (#466):
+>
+> * **no key EXACT recognises** — `400`, naming the keys it could not read.
+>   Sending the key means describing a patient, so understanding none of it is
+>   an error rather than a search with the whole catalog as its answer.
+> * **keys it recognises, but every value `null`, `""` or whitespace** — no
+>   patient. A client serialising a form the reader has not filled in yet is
+>   well behaved, and `matchingType` is `null` for every row.
+> * **anything else** — a patient. Keys EXACT does not recognise, alongside
+>   ones it does, are ignored rather than refused: a client may send a field
+>   this version has not heard of.
+>
+> An empty object — or no key at all — is the first-class way to search
+> without a patient. `POST /trials/export/` needs a patient to narrow it and
+> answers `400` for the middle state.
 
 | Param | Type | Description |
 |---|---|---|
@@ -158,7 +179,7 @@ List trials ordered by `-match_score, -posted_date, id`. For explicit
 sorting or the per-tab counts, use [`GET /trials/search/`](#get-trialssearch)
 instead — `sort` is read only there.
 
-**Patient context**: optional — include `"patient_info": {...}` in the request body (snake_case; no camelCase parser is configured, so `patientInfo` is silently ignored).
+**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
 
 **Query params:**
 
@@ -168,10 +189,19 @@ instead — `sort` is read only there.
 | `search` | string | Full-text search on title fields |
 | `explain` | `true` | Include per-criterion match breakdown in each trial (see `matchReasons` below) |
 
-**Response** (paginated, 200 per page by default):
+**Response** (paginated, 20 per page by default; `?limit=` up to 200).
+
+> **`count` is the number of PAGES, not the number of results.** DRF's own
+> convention is the opposite, so this is the field most likely to be read
+> wrongly: the number of matching trials is `itemsTotalCount`. The example
+> below has 442 trials across 23 pages at the default page size. Dividing `count` by the page size, or
+> showing it as "N trials found", gives a number that changes when the page
+> size does.
+
 ```json
 {
-  "count": 142,
+  "count": 23,
+  "itemsTotalCount": 442,
   "next": "http://…/trials/?page=2",
   "previous": null,
   "results": [
@@ -248,7 +278,7 @@ Extended search endpoint — use this instead of `GET /trials/` when you need
 explicit sorting or the per-tab counts. Accepts the same patient context and
 study-preference query params as `GET /trials/`, plus:
 
-**Patient context**: optional — include `"patient_info": {...}` in the request body (snake_case; no camelCase parser is configured, so `patientInfo` is silently ignored).
+**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
 
 **Query params:**
 
@@ -312,7 +342,7 @@ does **not** read `sort`.
 
 Returns the count of matched trials without fetching full records.
 
-**Patient context**: optional — include `"patient_info": {...}` in the request body (snake_case; no camelCase parser is configured, so `patientInfo` is silently ignored).
+**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
 
 **Response:**
 ```json
@@ -326,7 +356,7 @@ Returns the count of matched trials without fetching full records.
 Retrieve full trial details including all eligibility attributes grouped for
 display, with per-attribute patient match status.
 
-**Patient context**: optional — include `"patient_info": {...}` in the request body (snake_case; no camelCase parser is configured, so `patientInfo` is silently ignored).
+**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
 
 **Response:** Full trial object including `trialEligibilityAttributes` grouped
 by category, each with the trial's value, the patient's current value, and the
@@ -341,7 +371,7 @@ match status (`matched`, `unknown`, or `not_matched`).
 Returns a compact graph-structured response optimised for visual dependency
 views.
 
-**Patient context**: optional — include `"patient_info": {...}` in the request body (snake_case; no camelCase parser is configured, so `patientInfo` is silently ignored).
+**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
 
 **Query params:**
 
