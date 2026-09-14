@@ -12,7 +12,7 @@ so the entry carries the canonical name outright — taken from
 """
 import pytest
 
-from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES, normalize_patient_info
+from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES, recompute_note, normalize_patient_info
 from trials.services.trial_details.configs import SUBFORM_ATTRS_MAPPING
 from trials.services.trial_details.trial_attributes import TrialAttributes
 from tests.factories import *
@@ -70,8 +70,20 @@ class TestSubformEntriesNameTheirField:
         # lines, and everything statically listed is raw data.
         for entries in _groups(patient_info).values():
             for entry in entries:
+                # Against `recompute_note`, not the set. The set is what
+                # `normalize.py` WRITES, and a value that is not stored at
+                # all — a read-only property with no column — is in neither
+                # it nor any condition, so the set answers `false` for one:
+                # "this is yours to edit", over a field an edit cannot reach.
+                # The two agree for every field reachable from a subform
+                # today, so this assertion passed either way — and would have
+                # started failing the moment such a property joined a group,
+                # which is the case the answer exists for.
                 assert entry['upatientRecomputed'] == (
-                    entry['upatientField'] in RECOMPUTED_ATTRIBUTES
+                    recompute_note(entry['upatientField']) is not None
+                )
+                assert entry['upatientRecomputedWhen'] == recompute_note(
+                    entry['upatientField']
                 )
 
     def test_both_answers_are_reachable_from_this_fixture(self, patient_info):

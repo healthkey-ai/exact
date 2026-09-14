@@ -6,7 +6,7 @@ import re
 from django.db import models
 from django.db.models import Q
 
-from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES
+from trials.services.patient_info.normalize import recompute_note
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
@@ -507,9 +507,24 @@ class TrialAttributes:
             # undone, with no error anywhere (#449). A client that offers an
             # edit box for one of them is offering a control that does
             # nothing, which is worse than offering none.
-            field['upatientRecomputed'] = (
-                field['upatientField'] in RECOMPUTED_ATTRIBUTES
-            )
+            #
+            # `recompute_note` rather than the set alone, because the set is
+            # what this module WRITES and that is not the whole question.
+            # `abnormal_kappa_lambda_ratio` and `meets_meas_or_bone_status`
+            # are properties with no column and no setter — recomputed on
+            # every read, and dropped from an inbound payload before they
+            # reach the instance. They are in neither the set nor any
+            # condition, so they answered `false` here: "this value is the
+            # reader's", over a field an edit cannot reach at all. Worse than
+            # the case the key exists for.
+            note = recompute_note(field['upatientField'])
+            field['upatientRecomputed'] = note is not None
+            # The same answer with its reason, for a client that can say more
+            # than yes or no. A boolean calls `mipi_risk` recomputed for a
+            # breast-cancer patient, whose `mipi_risk` nothing here touches —
+            # so the control is hidden from the one reader who could have used
+            # it, which is the false positive #449 named on `meets_gelf`.
+            field['upatientRecomputedWhen'] = note
         return fields
 
     def computed_general_fields(self):
@@ -850,6 +865,9 @@ class TrialAttributes:
                 pi_field_names = data
 
             for pi_field_name in pi_field_names:
+                # Once per entry, the way the row site does it, rather than
+                # once for the boolean and again for the note.
+                entry_note = recompute_note(pi_field_name)
                 if pi_field_name in out:
                     continue
 
@@ -895,7 +913,16 @@ class TrialAttributes:
                     # and never writes it; the derived renal value is
                     # `estimated_glomerular_filtration_rate`, which is in no
                     # subform.)
-                    'upatientRecomputed': pi_field_name in RECOMPUTED_ATTRIBUTES,
+                    #
+                    # Through `recompute_note` like the row above, not off the
+                    # set: the set is what `normalize.py` WRITES, and a value
+                    # that is not stored at all — a read-only property with no
+                    # column — is in neither it nor any condition, so reading
+                    # the set alone answers `false` for one, which a client
+                    # takes as "this is yours to edit" over a field an edit
+                    # cannot reach.
+                    'upatientRecomputed': entry_note is not None,
+                    'upatientRecomputedWhen': entry_note,
                 }
 
                 # The unit the PATIENT's value is stored in, the same way a row

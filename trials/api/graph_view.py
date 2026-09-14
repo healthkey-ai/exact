@@ -33,6 +33,12 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         # Whether EXACT recomputes it, i.e. whether a write upstream
         # survives to the next match (#449).
         "patientFieldRecomputed": item.get("upatientRecomputed"),
+        # The same answer with its reason. This endpoint rebuilds the row
+        # from a whitelist, so a key left out is a key its consumer cannot
+        # tell from "this row is about nothing" — and `null` is also what
+        # an un-recomputed field answers, which makes a missing one the
+        # hardest kind to notice.
+        "patientFieldRecomputedWhen": item.get("upatientRecomputedWhen"),
         # Carried for the same reason as the name: this endpoint rebuilds
         # the row, so a client here would otherwise not know the value sits
         # behind a subform.
