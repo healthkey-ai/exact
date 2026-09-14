@@ -623,6 +623,15 @@ export function useSavedFilters(
   const writerRef = useRef<PreferenceWriter | null>(null);
   const writer = useMemo(() => {
     const built: PreferenceWriter = new PreferenceWriter(transport, {
+      // `=== built`, so a NULL ref means "not mine" and this stays quiet.
+      // `useQueuedPatientFields` writes the same guard as
+      // `current && current !== built`, where null means "nobody has claimed
+      // it, so go ahead" — the opposite reading of the same value. The two
+      // hooks look interchangeable and are not. The difference is deliberate:
+      // there, a flush fired from the cleanup must still be able to report
+      // after the ref is released; here, the only thing a released ref can
+      // mean is that this hook is gone, and raising a flag on an unmounted
+      // tree says nothing to anybody.
       onError: () => {
         if (writerRef.current === built) setFailed(true);
       },
@@ -634,7 +643,6 @@ export function useSavedFilters(
         if (writerRef.current === built) setFailed(false);
       },
     });
-    writerRef.current = built;
     return built;
   }, [transport]);
 
