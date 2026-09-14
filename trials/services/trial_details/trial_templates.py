@@ -40,8 +40,15 @@ class TrialTemplates:
             'trialEligibilityAttributes': [],
         }
 
+        # Keys are the statuses `attr_match_status()` returns. The mismatch key
+        # carried a SPACE while the matcher has always returned an underscore,
+        # so the lookup never hit: every mismatch fell through to the default
+        # weight of 5 in `order_weight` and sorted BELOW the criteria the
+        # patient already satisfies — the inversion of what a view called
+        # `potential_attributes_first_view` exists to do. CB fixed the same typo
+        # in #4669 and the fix was never ported down.
         mapping_for_order = {
-            'not matched': 1,
+            'not_matched': 1,
             'unknown': 2,
             'matched': 3
         }
