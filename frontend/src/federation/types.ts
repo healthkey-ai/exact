@@ -285,12 +285,21 @@ export interface FilterState {
    *  phase was never ingested drop out of every value, including the
    *  lowest (EXACT #417). */
   phase?: string;
-  /** How many YEARS back to accept, as digits — not a date, and between 1
-   *  and 100. Anything else is dropped here rather than forwarded: an ISO
-   *  date (which is what CB writes, #429) filters nothing server-side,
-   *  `"0"` is read as no limit at all, and a few thousand takes the
-   *  backend's date arithmetic below year 1 and 500s every search. Note
-   *  that the filter keeps trials whose `last_update_date` is null. */
+  /** Either an ISO date — `2026-01-01`, or the `T`/`Z` forms — meaning "on
+   *  or after that day", or digits meaning how many YEARS back to accept.
+   *
+   *  The date spelling was silently dropped until #429: `by_date_since` read
+   *  the value through `cast_str_to_int`, which takes digits only, so a date
+   *  became `None` and nothing was filtered. CB's panel has always rendered a
+   *  date picker and PATCHed an ISO value into that. Both work now.
+   *
+   *  A bare four-digit value is still read as a COUNT, so `2026` means
+   *  "within 2026 years", not the year 2026 — send `2026-01-01` for that. The
+   *  count is bounded client-side (`isUsableLastUpdate`): `"0"` reads as no
+   *  limit at all, and a few thousand takes the backend's date arithmetic
+   *  below year 1 and 500s every search.
+   *
+   *  Either way, trials whose `last_update_date` is null are kept. */
   lastUpdate?: string;
   /** "type" param. `eligible` / `potential` narrow server-side; `all`
    *  switches to the admin corpus, which skips the eligibility filter and

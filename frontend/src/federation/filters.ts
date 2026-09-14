@@ -253,7 +253,20 @@ export const LAST_UPDATE_OPTIONS = [
  *      that starts in 2000 is fully covered by 30).
  */
 export function isUsableLastUpdate(value: unknown): boolean {
-  if (typeof value !== "string" || !/^\d+$/.test(value)) return false;
+  if (typeof value !== "string") return false;
+  // An ISO date, which `by_date_since` reads as "on or after that day" since
+  // #429. Refusing it here would not merely ignore the filter — a stored
+  // value this remote refuses is nulled out of the PROMOP row by the next
+  // save — and CB's own panel PATCHes exactly this spelling, so the value
+  // would be deleted from under a reader who had never used this client.
+  //
+  // Separators required, matching the backend: a bare `2026` is a COUNT of
+  // years there, and reading it as a calendar year here would send the two
+  // sides after different things.
+  if (/^\d{4}-\d{2}-\d{2}([T ]|$)/.test(value)) {
+    return !Number.isNaN(Date.parse(value));
+  }
+  if (!/^\d+$/.test(value)) return false;
   // No length bound beside this: a string of ten thousand digits is
   // `Infinity` here and fails the comparison, so a second guard would be
   // one no test could tell from the first.

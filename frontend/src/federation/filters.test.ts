@@ -400,10 +400,21 @@ describe("what the stored set is trusted to contain", () => {
         lastUpdate: good,
       });
     }
-    // An ISO date is what CB writes into this field (#429) and the backend
-    // gets nothing out of it; `"0"` it reads as no limit at all; a few
-    // thousand years takes its date arithmetic below year 1 and 500s.
-    for (const junk of ["2020-01-01", "0", "00", "2001", "3000", ""]) {
+    // An ISO date is what CB writes into this field, and since #429 the
+    // backend reads it as "on or after that day" — so it is kept. Refusing it
+    // would delete it from the row on the next save, from under a reader who
+    // never used this client.
+    for (const good of ["2020-01-01", "2026-01-01T00:00:00Z", "2026-01-01 09:00"]) {
+      expect(sanitizeStoredFilters({ lastUpdate: good })).toEqual({
+        lastUpdate: good,
+      });
+    }
+    // `"0"` the backend reads as no limit at all, and a few thousand years
+    // takes its date arithmetic below year 1 and 500s every search — which is
+    // what the 2000 cap is for, and why `2001` is refused as a COUNT rather
+    // than read as a calendar year. Reading it as a year here would send the
+    // two sides after different things: the backend still counts it.
+    for (const junk of ["0", "00", "2001", "3000", "", "2026-13-45", "2026-01", "soon"]) {
       expect(sanitizeStoredFilters({ lastUpdate: junk })).toEqual({});
     }
   });
