@@ -359,6 +359,14 @@
 }
 .exact-root .exact-elig__cell {
   display: flex;
+  /* Wraps because `.exact-elig__error` below claims `flex: 1 0 100%` to get a
+     line of its own. Without a wrapping parent that basis cannot wrap and,
+     being `flex-shrink: 0`, cannot shrink either: the message overflowed the
+     cell and carried the retry control out past its right edge — measured at
+     45px of overflow in a 300px cell, with the pencil landing at x=357. The
+     two other sites that use that class already sit in wrapping parents,
+     which is why only this one broke. */
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 0.375rem;
   padding: 0.25rem 0.5rem;

@@ -169,7 +169,6 @@ function failedFieldLabels(
   openHere: Set<string>,
 ): string[] {
   const names = Object.keys(failed);
-  // eslint-disable-next-line no-console
   if (names.length === 0) return [];
   const labels = new Map<string, string>();
   const spokenFor = new Set<string>();
@@ -694,22 +693,30 @@ export function TrialDetailPage({
             </div>
           </div>
 
+          {/* OUTSIDE the grid, which is a flex ROW from 768px up. As a child
+              it became a third column, taking most of the page width from the
+              eligibility table beside it and pushing the document into
+              horizontal overflow at every breakpoint. Deliberately no pixel
+              figures here: three separate measurements of the before-state
+              disagreed, because each harness carried different page chrome,
+              and a number in a comment outlives the harness that produced it.
+              The mechanism is what reproduces. jsdom does no layout, so no
+              test in either suite can see any of this. */}
+          {failedLabels.length ? (
+            <p className="exact-detail__write-error" role="alert">
+              {failedLabels.length === 1
+                ? `Your ${failedLabels[0]} could not be saved.`
+                : `These could not be saved: ${failedLabels.join(", ")}.`}{" "}
+              The record still holds what it had. Open the field and try again.
+            </p>
+          ) : null}
+
           <div className="exact-detail__grid">
             {summary ? (
               <section className="exact-panel exact-detail__summary">
                 <h2 className="exact-panel__title">Summary</h2>
                 <p className="exact-detail__summary-text">{summary}</p>
               </section>
-            ) : null}
-
-            {failedLabels.length ? (
-              <p className="exact-detail__write-error" role="alert">
-                {failedLabels.length === 1
-                  ? `Your ${failedLabels[0]} could not be saved.`
-                  : `These could not be saved: ${failedLabels.join(", ")}.`}{" "}
-                The record still holds what it had. Open the field and try
-                again.
-              </p>
             ) : null}
 
             <section className="exact-panel exact-detail__elig">
