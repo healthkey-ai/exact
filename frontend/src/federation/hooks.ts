@@ -638,6 +638,20 @@ export function useSavedFilters(
     return built;
   }, [transport]);
 
+  // Claimed in an EFFECT, not during render. React invokes a `useMemo` factory
+  // twice under StrictMode and keeps one of the two results, so a ref assigned
+  // inside the factory names the instance that was thrown away — and the live
+  // one's `onError` then fails its own ownership check and never raises the
+  // flag. Every entry point in this repo mounts under StrictMode, so this
+  // warning simply never appeared. The same mistake, and the same fix, as in
+  // `useQueuedPatientFields`.
+  useEffect(() => {
+    writerRef.current = writer;
+    return () => {
+      if (writerRef.current === writer) writerRef.current = null;
+    };
+  }, [writer]);
+
   const onLoadRef = useRef(onLoad);
   onLoadRef.current = onLoad;
 

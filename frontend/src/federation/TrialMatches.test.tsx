@@ -2326,6 +2326,56 @@ describe("when the filters cannot be saved", () => {
   });
 });
 
+describe("the save warning under StrictMode, which is how it is mounted", () => {
+  it("still appears", async () => {
+    // Same shape of bug as the one QA found in the patient-field writer: the
+    // writer claims ownership by assigning a ref DURING RENDER inside
+    // `useMemo`, React invokes that factory twice under StrictMode and keeps
+    // one result, so the ref names the instance that was thrown away — and
+    // `onError` on the live one fails its own `writerRef.current === built`
+    // check and never sets the flag.
+    //
+    // Every entry point in this repo mounts under StrictMode. The test above
+    // does not, so it cannot see this.
+    const api = fakeApi();
+    const state = {
+      listFavoriteIds: vi.fn(async () => []),
+      listRegisteredIds: vi.fn(async () => []),
+      listAdvancedEnrollments: vi.fn(async () => ({})),
+      setFavorite: vi.fn(async () => undefined),
+      setRegistered: vi.fn(async () => undefined),
+      getPreferences: vi.fn(async () => {
+        throw new Error("promop unreachable");
+      }),
+      savePreferences: vi.fn(async () => undefined),
+      resetPreferences: vi.fn(async () => undefined),
+    };
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <TrialMatches
+            apiClient={api.client}
+            queryClient={queryClient}
+            personId="p1"
+            state={state as never}
+          />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByRole("textbox", { name: "Title" }), "dara");
+
+    await screen.findByText(/couldn't be saved for next time/);
+  });
+});
+
 describe("the save warning belongs to the patient it happened under", () => {
   it("does not follow the reader to the next patient", async () => {
     // A patient switch builds a new writer while the old one's flush is still
