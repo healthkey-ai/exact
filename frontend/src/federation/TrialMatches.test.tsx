@@ -484,7 +484,7 @@ describe("with a state adapter", () => {
     const state = fakeState({ favorites: ["1", "2"], registered: ["3"] });
     renderTrialMatches(api, { state: state.adapter });
     await screen.findByRole("button", { name: "Favorites, 2 trials" });
-    await screen.findByRole("button", { name: "Registered, 1 trials" });
+    await screen.findByRole("button", { name: "Registered, 1 trial" });
   });
 
   it("narrows the list by the saved ids when the tab is opened", async () => {
@@ -771,14 +771,14 @@ describe("counts while a state tab is active", () => {
     // for a reader with one bookmarked eligible trial and many matching.
     const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Fully matched, 1 trials" });
+    await screen.findByRole("button", { name: "Fully matched, 1 trial" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /Fully matched, / })).toBeNull(),
     );
     // The state tab's own count still comes from the adapter.
-    await screen.findByRole("button", { name: "Favorites, 1 trials" });
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
   });
 
   it("runs no matcher query behind a failed saved-ids read", async () => {
@@ -893,7 +893,7 @@ describe("two patients who look alike", () => {
       </QueryClientProvider>
     );
     const view = render(ui("1"));
-    await screen.findByRole("button", { name: "Favorites, 1 trials" });
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
 
     current = "2";
     view.rerender(ui("2"));
