@@ -339,12 +339,22 @@ class TrialQuerySet(models.QuerySet):
 
         query = self
 
-        # therapy_id applies to all search paths (standard and admin).
+        # therapy_id applies to all search paths (standard and admin). It is an
+        # EXACT-native OMOP search param (?therapy_id=, PR #211/#212). Read it
+        # host-agnostically: a host whose study_info has no such field (e.g. CB's
+        # StudyInfo model) simply doesn't do therapy-id search, and by_therapy_id
+        # no-ops on the resulting None — so the shared body runs on that host too.
         if study_info:
-            query = query.by_therapy_id(study_info.therapy_id)
+            query = query.by_therapy_id(getattr(study_info, 'therapy_id', None))
 
         if search_type in ['all', 'favorites', 'my_trials']:
-            query, _ = query.filter_for_admin(study_info, patient_info)
+            # Favorites / my_trials are trials the patient picked by hand — do NOT apply
+            # the trial-purpose filter to them (it would drop saved trials with a
+            # non-matching purpose off the only page that lists them). Matches CB.
+            query, _ = query.filter_for_admin(
+                study_info, patient_info,
+                apply_trial_purpose=search_type not in ('favorites', 'my_trials'),
+            )
             max_distance = D(mi=1000)
             if study_info.distance:
                 max_distance = D(mi=study_info.distance) if str(study_info.distance_units).lower() == 'miles' else D(
@@ -363,7 +373,7 @@ class TrialQuerySet(models.QuerySet):
 
             return query, list(study_traces) + list(patient_traces)
 
-    def filter_for_admin(self, study_info, patient_info):
+    def filter_for_admin(self, study_info, patient_info, apply_trial_purpose=True):
         traces = []
         if not study_info:
             return self, traces
@@ -374,7 +384,10 @@ class TrialQuerySet(models.QuerySet):
         query = query.by_study_id(study_info.study_id)
         query = query.by_register(study_info.register)
         query = query.by_trial_type(study_info.trial_type)
-        query = query.by_trial_purpose(study_info.trial_purpose)
+        # apply_trial_purpose=False for favorites / my_trials (hand-picked lists) so the
+        # purpose filter doesn't remove saved trials — the caller decides. Matches CB.
+        if apply_trial_purpose:
+            query = query.by_trial_purpose(study_info.trial_purpose)
         query = query.by_study_type(study_info.study_type)
         query = query.by_validated_only(study_info.validated_only)
         if patient_info and patient_info.disease is not None and patient_info.disease != '':
@@ -406,12 +419,13 @@ class TrialQuerySet(models.QuerySet):
             })
             count = new_count
 
-        query = query.by_therapy_id(study_info.therapy_id)
+        therapy_id = getattr(study_info, 'therapy_id', None)  # host-agnostic (see filtered_trials)
+        query = query.by_therapy_id(therapy_id)
         if add_traces:
             new_count = query.count()
             traces.append({
                 'attr': 'study_info.therapy_id',
-                'val': study_info.therapy_id,
+                'val': therapy_id,
                 'records': new_count,
                 'dropped': count - new_count,
             })
