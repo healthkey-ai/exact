@@ -622,6 +622,9 @@ class PatientInfoAttributes:
         - tp53Mutation in molecular_markers OR
         - p53_ihc >= 50%
         """
+        if hasattr(self.patient_info, '_provided_tp53_disruption'):
+            return self.patient_info._provided_tp53_disruption
+
         cytogenic = self.patient_info.cytogenic_markers or ''
         molecular = self.patient_info.molecular_markers or ''
 
