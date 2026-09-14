@@ -886,7 +886,53 @@ class TrialAttributes:
                     'type': utype,
                     'value': self.get_value(field_name, value),
                     'options': options,
+                    # The patient attribute this entry IS — taken from the
+                    # mapping rather than derived from `name`, which is the
+                    # camelCase spelling and cannot be turned back reliably
+                    # (`p53_ihc` camelises to `p53Ihc`, which a snake-caser
+                    # returns as `p_53_ihc`). The row's own `upatientField`
+                    # has to be derived; this one does not, and taking the
+                    # harder route here would be inventing a problem.
+                    'upatientField': pi_field_name,
+                    # Same question as on a row, and it is asked here for the
+                    # opposite reason. A subform exists because the value
+                    # above it is COMPUTED: the reader cannot write
+                    # `tnbc_status`, they write the receptor statuses it is
+                    # computed from. So the entries are the writable part —
+                    # except where an entry is itself computed, and then it is
+                    # no more writable than the row that opened the dialog.
+                    #
+                    # Only the therapy groups contain such an entry today:
+                    # `first_line_therapy` and its date and outcome are
+                    # derived from the therapy lines. Every statically listed
+                    # input is raw data. (`creatinine_clearance_rate` looks
+                    # like a counter-example and is not one — EXACT reads it
+                    # and never writes it; the derived renal value is
+                    # `estimated_glomerular_filtration_rate`, which is in no
+                    # subform.)
+                    #
+                    # Through `recompute_note` like the row above, not off the
+                    # set: the set is what `normalize.py` WRITES, and a value
+                    # that is not stored at all — a read-only property with no
+                    # column — is in neither it nor any condition, so reading
+                    # the set alone answers `false` for one, which a client
+                    # takes as "this is yours to edit" over a field an edit
+                    # cannot reach.
+                    'upatientRecomputed': recompute_note(pi_field_name) is not None,
+                    'upatientRecomputedWhen': recompute_note(pi_field_name),
                 }
+
+                # The unit the PATIENT's value is stored in, the same way a row
+                # carries it. Without this a subform prints a bare number and
+                # an editor falls back to the descriptor's unit, which is the
+                # vocabulary's and not this patient's — and CRAB, whose inputs
+                # are exactly these labs, converts through the stored one. A
+                # calcium typed in the wrong scale flips a clinical composite
+                # with nothing on screen to show which scale was meant.
+                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
+                if units_details:
+                    val['uunits'] = units_details['options'].get(units_details['uvalue'])
+                    val['units'] = units_details['options'].get(units_details['default'])
 
                 tmp[pi_field_name] = val
 

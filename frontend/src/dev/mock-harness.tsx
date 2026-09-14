@@ -106,7 +106,9 @@ const trials: TrialsResponse = {
   // `matchingType` so the numbers match the cards on screen.
   tabCounts: {
     eligible: results.filter((t) => t.matchingType === "eligible").length,
-    potential: results.filter((t) => t.matchingType !== "eligible").length,
+    // Not `!== "eligible"`: a row from a patient-less search carries
+    // `matchingType: null`, which that spelling counts as potential (#456).
+    potential: results.filter((t) => t.matchingType === "potential").length,
   },
 };
 
@@ -173,6 +175,96 @@ function detailFor(id: string) {
     details: {
       general: [],
       trialEligibilityAttributes: [
+        // The four answers the editing work has to tell apart, in order:
+        // writable, computed-by-EXACT (no control, but a subform), refused by
+        // PROMOP with a reason, and writable somewhere else.
+        {
+          name: "hemoglobinMin",
+          label: "Hemoglobin",
+          type: "number",
+          value: 10,
+          units: "g/dL",
+          ufield: "hemoglobinLevel",
+          upatientField: "hemoglobin_g_dl",
+          upatientRecomputed: false,
+          uvalue: 11.2,
+          uunits: "g/dL",
+          matchingType: "matched",
+        },
+        {
+          name: "tnbcStatus",
+          label: "TNBC Status",
+          type: "boolean",
+          value: true,
+          ureadonly: true,
+          ufield: "tnbcStatus",
+          upatientField: "tnbc_status",
+          // EXACT derives it, so no pencil — the subform is the way in.
+          upatientRecomputed: true,
+          uvalue: false,
+          matchingType: "not_matched",
+          subform_details: [
+            {
+              name: "estrogenReceptorStatus",
+              label: "Estrogen receptor status",
+              type: "select",
+              value: "ER-",
+              options: [
+                { value: "ER-", label: "ER-" },
+                { value: "ER+", label: "ER+" },
+              ],
+              upatientField: "estrogen_receptor_status",
+              upatientRecomputed: false,
+            },
+            {
+              name: "progesteroneReceptorStatus",
+              label: "Progesterone receptor status",
+              type: "select",
+              value: "PR-",
+              options: [
+                { value: "PR-", label: "PR-" },
+                { value: "PR+", label: "PR+" },
+              ],
+              upatientField: "progesterone_receptor_status",
+              upatientRecomputed: false,
+            },
+            {
+              name: "her2Status",
+              label: "HER2 status",
+              type: "select",
+              value: "HER2-",
+              options: [
+                { value: "HER2-", label: "HER2-" },
+                { value: "HER2+", label: "HER2+" },
+                { value: "HER2 low", label: "HER2 low" },
+              ],
+              upatientField: "her2_status",
+              upatientRecomputed: false,
+            },
+          ],
+        },
+        {
+          name: "bmiMin",
+          label: "BMI",
+          type: "number",
+          value: 18,
+          ufield: "bmi",
+          upatientField: "bmi",
+          upatientRecomputed: true,
+          uvalue: 24,
+          matchingType: "matched",
+        },
+        {
+          name: "mutationGenesRequired",
+          label: "Mutation Genes (writable elsewhere)",
+          type: "multiselect",
+          value: ["BRCA1"],
+          ufield: "geneticMutations",
+          upatientField: "genetic_mutations",
+          upatientRecomputed: false,
+          uvalue: ["BRCA1"],
+          matchingType: "not_matched",
+        },
         {
           name: "mutationGenes",
           label: "Mutation Genes",
@@ -247,6 +339,80 @@ const apiClient = {
 
 const patientInfo = { disease: "MM", country: "US" };
 
+// An adapter in memory, so the whole write path can be tried without PROMOP.
+//
+// The descriptor is the part worth faking carefully: it is what decides which
+// rows get a control, and half the behaviour of phases 2–4 is refusals. So it
+// carries all four answers a real one gives — writable, writable-elsewhere,
+// computed, and a field it has never heard of — rather than saying yes to
+// everything and hiding exactly what there is to look at.
+const RECORD: Record<string, unknown> = {
+  hemoglobin_g_dl: 11.2,
+  estrogen_receptor_status: "ER-",
+  progesterone_receptor_status: "PR-",
+  her2_status: "HER2-",
+};
+
+const WRITABLE_FIELDS = {
+  hemoglobin_g_dl: {
+    kind: "direct", writable: true, value_kind: "number", unit: "g/dL",
+  },
+  estrogen_receptor_status: {
+    kind: "direct", writable: true, value_kind: "string",
+    options: [{ value: "ER-" }, { value: "ER+" }],
+  },
+  progesterone_receptor_status: {
+    kind: "direct", writable: true, value_kind: "string",
+    options: [{ value: "PR-" }, { value: "PR+" }],
+  },
+  her2_status: {
+    kind: "direct", writable: true, value_kind: "string",
+    options: [{ value: "HER2-" }, { value: "HER2+" }, { value: "HER2 low" }],
+  },
+  // Writable, but not here — the row should refuse and say where.
+  genetic_mutations: {
+    kind: "editable", writable: true, target: "genomics",
+    reason: "Edit individual variants in the Genomics tab.",
+  },
+  // PROMOP's own refusal, with its own reason.
+  bmi: {
+    kind: "computed", writable: false,
+    reason: "Derived from height and weight; edit those instead.",
+  },
+};
+
+/** Set `?slow=1` to watch the optimistic value and "Saving…" for a second,
+ *  and `?fail=1` to see what a refused write leaves behind. */
+const params = new URLSearchParams(window.location.search);
+const SLOW = params.has("slow");
+const FAIL = params.has("fail");
+
+const mockState = {
+  listFavoriteIds: async () => [],
+  setFavorite: async () => undefined,
+  listRegisteredIds: async () => [],
+  setRegistered: async () => undefined,
+  listAdvancedEnrollments: async () => ({}),
+  getPreferences: async () => ({}),
+  savePreferences: async () => undefined,
+  resetPreferences: async () => undefined,
+  getWritableFields: async () => WRITABLE_FIELDS,
+  setPatientFields: async (fields: Record<string, unknown>) => {
+    if (SLOW) await new Promise((r) => setTimeout(r, 1200));
+    if (FAIL) throw new Error("refused, for the look of it");
+    const out: Record<string, { status: "saved"; value: unknown }> = {};
+    for (const [field, value] of Object.entries(fields)) {
+      RECORD[field] = value;
+      out[field] = { status: "saved", value };
+    }
+    // eslint-disable-next-line no-console
+    console.info("[mock] wrote", fields, "→ record is now", { ...RECORD });
+    return out;
+  },
+} as unknown as Parameters<typeof TrialMatches>[0]["state"];
+
+
+
 // `?trial=<id>` opens the detail page directly; otherwise show the list
 // (click a card / "View Trial" to reach the detail).
 const directTrialId = new URLSearchParams(window.location.search).get("trial");
@@ -261,13 +427,19 @@ createRoot(document.getElementById("root")!).render(
             apiClient={apiClient}
             trialId={directTrialId}
             patientInfo={patientInfo}
+            personId="mock-1"
             onBack={() => {
               window.location.href = "/mock-preview.html";
             }}
           />
         </div>
       ) : (
-        <TrialMatches apiClient={apiClient} patientInfo={patientInfo} />
+        <TrialMatches
+          apiClient={apiClient}
+          patientInfo={patientInfo}
+          personId="mock-1"
+          state={mockState}
+        />
       )}
     </QueryClientProvider>
   </StrictMode>,

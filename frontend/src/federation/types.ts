@@ -63,7 +63,11 @@ export interface TrialMatch {
   patientBurdenScore: number | null;
   goodnessScore: number | null;
   matchScore: number | null;
-  matchingType: MatchingType;
+  /** `null` when the request carried no patient: `eligible` is a claim
+   *  about a person, and with nobody named there is nothing to claim
+   *  (#456). Narrow before comparing — `!== "eligible"` reads a
+   *  patient-less row as potential. */
+  matchingType: MatchingType | null;
   /** Stringified human-friendly stages — `"Stage I, Stage II"`. */
   stage: string;
   attributesToFillIn: AttributeToFillIn[];
@@ -100,6 +104,37 @@ export interface TrialsResponse {
  *  `value` is the trial's required value; `uvalue` is the patient's value;
  *  `matchingType` is the per-attribute verdict. Permissive — the server adds
  *  fields as the templates evolve. Source: `trials/services/trial_details/`. */
+/** One value a composite row is computed from.
+ *
+ *  Sent under `subform_details` — snake_case, because EXACT does not camelise
+ *  its responses and these keys are built by hand.
+ *
+ *  This is how a computed row is edited. The row itself carries no control:
+ *  EXACT derives TNBC status from the receptor statuses, CRAB from calcium
+ *  and creatinine and the rest, so writing the row would be undone by the
+ *  next match. The entries beside it are those inputs, and they are raw data
+ *  — with one exception worth knowing: the therapy groups, where
+ *  `first_line_therapy` and its date and outcome are derived as well and
+ *  therefore say so. */
+export interface SubformEntry {
+  /** camelCase, for display and for React keys. */
+  name: string;
+  label: string;
+  type: string;
+  value: unknown;
+  options?: { value: unknown; label: string }[] | null;
+  /** The patient attribute this entry IS, in the record's spelling. Sent
+   *  rather than derived: un-camelising is not reliable here. */
+  upatientField?: string | null;
+  /** Whether EXACT recomputes it — see `TrialDetailField.upatientRecomputed`. */
+  upatientRecomputed?: boolean;
+  /** The unit the trial's threshold is in. */
+  units?: string;
+  /** The unit the PATIENT's value is stored in — the one to show and to type
+   *  in, because the composite above converts through it. */
+  uunits?: string;
+}
+
 export interface TrialDetailField {
   name: string;
   label: string;
@@ -151,6 +186,9 @@ export interface TrialDetailField {
     | { when: "never-stored" }
     | { when: "sometimes"; condition: string }
     | null;
+  /** The values this row is computed from, when it is computed from any.
+   *  Snake_case on the wire. */
+  subform_details?: SubformEntry[] | null;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;
@@ -281,7 +319,10 @@ export interface FilterState {
   country?: string;
   region?: string;
   trialType?: string;
-  trialPurpose?: string;
+  /** A list since CB #4663 made the control a multiselect; the server
+   *  answers with the union. Sent as one comma-separated `trialPurpose`
+   *  param — see `filterStateToParams`. */
+  trialPurpose?: string[];
   studyType?: string;
   distance?: number;
   distanceUnits?: "km" | "miles";
@@ -296,12 +337,21 @@ export interface FilterState {
    *  phase was never ingested drop out of every value, including the
    *  lowest (EXACT #417). */
   phase?: string;
-  /** How many YEARS back to accept, as digits — not a date, and between 1
-   *  and 100. Anything else is dropped here rather than forwarded: an ISO
-   *  date (which is what CB writes, #429) filters nothing server-side,
-   *  `"0"` is read as no limit at all, and a few thousand takes the
-   *  backend's date arithmetic below year 1 and 500s every search. Note
-   *  that the filter keeps trials whose `last_update_date` is null. */
+  /** Either an ISO date — `2026-01-01`, or the `T`/`Z` forms — meaning "on
+   *  or after that day", or digits meaning how many YEARS back to accept.
+   *
+   *  The date spelling was silently dropped until #429: `by_date_since` read
+   *  the value through `cast_str_to_int`, which takes digits only, so a date
+   *  became `None` and nothing was filtered. CB's panel has always rendered a
+   *  date picker and PATCHed an ISO value into that. Both work now.
+   *
+   *  A bare four-digit value is still read as a COUNT, so `2026` means
+   *  "within 2026 years", not the year 2026 — send `2026-01-01` for that. The
+   *  count is bounded client-side (`isUsableLastUpdate`): `"0"` reads as no
+   *  limit at all, and a few thousand takes the backend's date arithmetic
+   *  below year 1 and 500s every search.
+   *
+   *  Either way, trials whose `last_update_date` is null are kept. */
   lastUpdate?: string;
   /** "type" param. `eligible` / `potential` narrow server-side; `all`
    *  switches to the admin corpus, which skips the eligibility filter and

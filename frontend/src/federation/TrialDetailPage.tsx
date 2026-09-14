@@ -33,6 +33,7 @@ import { FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit } from "./FieldEdit";
+import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { editabilityOf } from "./writable";
 import type { WritableFields } from "./writable";
 
@@ -117,7 +118,7 @@ function labelOf(value: unknown, options?: TrialDetailField["options"]): string 
   return match ? match.label : String(value);
 }
 
-function formatValue(value: unknown, options?: TrialDetailField["options"]): string {
+export function formatValue(value: unknown, options?: TrialDetailField["options"]): string {
   if (value == null || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) {
@@ -134,8 +135,63 @@ function formatValue(value: unknown, options?: TrialDetailField["options"]): str
  *  today. */
 export interface RowEditing {
   fields?: WritableFields;
-  /** Rejects when the write was refused. */
-  save: (field: string, value: unknown) => Promise<void>;
+  /** Queue it. Returns at once and never rejects — what happened arrives
+   *  through `outstanding` and `failed`. */
+  save: (field: string, value: unknown) => void;
+  /** What the reader chose, for fields whose write has not come back. The row
+   *  shows this instead of the record's value, because the record does not
+   *  hold it yet and showing the old one reads as an edit that did nothing. */
+  outstanding: Record<string, unknown>;
+  /** The value that was refused, by field — so the editor can open on what
+   *  the reader typed rather than making them find it again. */
+  failed: Record<string, unknown>;
+}
+
+/** The fields whose last write was refused, named the way the reader saw them.
+ *
+ *  Only the ones no row will speak for. A row that carries the control paints
+ *  its own refusal in place, and saying it twice is worse than saying it once.
+ *  But a subform input is by construction a DIFFERENT attribute from the row
+ *  that opened the dialog, so a refusal there had nowhere to appear at all
+ *  once the dialog was closed — and a write that vanishes with nothing said is
+ *  the failure this whole phase was built to prevent, reached through the one
+ *  surface the reader can shut.
+ *
+ *  Labels come from the payload rather than the canonical names, because
+ *  `serum_calcium_level` is not what the reader was looking at when they
+ *  typed. A field with no label to find is still named: leaving it out would
+ *  under-report the failure to keep the sentence tidy.
+ */
+function failedFieldLabels(
+  fields: TrialDetailField[],
+  failed: Record<string, unknown>,
+  editableRows: Set<string>,
+  openHere: Set<string>,
+): string[] {
+  const names = Object.keys(failed);
+  // eslint-disable-next-line no-console
+  if (names.length === 0) return [];
+  const labels = new Map<string, string>();
+  const spokenFor = new Set<string>();
+  for (const field of fields) {
+    if (field.upatientField) {
+      labels.set(field.upatientField, field.label);
+      // A row that carries the control says so itself, in place. Repeating it
+      // up here would put two alerts on screen about one refusal.
+      if (editableRows.has(field.name)) spokenFor.add(field.upatientField);
+    }
+    for (const entry of field.subform_details ?? []) {
+      if (entry.upatientField) labels.set(entry.upatientField, entry.label);
+    }
+  }
+  return names
+    .filter((name) => !spokenFor.has(name) && !openHere.has(name))
+    // A name with no label is not on this page. `failed` belongs to the
+    // PATIENT's queue, which outlives any one trial, so a refusal from the
+    // trial the reader was looking at a minute ago would otherwise be
+    // announced on this one — under a canonical name nothing here shows.
+    .filter((name) => labels.has(name))
+    .map((name) => labels.get(name)!);
 }
 
 /** Which rows may carry an edit control.
@@ -172,14 +228,39 @@ function editableRowNames(fields: TrialDetailField[]): Set<string> {
   return rows;
 }
 
+/** Which rows may offer the subform door.
+ *
+ *  One per attribute, for the reason the pencils are: a ULN group is three
+ *  rows — the pair and the range — carrying the SAME `subform_details`, so
+ *  left alone the reader is offered the same dialog three times in a column
+ *  and has to wonder which one is theirs.
+ */
+function subformRowNames(fields: TrialDetailField[]): Set<string> {
+  const taken = new Set<string>();
+  const rows = new Set<string>();
+  for (const field of fields) {
+    const attribute = field.upatientField;
+    if (!attribute || !field.subform_details?.length || taken.has(attribute)) continue;
+    taken.add(attribute);
+    rows.add(field.name);
+  }
+  return rows;
+}
+
 function EligibilityRow({
   field,
   editing,
   editableHere,
+  subformHere,
+  openSubform,
+  onSubformOpen,
 }: {
   field: TrialDetailField;
   editing?: RowEditing;
   editableHere?: boolean;
+  subformHere?: boolean;
+  openSubform?: string | null;
+  onSubformOpen?: (name: string | null) => void;
 }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
@@ -190,7 +271,26 @@ function EligibilityRow({
   // not a requirement at all.
   const notEvaluated = field.matchingType === "not_evaluated";
   const required = formatValue(field.value, field.options);
-  const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
+  // The reader's own value wins over the record's while a write is out. Not
+  // cosmetic: the record genuinely does not hold it yet, and showing the old
+  // one for as long as that takes reads as a save that did not take.
+  // Only the row that carries the control carries its optimistic value. The
+  // others name the same attribute — a min, a max, and a "× upper limit of
+  // normal" pair — and the ×ULN row shows a RATIO, so painting the written
+  // number there would put a clinically false figure on screen, briefly, in a
+  // table a patient reads.
+  const attribute = editableHere ? field.upatientField : null;
+  const pendingValue =
+    attribute && editing && attribute in editing.outstanding
+      ? editing.outstanding[attribute]
+      : undefined;
+  const writePending = attribute != null && editing != null
+    && attribute in editing.outstanding;
+  const writeFailed = Boolean(attribute && editing && attribute in editing.failed);
+  const yours = formatValue(
+    writePending ? pendingValue : field.uvalue,
+    field.uoptions ?? field.options,
+  );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
   // Only `edit` puts anything on screen. `no` carries a reason, but PROMOP's
   // reasons are written for whoever is integrating — one of them points at
@@ -198,6 +298,9 @@ function EligibilityRow({
   // be worse than the silence. Surfacing them needs curated wording, and that
   // is a decision, not an oversight.
   const [editorOpen, setEditorOpen] = useState(false);
+  const subformOpen = openSubform === field.name;
+  const canOpenSubform =
+    Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
       ? editabilityOf(field.upatientField, editing.fields)
@@ -255,13 +358,53 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
+        {writePending ? (
+          <span className="exact-elig__saving">Saving…</span>
+        ) : null}
+        {writeFailed ? (
+          <span className="exact-elig__error" role="alert">
+            Couldn't save that. Your value is not in the record.
+          </span>
+        ) : null}
+        {/* A computed row cannot be written, but what it is computed FROM
+            can — and the payload names those values. Offered only where at
+            least one of them is actually writable: a dialog listing four
+            values none of which can be changed is a door onto a wall, which
+            is what the therapy groups would be. */}
+        {canOpenSubform ? (
+          <button
+            type="button"
+            className="exact-elig__subform"
+            aria-label={`Change what ${field.label} is worked out from`}
+            onClick={() => onSubformOpen?.(field.name)}
+          >
+            Change what this is from
+          </button>
+        ) : null}
+        {subformOpen && editing && field.subform_details ? (
+          <SubformDialog
+            field={field}
+            entries={field.subform_details}
+            editing={editing}
+            onClose={() => onSubformOpen?.(null)}
+          />
+        ) : null}
         {editable.can === "edit" && editing ? (
           <FieldEdit
             field={editable.field}
             label={field.label}
             entry={editable.entry}
             control={editable.control}
-            value={field.uvalue}
+            // A refused value wins over the record's: the reader is about to
+            // try again, and the thing they want in the box is what they
+            // typed.
+            value={
+              writeFailed && attribute
+                ? editing.failed[attribute]
+                : writePending
+                  ? pendingValue
+                  : field.uvalue
+            }
             units={field.uunits ?? field.units}
             onSave={(value) => editing.save(editable.field, value)}
             onOpenChange={setEditorOpen}
@@ -432,6 +575,29 @@ export function TrialDetailPage({
 
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
   const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
+  const subformRows = useMemo(() => subformRowNames(eligibility), [eligibility]);
+  // Which row's dialog is open, if any. Held here rather than in the row so
+  // the notice below can stay quiet about what an open dialog is already
+  // saying to the reader's face.
+  const [openSubform, setOpenSubform] = useState<string | null>(null);
+  const openSubformFields = useMemo(() => {
+    const row = eligibility.find((field) => field.name === openSubform);
+    return new Set(
+      (row?.subform_details ?? [])
+        .map((entry) => entry.upatientField)
+        .filter((name): name is string => Boolean(name)),
+    );
+  }, [eligibility, openSubform]);
+  const failedLabels = useMemo(
+    () =>
+      failedFieldLabels(
+        eligibility,
+        editing?.failed ?? {},
+        editableRows,
+        openSubformFields,
+      ),
+    [eligibility, editing?.failed, editableRows, openSubformFields],
+  );
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
@@ -536,6 +702,16 @@ export function TrialDetailPage({
               </section>
             ) : null}
 
+            {failedLabels.length ? (
+              <p className="exact-detail__write-error" role="alert">
+                {failedLabels.length === 1
+                  ? `Your ${failedLabels[0]} could not be saved.`
+                  : `These could not be saved: ${failedLabels.join(", ")}.`}{" "}
+                The record still holds what it had. Open the field and try
+                again.
+              </p>
+            ) : null}
+
             <section className="exact-panel exact-detail__elig">
               <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
               {eligibility.length ? (
@@ -551,6 +727,9 @@ export function TrialDetailPage({
                       field={field}
                       editing={editing}
                       editableHere={editableRows.has(field.name)}
+                      subformHere={subformRows.has(field.name)}
+                      openSubform={openSubform}
+                      onSubformOpen={setOpenSubform}
                     />
                   ))}
                 </div>

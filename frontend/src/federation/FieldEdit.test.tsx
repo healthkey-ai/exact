@@ -5,11 +5,16 @@
 // said it could be written, or a save that does not reach the record, or an
 // error shown for a write that succeeded. All three are about the wiring.
 
-import { screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+import { TrialMatches } from "./TrialMatches";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { fakeApi, fakeState, renderTrialMatches, trialDetail } from "../test/renderTrialMatches";
+import type { WriteOutcome } from "./state";
 import type { WritableFields } from "./writable";
 import type { TrialDetailField } from "./types";
 
@@ -269,10 +274,11 @@ describe("saving", () => {
     // the write produced, and units come back canonicalised. Showing "could
     // not save" here would be a lie about a write that landed.
     const state = fakeState({ writable: WRITABLE });
-    state.adapter.setPatientField = vi.fn(async () => ({
-      status: "differs" as const,
-      value: 12.5,
-    }));
+    state.adapter.setPatientFields = vi.fn(async (fields: Record<string, unknown>) =>
+      Object.fromEntries(
+        Object.keys(fields).map((f) => [f, { status: "differs" as const, value: 12.5 }]),
+      ),
+    );
     await startEditing(state);
 
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -283,11 +289,12 @@ describe("saving", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("keeps the editor open, holding what was typed, when the write was refused", async () => {
-    // A refused write that closed the box would make the reader type it again
-    // to learn whether it was their value or the connection at fault.
+  it("says so on the row when the write was refused, and stops showing the value", async () => {
+    // With a queue the editor is long closed by the time an answer arrives,
+    // so the row is where this has to be said. And the optimistic value goes:
+    // leaving it up would show a value the record does not hold.
     const state = fakeState({ writable: WRITABLE });
-    state.adapter.setPatientField = vi.fn(async () => {
+    state.adapter.setPatientFields = vi.fn(async () => {
       throw new Error("403");
     });
     await startEditing(state);
@@ -297,7 +304,16 @@ describe("saving", () => {
     await userEvent.type(box, "9");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save that");
+    expect(screen.queryByRole("textbox", { name: "Hemoglobin" })).toBeNull();
+    expect(screen.queryByText("Saving…")).toBeNull();
+    // The row tells the truth — the record still holds 12 — and the reader's
+    // own value is not lost: the editor opens on it, so retrying is a click
+    // rather than remembering what they typed. PROMOP validates a PATCH as
+    // one transaction, so a single bad field can refuse a whole batch, and
+    // retyping three good values because of a fourth is not a thing to ask.
+    expect(screen.getByText("12")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit Hemoglobin" }));
     expect(screen.getByRole("textbox", { name: "Hemoglobin" })).toHaveValue("9");
   });
 
@@ -314,7 +330,10 @@ describe("saving", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Enter a number");
-    expect(state.adapter.setPatientField).not.toHaveBeenCalled();
+    // Past the debounce, not before it: checked immediately this would pass
+    // whether or not the value had been queued.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(state.adapter.setPatientFields).not.toHaveBeenCalled();
     expect(box).toHaveValue("12..5");
   });
 
@@ -331,27 +350,41 @@ describe("saving", () => {
     await waitFor(() => expect(api.detailRequests().length).toBeGreaterThan(before));
   });
 
-  it("stays on Saving… until the record has actually been re-read", async () => {
-    // Resolving the save before the re-read lands would close the editor onto
-    // the OLD value, and reopening would show it again — which reads as an
-    // edit that did not take.
+  it("shows the reader's own value, and says it is saving, until the write comes back", async () => {
+    // The record does not hold it yet. Showing the old value for as long as
+    // that takes reads as a save that did not take — and the reader has no
+    // way to tell the difference from one that failed.
     const state = fakeState({ writable: WRITABLE });
-    const api = await startEditing(state);
-    const release = api.holdNextDetail();
+    let release: (() => void) | null = null;
+    state.adapter.setPatientFields = vi.fn(
+      (fields: Record<string, unknown>) =>
+        new Promise<Record<string, WriteOutcome>>((resolve) => {
+          release = () =>
+            resolve(
+              Object.fromEntries(
+                Object.entries(fields).map(([f, v]) => [f, { status: "saved", value: v }]),
+              ),
+            );
+        }),
+    );
+    await startEditing(state);
 
     const box = screen.getByRole("textbox", { name: "Hemoglobin" });
     await userEvent.clear(box);
     await userEvent.type(box, "13");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    // The write itself is long done — the record already holds the value.
-    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
-    expect(screen.getByRole("button", { name: "Saving…" })).toBeInTheDocument();
+    // Closed at once, and the row carries the value and the word.
+    expect(screen.queryByRole("textbox", { name: "Hemoglobin" })).toBeNull();
+    expect(await screen.findByText("Saving…")).toBeInTheDocument();
+    expect(screen.getByText("13")).toBeInTheDocument();
 
-    release();
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /Saving|Save/ })).toBeNull(),
-    );
+    // The request itself has not gone out yet — "Saving…" is the row's own
+    // promise, made the moment the reader pressed Save, not a report of a
+    // request in flight.
+    await waitFor(() => expect(release).not.toBeNull());
+    release!();
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
   });
 
   it("opens a date box on a value the server sent as a full timestamp", async () => {
@@ -481,7 +514,8 @@ describe("saving", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Enter a number");
-    expect(state.adapter.setPatientField).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(state.adapter.setPatientFields).not.toHaveBeenCalled();
   });
 
   it("puts focus back on the pencil when the editor closes", async () => {
@@ -513,7 +547,8 @@ describe("saving", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Type" }), "IgA");
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("combobox", { name: "Type" })).toBeNull();
-    expect(state.adapter.setPatientField).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(state.adapter.setPatientFields).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Edit Type" }));
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Type" }), "IgA");
@@ -609,6 +644,294 @@ describe("saving", () => {
     );
   });
 
+  it("sends two fields filled in one breath as one request", async () => {
+    // The point of the queue. Every write re-derives the projection and
+    // rescores the match, so two gaps filled in a row should cost one of
+    // each — not two, with the reader watching the list reshuffle twice.
+    const state = fakeState({
+      writable: {
+        hemoglobin_g_dl: { kind: "direct", writable: true, value_kind: "number" },
+        platelet_count: { kind: "direct", writable: true, value_kind: "number" },
+      },
+    });
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({ name: "hgb", label: "Hemoglobin" }),
+        row({ name: "plt", label: "Platelets", upatientField: "platelet_count", uvalue: 200 }),
+      ]),
+    );
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const hgb = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(hgb);
+    await userEvent.type(hgb, "13");
+    await userEvent.click(
+      within(document.querySelector('[data-field="hemoglobin_g_dl"]') as HTMLElement)
+        .getByRole("button", { name: "Save" }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Edit Platelets" }));
+    const plt = screen.getByRole("textbox", { name: "Platelets" });
+    await userEvent.clear(plt);
+    await userEvent.type(plt, "250");
+    await userEvent.click(
+      within(document.querySelector('[data-field="platelet_count"]') as HTMLElement)
+        .getByRole("button", { name: "Save" }),
+    );
+
+    await waitFor(() => expect(state.record.platelet_count).toBe(250));
+    expect(state.record.hemoglobin_g_dl).toBe(13);
+    expect(state.adapter.setPatientFields).toHaveBeenCalledTimes(1);
+    expect((state.adapter.setPatientFields as ReturnType<typeof vi.fn>).mock.calls[0][0])
+      .toEqual({ hemoglobin_g_dl: 13, platelet_count: 250 });
+  });
+
+  it("writes a queued edit into the patient it was made for, not the next one", async () => {
+    // The writer's flush runs on a patient switch, and the refs it would
+    // reach through are written during render — so by then they describe the
+    // NEW patient. For a saved search that is an annoyance; for a haemoglobin
+    // it is one person's lab value in another person's chart.
+    const writable: WritableFields = {
+      hemoglobin_g_dl: { kind: "direct", writable: true, value_kind: "number" },
+    };
+    const alice = fakeState({ writable });
+    const bob = fakeState({ writable });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (personId: string, state: typeof alice.adapter) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma" }}
+          personId={personId}
+          state={state}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("alice", alice.adapter));
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[0],
+    );
+    await screen.findByText("Back to all trials");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Still inside the debounce: the edit is queued, nothing is on the wire.
+    view.rerender(ui("bob", bob.adapter));
+    await waitFor(() => expect(alice.record.hemoglobin_g_dl).toBe(13));
+    expect(bob.record).toEqual({});
+    expect(bob.adapter.setPatientFields).not.toHaveBeenCalled();
+
+    // And the other direction: the queue belongs to the patient, so Bob's own
+    // edit must not go out through the adapter it captured for Alice.
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[0],
+    );
+    await screen.findByText("Back to all trials");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const bobBox = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(bobBox);
+    await userEvent.type(bobBox, "9");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(bob.record.hemoglobin_g_dl).toBe(9));
+    expect(alice.record.hemoglobin_g_dl).toBe(13);
+  });
+
+  it("keeps showing the reader's value until the re-read lands, not until the write returns", async () => {
+    // The row's own value only changes when the detail is re-read. Retired
+    // any earlier, the OLD value goes back on screen for a whole round trip:
+    // 13 → Saving… → 12 → 13, which is exactly the save-that-did-nothing
+    // this overlay exists to prevent.
+    const state = fakeState({ writable: WRITABLE });
+    const api = await startEditing(state);
+
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+
+    const release = api.holdNextDetail();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+
+    // Written, answered, and the re-read still in the air.
+    expect(screen.getByText("13")).toBeInTheDocument();
+    expect(screen.queryByText("12")).toBeNull();
+
+    release();
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+  });
+
+  it("does not paint the written value on the × upper-limit row", async () => {
+    // That row shows a RATIO of the same attribute. The control is withheld
+    // there; the value must be too, or a clinically false number appears in a
+    // table the patient reads.
+    const state = fakeState({ writable: WRITABLE });
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({ name: "hgb_min", label: "Hemoglobin" }),
+        row({ name: "hgb_uln", label: "Hemoglobin ×ULN", ureadonly: true, uvalue: 0.8 }),
+      ]),
+    );
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("13")).toBeInTheDocument();
+    // The ratio row still reads its own number, and says nothing about saving.
+    expect(screen.getByText("0.8")).toBeInTheDocument();
+    expect(screen.getAllByText("Saving…")).toHaveLength(1);
+  });
+
+  it("does not let an older answer retire a newer edit to the same field", async () => {
+    // Keyed by field alone, the first request's answer retires the second
+    // edit's optimistic value: the row drops back to the server's older
+    // number, with no "Saving…" on it, until the second re-read lands.
+    const state = fakeState({ writable: WRITABLE });
+    const releases: Array<() => void> = [];
+    state.adapter.setPatientFields = vi.fn(
+      (fields: Record<string, unknown>) =>
+        new Promise<Record<string, WriteOutcome>>((resolve) => {
+          releases.push(() =>
+            resolve(
+              Object.fromEntries(
+                Object.entries(fields).map(([f, v]) => [f, { status: "saved", value: v }]),
+              ),
+            ),
+          );
+        }),
+    );
+    await startEditing(state);
+
+    const type = async (value: string) => {
+      const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+      await userEvent.clear(box);
+      await userEvent.type(box, value);
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    };
+    await type("13");
+    await waitFor(() => expect(releases.length).toBe(1));
+
+    // A second edit while the first is still on the wire.
+    await userEvent.click(screen.getByRole("button", { name: "Edit Hemoglobin" }));
+    await type("14");
+    expect(screen.getByText("14")).toBeInTheDocument();
+
+    releases[0]();
+    await waitFor(() => expect(releases.length).toBe(2));
+    // Still the reader's newer value, still saving.
+    expect(screen.getByText("14")).toBeInTheDocument();
+    expect(screen.getByText("Saving…")).toBeInTheDocument();
+  });
+
+  it("blames the value that was refused, not the one still waiting", async () => {
+    const state = fakeState({ writable: WRITABLE });
+    const releases: Array<(fail: boolean) => void> = [];
+    state.adapter.setPatientFields = vi.fn(
+      (fields: Record<string, unknown>) =>
+        new Promise<Record<string, WriteOutcome>>((resolve, reject) => {
+          releases.push((fail) =>
+            fail
+              ? reject(new Error("403"))
+              : resolve(
+                  Object.fromEntries(
+                    Object.entries(fields).map(([f, v]) => [
+                      f,
+                      { status: "saved", value: v },
+                    ]),
+                  ),
+                ),
+          );
+        }),
+    );
+    await startEditing(state);
+    const type = async (value: string) => {
+      const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+      await userEvent.clear(box);
+      await userEvent.type(box, value);
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    };
+    await type("13");
+    await waitFor(() => expect(releases.length).toBe(1));
+    await userEvent.click(screen.getByRole("button", { name: "Edit Hemoglobin" }));
+    await type("14");
+
+    releases[0](true);
+    await waitFor(() => expect(releases.length).toBe(2));
+    // The second edit is on its way; nothing is said about it yet, and the
+    // row is still showing it rather than an error about a value the reader
+    // has already moved past.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("14")).toBeInTheDocument();
+  });
+
+  it("retires the optimistic value under StrictMode, which is how it is mounted", async () => {
+    // Regression: found by /qa on 2026-09-14 in the mock preview, where
+    // "Saving…" never went away and no re-read was ever started.
+    //
+    // The writer claimed ownership by assigning a ref during render, inside
+    // `useMemo`. React invokes that factory TWICE under StrictMode and keeps
+    // one of the two results, so the ref named the instance that was thrown
+    // away — and every callback of the one actually in use then failed its
+    // own ownership check. The write went out, nothing was retired, and the
+    // match never recomputed, which is the whole point of the phase.
+    //
+    // Every entry point in this repo mounts under StrictMode. No test did,
+    // so the suite could not see it.
+    const state = fakeState({ writable: WRITABLE });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <TrialMatches
+            apiClient={api.client}
+            queryClient={queryClient}
+            patientInfo={{ disease: "multiple myeloma" }}
+            personId="p1"
+            state={state.adapter}
+          />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[0],
+    );
+    await screen.findByText("Back to all trials");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    const before = api.detailRequests().length;
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+    // The two things the broken guard silently skipped.
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+    expect(api.detailRequests().length).toBeGreaterThan(before);
+  });
+
   it("cancels without writing anything", async () => {
     const state = fakeState({ writable: WRITABLE });
     await startEditing(state);
@@ -619,6 +942,8 @@ describe("saving", () => {
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(screen.queryByRole("textbox", { name: "Hemoglobin" })).toBeNull();
-    expect(state.adapter.setPatientField).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(state.adapter.setPatientFields).not.toHaveBeenCalled();
+    expect(state.record).toEqual({});
   });
 });

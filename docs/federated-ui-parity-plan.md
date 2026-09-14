@@ -48,7 +48,7 @@ Data: `POST /trials/match/` with an inline payload, or `GET /trials/?person_id=`
 | Export CSV (`/trials/export/`) | none | **missing** | Port the action into EXACT, add the button |
 | Explore Trials → Knowledge Graph | none | **missing** | Backend **already exists**: `/trials-graph/graph/`. UI only |
 | Suitability Preferences (benefit / burden / risk / distance weights) | none | **missing** | Backend **already accepts** `benefitWeight` et al. Needs UI + storage for the weights |
-| TrialPurposeNotice (explains the default narrowing to treatment) | none, and the purpose filter itself is missing | **missing** | Ships with the purpose multiselect |
+| TrialPurposeNotice (explains the default narrowing to treatment) | multiselect present; notice absent | **deliberately not ported** | The multiselect shipped with #428. The notice did not: **this line has no default narrowing to explain** — `trial_purpose` defaults to `[]`, `by_trial_purpose([])` is a no-op and `baselineFilters` does not seed it, so an unfiltered search returns every purpose. Whether this line SHOULD adopt CB's treatment default is a product call, not a port: it changes what every unfiltered search returns. Raised on #428 |
 | ProfileCompletionCard ("complete your profile, %") | none | **missing** | Compute the percentage host-side / in PROMOP; the remote exposes a slot |
 | Updating indicator, empty/error states | present, simpler | **present** | Cosmetic |
 | Tooltips on every control (admin-editable, DB-backed) | static, detail page only | **partial** | Keep them static; editable tooltips are a CB-only feature |

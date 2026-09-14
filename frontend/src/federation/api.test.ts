@@ -26,7 +26,7 @@ describe("filterStateToParams", () => {
       country: "US",
       region: "NY",
       trialType: "interventional",
-      trialPurpose: "treatment",
+      trialPurpose: ["treatment"],
       studyType: "phase2",
       distance: 50,
       distanceUnits: "km",
@@ -202,16 +202,21 @@ describe("fetchTrials — the search path", () => {
   });
 
   it("sends no lastUpdate the backend would mishandle", () => {
-    // This used to forward whatever it was given, and the case it was
-    // written around — an ISO date — is one the panel cannot produce and
-    // the server drops silently, so the badge counted a filter that
-    // narrowed nothing. `"0"` does the same; a large number overflows
-    // `timedelta` into a 500 on every search. A host's `initialFilters`
-    // reaches here without passing through storage, so the check has to be
-    // at the wire as well — which is what `distance` already does.
-    for (const junk of ["2026-01-01", "0", "3000", "2001"]) {
+    // This used to forward whatever it was given. `"0"` the server reads as
+    // no limit at all; a large number overflows `timedelta` into a 500 on
+    // every search — which is what the 2000 cap is for, and why `2001` is
+    // refused as a COUNT rather than read as a calendar year. A host's
+    // `initialFilters` reaches here without passing through storage, so the
+    // check has to be at the wire as well — which is what `distance` already
+    // does.
+    for (const junk of ["0", "3000", "2001", "2026-13-45"]) {
       expect(filterStateToParams({ lastUpdate: junk })).toEqual({});
     }
+    // An ISO date now goes through: since #429 the server reads it as "on or
+    // after that day", and it is the spelling CB's own panel writes.
+    expect(filterStateToParams({ lastUpdate: "2026-01-01" })).toEqual({
+      lastUpdate: "2026-01-01",
+    });
     // …while a count the backend handles goes through, even one the panel
     // does not offer: a host may legitimately ask for four years.
     expect(filterStateToParams({ lastUpdate: "4" })).toEqual({ lastUpdate: "4" });
@@ -293,5 +298,47 @@ describe("fetchTrials — trial_ids", () => {
       { trial_ids: ["7"] },
       { params: { person_id: "9001" } },
     );
+  });
+});
+
+describe("trialPurpose on the wire (#428)", () => {
+  it("sends several codes as one comma-separated param", () => {
+    // Not a repeated param: axios's default serializer spells an array
+    // `trialPurpose[]=a&trialPurpose[]=b`, and Django's
+    // `getlist('trialPurpose')` does not see the bracketed key. The backend's
+    // `_str_list` accepts the comma form for exactly this reason.
+    expect(
+      filterStateToParams({ trialPurpose: ["treatment", "prevention"] }),
+    ).toEqual({ trialPurpose: "treatment,prevention" });
+  });
+
+  it("sends a single code unchanged, as the pre-#4663 contract did", () => {
+    expect(filterStateToParams({ trialPurpose: ["treatment"] })).toEqual({
+      trialPurpose: "treatment",
+    });
+  });
+
+  it("omits the param entirely when nothing is selected", () => {
+    // `[].join(",")` is `""`, which would put `?trialPurpose=` on the wire.
+    // `_str_list` drops blanks so the result would be the same, but the param
+    // would show up in the URL as a filter the reader did not set.
+    expect(filterStateToParams({ trialPurpose: [] })).toEqual({});
+    expect(filterStateToParams({})).toEqual({});
+  });
+});
+
+describe("trialPurpose from a build that spelled it a string", () => {
+  it("does not throw, and filters on the code it names", () => {
+    // The second lock: the state is normalized on the way in, but a host can
+    // reach `fetchTrials` by paths that never pass through the panel. Before
+    // this, `.length` was truthy and `.join` threw — taking the whole trial
+    // list down on every mount rather than dropping one filter.
+    expect(
+      filterStateToParams({ trialPurpose: "treatment" as never }),
+    ).toEqual({ trialPurpose: "treatment" });
+  });
+
+  it("an empty string is no param at all", () => {
+    expect(filterStateToParams({ trialPurpose: "" as never })).toEqual({});
   });
 });

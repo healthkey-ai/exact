@@ -1243,6 +1243,75 @@
   outline-offset: -1px;
 }
 
+/* Trial purpose is several codes at once (#428). `<details>` is the native
+   popover: no library, keyboard- and screen-reader-navigable as shipped. The
+   summary is styled as an input so the control does not look like a different
+   species from the selects beside it. */
+.exact-root .exact-filter__multi {
+  position: relative;
+  min-width: 0;
+}
+
+.exact-root .exact-filter__multi-summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Safari draws its own disclosure triangle through `list-style: none`. */
+.exact-root .exact-filter__multi-summary::-webkit-details-marker {
+  display: none;
+}
+
+.exact-root .exact-filter__multi-summary::after {
+  content: "";
+  margin-left: auto;
+  padding-left: 0.5rem;
+  border: 0.3rem solid transparent;
+  border-top-color: var(--exact-color-text-tertiary);
+  transform: translateY(0.15rem);
+}
+
+.exact-root .exact-filter__multi[open] .exact-filter__multi-summary::after {
+  transform: translateY(-0.15rem) rotate(180deg);
+}
+
+/* Absolute so opening the list does not reflow the filter grid under it. */
+.exact-root .exact-filter__multi-list {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  margin-top: 0.25rem;
+  padding: 0.375rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+}
+
+.exact-root .exact-filter__multi-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+  cursor: pointer;
+}
+
+.exact-root .exact-filter__multi-option:hover {
+  background: var(--exact-color-surface-2);
+}
+
 .exact-root .exact-filter__pair {
   display: flex;
   gap: 0.5rem;
@@ -1477,4 +1546,104 @@
   flex: 1 0 100%;
   color: var(--exact-color-not-eligible);
   font-size: 0.8125rem;
+}
+
+/* The subform dialog (#421): the only route a computed row has to being
+   changed, so it is a dialog rather than an expander — the reader is leaving
+   the table to work on something else and comes back to a recomputed row. */
+.exact-root .exact-elig__subform {
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+.exact-root .exact-elig__subform:hover {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-subform__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  /* Its own ground rather than a tint of the host's: this remote does not
+     know what it is mounted on, and a translucent white over a dark host
+     leaves the panel unreadable. */
+  background: rgb(0 0 0 / 45%);
+}
+.exact-root .exact-subform {
+  width: min(32rem, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+  color: var(--exact-color-text);
+}
+.exact-root .exact-subform__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.exact-root .exact-subform__title {
+  margin: 0;
+  font-size: 1rem;
+}
+.exact-root .exact-subform__close {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.exact-root .exact-subform__note {
+  margin: 4px 0 12px;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-subform__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.exact-root .exact-subform__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--exact-color-border);
+}
+.exact-root .exact-subform__label {
+  flex: 1 1 10rem;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-subform__value {
+  font-size: 0.875rem;
+}
+
+/* A refused write, said where the reader will see it whatever they closed.
+   Above the table rather than inside it: the row that failed may be a subform
+   input, which has no row of its own. */
+.exact-root .exact-detail__write-error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--exact-color-not-eligible);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font-size: 0.875rem;
+  color: var(--exact-color-not-eligible);
 }

@@ -45,6 +45,12 @@ export interface WritableFieldEntry {
   value_kind?: string;
   unit?: string;
   multiple?: boolean;
+  /** Where the value ends up in OMOP when the write is to the record.
+   *  `person` and `location` are the demographics — gender, ethnicity, the
+   *  address — which describe the PATIENT rather than any one measurement.
+   *  PROMOP takes them through the same PATCH, which is why they are writable
+   *  here at all. */
+  projection_target?: string;
   /** Where the write goes. `patient_record` is the one this seam can reach;
    *  `genomics` and `episode` are edited through their own resources, and
    *  those entries carry a `reason` saying where. */

@@ -49,6 +49,7 @@ import {
   baselineFilters,
   countActiveFilters,
   countryFor,
+  normalizeFilterState,
   userOwnedFilters,
 } from "./filters";
 import { MAX_TRIAL_IDS, canEditFields } from "./state";
@@ -63,7 +64,7 @@ import {
   canReadAdvanced,
   useAdvancedEnrollments,
   useSavedFilters,
-  useSetPatientField,
+  useQueuedPatientFields,
   useWritableFields,
   useSetTrialState,
   useStateIds,
@@ -93,7 +94,12 @@ function TrialMatchesInner({
     injectStyles();
   }, []);
 
-  const [filters, setFilters] = useState<FilterState>(initialFilters ?? {});
+  // Normalized on the way in: a host compiles separately, so a pre-#428
+  // `trialPurpose` string in `initialFilters` is not caught by `tsc` here
+  // and would spread into its own letters on the first click (#428).
+  const [filters, setFilters] = useState<FilterState>(() =>
+    normalizeFilterState(initialFilters),
+  );
   // The id, and the list row when there is one. A trial can be opened from
   // the graph, which draws up to fifty trials while the list holds one page —
   // so "which trial" is always answerable and "which row" is not.
@@ -156,7 +162,7 @@ function TrialMatchesInner({
   // once rather than on every detail page. Its absence is the safe state:
   // until it arrives, no row draws a control.
   const writableFields = useWritableFields(state, stateKey);
-  const setPatientField = useSetPatientField(state, stateKey);
+  const patientFields = useQueuedPatientFields(state, stateKey);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -173,7 +179,10 @@ function TrialMatchesInner({
     // to expire a type picked for someone else — would mask the very type
     // just loaded, and a later edit would overwrite it.
     if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
-    setFilters((current) => ({ ...current, ...saved }));
+    // Normalized for the same reason as the initial state, and the more
+    // likely source: this is what the PREVIOUS build of this remote saved,
+    // when `trialPurpose` was a single string.
+    setFilters((current) => normalizeFilterState({ ...current, ...saved }));
   });
 
   // Whether the panel has been touched since the last time a saved set
@@ -848,22 +857,17 @@ function TrialMatchesInner({
         // decoration.
         //
         // The gate below is about `save`, not about the rows: it is there so
-        // a callback that would dereference a missing `setPatientField` is
-        // never handed out at all. Nothing calls it today, because nothing
-        // draws a control without the descriptor; the queue in the next slice
-        // will hold it for longer than one click, which is when handing out a
-        // callback that cannot work starts to matter.
+        // a callback that would dereference a missing `setPatientFields` is
+        // never handed out at all. It matters now in a way it did not before
+        // the queue — the callback is held across renders and fired from a
+        // timer, long after the render that produced it.
         editing={
           canEditFields(state)
             ? {
                 fields: writableFields.data,
-                save: async (field, value) => {
-                  // Resolving means the record was re-read, not that it holds
-                  // what was sent — the write may have been canonicalised.
-                  // Only a refusal rejects, and only that is shown as an
-                  // error.
-                  await setPatientField.mutateAsync({ field, value });
-                },
+                save: patientFields.save,
+                outstanding: patientFields.outstanding,
+                failed: patientFields.failed,
               }
             : undefined
         }

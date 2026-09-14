@@ -6,10 +6,10 @@
 // nothing is worse than no pencil, and a reader cannot tell the difference
 // until after they have typed.
 //
-// One field at a time, one request at a time. The queue that batches several
-// edits into one PATCH is the next slice; this one is deliberately the naive
-// version, because a naive write that is correct is a better base to batch on
-// than a batched write that is not.
+// Save does not wait. The value is handed to the queue, the editor closes,
+// and the row shows it on trust until the record answers — what came back is
+// the row's business, not the editor's, because by then the editor is gone.
+// See `patientWriter.ts`.
 
 import { useEffect, useRef, useState } from "react";
 
@@ -28,10 +28,12 @@ export interface FieldEditProps {
   /** Unit to show beside a number. The row's own unit wins over the
    *  descriptor's: it is the one the reader is looking at. */
   units?: string;
-  /** Rejects when the write was refused. Resolving means the record was
-   *  re-read; it does NOT mean the stored value equals what was sent — see
-   *  `WriteOutcome`. */
-  onSave: (value: unknown) => Promise<void>;
+  /** Queue the value. Returns at once: the reader has decided, and the row
+   *  shows their value on trust while the request goes out with whatever else
+   *  they change in the same breath. What came back is the row's business,
+   *  not the editor's — by the time an answer arrives the editor is closed,
+   *  which is the whole point of a queue. */
+  onSave: (value: unknown) => void;
   /** Told to the row, which hides the value, its unit and the mismatch mark
    *  while the editor stands in their place. Side by side they compete for a
    *  column that can be a few characters wide, and the reader is shown the
@@ -157,7 +159,6 @@ export function FieldEdit({
 }: FieldEditProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string | string[]>(() => draftFrom(value, control));
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const firstControl = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
   const pencil = useRef<HTMLButtonElement | null>(null);
@@ -225,27 +226,17 @@ export function FieldEdit({
   ];
   const unit = units ?? entry.unit;
 
-  const commit = async () => {
+  const commit = () => {
     const payload = payloadFrom(draft, control);
     if (typeof payload === "number" && Number.isNaN(payload)) {
       setError("Enter a number.");
       return;
     }
-    setBusy(true);
     setError(null);
-    try {
-      await onSave(payload);
-      returnFocus.current = true;
-      setOpen(false);
-      onOpenChange?.(false);
-    } catch {
-      // Left open, holding what was typed. A refused write that closed the
-      // box would make the reader type it again to find out whether it was
-      // their value or the connection that was the problem.
-      setError("Could not save. Your value is still here — try again.");
-    } finally {
-      setBusy(false);
-    }
+    onSave(payload);
+    returnFocus.current = true;
+    setOpen(false);
+    onOpenChange?.(false);
   };
 
   const cancel = () => {
@@ -262,6 +253,10 @@ export function FieldEdit({
       onKeyDown={(e) => {
         if (e.key === "Escape") {
           e.preventDefault();
+          // And no further: the subform dialog listens for Escape on the
+          // document, so without this one keystroke discards the draft AND
+          // shuts the dialog the reader was working in.
+          e.stopPropagation();
           cancel();
           return;
         }
@@ -270,7 +265,7 @@ export function FieldEdit({
         // selection they were still building.
         if (e.key === "Enter" && control !== "multiselect") {
           e.preventDefault();
-          void commit();
+          commit();
         }
       }}
     >
@@ -282,8 +277,7 @@ export function FieldEdit({
           }}
           className="exact-elig__input"
           value={typeof draft === "string" ? draft : ""}
-          disabled={busy}
-          onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => setDraft(e.target.value)}
         >
           <option value="">—</option>
           {control === "boolean"
@@ -306,8 +300,7 @@ export function FieldEdit({
           multiple
           className="exact-elig__input exact-elig__input--multi"
           value={Array.isArray(draft) ? draft : []}
-          disabled={busy}
-          onChange={(e) =>
+            onChange={(e) =>
             setDraft(Array.from(e.target.selectedOptions).map((o) => o.value))
           }
         >
@@ -327,21 +320,18 @@ export function FieldEdit({
           type={inputType(control)}
           inputMode={control === "number" ? "decimal" : undefined}
           value={typeof draft === "string" ? draft : ""}
-          disabled={busy}
-          onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => setDraft(e.target.value)}
         />
       )}
       {unit ? <span className="exact-elig__units">{unit}</span> : null}
       <button
         type="button"
         className="exact-elig__save"
-        onClick={() => void commit()}
-        disabled={busy}
-        aria-busy={busy}
+        onClick={commit}
       >
-        {busy ? "Saving…" : "Save"}
+        Save
       </button>
-      <button type="button" className="exact-elig__cancel" onClick={cancel} disabled={busy}>
+      <button type="button" className="exact-elig__cancel" onClick={cancel}>
         Cancel
       </button>
       {error ? (
