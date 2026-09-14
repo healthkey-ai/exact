@@ -227,6 +227,15 @@ export function useQueuedPatientFields(
   // Whose verdicts the state below belongs to. A patient switch builds a new
   // writer while the old one's flush is still in the air, and that answer
   // lands afterwards — under the new patient, about the previous one's row.
+  //
+  // Claimed in an EFFECT, not during render. React invokes a `useMemo`
+  // factory twice under StrictMode and keeps one of the two results, so a ref
+  // assigned inside the factory ends up naming the instance that was thrown
+  // away — and every callback of the instance actually in use then fails its
+  // own ownership check. Every entry point in this repo mounts under
+  // StrictMode, so that is not an edge case, it is the behaviour: the write
+  // went out, nothing was retired, no re-read was started, and "Saving…" sat
+  // there for ever. An effect runs only for the instance React kept.
   const writerRef = useRef<PatientFieldWriter | null>(null);
   const writer = useMemo(() => {
     if (!can) {
@@ -252,7 +261,7 @@ export function useQueuedPatientFields(
       (fields) => live().setPatientFields!(fields),
       {
         onSettled: (field) => {
-          if (writerRef.current !== built) return;
+          if (writerRef.current && writerRef.current !== built) return;
           owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
           // Superseded: a newer edit to this field has not been answered yet,
           // and ITS value is what the row is showing.
@@ -268,14 +277,14 @@ export function useQueuedPatientFields(
         onBatchSettled: () => {
           const reported = settledFields.current;
           settledFields.current = [];
-          if (writerRef.current !== built) return;
+          if (writerRef.current && writerRef.current !== built) return;
           void settledRef.current().then(() => {
-            if (writerRef.current !== built) return;
+            if (writerRef.current && writerRef.current !== built) return;
             retire(reported);
           });
         },
         onError: (fields) => {
-          if (writerRef.current !== built) return;
+          if (writerRef.current && writerRef.current !== built) return;
           const settled = fields.filter((field) => {
             owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
             return owed.current[field] === 0;
@@ -290,7 +299,6 @@ export function useQueuedPatientFields(
         },
       },
     );
-    writerRef.current = built;
     return built;
     // `can` rather than `state`: see above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -300,6 +308,14 @@ export function useQueuedPatientFields(
   // navigating away, or the host switching patients — which rebuilds the
   // writer and runs this cleanup against the OLD one, carrying edits made for
   // the previous patient.
+  useEffect(() => {
+    writerRef.current = writer;
+    return () => {
+      // Only if it is still ours: a later writer has already claimed it.
+      if (writerRef.current === writer) writerRef.current = null;
+    };
+  }, [writer]);
+
   useEffect(() => {
     if (!writer) return;
     return () => {

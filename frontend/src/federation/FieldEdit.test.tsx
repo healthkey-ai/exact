@@ -5,6 +5,7 @@
 // said it could be written, or a save that does not reach the record, or an
 // error shown for a write that succeeded. All three are about the wiring.
 
+import { StrictMode } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -879,6 +880,56 @@ describe("saving", () => {
     // has already moved past.
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByText("14")).toBeInTheDocument();
+  });
+
+  it("retires the optimistic value under StrictMode, which is how it is mounted", async () => {
+    // Regression: found by /qa on 2026-09-14 in the mock preview, where
+    // "Saving…" never went away and no re-read was ever started.
+    //
+    // The writer claimed ownership by assigning a ref during render, inside
+    // `useMemo`. React invokes that factory TWICE under StrictMode and keeps
+    // one of the two results, so the ref named the instance that was thrown
+    // away — and every callback of the one actually in use then failed its
+    // own ownership check. The write went out, nothing was retired, and the
+    // match never recomputed, which is the whole point of the phase.
+    //
+    // Every entry point in this repo mounts under StrictMode. No test did,
+    // so the suite could not see it.
+    const state = fakeState({ writable: WRITABLE });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    render(
+      <StrictMode>
+        <QueryClientProvider client={queryClient}>
+          <TrialMatches
+            apiClient={api.client}
+            queryClient={queryClient}
+            patientInfo={{ disease: "multiple myeloma" }}
+            personId="p1"
+            state={state.adapter}
+          />
+        </QueryClientProvider>
+      </StrictMode>,
+    );
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[0],
+    );
+    await screen.findByText("Back to all trials");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    const before = api.detailRequests().length;
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+    // The two things the broken guard silently skipped.
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+    expect(api.detailRequests().length).toBeGreaterThan(before);
   });
 
   it("cancels without writing anything", async () => {
