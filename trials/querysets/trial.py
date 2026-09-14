@@ -196,6 +196,39 @@ def _csv_stripped(value):
     return [x.strip() for x in _csv(value)]
 
 
+def _has_location(**location_lookups):
+    """`Exists` over LocationTrial instead of a join plus `.distinct()`.
+
+    A join multiplies the trial by its locations, so the old form needed
+    `.distinct()` to put it back — and that cost twice.
+
+    It was slow: DISTINCT over the whole trial row across 18,065 join rows for
+    2,038 trials. The search action issues three counts over this scope, and a
+    country search took 13.4s end to end against 3,114 trials. The same answer
+    through `Exists` is ~300x cheaper (4.4s -> 0.014s for one count).
+
+    It was also wrong in a way nothing could see: `.distinct()` makes Django
+    compute `aggregate()` over a derived table, which is what broke
+    `BlankAttributeRecordsCount` (its CASE-WHEN strings name columns
+    unqualified) and 500'd every search carrying a country. That is fixed at
+    the counting end too, but the join was the reason the fix was needed.
+
+    `Exists` keeps one row per trial structurally, so neither problem arises.
+
+    NOTE: `with_distance_optimized` still ends in `.distinct()` and carries the
+    same latent 500 on `?distance=` and `?type=all`. It is untouched here and
+    on `main`/`dev`, where it is live — filed separately.
+    """
+    from trials.models import LocationTrial
+
+    return Exists(
+        LocationTrial.objects.filter(
+            trial=OuterRef('pk'),
+            **{f'location__{k}': v for k, v in location_lookups.items()},
+        )
+    )
+
+
 def _filter_disease(scope, value, _ctx):
     return scope.filter(disease__iexact=value.lower())
 
@@ -888,10 +921,10 @@ class TrialQuerySet(models.QuerySet):
             )
             if state_ids:
                 return self.filter(
-                    locationtrial__location__state_id__in=state_ids
-                ).distinct()
+                    _has_location(state_id__in=state_ids)
+                )
 
-        return self.filter(locationtrial__location__country_id__in=country_ids).distinct()
+        return self.filter(_has_location(country_id__in=country_ids))
 
     def by_distance(self, geo_point, distance, distance_units):
         if not geo_point or not distance or distance <= 0 or not distance_units:  # skip

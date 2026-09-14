@@ -41,27 +41,5 @@ class BlankAttributeRecordsCount:
             attr: Sum(RawSQL(sql_conditions[attr], []), output_field=BigIntegerField())
             for attr in sql_conditions
         }
-        # Re-derive the scope by primary key before aggregating.
-        #
-        # The CASE-WHEN strings name columns UNQUALIFIED (`age_low_limit`, not
-        # `trials_trial.age_low_limit`), which is fine while the aggregate runs
-        # against the table itself. It stops being fine the moment the scope
-        # carries a `.distinct()`, a join or a slice: Django then computes the
-        # aggregate over a DERIVED TABLE, whose select list does not carry those
-        # columns, and Postgres answers `column "age_low_limit" does not exist`
-        # — a 500 on the search endpoint.
-        #
-        # `by_location` is exactly such a scope (it joins LocationTrial and
-        # ends in `.distinct()`), so every search carrying a resolvable country
-        # hit this. Qualifying the columns would NOT help: the outer query's
-        # FROM holds only the derived table, so `trials_trial.age_low_limit`
-        # fails too, just with a different message.
-        #
-        # `pk__in` keeps the same set of trials — the ids come from the same
-        # scope — while giving the aggregate a plain, un-joined queryset to run
-        # against. It fixes the whole class rather than the one filter that
-        # happened to expose it, and it leaves the shared queryset code
-        # byte-identical to CancerBot's (docs/porting-from-cancerbot.md).
-        flat = Trial.objects.filter(pk__in=scope.values('pk'))
-        out = flat.aggregate(**aggregations)
+        out = scope.aggregate(**aggregations)
         return {k: v for k, v in out.items() if v is not None}
