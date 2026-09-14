@@ -12,6 +12,7 @@ import type { AxiosInstance } from "axios";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { sanitizeStoredFilters } from "./filters";
 import {
   PreferenceWriter,
   adapterPreferences,
@@ -378,6 +379,15 @@ export function useTrialsGraph({
  *  nothing. The filter panel is the same panel either way, and a panel that
  *  forgets on reload is a worse answer than a per-browser one.
  */
+/** How long the trial search waits for the saved filters before going
+ *  ahead without them.
+ *
+ *  Short: it is a single small GET against a service the host has already
+ *  authenticated, so the common case is a few milliseconds and the reader
+ *  never sees the wait. Long enough that the common case actually fits
+ *  inside it, which is the whole point — one search instead of two. */
+export const SAVED_FILTERS_GRACE_MS = 300;
+
 export function useSavedFilters(
   state: TrialStateAdapter | undefined,
   key: string,
@@ -389,6 +399,13 @@ export function useSavedFilters(
   reset: () => void;
   /** The last write did not land. */
   failed: boolean;
+  /** Which attempt this is. Changes whenever the reader behind the panel
+   *  changes, so a view keyed on it is rebuilt rather than reused. */
+  epoch: object;
+  /** True while the stored set is still being read, and for at most
+   *  `SAVED_FILTERS_GRACE_MS` after — the list must not be hostage to the
+   *  preferences service. */
+  pending: boolean;
 } {
   const hasAdapter = state != null;
   // Read through a ref so the memo below does not rebuild on every render —
@@ -463,35 +480,90 @@ export function useSavedFilters(
   // reverts what they just did, and only on a slow connection, which is the
   // hardest kind of bug to be told about.
   const editedRef = useRef(false);
+  // The gate is owned by the WRITER, and re-raised DURING the render that
+  // replaces it rather than in an effect afterwards.
+  //
+  // The writer, not the patient key: the two come apart when a host gains
+  // an adapter for the same patient — the panel was on `localStorage` a
+  // moment ago, the key never changed, and the gate would stay open while
+  // PROMOP's slower read was still in flight. It is the reader the answer
+  // is coming from that decides, and each writer has exactly one read.
+  //
+  // During render, because an effect is a render too late: by then the
+  // query observer has been handed the new key and has already fired for
+  // it, which is the very double request this exists to collapse.
+  const [gate, setGate] = useState<{ owner: object; pending: boolean }>({
+    owner: writer,
+    pending: true,
+  });
+  if (gate.owner !== writer) setGate({ owner: writer, pending: true });
+  // No `owner !== writer ? true : …` fallback beside it: React re-runs the
+  // component before committing the update above, so the render anybody
+  // observes already has the new owner. A fallback would be a second
+  // mechanism for the same thing — and, as it turned out, the one the
+  // tests were actually exercising.
+  const pending = gate.pending;
+  // Only the current writer's read may open it.
+  //
+  // The read path is already guarded — a torn-down effect sets `cancelled`
+  // — so what this actually covers is the CAP, which is not cleared when
+  // its writer is replaced: without it, one writer's cap opens the gate of
+  // a writer whose own answer has not arrived. The list then shows rows for
+  // the previous reader's filters until the successor's cap comes round.
+  const release = (owner: object) =>
+    setGate((current) =>
+      current.owner === owner ? { owner, pending: false } : current,
+    );
   useEffect(() => {
     editedRef.current = false;
     // The message described the PREVIOUS patient's row. Left standing it reads
     // as a failure to save this patient's filters, which nobody has tried yet.
     setFailed(false);
+    // No cleanup: a cap belonging to a replaced writer can only fire into
+    // `release`, which ignores it. Clearing it as well would be a second
+    // mechanism for the same thing, and untestable because the first already
+    // covers it.
+    setTimeout(() => release(writer), SAVED_FILTERS_GRACE_MS);
   }, [writer]);
 
   useEffect(() => {
     let cancelled = false;
     void transport
       .get()
-      .then((saved) => {
+      .then((raw) => {
         if (cancelled) return;
+        // Validated here rather than in each transport, so the adapter and
+        // the localStorage fallback are held to the same line: what comes
+        // back is a CLAIM about filters, not a `FilterState`.
+        const saved = sanitizeStoredFilters(raw);
         // Nothing saved is the common case and must not clobber the filters
         // the host seeded, so an empty object is treated as "no opinion".
-        if (!saved || Object.keys(saved).length === 0) return;
+        if (Object.keys(saved).length === 0) return;
         // `applied: false` when the reader edited while this was in flight:
         // the VALUES are dropped, because merging them over an edit visibly
         // reverts what they just did. The KEYS are reported either way, and
-        // that distinction is load-bearing. Ownership is what makes a cleared
-        // filter clearable — `userOwnedFilters` only tombstones a field it
-        // owns — and the transport has already read these keys, so without
-        // ownership they would be in every payload with no way to remove
-        // them. The reader would clear a filter and find it again on the next
-        // mount, with only Reset able to shift it.
+        // that distinction is load-bearing — ownership is what makes a
+        // cleared filter clearable, and the transport has already read these
+        // keys. An earlier version of this branch called `transport.forget()`
+        // here instead, which left them in every payload with no way to
+        // remove them.
         onLoadRef.current(saved, !editedRef.current);
       })
       .catch(() => {
         // Unreachable saved filters are not a reason to fail the search.
+      })
+      // `.finally`, so a read that FAILS opens the gate too — one that
+      // only opens on success holds the list for ever the day PROMOP is
+      // unreachable.
+      //
+      // But not a CANCELLED one. Ownership cannot tell those apart:
+      // StrictMode double-invokes the mount effect for the same writer, so
+      // the first read — the one whose effect has already been torn down —
+      // would open the gate belonging to the second, still in flight. Every
+      // entry point in this repo mounts under StrictMode, so that is the
+      // configuration the next person debugging this will be looking at.
+      .finally(() => {
+        if (!cancelled) release(writer);
       });
     return () => {
       cancelled = true;
@@ -538,7 +610,9 @@ export function useSavedFilters(
         writer.reset();
       },
       failed,
+      pending,
+      epoch: writer,
     }),
-    [writer, failed],
+    [writer, failed, pending],
   );
 }
