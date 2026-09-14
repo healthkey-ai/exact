@@ -52,6 +52,13 @@ export interface FakeApi {
   /** Leave `/form-settings/` unanswered, to see what renders while the option
    *  catalog is still in flight. */
   holdFormSettings: () => void;
+  /** Leave the NEXT list request unanswered, and hand back the release.
+   *
+   *  Anything about what the reader sees WHILE a request is in flight — the
+   *  stale-data dimming, a loading line — is unobservable against a fake that
+   *  resolves in the same tick: the in-flight state exists, but no assertion
+   *  can be scheduled inside it. */
+  deferNextList: () => () => void;
   /** Replace the graph payload's trials. Each entry is merged over the node
    *  the fake would have built for that trial. */
   setGraph: (trials: Array<Record<string, unknown>>) => void;
@@ -176,6 +183,12 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   };
   let failWith: number | null = null;
   let holdSettings = false;
+  let deferList: ((value: unknown) => void) | null = null;
+  // Separate from `deferList`, which is cleared the moment the request
+  // arrives: a deferral is "armed" from the call until the release, and the
+  // held request lives in the middle of that. Guarding on `deferList` alone
+  // would let a second arm through while the first request was still held.
+  let deferArmed = false;
   let truncateExport = false;
   let cutExport = false;
   let cutInsideQuote = false;
@@ -183,6 +196,9 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   let detailOverrides: Partial<TrialDetailResponse> = {};
   let graphOverrides: Array<Record<string, unknown>> | null = null;
   let heldDetail: { release: () => void } | null = null;
+
+  const isListUrl = (url: string) =>
+    url === "/trials/search/" || url === "/trials/search/match/";
 
   const respond = (url: string, body?: unknown) => {
     if (url.includes("form-settings")) {
@@ -271,15 +287,40 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     // for a narrowed request makes the fake agree with any implementation,
     // including one that ignores the filter — a test asserting "the wrong
     // rows are not shown" then cannot fail.
-    const ids = (body as { trial_ids?: string[] } | undefined)?.trial_ids;
-    if (ids !== undefined) {
+    const listData = () => {
+      const ids = (body as { trial_ids?: string[] } | undefined)?.trial_ids;
+      if (ids === undefined) return { data: response };
       const wanted = new Set(ids.map(String));
       const results = response.results.filter((t) => wanted.has(String(t.trialId)));
-      return Promise.resolve({
-        data: { ...response, results, itemsTotalCount: results.length },
+      return { data: { ...response, results, itemsTotalCount: results.length } };
+    };
+    // After the payload is decided, not instead of deciding it: a `trial_ids`
+    // request is a list request, and deferring only the unnarrowed ones would
+    // make `deferNextList` silently skip every state tab.
+    // Gated on the URL, not on "whatever reached the end of this function":
+    // an unrecognised path — `/normalize-ctomop-row/`, or the next endpoint
+    // somebody adds — would otherwise consume a deferral armed for the list,
+    // and the list request it was armed for would answer immediately while
+    // the test waited for a state it had already passed through.
+    if (deferList && isListUrl(url)) {
+      const arm = deferList;
+      deferList = null;
+      // The payload is decided NOW, not on release. A `setResponse` made while
+      // the request is held describes the NEXT response, not one the server
+      // has already been asked for — resolving `listData()` late would let a
+      // test retroactively change a response it is holding open, which is not
+      // a thing a server can do.
+      // Shallow-copied, so the held answer is this request's own object. The
+      // rows inside are still the array the test supplied — nothing mutates a
+      // response in place, and a fake that deep-copied would stop `trial()`
+      // identities matching, which several tests compare on.
+      const { data } = listData();
+      const held = { data: { ...data } };
+      return new Promise((resolve) => {
+        arm(() => resolve(held));
       });
     }
-    return Promise.resolve({ data: response });
+    return Promise.resolve(listData());
   };
 
   const record = (method: "get" | "post", url: string, a?: unknown, b?: unknown) => {
@@ -327,6 +368,45 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
     },
     holdFormSettings: () => {
       holdSettings = true;
+    },
+    deferNextList: () => {
+      // Two hops, because the release is handed out BEFORE the request it
+      // releases has been made. `deferList` is called when the request
+      // arrives and hands its resolver back through this closure.
+      //
+      // `released` is what makes the two orders equivalent. Without it,
+      // releasing before the request arrived called the initial no-op and the
+      // request then hung for ever — a test that armed the deferral, released
+      // it, and only then triggered the request would time out rather than
+      // fail, which is the least useful way for a test to be wrong.
+      if (deferArmed) {
+        // Loud, because the failure is silent: the second arm would replace
+        // the first closure, the first `release()` would flip a flag nobody
+        // reads, and that request would hang — a test that TIMES OUT rather
+        // than fails, which is what this whole mechanism was fixed to stop
+        // doing.
+        throw new Error(
+          'deferNextList is already armed: release the held request before ' +
+            'arming another, or the first one hangs.',
+        );
+      }
+      deferArmed = true;
+      let released = false;
+      let resolveArrived: (() => void) | null = null;
+      deferList = (resolver) => {
+        if (released) {
+          (resolver as () => void)();
+          return;
+        }
+        resolveArrived = resolver as () => void;
+      };
+      return () => {
+        released = true;
+        deferArmed = false;
+        deferList = null;
+        resolveArrived?.();
+        resolveArrived = null;
+      };
     },
     truncateNextExport: () => {
       truncateExport = true;
@@ -428,28 +508,56 @@ export function fakeState(
   return { adapter, favorites, registered, reads, record };
 }
 
+export interface RenderTrialMatchesResult extends RenderResult {
+  /** Re-render with different props, keeping the same QueryClient — which is
+   *  what a host re-rendering looks like from in here. A fresh `render` would
+   *  start a new cache and prove nothing about what survives. */
+  setProps: (next: TrialMatchesProps) => void;
+  queryClient: QueryClient;
+}
+
+export interface TrialMatchesProps {
+  patientInfo?: PatientInfo | null;
+  personId?: string | number;
+  // Typed, not `Record<string, unknown>` + `as never`: that turned off
+  // checking for every test, so a typo'd filter name compiled and the
+  // test asserted nothing.
+  initialFilters?: FilterState;
+  renderMap?: MapRenderer;
+  state?: TrialStateAdapter;
+}
+
 export function renderTrialMatches(
   api: FakeApi,
-  props: {
-    patientInfo?: PatientInfo | null;
-    personId?: string | number;
-    // Typed, not `Record<string, unknown>` + `as never`: that turned off
-    // checking for every test, so a typo'd filter name compiled and the
-    // test asserted nothing.
-    initialFilters?: FilterState;
-    renderMap?: MapRenderer;
-    state?: TrialStateAdapter;
-  } = {},
-): RenderResult {
+  props: TrialMatchesProps = {},
+): RenderTrialMatchesResult {
   const queryClient = new QueryClient({
     defaultOptions: {
       // A test that retries hides the error path this suite is here to
       // exercise, and one that refetches on focus makes the request log
       // depend on which window jsdom thinks is focused.
+      //
+      // A test that wants a background refetch asks for one through the
+      // returned `queryClient`. Not a preference: no window-focus trigger
+      // could be made to fire here. Measured four ways against this suite —
+      // `focusManager.setFocused(false)` then `(true)`; the same with
+      // `Date.now` stubbed past `staleTime` before the render; the same with
+      // `refetchOnWindowFocus: 'always'`, which bypasses staleness
+      // altogether; and real `visibilitychange` + `focus` DOM events, which
+      // are what React Query subscribes to. All four left the request count
+      // at one.
+      //
+      // A review measured the opposite, with a `Date.now` stub, and put it
+      // down to `staleTime: 30_000` in `hooks.ts`. That did not reproduce
+      // here, and `'always'` rules staleness out on its own. The cause is
+      // unresolved, which is the reason not to build on the trigger: a test
+      // driven by something we cannot agree fires is a test that can pass by
+      // never reaching its own assertion. `refetchQueries` is unambiguous and
+      // reaches the same state.
       queries: { retry: false, refetchOnWindowFocus: false },
     },
   });
-  return render(
+  const tree = (next: TrialMatchesProps) => (
     <QueryClientProvider client={queryClient}>
       <TrialMatches
         apiClient={api.client}
@@ -457,15 +565,32 @@ export function renderTrialMatches(
         // `??` would swap in the default for an EXPLICIT null, so a test
         // about the no-patient path would quietly run with a patient.
         patientInfo={
-          props.patientInfo === undefined
+          next.patientInfo === undefined
             ? { disease: "multiple myeloma" }
-            : props.patientInfo
+            : next.patientInfo
         }
-        personId={props.personId}
-        initialFilters={props.initialFilters}
-        renderMap={props.renderMap}
-        state={props.state}
+        personId={next.personId}
+        initialFilters={next.initialFilters}
+        renderMap={next.renderMap}
+        state={next.state}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  // Cumulative, not merged against the original every time: two consecutive
+  // `setProps` calls would otherwise discard the first, so a test that changed
+  // the patient and then the person id would silently be testing the original
+  // patient again. Merged rather than replaced for the same class of reason —
+  // a `setProps({ patientInfo })` over a render carrying a `state` adapter
+  // must not unmount the adapter and turn a bookmark assertion into one about
+  // the no-adapter path.
+  let current: TrialMatchesProps = props;
+  const result = render(tree(current));
+  return {
+    ...result,
+    queryClient,
+    setProps: (next: TrialMatchesProps) => {
+      current = { ...current, ...next };
+      result.rerender(tree(current));
+    },
+  };
 }

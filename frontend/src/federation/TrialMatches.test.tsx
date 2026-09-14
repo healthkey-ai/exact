@@ -14,7 +14,7 @@
 // out, and when, is the thing that was wrong.
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { StrictMode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -2093,6 +2093,184 @@ describe("leaving the page without unmounting", () => {
     expect(remove.mock.calls.filter(([type]) => type === "pagehide")).toHaveLength(1);
     add.mockRestore();
     remove.mockRestore();
+  });
+});
+
+describe("the page number, and what should and should not reset it", () => {
+  // Three of the five behaviours #426 names had no test. The page reset runs
+  // off a stringified query key, so what resets the page is decided by what
+  // lands in that key — not by an explicit list of controls. Both directions
+  // therefore need asserting: a control that belongs in the key, and a
+  // re-render that does not.
+
+  it("returns to the first page when a filter changes", async () => {
+    // The half of this the existing debounce test does not reach: it starts
+    // on page 1 and stays there, so `params.page` is absent whether or not
+    // anything resets. A reader on page 7 who types a title filter is looking
+    // at page 7 of a different list.
+    //
+    // The sort test alone does not cover this either. Both ride the same
+    // stringified key today, so one passing says nothing about the other the
+    // moment that key becomes an explicit list of controls — which is exactly
+    // what makes the mechanism worth pinning from both ends.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await user.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    await user.click(screen.getByRole("button", { name: /Filter Results/ }));
+    await user.type(await screen.findByLabelText("Title"), "myeloma");
+    await vi.advanceTimersByTimeAsync(500);
+
+    await waitFor(() => expect(listed(api).length).toBe(3));
+    const last = listed(api)[listed(api).length - 1];
+    expect(last.params.searchTitle).toBe("myeloma");
+    expect(last.params.page).toBeUndefined();
+    vi.useRealTimers();
+  });
+
+  it("returns to the first page when the sort changes", async () => {
+    // `sort` reorders the whole result set, so page 2 of the new order has
+    // nothing to do with page 2 of the old one — the reader would land in
+    // the middle of a list they have not seen the start of.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: /Sort/ }),
+      "matchScore",
+    );
+
+    await waitFor(() => expect(listed(api).length).toBe(3));
+    const last = listed(api)[2];
+    expect(last.params.sort).toBe("matchScore");
+    expect(last.params.page).toBeUndefined();
+  });
+
+  it("stays where the reader is when the host merely re-renders", async () => {
+    // The other direction, and the one that cannot be seen by reading: a host
+    // that builds `patientInfo` inline re-creates the object on every one of
+    // its own renders. Keyed on the object's IDENTITY, that resets the page
+    // (and closes an open trial) for a reason the reader has no way to
+    // connect to anything they did. `patientInfoKey` stringifies it for
+    // exactly this, and nothing was holding that in place.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const view = renderTrialMatches(api, {
+      patientInfo: { disease: "multiple myeloma" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    // A NEW object with the same content — what a host's re-render produces.
+    view.setProps({ patientInfo: { disease: "multiple myeloma" } });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "2" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+    expect(listed(api).length).toBe(2);
+  });
+
+  it("...but a genuinely different patient does reset it", async () => {
+    // Non-vacuity for the test above: a reset keyed on nothing at all would
+    // pass it. This is also the behaviour that must not be lost in fixing the
+    // identity problem — page 2 of one patient's matches is not a place to
+    // leave a reader who just became a different patient.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const view = renderTrialMatches(api, {
+      patientInfo: { disease: "multiple myeloma" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    view.setProps({ patientInfo: { disease: "breast cancer" } });
+
+    // On the pager, not on the request log — the same reason the 404 test
+    // gives. A new disease changes the query key, so a request DOES go out
+    // with the stale page before the reset lands, and the log passes through
+    // `1, 2, 2, 1`. Asserting "the last request has no page" then depends on
+    // catching the log after its final entry, which is a race: measured, it
+    // reached that state every time given a moment, and missed it two runs in
+    // three under `waitFor` alone. Where the reader ends up is the claim.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "1" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "2" }),
+    ).not.toHaveAttribute("aria-current", "page");
+  });
+});
+
+describe("the stale-data dimming", () => {
+  // The defect this suite's own header records: the indicator was keyed on
+  // `isFetching`, which is true for ANY request on the query — including a
+  // background refetch of the data already on screen. The list dimmed and
+  // said "Updating…" while showing rows that were not going to change.
+  //
+  // Both halves need a request held open: against a fake that resolves in the
+  // same tick the in-flight state exists but nothing can be asserted inside
+  // it. `deferNextList` is what makes that observable.
+
+  it("appears while a page the reader asked for is on its way", async () => {
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const release = api.deferNextList();
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+
+    // The rows on screen belong to page 1 while page 2 is in flight — they
+    // are the wrong rows, and saying so is the point.
+    expect(await screen.findByText("Updating…")).toBeInTheDocument();
+
+    release();
+    await waitFor(() => expect(screen.queryByText("Updating…")).toBeNull());
+  });
+
+  it("does not appear for a refetch of the rows already on screen", async () => {
+    // The refetch is driven through the QueryClient rather than by faking a
+    // window focus: `focusManager.setFocused` produces no refetch under jsdom
+    // (measured — the request never goes out), so a test written that way
+    // would pass without ever reaching the state it claims to check. What it
+    // reproduces is the same condition: a background refetch of the key
+    // already on screen, which is what a window focus, a reconnect or an
+    // invalidation all come down to, and what the original defect dimmed the
+    // list for.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const view = renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    expect(await screen.findByText("Trial 1")).toBeInTheDocument();
+
+    const release = api.deferNextList();
+    await act(async () => {
+      void view.queryClient.refetchQueries();
+    });
+
+    // Asserted while the request is still open — after it resolves, the
+    // correct and the incorrect implementation look identical, which is what
+    // made the original bug invisible to every test written before it.
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect(screen.queryByText("Updating…")).toBeNull();
+    expect(screen.getByText("Trial 1")).toBeInTheDocument();
+
+    // Awaited, not just released: a refetch still in flight when the test
+    // ends settles into an unmounted tree, and the React warning lands on
+    // whichever test happens to be running by then.
+    release();
+    await waitFor(() => expect(view.queryClient.isFetching()).toBe(0));
   });
 });
 
