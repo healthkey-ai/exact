@@ -223,8 +223,15 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         if holder is not None:
             return holder[0]
 
+        from trials.services.patient_info.resolve import PATIENT_INFO_KEYS
+
         data = getattr(self.request, 'data', None)
-        has_inline = isinstance(data, dict) and bool(data.get('patient_info'))
+        # Both spellings: the camelCase one is what docs/api.md documents,
+        # and treating it as "no inline payload" is what made the documented
+        # request answer with the unfiltered catalog (#375).
+        has_inline = isinstance(data, dict) and any(
+            bool(data.get(key)) for key in PATIENT_INFO_KEYS
+        )
 
         try:
             patient_info = resolve_patient_info(self.request)

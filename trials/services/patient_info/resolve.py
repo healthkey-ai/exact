@@ -45,7 +45,9 @@ import json
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
-from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from django.db.models import (
+    DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField, Q,
+)
 
 from trials.services.patient_info.normalize import normalize_patient_info
 
@@ -63,9 +65,12 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
-    patient_info_data = _get_body_field(request, 'patient_info')
-    if patient_info_data:
-        return _build_in_memory(patient_info_data)
+    patient_info_data, sent_as = _patient_info_payload(request)
+    if sent_as is not None:
+        if not patient_info_data:
+            # `{}` or `null` under the key: said, and says nothing.
+            return None
+        return _patient_from_inline(patient_info_data, sent_as)
 
     person_id = _extract_person_id(request)
     if person_id:
@@ -84,6 +89,46 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
         return _resolve_from_ctomop(person_id)
 
     return None
+
+
+#: Both spellings of the inline payload key. `docs/api.md` documents the
+#: camelCase one and always has; the parser only ever read the snake_case one,
+#: and an unread key is not an error — so the documented request ran the
+#: matcher with NO patient and answered 200 with the unfiltered catalog.
+#: Measured against a real corpus: 2 376 matching trials under `patient_info`,
+#: 18 462 under `patientInfo` (#375).
+#:
+#: Accepted rather than rejected, because the docs are the contract an
+#: integrator reads and this is the shape they were told to send. The inner
+#: keys were always handled either way — `_to_snake_case` does that — so only
+#: the outer one was ever wrong.
+PATIENT_INFO_KEYS = ('patient_info', 'patientInfo')
+
+
+def _patient_info_payload(request):
+    """The inline payload and the key it arrived under, or `(None, None)`.
+
+    A key that is PRESENT but empty is still the caller's statement — "I have
+    no patient" — and it ends resolution here rather than falling through to
+    `person_id`. Gating on truthiness made `{"patient_info": {}, "person_id":
+    7}` do a person lookup, contradicting both the documented meaning of the
+    empty object and this module's own inline-first precedence.
+    """
+    data = getattr(request, 'data', None)
+    if not isinstance(data, dict):
+        return None, None
+    # A usable payload wins over an empty one, whichever key it came under:
+    # `{"patient_info": null, "patientInfo": {...}}` is a caller sending both
+    # spellings, and answering "no patient" because the first one is empty
+    # would discard the one they filled in. Between two usable payloads the
+    # snake_case key still decides — it is the existing contract.
+    present = [key for key in PATIENT_INFO_KEYS if key in data]
+    for key in present:
+        if data[key]:
+            return data[key], key
+    if present:
+        return data[present[0]], present[0]
+    return None, None
 
 
 def _get_body_field(request, name: str) -> Any:
@@ -125,17 +170,186 @@ def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
     return build_patient_info_from_ctomop_row(row)
 
 
+#: How many unrecognised keys the 400 quotes back, and how long each may be.
+#: `pagination.py` made the same call for `?limit=` two files away — "don't
+#: echo unbounded user input back in the error body" — and this is the same
+#: shape: a payload with 5 000 junk keys produced a 69 kB response, and one
+#: 200 000-character key produced a 200 kB one. Naming a few is what makes the
+#: error useful; naming all of them is a megaphone.
+_QUOTED_KEYS = 10
+_QUOTED_KEY_LENGTH = 64
+
+
+#: The one payload key that is genuinely many-to-many. Named here, and used
+#: both by the recognition test and by the pop in `_build_in_memory`, so the
+#: two cannot drift: it is NOT a model field — it is attached as a synthetic
+#: `_`-prefixed attribute, because an unsaved instance cannot hold an M2M — so
+#: a recognition test built from `_meta` alone refused the documented key.
+#:
+#: `concomitant_medications` was popped here too and is not an M2M at all: it
+#: is a `TextField` with a column, which the queryset
+#: (`_filter_concomitant_medications`) and the matcher
+#: (`_match_concomitant_medications`, through `get_value`) both read AS a
+#: column. Nothing anywhere reads the `_concomitant_medications` the pop
+#: created. So the pop only ever deleted the value — silently, and
+#: asymmetrically: the snake_case spelling was popped and lost, while the
+#: camelCase one escaped by accident and worked. Not popped now, so both
+#: spellings set the column.
+M2M_PAYLOAD_KEYS = ('pre_existing_condition_categories',)
+
+
+def _known_attribute_names():
+    """Every name `_build_in_memory` will actually read off a payload.
+
+    The set has to be exactly that, and getting it wrong in either direction
+    puts back the defect this module is fixing:
+
+    * too narrow and a field EXACT does use is answered 400 — the M2M keys
+      have no column, so a column-only test refused `preExistingConditionCategories`
+      outright;
+    * too wide and a payload naming only something we DROP passes the check
+      and produces the blank patient again, one step further along.
+
+    `geo_point` is the second case and is deliberately absent. It is an
+    attribute on the instance, and it is what the distance filter reads — but
+    it is not in `_FIELDS`, so `_build_in_memory` discards a caller-supplied
+    one. EXACT computes it from the country and postal code instead. A payload
+    naming only `geo_point` therefore tells us nothing we will use, and 400 is
+    the honest answer.
+    """
+    from trials.services.patient_info.patient_info import PatientInfo
+
+    names = {
+        field.name
+        for field in PatientInfo._meta.get_fields()
+        if hasattr(field, 'column')
+    }
+    names.update(M2M_PAYLOAD_KEYS)
+    return names
+
+
+def _says_something(value):
+    """Whether a value tells us anything about a patient.
+
+    `[]` does — for the M2M list it is the statement "none of these", which is
+    a fact rather than silence. `None`, `''` and whitespace do not: a field
+    holding three spaces is an empty form field, and building a patient whose
+    disease is `'   '` narrows the corpus on it.
+
+    `False` and `0` DO. They are answers.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _patient_from_inline(payload, sent_as):
+    """The inline payload, in three states rather than two.
+
+    `_build_in_memory` filters a payload down to known fields, and the gate
+    above it tested only that the object was non-empty. So a payload whose
+    keys this service does not know passed the gate and emptied at the filter,
+    and what came out was a BLANK `PatientInfo` — not `None`. Every downstream
+    "is there a patient?" check passed, the matcher found nothing standing in
+    the way, and the answer was `eligible`, score 100, for every trial (#466).
+
+    Three states, because two cannot separate the caller who typed a field
+    name wrong from the one who has nothing to say yet:
+
+        no name we recognise  -> 400. You meant something we cannot read.
+        names but no values   -> None. You read the contract; there is just
+                                 nothing in it yet — a form-backed client
+                                 serialising every field as null is well
+                                 behaved, and answering it 400 would be wrong.
+        anything else         -> a patient.
+
+    Sending no key at all is a fourth thing and unchanged: a search without a
+    patient, which is supported.
+
+    Deciding here rather than inside `_build_in_memory` because that function
+    is shared: the CTOMOP adapter and `explain_trial_match` call it too, and a
+    sparse CTOMOP row would otherwise answer the caller 400 about a
+    `patient_info` key their request never contained — and bypass the view's
+    deliberate choice to let a `person_id` failure surface as a 500 rather
+    than be masked as a misleading 400.
+    """
+    from rest_framework.exceptions import ValidationError
+
+    # Snake-cased first: `patientAge` and `patient_age` are the same field, and
+    # the M2M keys have to be seen through the same lens as the rest — reading
+    # the raw keys meant `preExistingConditionCategories` was neither
+    # recognised nor popped, so the documented spelling of a field EXACT
+    # curates was refused, and its value silently dropped in a mixed payload.
+    snake = _to_snake_case(payload)
+    known = _known_attribute_names()
+    recognised = {name for name in snake if name in known}
+
+    # Asked in this order because the two questions compose, and the first
+    # version short-circuited: it refused only when NOTHING was recognised, so
+    # one recognised-but-empty key disarmed the check entirely and
+    # `{"patient_age": null, "diseas": "myeloma"}` fell through to "no
+    # patient" — the whole catalog, 200, no signal. Straight back to #375.
+    #
+    # That combination is not a curiosity: the form-backed client the empty
+    # state exists FOR — every field serialised, most of them null — is
+    # exactly the client most likely to also carry a misspelled one.
+    if any(_says_something(snake[name]) for name in recognised):
+        # Something usable arrived. Unrecognised keys alongside it are not an
+        # error: a client sending a field EXACT has not heard of yet, next to
+        # ones it has, described a patient.
+        return _build_in_memory(payload)
+
+    if set(snake) - recognised:
+        # Nothing usable, and something we could not read. That is a caller
+        # who meant to describe a patient and was not understood.
+        raise ValidationError({sent_as: _no_recognised_fields_message(payload)})
+
+    # Every name recognised, no value in any of them: the contract was read
+    # and there is nothing in it yet.
+    return None
+
+
+def _no_recognised_fields_message(payload):
+    """Names the keys the CALLER typed, not what they became.
+
+    The point of listing them is that "invalid patient_info" sends the reader
+    back to guess which of forty fields was wrong. Listing the snake_cased
+    forms undoes that — `patientAgee` came back as `patient_agee`, a string the
+    caller never wrote.
+    """
+    keys = [str(key) for key in payload]
+    quoted = [
+        key[:_QUOTED_KEY_LENGTH] + ('…' if len(key) > _QUOTED_KEY_LENGTH else '')
+        for key in sorted(keys)[:_QUOTED_KEYS]
+    ]
+    listed = ', '.join(quoted)
+    if len(keys) > _QUOTED_KEYS:
+        listed += f' (and {len(keys) - _QUOTED_KEYS} more)'
+    return (
+        'No recognised patient fields. EXACT understood none of: '
+        + listed
+        + '. Send an empty object to search without a patient.'
+    )
+
+
 def _build_in_memory(data: dict) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields."""
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
 
-    # Extract M2M fields that can't be set on an unsaved instance
-    pre_existing_ids = data.pop('pre_existing_condition_categories', None) or []
-    concomitant_ids = data.pop('concomitant_medications', None) or []
-
-    # Convert camelCase keys to snake_case if needed
+    # Converted BEFORE the M2M pop, not after. The pops name the snake_case
+    # keys, so `preExistingConditionCategories` — the spelling the docs
+    # publish, and the one EXACT's own serializer emits — was never popped and
+    # then dropped by the field filter, because an M2M has no column. The
+    # value vanished, with a 200: measured, `{"preExistingConditionCategories":
+    # [1]}` produced a patient with no categories while the snake_case form
+    # produced the real one.
     snake_data = _to_snake_case(data)
+
+    # Extract the M2M field, which cannot be set on an unsaved instance
+    pre_existing_ids = snake_data.pop(M2M_PAYLOAD_KEYS[0], None) or []
 
     # Filter to known model fields only
     model_fields = {f.name for f in PatientInfo._meta.get_fields() if hasattr(f, 'column')}
@@ -153,12 +367,39 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     pi = PatientInfo(**filtered)
 
     # Attach M2M as synthetic attributes so matchers can read them
+    # By id OR by code, because the documented example uses codes and the
+    # lookup only ever took ids. That mismatch was invisible while the
+    # camelCase spelling of this key was being dropped before it got here: the
+    # documented request lost the value silently. Reaching the lookup, it
+    # raised `ValueError: Field 'id' expected a number but got 'cardiacIssues'`
+    # — a 400 saying nothing about which key or why. `code` is unique on the
+    # model, so both readings are unambiguous and neither is a guess.
+    categories = []
     if pre_existing_ids:
-        categories = list(PreExistingConditionCategory.objects.filter(pk__in=pre_existing_ids))
-    else:
-        categories = []
+        ids, codes = [], []
+        for value in pre_existing_ids:
+            # `bool` before `int`, because in Python it IS one: `true` would
+            # otherwise be looked up as primary key 1 and select whichever
+            # category happens to hold it.
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int):
+                ids.append(value)
+            elif isinstance(value, str):
+                # A digit string is an id, which is what `pk__in` accepted
+                # before this — form encoding turns every value into a string,
+                # so reading `"12"` as a code would silently drop it.
+                (ids if value.strip().lstrip('-').isdigit() else codes).append(
+                    int(value) if value.strip().lstrip('-').isdigit() else value
+                )
+        lookups = Q()
+        if ids:
+            lookups |= Q(pk__in=ids)
+        if codes:
+            lookups |= Q(code__in=codes)
+        if ids or codes:
+            categories = list(PreExistingConditionCategory.objects.filter(lookups))
     pi._pre_existing_condition_categories = categories
-    pi._concomitant_medications = concomitant_ids
 
     normalize_patient_info(pi)
     return pi
