@@ -340,15 +340,51 @@ class PhrTokenProvider(TokenProvider):
         if not _has_live_exp(payload):
             return None
 
+        url = settings.PHR_INTROSPECT_URL
+        if not url:
+            # Allowed but never configured, which is checkable for free — so it
+            # goes with the other no-network checks, ahead of the budget. Behind
+            # it, an unconfigured deployment spends its whole allowance on calls
+            # that were never going to happen, and anything added between the
+            # two would inherit an allowance already gone.
+            logger.debug("phr introspection allowed but no endpoint configured")
+            return None
+
         if not _introspect_budget.claim(
             settings.PHR_INTROSPECT_MAX_CALLS,
             settings.PHR_INTROSPECT_RATE_INTERVAL,
         ):
             return None
 
+        # RFC 7662 §2.1 requires the endpoint be protected, so send client
+        # credentials when we have them.
+        auth = None
+        introspect_auth = settings.PHR_INTROSPECT_AUTH
+        # `partition` keeps everything after the first ":" as the secret, so a
+        # secret containing a colon survives intact.
+        client_id, _, client_secret = introspect_auth.partition(":")
+        if client_id and client_secret:
+            auth = (client_id, client_secret)
+        elif introspect_auth:
+            # Both halves, not merely a colon somewhere: a trailing colon
+            # ("id:") sends an empty password and a leading one (":secret") an
+            # empty client_id. Either goes out as a Basic header that reads as
+            # authenticated in the portal's log and is not — which is the whole
+            # thing this branch exists to refuse.
+            logger.warning(
+                "PHR_INTROSPECT_AUTH ignored: expected 'client_id:client_secret'"
+            )
+
         try:
             resp = httpx.post(
-                settings.PHR_INTROSPECT_URL, json={"token": token}, timeout=5
+                url,
+                # §2.1: form-encoded, not JSON. A spec-compliant portal parses
+                # the body as a form and sees no `token` parameter at all in
+                # the JSON spelling — it answers "not active" for a token that
+                # is perfectly good.
+                data={"token": token, "token_type_hint": "access_token"},
+                auth=auth,
+                timeout=5,
             )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
