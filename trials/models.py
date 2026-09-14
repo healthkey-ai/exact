@@ -445,9 +445,9 @@ class Trial(TimeStampMixin):
     omop_therapies_excluded = models.JSONField(blank=True, null=False, default=list)
     # OMOP-mapped drug-class "types" (promop ADR 0002, reverses decision A/#4502):
     # the patient now carries pre-expanded class concept_ids (promop#370), so these
-    # class-concept-id columns CAN overlap. Filled upstream by CB (#4633); read by
-    # EXACT only when the OMOP TherapyMatchProfile + EXACT_OMOP_THERAPY_TYPES are
-    # active (#285). Mirrors CB (#4631).
+    # class-concept-id columns CAN overlap. Filled upstream by CB (#4633); read by EXACT
+    # under the OMOP TherapyMatchProfile (#285 folded types into the base flag). Mirrors
+    # CB (#4631).
     omop_therapy_types_required = models.JSONField(blank=True, null=False, default=list)
     omop_therapy_types_excluded = models.JSONField(blank=True, null=False, default=list)
     omop_therapy_components_required = models.JSONField(blank=True, null=False, default=list)

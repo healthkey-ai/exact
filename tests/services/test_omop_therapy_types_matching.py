@@ -1,8 +1,8 @@
-"""OMOP-native drug-class TYPE matching under EXACT_OMOP_THERAPY_TYPES (#285).
+"""OMOP-native drug-class TYPE matching — folded into the base EXACT_OMOP_THERAPY flag (#285).
 
 promop ADR 0002 reverses "types are not OMOP-mapped": the patient now carries
-pre-expanded drug-class concept_ids (PatientInfo.therapy_type_ids,
-promop#370). With EXACT_OMOP_THERAPY + EXACT_OMOP_THERAPY_TYPES on:
+pre-expanded drug-class concept_ids (PatientInfo.therapy_type_ids, promop#370). Types
+are part of the one OMOP therapy projection (no separate flag). With EXACT_OMOP_THERAPY on:
 - the profile flips therapy_types_* -> omop_therapy_types_* (class concept_id columns);
 - derive returns the consumer's class concept_ids as type_values (no category lookup);
 - matching is class-concept_id overlap, FAIL-CLOSED on unknown/empty patient classes.
@@ -15,7 +15,7 @@ from django.test import override_settings
 from trials.models import Trial
 from trials.services.omop.therapy_graph import derive_component_and_type_values
 from trials.services.therapy_match_profile import (
-    get_therapy_match_profile, OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE,
+    get_therapy_match_profile,
     OMOP_THERAPY_MATCH_PROFILE, LEGACY_THERAPY_MATCH_PROFILE,
 )
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
@@ -34,7 +34,8 @@ INVALID_CLASS = '35800002'  # present in the mirror but invalidated (invalid_rea
 _RID = 1                    # the seeded active mirror release_id
 
 
-OMOP_TYPES = dict(EXACT_OMOP_THERAPY=True, EXACT_OMOP_THERAPY_TYPES=True)
+# Types are folded into the base flag (#285) — no separate EXACT_OMOP_THERAPY_TYPES.
+OMOP_TYPES = dict(EXACT_OMOP_THERAPY=True)
 
 
 def _mirror_concept(concept_id, invalid_reason=None):
@@ -71,17 +72,15 @@ def _active_mirror(db):
 # ── profile selection ────────────────────────────────────────────────
 
 def test_profile_selection_matrix():
-    with override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_THERAPY_TYPES=False):
+    # Types are folded into the base flag: base off -> legacy; base on -> the one OMOP
+    # profile, which now names the omop_therapy_types_* columns.
+    with override_settings(EXACT_OMOP_THERAPY=False):
         assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
-    with override_settings(EXACT_OMOP_THERAPY=True, EXACT_OMOP_THERAPY_TYPES=False):
-        assert get_therapy_match_profile() is OMOP_THERAPY_MATCH_PROFILE
-    with override_settings(**OMOP_TYPES):
+    with override_settings(EXACT_OMOP_THERAPY=True):
         p = get_therapy_match_profile()
-        assert p is OMOP_THERAPY_WITH_TYPES_MATCH_PROFILE
+        assert p is OMOP_THERAPY_MATCH_PROFILE
         assert p.therapy_types_required == 'omop_therapy_types_required'
-    # types flag ignored when OMOP therapy is off (types ride the OMOP profile)
-    with override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_THERAPY_TYPES=True):
-        assert get_therapy_match_profile() is LEGACY_THERAPY_MATCH_PROFILE
+        assert p.therapy_types_excluded == 'omop_therapy_types_excluded'
 
 
 # ── derive: types = the patient's class concept_ids ──────────────────
@@ -93,12 +92,17 @@ def test_derive_returns_patient_class_ids_as_types():
     assert types == [PI_CLASS]          # class concept_ids as-is, no category lookup
 
 
-def test_types_flag_ignored_without_omop_therapy():
-    # codex [P2]: the types flag alone must NOT divert onto the OMOP-types path
-    # (queryset/matcher) while the profile still names legacy columns.
-    from trials.services.therapy_match_profile import omop_therapy_types_enabled
-    with override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_THERAPY_TYPES=True):
+def test_types_enabled_tracks_base_flag():
+    # Types are folded into the base flag — the type path engages exactly when OMOP
+    # therapy is on (no separate toggle).
+    from trials.services.therapy_match_profile import (
+        omop_therapy_types_enabled, omop_therapy_enabled)
+    with override_settings(EXACT_OMOP_THERAPY=False):
         assert omop_therapy_types_enabled() is False
+        assert omop_therapy_types_enabled() == omop_therapy_enabled()
+    with override_settings(EXACT_OMOP_THERAPY=True):
+        assert omop_therapy_types_enabled() is True
+        assert omop_therapy_types_enabled() == omop_therapy_enabled()
 
 
 @override_settings(**OMOP_TYPES)
@@ -131,13 +135,6 @@ def test_derive_none_class_ids_is_unknown_types():
 def test_derive_empty_class_ids_is_known_empty_types():
     _, types = derive_component_and_type_values([REG], [BORT_CID], patient_class_ids=[])
     assert types == []
-
-
-@override_settings(EXACT_OMOP_THERAPY=True, EXACT_OMOP_THERAPY_TYPES=False)
-def test_derive_ignores_class_ids_when_types_flag_off():
-    # types flag off: class ids are ignored; legacy category-code path is used.
-    _, types = derive_component_and_type_values([REG], [BORT_CID], patient_class_ids=[PI_CLASS])
-    assert types == []                  # no category lookup rows -> [] (not the class ids)
 
 
 # ── matcher verdict (fail-closed) ────────────────────────────────────
@@ -185,6 +182,31 @@ def test_no_required_type_matches():
                      therapy_type_ids=[])
     trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
     assert _match(trial, pi) == 'matched'
+
+
+# ── exclusion + empty/unknown patient classes (documented flip-gate policy) ──
+# Required types are fail-CLOSED on unknown/empty patient classes (see the
+# test_type_required_* cases above). Excluded types are NOT: an empty (known-empty)
+# class set does not reject an excluded-type trial. This is INTENTIONAL and preserved
+# by the fold (#285) — it is a documented flip-gate decision, guarded by an ingestion
+# invariant: a therapy-bearing patient must never emit an EMPTY class list merely
+# because pre-expansion failed (that would silently weaken an exclusion). These tests
+# pin the current behavior so a future change is a conscious one.
+
+@override_settings(**OMOP_TYPES)
+def test_type_excluded_empty_classes_does_not_reject():
+    pi = PatientInfo(disease='multiple myeloma', therapy_component_ids=[int(BORT_CID)],
+                     therapy_type_ids=[])  # known-empty
+    trial = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[PI_CLASS])
+    assert _match(trial, pi) == 'matched'  # empty class set does NOT trip the exclusion
+
+
+@override_settings(**OMOP_TYPES)
+def test_queryset_empty_classes_keeps_excluded_type_trial():
+    excl = TrialFactory(disease='multiple myeloma', omop_therapy_types_excluded=[PI_CLASS])
+    # [] (known-empty) patient classes: the excluded-type trial is NOT dropped.
+    qs = Trial.objects.filter(id=excl.id).eligible_for_omop_therapy_types([])
+    assert set(qs.values_list('id', flat=True)) == {excl.id}
 
 
 # ── queryset fail-closed (parity with the matcher verdict) ───────────

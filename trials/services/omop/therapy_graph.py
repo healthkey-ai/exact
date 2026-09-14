@@ -20,7 +20,7 @@ Returns ``(component_values, type_values)``. ``(None, None)`` means unknown
 ``therapy_component_ids`` (``patient_component_ids is None``); legacy → the patient
 has no resolvable regimens. An empty list is a known-empty component set.
 """
-from trials.services.therapy_match_profile import omop_therapy_enabled, omop_therapy_types_enabled
+from trials.services.therapy_match_profile import omop_therapy_enabled
 
 
 def resolve_regimens(therapy_identifiers):
@@ -46,14 +46,12 @@ def derive_component_and_type_values(therapy_identifiers, patient_component_ids=
     sent nothing) → ``(None, None)``; ``[]`` = known-empty; a list → those component
     concept_ids.
 
-    Types (drug-class):
-    - OMOP-types mode (``EXACT_OMOP_THERAPY_TYPES`` on, promop ADR 0002 / #285):
-      types are the consumer-supplied pre-expanded class concept_ids
-      ``patient_class_ids`` — ``None`` = unknown (fail-closed downstream), ``[]`` =
-      known-empty, a list → those class concept_ids. Matched by overlap against
-      ``omop_therapy_types_*``.
-    - OMOP-types OFF: legacy — CB category codes from the components via the flat
-      category lookup (overlapped against legacy ``therapy_types_*``; #4502).
+    Types (drug-class) under OMOP (folded into the base flag, #285 / promop ADR 0002):
+    the consumer-supplied PRE-EXPANDED class concept_ids ``patient_class_ids`` — ``None``
+    = unknown (fail-closed downstream), ``[]`` = known-empty, a list → those class
+    concept_ids. Matched by overlap against ``omop_therapy_types_*``. (The old
+    component→CB-category lookup type path is retired under OMOP; promop pre-expands
+    component→class per ADR 0004.)
 
     ``therapy_identifiers`` is used only by the legacy path.
 
@@ -67,26 +65,25 @@ def derive_component_and_type_values(therapy_identifiers, patient_component_ids=
     the return value is identical either way.
     """
     if omop_therapy_enabled():
-        types_on = omop_therapy_types_enabled()
+        # Types are folded into the base OMOP flag (#285): drug-class types are the
+        # consumer's PRE-EXPANDED class concept_ids (patient_class_ids), matched against
+        # omop_therapy_types_*. The old component->CB-category lookup type path (mode 2)
+        # is retired under OMOP — promop pre-expands component->class (ADR 0004).
         if patient_component_ids is None:
             if measure and therapy_identifiers:
                 from trials.services.omop.phase_t_metrics import record_regimen_unresolved
                 record_regimen_unresolved(therapy_identifiers)
-            # Components unknown -> component_values None. Types are independent under
-            # OMOP-types mode: a class-only patient (class ids but no components — and
-            # the #224 fold routes such patients here) still derives its types from the
-            # supplied class ids, so a required-class trial isn't false-negatived.
-            if types_on and patient_class_ids is not None:
+            # Components unknown -> component_values None. Types are independent: a
+            # class-only patient (class ids but no components — the #224 fold routes such
+            # patients here) still derives its types from the class ids, so a
+            # required-class trial isn't false-negatived.
+            if patient_class_ids is not None:
                 return None, [str(cid) for cid in patient_class_ids]
             return None, None
         component_values = [str(cid) for cid in patient_component_ids]
-        if types_on:
-            # Types = the patient's pre-expanded class concept_ids as-is. Preserve
-            # None (consumer sent no class ids -> unknown -> fail-closed) vs [].
-            type_values = None if patient_class_ids is None else [str(cid) for cid in patient_class_ids]
-        else:
-            from trials.services.omop.component_category_lookup import component_concept_ids_to_type_codes
-            type_values = component_concept_ids_to_type_codes(component_values) or []
+        # Types = the patient's pre-expanded class concept_ids as-is. Preserve None
+        # (consumer sent no class ids -> unknown -> fail-closed) vs [] (known-empty).
+        type_values = None if patient_class_ids is None else [str(cid) for cid in patient_class_ids]
         return component_values, type_values
 
     # ── legacy (flag OFF): internal CB-graph expansion — byte-identical to CB ──

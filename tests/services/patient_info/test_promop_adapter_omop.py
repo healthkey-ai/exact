@@ -101,7 +101,7 @@ def test_therapy_release_id_preserved_by_normalize_flag_off():
     assert r['therapy_release_id'] == '7'      # untouched regardless of the OMOP flag
 
 
-@override_settings(EXACT_OMOP_THERAPY=True, EXACT_OMOP_THERAPY_TYPES=True)
+@override_settings(EXACT_OMOP_THERAPY=True)
 def test_therapy_release_id_reaches_getter_end_to_end():
     # Full forwarding chain: PROMOP row -> normalize -> build PatientInfo -> getter.
     # (The flags are prod-realistic context; neither normalize nor the getter reads

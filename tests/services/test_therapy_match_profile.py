@@ -36,10 +36,10 @@ def test_active_profile_uses_omop_columns_when_flag_on():
     # supportive flips too (#228, dedicated path wired by #4449)
     assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'omop_supportive_therapies_required'
     assert THERAPY_MATCH_PROFILE.supportive_therapies_excluded == 'omop_supportive_therapies_excluded'
-    # types stay legacy even in OMOP mode (matched via CB category graph)
-    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'therapy_types_required'
-    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'therapy_types_excluded'
-    # planned stays legacy (76/85 codes unmappable — #230)
+    # types flip too — folded into the base OMOP flag (#285)
+    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'omop_therapy_types_required'
+    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'omop_therapy_types_excluded'
+    # only planned stays legacy (76/85 codes unmappable — #230)
     assert THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
 
 
@@ -65,10 +65,10 @@ def test_active_profile_flips_mapped_levels_when_flag_on():
     assert THERAPY_MATCH_PROFILE.therapy_components_required == 'omop_therapy_components_required'
     assert THERAPY_MATCH_PROFILE.therapy_components_excluded == 'omop_therapy_components_excluded'
     assert THERAPY_MATCH_PROFILE.supportive_therapies_required == 'omop_supportive_therapies_required'
-    # ...but types stay LEGACY (not OMOP-mapped — matched via the CB category graph),
-    # as does planned (76/85 codes unmappable — #230).
-    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'therapy_types_required'
-    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'therapy_types_excluded'
+    # ...and types flip too (#285 folded them into the base flag); only planned stays
+    # legacy (76/85 codes unmappable — #230).
+    assert THERAPY_MATCH_PROFILE.therapy_types_required == 'omop_therapy_types_required'
+    assert THERAPY_MATCH_PROFILE.therapy_types_excluded == 'omop_therapy_types_excluded'
     assert THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
 
 
@@ -97,9 +97,12 @@ def test_an_omop_profile_can_be_constructed():
         therapies_excluded='omop_therapies_excluded',
     )
     assert omop.therapies_required == 'omop_therapies_required'
-    # the shipped OMOP profile flips regimen + component + supportive; planned stays legacy
+    # the shipped OMOP profile flips regimen + component + supportive + TYPES (#285 folded
+    # types into the base flag); only planned stays legacy
     assert OMOP_THERAPY_MATCH_PROFILE.therapies_required == 'omop_therapies_required'
     assert OMOP_THERAPY_MATCH_PROFILE.supportive_therapies_required == 'omop_supportive_therapies_required'
+    assert OMOP_THERAPY_MATCH_PROFILE.therapy_types_required == 'omop_therapy_types_required'
+    assert OMOP_THERAPY_MATCH_PROFILE.therapy_types_excluded == 'omop_therapy_types_excluded'
     assert OMOP_THERAPY_MATCH_PROFILE.planned_therapies_required == 'planned_therapies_required'
 
 

@@ -20,11 +20,11 @@ Component concept_ids (RxNorm):
     Dexamethasone 1518254
     Daratumumab   35605744
 
-Type codes (CB-internal, not OMOP):
-    proteasome_inhibitor
-    immunomodulatory_drug_(imid)
-    corticosteroid
-    monoclonal_antibody_(anti_cd38)
+Scope: regimen + component + queryset matching on OMOP concept_ids. Drug-class TYPE
+matching folded into the base flag (#285) is covered by
+tests/services/test_omop_therapy_types_matching.py; the old mode-2 type path (component
+concept_ids -> CB category codes -> legacy therapy_types_*) is retired under OMOP and its
+tests were removed here.
 """
 import pytest
 from django.test import override_settings
@@ -73,17 +73,10 @@ def omop_vocab(db):
     ]:
         TherapyComponent.objects.filter(code=code).update(omop_concept_id=cid)
 
-    # Populate the flat lookup table — derive_component_and_type_values reads
-    # ComponentCategoryOmopLookup in OMOP mode (not the M2M graph directly).
-    # The .update() calls above bypass signals, so we sync explicitly here.
-    from trials.services.omop.component_category_lookup import (
-        clear_lookup_cache,
-        sync_component_category_lookup,
-    )
-    sync_component_category_lookup()
-    # Flush the LRU cache so stale entries from other tests don't leak in.
+    # (Types are folded into the base flag, #285 — matched via the patient's pre-expanded
+    # class concept_ids, not the flat ComponentCategoryOmopLookup — so no lookup sync is
+    # needed here; these tests exercise regimen + component matching on omop_* columns.)
     yield
-    clear_lookup_cache()
 
 # ── real concept_ids (from local vocab — test will fail if mapping drifts) ──
 
@@ -101,12 +94,6 @@ CARF = '42873638'   # carfilzomib component
 DEX  = '1518254'    # dexamethasone component
 DARA = '35605744'   # daratumumab component
 
-PI_CAT_BORT = 'proteasome_inhibitor'
-PI_CAT_LEN  = 'immunomodulatory_drug_(imid)'
-PI_CAT_DEX  = 'corticosteroid'
-PI_CAT_DARA = 'monoclonal_antibody_(anti_cd38)'
-
-
 # ── Phase P: components are consumer-supplied (promop pre-expanded), not derived ──
 # Regimen → its component concept_ids, i.e. what promop pre-expands onto the patient.
 REGIMEN_COMPONENTS = {
@@ -120,12 +107,9 @@ REGIMEN_COMPONENTS = {
 }
 
 
-def test_derive_uses_supplied_components_and_maps_types():
-    comps, types = derive_component_and_type_values([VRD], REGIMEN_COMPONENTS[VRD])
-    assert sorted(comps) == sorted([BORT, LEN, DEX])
-    assert PI_CAT_BORT in types
-    assert PI_CAT_LEN in types
-    assert PI_CAT_DEX in types
+def test_derive_uses_supplied_components():
+    comps, _ = derive_component_and_type_values([VRD], REGIMEN_COMPONENTS[VRD])
+    assert sorted(comps) == sorted([BORT, LEN, DEX])  # consumer-supplied component ids
 
 
 def test_derive_none_component_ids_is_unknown():
@@ -224,67 +208,9 @@ def test_daratumumab_naive_trial_excludes_dara_vrd_patient():
     assert result == 'not_matched'
 
 
-# ── extra mapping: HemOnc component concept_id → CB category code ────────────
-# These pin the TherapyComponent.omop_concept_id → TherapyComponentCategory.code
-# path so a vocab-load error is caught at this level, not only end-to-end.
-
-def test_bortezomib_component_concept_id_maps_to_proteasome_inhibitor():
-    _, types = derive_component_and_type_values([BORT_MONO], [BORT])
-    assert PI_CAT_BORT in types
-
-
-def test_carfilzomib_component_concept_id_also_maps_to_proteasome_inhibitor():
-    _, types = derive_component_and_type_values([CARF_MONO], [CARF])
-    assert PI_CAT_BORT in types
-
-
-def test_lenalidomide_component_concept_id_maps_to_imid():
-    _, types = derive_component_and_type_values([LEN_MONO], [LEN])
-    assert PI_CAT_LEN in types
-
-
-def test_daratumumab_component_concept_id_maps_to_anti_cd38():
-    _, types = derive_component_and_type_values([DARA_MONO], [DARA])
-    assert PI_CAT_DARA in types
-
-
-# ── type-level matching (CB category codes, legacy column) ───────────────────
-
-def test_trial_requiring_proteasome_inhibitor_matches_vrd_patient():
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_BORT])
-    pi = _mm_pi(VRD)
-    result = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([VRD], False)
-    assert result == 'matched'
-
-
-def test_trial_excluding_imid_blocks_vrd_patient():
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=[PI_CAT_LEN])
-    pi = _mm_pi(VRD)
-    result = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([VRD], False)
-    assert result == 'not_matched'
-
-
-def test_trial_requiring_anti_cd38_not_matched_by_vrd_patient():
-    # VRd has no anti-CD38 component
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_DARA])
-    pi = _mm_pi(VRD)
-    result = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([VRD], False)
-    assert result == 'not_matched'
-
-
-def test_trial_requiring_anti_cd38_matches_dara_vrd_patient():
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_DARA])
-    pi = _mm_pi(DARA_VRD)
-    result = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([DARA_VRD], False)
-    assert result == 'matched'
-
-
-def test_trial_excluding_anti_cd38_allows_vrd_patient():
-    # VRd has no anti-CD38 → patient is eligible despite the exclusion
-    trial = TrialFactory(disease='multiple myeloma', therapy_types_excluded=[PI_CAT_DARA])
-    pi = _mm_pi(VRD)
-    result = UserToTrialAttrMatcher(trial, pi)._match_therapy_related_things([VRD], False)
-    assert result == 'matched'
+# (The component-concept_id→CB-category mapping tests and the type-level matching tests
+# exercised the retired mode-2 type path; drug-class type matching is now mode-3 and
+# covered by tests/services/test_omop_therapy_types_matching.py, #285.)
 
 
 def test_trial_requiring_carfilzomib_component_not_matched_by_vrd_patient():
@@ -411,11 +337,5 @@ def test_component_only_component_exclusion_filters():
     assert kept.id in ids           # patient never had carfilzomib
 
 
-def test_component_only_type_filter_via_lookup():
-    type_match = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_BORT])
-    type_other = TrialFactory(disease='multiple myeloma', therapy_types_required=[PI_CAT_DARA])
-    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line',
-                     therapy_component_ids=[BORT, LEN])
-    ids = set(Trial.objects.filter_by_patient_info(pi)[0].values_list('id', flat=True))
-    assert type_match.id in ids     # bortezomib → proteasome inhibitor
-    assert type_other.id not in ids # patient has no anti-CD38 component
+# (test_component_only_type_filter_via_lookup removed — mode-2 type filter is retired;
+# the component-only type filter under mode-3 is covered by the omop-therapy-types suite.)

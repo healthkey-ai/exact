@@ -37,12 +37,16 @@ _request_memo: contextvars.ContextVar = contextvars.ContextVar(
 def component_concept_ids_to_type_codes(concept_ids):
     """Patient component concept_ids → list of CB category codes for type matching.
 
-    Returns ``None`` when ``concept_ids`` is ``None`` (unknown → preserve
-    unknown semantics in the matcher). Returns ``[]`` when the lookup yields
-    nothing (known-empty → no types to match).
+    DEPRECATED / DEAD (#285): this was the "mode 2" type path — reverse-map the
+    patient's components to CB category codes and overlap against the legacy
+    ``therapy_types_*`` columns. Types are now folded into the base OMOP flag and
+    matched by the patient's PRE-EXPANDED class concept_ids against
+    ``omop_therapy_types_*`` (promop pre-expands component→class, ADR 0004), so no
+    production caller reaches this. Kept only until the ``ComponentCategoryOmopLookup``
+    table + its sync/loader integration are retired in a follow-up. Do NOT add callers.
 
-    Input order is ignored. Inside a :class:`component_lookup_request_cache`
-    block the same concept_id set is resolved once and reused for the request.
+    Returns ``None`` when ``concept_ids`` is ``None`` (unknown → preserve unknown
+    semantics). Returns ``[]`` when the lookup yields nothing (known-empty).
     """
     if concept_ids is None:
         return None
