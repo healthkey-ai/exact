@@ -361,6 +361,12 @@ export function FilterPanel({
             />
             <select
               className="exact-filter__input exact-filter__units"
+              // Named explicitly: `Field`'s label wraps the pair, so without
+              // this the select reaches the accessibility tree with NO name at
+              // all — a screen reader announces an unlabelled dropdown — while
+              // its option text ("km") leaks into the number input's name
+              // instead, which is announced as "Max distance km".
+              aria-label="Distance units"
               value={filters.distanceUnits ?? "km"}
               onChange={(e) =>
                 set({ distanceUnits: e.target.value as FilterState["distanceUnits"] })
