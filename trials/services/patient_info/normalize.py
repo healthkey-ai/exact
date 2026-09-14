@@ -9,6 +9,66 @@ from trials.services.patient_info.patient_info_flipi_score import PatientInfoFli
 from trials.services.patient_info.patient_info_geo_point import PatientInfoGeoPoint
 
 
+# The attributes this module computes, and therefore the attributes a stored
+# value cannot decide.
+#
+# It is written down rather than inferred because clients need it and cannot
+# see it. EXACT recomputes these on every match from the inputs it was given,
+# so a value written into the patient record upstream — by a patient editing
+# their profile, by an import — is replaced before it ever reaches the
+# matcher. A client that offers an edit box for one of them offers a control
+# whose effect is undone by the next request, with no error anywhere: the
+# write is accepted, the re-read returns the recomputed value, and the reader
+# is left to conclude that nothing happened (EXACT #449).
+#
+# Note this is NOT the same question as `is_computed_value` in the attribute
+# config, which is about presentation and disagrees with this list in both
+# directions. Nor is it PROMOP's `writable`, which answers whether the record
+# will TAKE the write — it will; this answers whether the write survives.
+#
+# `test_normalize_recomputed_register` holds it to the module: the set and
+# the assignments below are checked against each other, so adding a
+# derivation without adding its name here fails the suite.
+RECOMPUTED_ATTRIBUTES = frozenset({
+    'bmi',
+    'bulky_disease_criteria',
+    'country',
+    'estimated_glomerular_filtration_rate',
+    'first_line_date',
+    'first_line_outcome',
+    'first_line_therapy',
+    'flipi_score',
+    'geo_point',
+    'haematological_adequacy_status',
+    'hepatic_adequacy_status',
+    'high_risk_mcl_criteria',
+    'hr_status',
+    'last_treatment',
+    'later_date',
+    'later_outcome',
+    'later_therapies',
+    'later_therapy',
+    'measurable_disease_imwg',
+    'meets_crab',
+    'meets_slim',
+    'metastatic_status',
+    'mipi_c_risk',
+    'mipi_risk',
+    'postal_code',
+    'progression',
+    'renal_adequacy_status',
+    'second_line_date',
+    'second_line_outcome',
+    'second_line_therapy',
+    'stem_cell_transplant_history',
+    'supportive_therapies',
+    'supportive_therapy_date',
+    'tnbc_status',
+    'tp53_disruption',
+    'treatment_refractory_status',
+})
+
+
 def normalize_patient_info(pi) -> None:
     """Compute and set all derived fields on a PatientInfo instance in-place.
 

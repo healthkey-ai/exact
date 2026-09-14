@@ -6,6 +6,7 @@ import re
 from django.db import models
 from django.db.models import Q
 
+from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
 from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
@@ -196,6 +197,20 @@ class TrialAttributes:
 
         return out
 
+    @property
+    def _scoping_disease_code(self):
+        """Whose disease decides which criteria apply.
+
+        The patient's when there is one — a myeloma patient should not be shown
+        a mantle-cell criterion. With no patient, the TRIAL's, which is the
+        right answer anyway: the row belongs to the trial, and a trial has a
+        disease even when nobody is looking at it.
+        """
+        if self._patient_info is not None:
+            return self._patient_info_attr.disease_code
+        from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+        return UserToTrialAttrMatcher.get_disease_code_from_trial(self._trial)
+
     def get_field_name(self, field):
         return AttributeNames.get_by_snake_case(field.name)
 
@@ -269,7 +284,10 @@ class TrialAttributes:
             return True
         elif value is False and field_name in ATTR_FALSE_VALUE_IS_BLANK:
             return True
-        elif self._context['gender'] == 'M' and field_name in ATTR_SKIP_FOR_MALE:
+        # `.get`: `get_context_from_user` returns an EMPTY dict when there is
+        # no patient, so the subscript was a KeyError on the public-browsing
+        # path. With nobody to be male, the rule does not apply.
+        elif self._context.get('gender') == 'M' and field_name in ATTR_SKIP_FOR_MALE:
             return True
         return False
 
@@ -505,6 +523,15 @@ class TrialAttributes:
             field['upatientField'] = (
                 patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
             )
+            # Whether a stored value for it survives. EXACT recomputes these
+            # on every match from the inputs it was given, so a write upstream
+            # is replaced before the matcher ever sees it — accepted, then
+            # undone, with no error anywhere (#449). A client that offers an
+            # edit box for one of them is offering a control that does
+            # nothing, which is worse than offering none.
+            field['upatientRecomputed'] = (
+                field['upatientField'] in RECOMPUTED_ATTRIBUTES
+            )
             # Keyed on `upatientField` rather than on `ufield` for the one
             # case that differs: `therapies` puts the TRIAL attribute in
             # `ufield`, so `therapiesRequired` resolves to a name no patient
@@ -582,9 +609,17 @@ class TrialAttributes:
           "dependencies": []
         }
 
-        distance_penalty = self._trial.get_distance_penalty(self._patient_info)
-        if distance_penalty:
-            distance_penalty = str(distance_penalty)
+        # Empty with no patient, the way `matchScore` beside it already is.
+        # The SCORING neutral for "no distance known" is 0 — a located-less
+        # patient gets it too, so the model keeps it — but printing that 0 in a
+        # cell labelled "distance Penalty" reads as "this patient is next
+        # door", which is a claim about somebody who is not there.
+        if self._patient_info is None:
+            distance_penalty = ''
+        else:
+            distance_penalty = self._trial.get_distance_penalty(self._patient_info)
+            if distance_penalty:
+                distance_penalty = str(distance_penalty)
 
         computed_fields['distancePenalty'] = {
           "name": "distancePenalty",
@@ -601,7 +636,10 @@ class TrialAttributes:
         }
 
         locations_name = self._trial.sorted_locations_by_distance(
-            self._patient_info.geo_point,
+            # `None` with no patient: the sites are then in the trial's own
+            # order rather than nearest-first, which is the only honest answer
+            # to "closest to whom?" — and the method already takes it.
+            self._patient_info.geo_point if self._patient_info else None,
             recruitment_status=recruitment_status
         )
         locations_name = [x.location.title for x in locations_name if x.location]
@@ -622,9 +660,17 @@ class TrialAttributes:
         return computed_fields
 
     def therapies(self, subform_attrs):
+        """The trial's therapy criteria, with the patient's values where there
+        is a patient.
+
+        Nothing below reads the patient — `user_value` is None throughout, and
+        the patient side of these rows is filled in later by the matcher. The
+        early return that used to stand here therefore dropped the trial's own
+        therapy requirements from a no-patient response: the one kind of
+        criterion a reader browsing a trial most wants to see, missing with no
+        indication it had been left out.
+        """
         out = {}
-        if not self._patient_info:
-            return out
 
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
@@ -882,9 +928,21 @@ class TrialAttributes:
         return out
 
     def get_user_details(self, subform_attrs):
+        """Which trial columns are eligibility criteria, and the patient's value
+        for each where there is a patient.
+
+        It used to return nothing at all without one — and `details()` only
+        emits a trial column that appears here or in `ATTR_NAME_ALWAYS_INCLUDED`,
+        so a detail response with no patient carried two rows out of twelve.
+        The trial's own requirements were not rendered verdict-less; they were
+        dropped, with nothing to say so.
+
+        Which columns are criteria is a property of the MAPPING, not of the
+        patient. The only patient-dependent parts are the value (None without
+        one) and the disease scoping, which falls back to the TRIAL's disease —
+        the right answer anyway, since the row belongs to the trial.
+        """
         out = {}
-        if not self._patient_info:
-            return out
 
         mapping = USER_TO_TRIAL_ATTRS_MAPPING
 
@@ -895,8 +953,8 @@ class TrialAttributes:
             ureadonly = ('is_computed_value' in trial_attr_meta and trial_attr_meta['is_computed_value'] is True) or subform_details is not None
 
             if "disease" in trial_attr_meta and (
-                self._patient_info_attr.disease_code is None
-                or not disease_attr_applies(trial_attr_meta["disease"], self._patient_info_attr.disease_code)
+                self._scoping_disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self._scoping_disease_code)
             ):
                 continue
 
@@ -976,8 +1034,13 @@ class TrialAttributes:
                 if isinstance(attr_names, str):
                     attr_names = [attr_names]
                 for attr_name in attr_names:
-                    uvalue_function = trial_attr_meta["uvalue_function"][attr_name]
-                    uvalue = uvalue_function(self._patient_info)
+                    # The lambdas in `configs.py` dereference the patient
+                    # directly — `lambda patient_info: patient_info.ethnicity` —
+                    # so they are not asked when there is nobody to ask about.
+                    uvalue = None
+                    if self._patient_info is not None:
+                        uvalue_function = trial_attr_meta["uvalue_function"][attr_name]
+                        uvalue = uvalue_function(self._patient_info)
                     uvalue = self.get_uvalue(f'u{attr_name}', uvalue)
                     out[attr_name] = {
                         'ureadonly': ureadonly,
