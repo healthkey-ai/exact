@@ -83,3 +83,37 @@ class TestSubformEntriesNameTheirField:
             for e in entries
         }
         assert flags == {True, False}
+
+
+@pytest.mark.django_db
+class TestSubformEntriesCarryThePatientsUnit:
+    """And the PATIENT's, not the vocabulary's.
+
+    The distinction is the whole point: `meets_crab` converts its inputs
+    through the unit the value is stored in, so a calcium read as mg/dL when
+    it was recorded in mmol/L flips a clinical composite. A fixture where the
+    two agree cannot tell them apart, and the snapshot test does exactly that
+    — its liver enzymes are `U/L` either way.
+    """
+
+    def _entry(self, patient_info, field):
+        pi = patient_info
+        pi.prior_therapy = 'More than two lines of therapy'
+        pi.hemoglobin_level_units = 'G/L'
+        normalize_patient_info(pi)
+        trial = TrialFactory(disease='Multiple Myeloma')
+        groups = TrialAttributes(trial, patient_info=pi).get_user_subform_attrs()
+        for entries in groups.values():
+            for entry in entries:
+                if entry['upatientField'] == field:
+                    return entry
+        return None
+
+    def test_a_non_default_unit_is_reported_as_the_patients(self, patient_info):
+        entry = self._entry(patient_info, 'hemoglobin_level')
+        assert entry is not None, 'hemoglobin is in no subform — pick another input'
+        assert entry['uunits'] != entry['units'], (
+            "the patient's unit and the default are the same here, so this "
+            "assertion cannot tell them apart — choose a fixture where they differ"
+        )
+        assert 'Liter' in entry['uunits'], entry['uunits']

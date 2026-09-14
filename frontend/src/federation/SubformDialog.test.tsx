@@ -7,7 +7,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { fakeApi, fakeState, renderTrialMatches, trialDetail } from "../test/renderTrialMatches";
+import { fakeApi, fakeState, renderTrialMatches, trial, trialDetail } from "../test/renderTrialMatches";
 import type { WritableFields } from "./writable";
 import type { SubformEntry, TrialDetailField } from "./types";
 
@@ -424,6 +424,101 @@ describe("inside the dialog", () => {
     const alerts = await screen.findAllByRole("alert");
     expect(alerts).toHaveLength(1);
     expect(alerts[0]).toHaveTextContent("Couldn't save that");
+  });
+
+  it("stays quiet while the dialog itself is saying it", async () => {
+    // The dialog puts the failure next to the entry, in front of the reader.
+    // The page notice sits behind the modal, so both at once is two
+    // announcements of one refusal — the thing the row rule already avoids.
+    const state = fakeState({ writable: WRITABLE });
+    state.adapter.setPatientFields = vi.fn(async () => {
+      throw new Error("400");
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([composite()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Edit Estrogen receptor status" }),
+    );
+    await userEvent.selectOptions(
+      within(dialog).getByRole("combobox", { name: "Estrogen receptor status" }),
+      "ER+",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    // Still open: one alert, and it is the dialog's.
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(dialog).toContainElement(alerts[0]);
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    const after = await screen.findByRole("alert");
+    expect(after).toHaveTextContent("Estrogen receptor status");
+  });
+
+  it("says nothing about a refusal from a trial the reader has left", async () => {
+    // `failed` belongs to the PATIENT's queue, which outlives any one trial.
+    // A field this trial does not show is not this page's business, and
+    // naming it by its canonical name would be worse than silence.
+    const state = fakeState({ writable: WRITABLE });
+    state.adapter.setPatientFields = vi.fn(async () => {
+      throw new Error("400");
+    });
+    // Two trials, because the point is what the SECOND one shows.
+    const api = fakeApi({ results: [trial(1), trial(2)], itemsTotalCount: 2 });
+    api.setDetail(detailWith([composite()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Edit Estrogen receptor status" }),
+    );
+    await userEvent.selectOptions(
+      within(dialog).getByRole("combobox", { name: "Estrogen receptor status" }),
+      "ER+",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await screen.findByRole("alert");
+
+    // Back to the list, into a trial whose rows are about something else.
+    api.setDetail(
+      detailWith([
+        {
+          name: "ecogMax",
+          label: "ECOG",
+          type: "int",
+          value: 2,
+          uvalue: 1,
+          matchingType: "matched",
+        },
+      ]),
+    );
+    await userEvent.click(screen.getByText("Back to all trials"));
+    await waitFor(() => expect(screen.queryByText("Back to all trials")).toBeNull());
+    // A DIFFERENT trial: reopening the same one is served from the cache, so
+    // the new rows would never arrive and the test would pass for that.
+    await waitFor(async () =>
+      expect((await screen.findAllByRole("button", { name: "View Trial" })).length)
+        .toBeGreaterThan(1),
+    );
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[1],
+    );
+    await screen.findByText("Back to all trials");
+
+    await new Promise((r) => setTimeout(r, 100));
+    console.info("PAGE", document.body.textContent?.slice(0, 200));
+    expect(await screen.findByText("ECOG")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("names every refused field, not just the first", async () => {
