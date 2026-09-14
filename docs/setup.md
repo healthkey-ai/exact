@@ -378,7 +378,8 @@ environment variables — never commit secret values to git.
 | `PROMOP_OAUTH_TOKEN_URL` | `{PROMOP_BASE}/o/token/` | Token endpoint override |
 | `PROMOP_API_BASE` | _(empty)_ | PRomop API base; the fallback the vocabulary mirror uses before `PROMOP_BASE` |
 | `PROMOP_VOCAB_BASE` | falls back to `PROMOP_API_BASE` / `PROMOP_BASE` | Base URL for the vocabulary mirror |
-| `PROMOP_VOCAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | Vocabulary OAuth2 credentials — a **separate service credential** from the patient client's; both or neither |
+| `PROMOP_VOCAB_SERVICE_TOKEN` | _(empty)_ | Bearer for the vocabulary endpoints — set to the **same** named token as `PROMOP_SERVICE_TOKEN` so PRomop sees one service identity |
+| `PROMOP_VOCAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | Vocabulary OAuth2 credentials; both or neither. Wins over the static token when set — clear them to use the named token |
 | `PROMOP_VOCAB_OAUTH_SCOPE` | `system/*.read` | Scope for the vocabulary mirror |
 | `PROMOP_VOCAB_OAUTH_TOKEN_URL` | `{base}/o/token/` | Token endpoint override |
 | `EXACT_ALLOW_PERSON_ID_LOOKUP` | `true` in DEBUG/`local`, else `false` | Enables the server-side `?person_id=` lookup — a PHI IDOR outside local use (#150/#108) |

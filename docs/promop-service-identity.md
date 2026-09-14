@@ -15,15 +15,49 @@ Tracked as [#448](https://github.com/healthkey-ai/exact/issues/448).
 
 | Path | Credential | Calls | Data |
 |---|---|---|---|
-| `trials/services/patient_info/promop_client.py` | `PROMOP_OAUTH_CLIENT_ID`/`_SECRET` (scope `patient/*.read`), or the static bearer `PROMOP_SERVICE_TOKEN` | `GET /api/v1/patient-records/{person_id}/`, plus `POST /o/token/` in OAuth mode | one patient row |
-| `vocab_mirror/promop_vocab_client.py` | `PROMOP_VOCAB_OAUTH_CLIENT_ID`/`_SECRET` (scope `system/*.read`) | `GET /api/v1/vocab-releases/latest/`, `.../snapshot/{table}/` | vocabulary, no PHI |
+| `trials/services/patient_info/promop_client.py` | `PROMOP_SERVICE_TOKEN` (the named token), or `PROMOP_OAUTH_CLIENT_ID`/`_SECRET` | `GET /api/v1/patient-records/{person_id}/`, plus `POST /o/token/` in OAuth mode | one patient row |
+| `vocab_mirror/promop_vocab_client.py` | `PROMOP_VOCAB_SERVICE_TOKEN` (the same named token), or `PROMOP_VOCAB_OAUTH_*` | `GET /api/v1/vocab-releases/latest/`, `.../snapshot/{table}/` | vocabulary, no PHI |
 
 Both service clients reach v1 only; the deprecated `/api/patient-info/` prefix
-was dropped in
-[#387](https://github.com/healthkey-ai/exact/issues/387). They are **two
-distinct service credentials with two distinct scopes** and are not
-interchangeable — a grant covering only `patient/*.read` leaves the vocab mirror
-unable to sync (it fails closed with `VocabSyncError`).
+was dropped in [#387](https://github.com/healthkey-ai/exact/issues/387). Each
+client reads its own credential settings, so the two *can* hold different
+credentials — but they should hold the same one, for the reasons below.
+
+## The credential EXACT should use, and why
+
+**The named static bearer, for both clients, granted `patient/*.read` and
+nothing else.** This is settled by PRomop's code rather than by preference:
+
+- **Only the static-bearer path produces `urn:service|exact`.**
+  `ServiceTokenAuthentication` matches the bearer against a managed application
+  token (or `SERVICE_AUTH_TOKENS`) and builds the principal from the matched
+  credential's service id: `Identity.objects.get_or_create(issuer='urn:service',
+  sub=matched.service_id)`. An OAuth2 client-credentials token authenticates
+  through the OAuth path instead, where the principal is whatever user its
+  `Application` is bound to — not something the service-application admin
+  manages. Since the identity in PRomop's audit trail is the point of this
+  migration, the transport that produces it is the one to use.
+- **One token for both clients, so EXACT is one principal.** Keeping the
+  vocabulary mirror on OAuth would put one logical service into PRomop's audit
+  under two identities. `PROMOP_VOCAB_SERVICE_TOKEN` is a separate setting from
+  `PROMOP_SERVICE_TOKEN` — set both to the same value — so the two clients stay
+  configurable apart without one module reading the other's settings.
+- **`patient/*.read` is sufficient for every endpoint EXACT calls.** The
+  vocabulary endpoints use `VocabReadPermission`, whose
+  `read_scopes = {patient/*.read, user/*.read, system/*.read}` — `system/*.read`
+  is *additionally accepted*, not required. The patient route
+  (`PatientRecordV1ViewSet`, verified: `permission_classes =
+  [ScopedTokenPermission, PatientSelfScopePermission]`) grants safe methods on
+  `patient/*.read`, and a service token bypasses the object-ownership check. All
+  three calls EXACT makes are GETs.
+- **Do not leave both configured.** OAuth wins whenever both OAuth settings are
+  present, in both clients — a deployment configured one way would behave the
+  other. And the OAuth access-token cache is keyed without the client secret, so
+  a rotated secret keeps working until the cached token expires.
+
+The one thing OAuth would have been better at: a static bearer travels on every
+request, while an OAuth client secret only ever reaches the token endpoint. That
+is a real trade, made knowingly in exchange for the audit identity.
 
 ### Findings
 
@@ -37,9 +71,8 @@ unable to sync (it fails closed with `VocabSyncError`).
   below.) None of the four endpoints the migration calls out —
   `/api/lab-results/sync/`, `/api/fhir/sync/`, `/api/persons/find_or_create/`,
   `/api/v1/patients/signup/` — is called from anywhere in this repository.
-  EXACT's grant should therefore be **read-only**: `patient/*.read` for the
-  patient client and `system/*.read` for the vocab mirror, with no
-  `patient/*.write`.
+  EXACT's grant should therefore be **read-only**, and one scope covers
+  everything it calls: `patient/*.read`, with no `patient/*.write`.
 - **User-attributed reads do not happen here by design.** Production patient
   context arrives as an inline `patient_info` payload that the federation host
   fetched from PRomop `/patient-info/me/` under the end user's *own* token. The
@@ -107,13 +140,15 @@ input file and sent as `Authorization: Token …` to `app.cancerbot.org`.
 
 ## Rollout notes
 
-1. **Determine what the deployment actually uses before installing anything.**
-   OAuth wins whenever both OAuth settings are present, so installing a new
-   `PROMOP_SERVICE_TOKEN` on an OAuth-configured deployment changes nothing.
-   Pick one credential per client and keep the other unset.
-2. **Cutover needs a plan, not just a new value.** `PROMOP_SERVICE_TOKEN` holds
-   a single token; overwriting it retires the old credential at that instant.
-   Verify the new credential against staging before the swap.
+1. **Install the named token as `PROMOP_SERVICE_TOKEN` *and*
+   `PROMOP_VOCAB_SERVICE_TOKEN`, and clear both OAuth pairs.** Leaving OAuth
+   configured silently keeps the old transport: it wins whenever both of its
+   settings are present.
+2. **Rotation is a PRomop-side operation, not an env-var swap.** An application
+   may hold several active tokens at once, so the safe order is: create the
+   replacement, deliver it, update EXACT's settings, then revoke the old token.
+   Overwriting the variable alone would otherwise retire the old credential at
+   that instant. Revocation and scope changes take effect on the next request.
 3. **OAuth access tokens are cached per process** for their stated lifetime,
    keyed by `(token_url, client_id, scope)` — the secret is not part of the key.
    After rotating a client secret, a running process keeps using its cached
@@ -122,9 +157,13 @@ input file and sent as `Authorization: Token …` to `app.cancerbot.org`.
 4. **Per-runtime, not per-repo.** The web service, the vocab-sync job and ad-hoc
    management commands are separate workloads with different credentials. The
    migrate job uses neither client and should not receive patient credentials.
-5. **Verify identity upstream.** After install, confirm with PRomop's
-   audit/provenance that reads arrive as `urn:service|exact` with the expected
-   scopes; retire the shared credential only once its use disappears from logs.
+5. **Three smoke GETs before retiring anything**, one per endpoint EXACT
+   actually calls: a patient record, `vocab-releases/latest`, and one snapshot
+   table. The permission classes above were read from source, not exercised
+   against the deployment.
+6. **Verify identity upstream.** Confirm with PRomop's audit/provenance that
+   reads arrive as `urn:service|exact` with the expected scopes; retire the
+   shared credential only once its use disappears from logs.
 
 Secrets never live in this repository. They come from the host platform's secret
 store as environment variables — see [setup.md](setup.md).

@@ -406,6 +406,12 @@ PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
 # PROMOP_OAUTH_* (scope patient/*.read). Base falls back to PROMOP_API_BASE /
 # PROMOP_BASE (same promop host); token_url defaults to {base}/o/token/.
 PROMOP_VOCAB_BASE = os.environ.get('PROMOP_VOCAB_BASE', '')
+# Static bearer for the vocabulary endpoints — EXACT's named PRomop service
+# token (#448). Only this path authenticates as `urn:service|exact`; set it to
+# the same token as PROMOP_SERVICE_TOKEN to keep one service identity. Kept as
+# its own setting so the two clients can hold different credentials if they ever
+# need to, rather than one module reading the other's configuration.
+PROMOP_VOCAB_SERVICE_TOKEN = os.environ.get('PROMOP_VOCAB_SERVICE_TOKEN', '')
 PROMOP_VOCAB_OAUTH_CLIENT_ID = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_ID', '')
 PROMOP_VOCAB_OAUTH_CLIENT_SECRET = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_SECRET', '')
 # Scope required by promop's vocab-releases endpoints (confirm with promop; the

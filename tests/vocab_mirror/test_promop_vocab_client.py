@@ -106,22 +106,87 @@ class TestVocabCredential:
     a credential to promop, and it must never ask for more than vocabulary reads.
     """
 
-    @pytest.mark.parametrize('kwargs, missing', [
+    @pytest.mark.parametrize('kwargs, expected', [
         ({'oauth_client_id': 'cid', 'oauth_client_secret': ''}, 'client_secret'),
         ({'oauth_client_id': '', 'oauth_client_secret': 'sec'}, 'client_id'),
-        ({'oauth_client_id': '', 'oauth_client_secret': ''}, 'client_id'),
+        ({'oauth_client_id': '', 'oauth_client_secret': ''}, 'no vocab credential'),
     ])
     def test_incomplete_credential_raises_without_a_token_request(
-            self, monkeypatch, kwargs, missing):
+            self, monkeypatch, kwargs, expected):
         posted = []
         monkeypatch.setattr(pvc.requests, 'post',
                             lambda *a, **k: posted.append(a) or None)
-        client = PromopVocabClient(base_url='http://promop',
+        client = PromopVocabClient(base_url='http://promop', token='',
                                    oauth_token_url='http://promop/o/token/', **kwargs)
         with pytest.raises(pvc.VocabSyncError) as exc:
             client._authorization()
-        assert missing in str(exc.value)
+        assert expected in str(exc.value)
         assert posted == []
+
+    @pytest.mark.parametrize('kwargs', [
+        {'oauth_client_id': 'cid'},      # secret missing
+        {'oauth_client_secret': 'sec'},  # id missing
+    ])
+    def test_half_an_oauth_pair_does_not_fall_back_to_the_static_token(
+            self, monkeypatch, kwargs):
+        """Parity with the patient client (#448): a dropped OAuth secret must
+        not silently substitute the other credential — that is the
+        shared-credential behaviour the migration removes."""
+        posted = []
+        monkeypatch.setattr(pvc.requests, 'post',
+                            lambda *a, **k: posted.append(a) or None)
+        client = PromopVocabClient(base_url='http://promop', token='static-tok',
+                                   oauth_token_url='http://promop/o/token/', **kwargs)
+        with pytest.raises(pvc.VocabSyncError):
+            client._authorization()
+        assert posted == []
+
+    def test_static_token_authorizes_without_minting(self, monkeypatch):
+        """The named PRomop service token is a plain bearer: no OAuth round-trip,
+        and it is what makes the request authenticate as `urn:service|exact`."""
+        posted = []
+        monkeypatch.setattr(pvc.requests, 'post',
+                            lambda *a, **k: posted.append(a) or None)
+        client = PromopVocabClient(base_url='http://promop', token='named-tok')
+        assert client.use_oauth is False
+        assert client.oauth_config_incomplete is False
+        assert client._authorization() == 'Bearer named-tok'
+        assert posted == []
+
+    def test_oauth_wins_when_both_credentials_are_configured(self, monkeypatch):
+        """Same precedence as the patient client, so a deployment can't be
+        configured one way and behave the other."""
+        from trials.services.patient_info.promop_client import _clear_token_cache
+
+        _clear_token_cache()
+
+        class _TokenResp:
+            ok = True
+            status_code = 200
+            reason = 'OK'
+
+            @staticmethod
+            def json():
+                return {'access_token': 'minted', 'expires_in': 3600}
+
+        monkeypatch.setattr(
+            'trials.services.patient_info.promop_client.requests.post',
+            lambda *a, **k: _TokenResp())
+        client = PromopVocabClient(base_url='http://promop', token='static-tok',
+                                   oauth_client_id='cid', oauth_client_secret='sec',
+                                   oauth_scope='system/*.read',
+                                   oauth_token_url='http://promop/o/token/')
+        try:
+            assert client._authorization() == 'Bearer minted'
+        finally:
+            _clear_token_cache()
+
+    def test_settings_supply_the_static_token(self, settings):
+        settings.PROMOP_VOCAB_BASE = 'http://promop'
+        settings.PROMOP_VOCAB_SERVICE_TOKEN = 'from-settings'
+        settings.PROMOP_VOCAB_OAUTH_CLIENT_ID = ''
+        settings.PROMOP_VOCAB_OAUTH_CLIENT_SECRET = ''
+        assert PromopVocabClient()._authorization() == 'Bearer from-settings'
 
     def test_token_request_uses_the_vocab_scope(self, monkeypatch):
         """The vocab grant is `system/*.read`, distinct from the patient
