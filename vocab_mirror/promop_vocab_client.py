@@ -72,6 +72,17 @@ class PromopVocabClient:
         self.timeout = timeout
 
     def _authorization(self):
+        # Check the credential locally first (#448). Without this, a missing or
+        # half-configured client posts half a credential to promop's token
+        # endpoint and reads the rejection as a server problem; and because the
+        # vocab client authenticates as its own service identity, a dropped
+        # secret must never degrade into some other credential.
+        if not (self.oauth_client_id and self.oauth_client_secret):
+            missing = 'client_id' if not self.oauth_client_id else 'client_secret'
+            raise VocabSyncError(
+                f'vocab OAuth credential incomplete (no {missing}); refusing to '
+                f'request a token (fail closed)'
+            )
         tok = _get_service_access_token(
             self.oauth_token_url, self.oauth_client_id, self.oauth_client_secret,
             self.oauth_scope, self.timeout,

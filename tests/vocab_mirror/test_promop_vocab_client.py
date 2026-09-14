@@ -98,3 +98,68 @@ def test_stream_snapshot_tolerates_absent_release_id_header(monkeypatch):
     # An older promop without the header still works (verify only when present).
     resp = _FakeStreamResp([json.dumps({'__done': True, 'rows': 0})], headers={})
     assert _run(monkeypatch, resp) == [{'__done': True, 'rows': 0}]
+
+
+class TestVocabCredential:
+    """The vocab client carries its own service credential and its own scope
+    (#448). It must fail closed locally on a broken one rather than posting half
+    a credential to promop, and it must never ask for more than vocabulary reads.
+    """
+
+    @pytest.mark.parametrize('kwargs, missing', [
+        ({'oauth_client_id': 'cid', 'oauth_client_secret': ''}, 'client_secret'),
+        ({'oauth_client_id': '', 'oauth_client_secret': 'sec'}, 'client_id'),
+        ({'oauth_client_id': '', 'oauth_client_secret': ''}, 'client_id'),
+    ])
+    def test_incomplete_credential_raises_without_a_token_request(
+            self, monkeypatch, kwargs, missing):
+        posted = []
+        monkeypatch.setattr(pvc.requests, 'post',
+                            lambda *a, **k: posted.append(a) or None)
+        client = PromopVocabClient(base_url='http://promop',
+                                   oauth_token_url='http://promop/o/token/', **kwargs)
+        with pytest.raises(pvc.VocabSyncError) as exc:
+            client._authorization()
+        assert missing in str(exc.value)
+        assert posted == []
+
+    def test_token_request_uses_the_vocab_scope(self, monkeypatch):
+        """The vocab grant is `system/*.read`, distinct from the patient
+        client's `patient/*.read` — the two credentials are not interchangeable,
+        and neither asks for write."""
+        from trials.services.patient_info.promop_client import _clear_token_cache
+
+        _clear_token_cache()
+        captured = {}
+
+        class _TokenResp:
+            ok = True
+            status_code = 200
+            reason = 'OK'
+
+            @staticmethod
+            def json():
+                return {'access_token': 'vt', 'expires_in': 3600}
+
+        def fake_post(url, data=None, auth=None, timeout=None, allow_redirects=None):
+            captured.update(url=url, data=data, auth=auth)
+            return _TokenResp()
+
+        monkeypatch.setattr(
+            'trials.services.patient_info.promop_client.requests.post', fake_post)
+        client = PromopVocabClient(base_url='http://promop', oauth_client_id='cid',
+                                   oauth_client_secret='sec',
+                                   oauth_token_url='http://promop/o/token/')
+        try:
+            assert client._authorization() == 'Bearer vt'
+        finally:
+            _clear_token_cache()
+        assert captured['url'] == 'http://promop/o/token/'
+        assert captured['data']['scope'] == 'system/*.read'
+        assert 'write' not in captured['data']['scope']
+        assert captured['auth'] == ('cid', 'sec')
+
+    def test_default_scope_is_the_vocab_read_scope(self, settings):
+        settings.PROMOP_VOCAB_BASE = 'http://promop'
+        assert PromopVocabClient().oauth_scope == 'system/*.read'
+

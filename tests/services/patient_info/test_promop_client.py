@@ -83,12 +83,15 @@ class TestPromopClientFetch:
                    return_value=_ok_response([{'foo': 'bar'}])):
             assert client.fetch_patient(9001) is None
 
-    def test_no_auth_header_when_token_unset(self):
+    def test_no_credential_means_no_request_at_all(self):
+        """An empty token is a missing credential, not a reason to ask anonymously
+        (#448). The old behaviour put a person_id on promop's wire under no
+        identity; now the client returns None without touching the network."""
         client = PromopClient(base_url='https://promop.example.com', token='')
         with patch('trials.services.patient_info.promop_client.requests.get',
                    return_value=_ok_response({'person_id': 9001})) as mock_get:
-            client.fetch_patient(9001)
-        assert 'Authorization' not in mock_get.call_args.kwargs['headers']
+            assert client.fetch_patient(9001) is None
+        mock_get.assert_not_called()
 
     @pytest.mark.parametrize('bad_id', [
         '../evil-endpoint',     # path traversal — would leak Bearer token
@@ -310,18 +313,42 @@ class TestOAuthV1:
             client.fetch_patient(9001)
         assert mpost.call_args.kwargs['allow_redirects'] is False
 
-    def test_partial_oauth_config_falls_back_to_the_static_token(self):
-        """Only client_id (no secret) must not enable OAuth — it falls back to
-        the static-token credential rather than half-authenticating. The URL
-        stays on v1 either way (#387)."""
+    @pytest.mark.parametrize('kwargs', [
+        {'oauth_client_id': 'cid'},      # secret missing
+        {'oauth_client_secret': 'sec'},  # id missing
+    ])
+    def test_partial_oauth_config_sends_nothing(self, kwargs):
+        """Half an OAuth pair is a broken credential, not a fallback trigger
+        (#448). It used to drop to the static token, which under per-service
+        credentials means a dropped secret silently substitutes one service
+        identity for another — exactly the shared-credential behaviour the
+        migration removes. No token request, no patient request."""
         client = PromopClient(base_url='https://promop.example.com', token='static',
-                              oauth_client_id='cid')  # secret missing
+                              **kwargs)
         assert client.use_oauth is False
-        with patch(_POST) as mpost, patch(_GET, return_value=_ok_response({'person_id': 1})) as mget:
-            client.fetch_patient(9001)
+        assert client.oauth_config_incomplete is True
+        with patch(_POST) as mpost, patch(_GET) as mget:
+            assert client.fetch_patient(9001) is None
         mpost.assert_not_called()
-        assert mget.call_args.args[0] == 'https://promop.example.com/api/v1/patient-records/9001/'
+        mget.assert_not_called()
+
+    def test_no_oauth_config_at_all_is_still_the_static_token(self):
+        """The complement of the test above: *no* OAuth config is the valid
+        static-token mode, not a misconfiguration."""
+        client = PromopClient(base_url='https://promop.example.com', token='static')
+        assert client.oauth_config_incomplete is False
+        with patch(_POST) as mpost, patch(_GET, return_value=_ok_response({'person_id': 1})) as mget:
+            assert client.fetch_patient(9001) == {'person_id': 1}
+        mpost.assert_not_called()
         assert mget.call_args.kwargs['headers']['Authorization'] == 'Bearer static'
+
+    def test_oauth_mode_with_unmintable_token_sends_no_patient_request(self):
+        """Fail-closed parity with the static path: OAuth configured but the
+        token endpoint unreachable ⇒ no patient request (#448)."""
+        client = _oauth_client()
+        with patch(_POST, side_effect=requests.Timeout('slow')), patch(_GET) as mget:
+            assert client.fetch_patient(9001) is None
+        mget.assert_not_called()
 
     def test_settings_drive_oauth_config(self, settings):
         settings.PROMOP_BASE = 'https://s.example.com'
@@ -336,3 +363,57 @@ class TestOAuthV1:
             client.fetch_patient(1)
         assert mget.call_args.args[0] == 'https://s.example.com/api/v1/patient-records/1/'
         assert mpost.call_args.args[0] == 'https://s.example.com/o/token/'
+
+
+class TestNoAssertedUserIdentity:
+    """promop no longer honours an unsigned `actor_iss`/`actor_sub` supplied
+    alongside a service credential, and rejects the request outright (#448 /
+    promop #147, #568). EXACT never claims a user to promop — these tests pin
+    the request shape so a future port can't quietly start."""
+
+    ACTOR_FIELDS = ('actor_iss', 'actor_sub')
+
+    def _sent_request(self, client, patcher_target=_GET):
+        with patch(_POST, return_value=_token_response('svc-tok')), \
+             patch(patcher_target, return_value=_ok_response(
+                 {'patient_info': {'person_id': 9001}})) as mget:
+            client.fetch_patient(9001)
+        return mget.call_args
+
+    @pytest.mark.parametrize('client_factory', [
+        lambda: PromopClient(base_url='https://promop.example.com', token='static'),
+        _oauth_client,
+    ], ids=['static-token', 'oauth'])
+    def test_patient_read_asserts_no_actor_and_carries_no_body(self, client_factory):
+        call = self._sent_request(client_factory())
+        kwargs = call.kwargs
+        # No body of any kind — the actor claim promop rejects travels in JSON.
+        assert 'json' not in kwargs and 'data' not in kwargs
+        # No query string either.
+        assert 'params' not in kwargs
+        assert '?' not in call.args[0]
+        headers = kwargs['headers']
+        blob = ' '.join(f'{k}:{v}' for k, v in headers.items()).lower()
+        for field in self.ACTOR_FIELDS:
+            assert field not in blob
+        # Nothing claiming to override provenance, either.
+        assert not [h for h in headers if 'provenance' in h.lower()
+                    or h.lower().startswith('x-on-behalf')]
+        assert headers['Authorization'].startswith('Bearer ')
+
+    def test_token_request_asks_only_for_the_read_scope(self):
+        """EXACT reads patients and writes nothing, so the grant it uses must be
+        read-only (#448): no `patient/*.write` is ever requested."""
+        client = _oauth_client()
+        with patch(_POST, return_value=_token_response()) as mpost, \
+             patch(_GET, return_value=_ok_response({'patient_info': {'person_id': 1}})):
+            client.fetch_patient(9001)
+        scope = mpost.call_args.kwargs['data']['scope']
+        assert scope == 'patient/*.read'
+        assert 'write' not in scope
+
+    def test_default_settings_scope_is_read_only(self, settings):
+        settings.PROMOP_BASE = 'https://s.example.com'
+        settings.PROMOP_OAUTH_CLIENT_ID = 'cid'
+        settings.PROMOP_OAUTH_CLIENT_SECRET = 'sec'
+        assert 'write' not in PromopClient().oauth_scope

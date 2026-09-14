@@ -16,12 +16,13 @@ the migration without breaking).
 
 ## Authorization boundary
 
-The PROMOP `person_id` path calls PROMOP with a static service token
-(`PROMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
-and PROMOP does not enforce row-level authz for that token — so honoring
-an arbitrary `person_id` lets any authenticated caller enumerate other
-patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
-patients (it's stateless for patient data — see project memory
+The PROMOP `person_id` path calls PROMOP with EXACT's own service
+credential, which authenticates EXACT as a service (`urn:service|exact`)
+and is NOT bound to the authenticated caller. PROMOP does not enforce
+row-level authz for a service credential — so honoring an arbitrary
+`person_id` lets any authenticated caller enumerate other patients' PHI
+(IDOR, #150/#108). EXACT also has no model linking users to patients
+(it's stateless for patient data — see project memory
 `feedback_exact_no_own_db.md`), so there's nothing in-tree to verify
 against.
 
@@ -32,12 +33,19 @@ local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
 `person_id` while the gate is off gets a 403.
 
 Re-enabling it in production requires BOTH:
-- forwarding the caller's identity to PROMOP (token exchange / pass-through
-  bearer or actor_iss/actor_sub — see hk-labs `promop_client.py`), AND
+- a *verified* end-user identity reaching PROMOP: either the caller's own
+  bearer forwarded through, or a token exchanged for it — matched to
+  PROMOP's audience, token type and scopes. Asserting `actor_iss`/
+  `actor_sub` alongside a service credential is NOT one of the options:
+  PROMOP rejects unsigned actor claims from a service identity outright
+  (#448 / promop #147, #568), and EXACT sends no such field anywhere, AND
 - PROMOP enforcing per-user authz (its `PatientUser`/consent models), or
   using the self-scoped `/patient-info/me/` route.
 
-Tracked as #150/#108.
+Neither exists today, so the gate stays closed in production: the
+service-identity migration does not re-open this path.
+
+Tracked as #150/#108, #448.
 """
 import ast
 import datetime as dt
