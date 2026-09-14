@@ -496,9 +496,13 @@ export function fakeState(
             reads.writable += 1;
             return initial.writable!;
           }),
-          setPatientField: vi.fn(async (field: string, value: unknown) => {
-            record[field] = value;
-            return { status: "saved", value } as WriteOutcome;
+          setPatientFields: vi.fn(async (fields: Record<string, unknown>) => {
+            const outcomes: Record<string, WriteOutcome> = {};
+            for (const [field, value] of Object.entries(fields)) {
+              record[field] = value;
+              outcomes[field] = { status: "saved", value };
+            }
+            return outcomes;
           }),
         }
       : {}),

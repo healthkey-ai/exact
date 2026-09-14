@@ -71,16 +71,21 @@ export interface TrialStateAdapter {
    *  reviewed concept set, on the field's kind, and on who is asking. See
    *  `writable.ts`.
    *
-   *  Optional, and paired with `setPatientField`: a host that implements
+   *  Optional, and paired with `setPatientFields`: a host that implements
    *  neither gets the read-only detail page it has today. Implementing only
    *  one is refused by `canEditFields` rather than half-honoured — a
    *  descriptor with no writer draws pencils that lead nowhere, and a writer
    *  with no descriptor has to guess what is writable, which is the guess this
    *  whole seam exists to avoid. */
   getWritableFields?(): Promise<WritableFields>;
-  /** Write one attribute. See `WriteOutcome` for why this reports three
-   *  states rather than resolving or rejecting. */
-  setPatientField?(field: string, value: unknown): Promise<WriteOutcome>;
+  /** Write attributes. Several at once, because that is how the queue sends
+   *  them: a reader who fills in three gaps in a row should cost one request
+   *  and one re-derivation, not three of each.
+   *
+   *  The answer is per field — see `WriteOutcome` for why each is three
+   *  states rather than resolved-or-rejected. A field the response does not
+   *  mention is `unconfirmed`; it does not make the others unconfirmed. */
+  setPatientFields?(fields: Record<string, unknown>): Promise<Record<string, WriteOutcome>>;
 }
 
 /** What the record showed after a write.
@@ -117,8 +122,8 @@ export type WriteOutcome =
 export function canEditFields(
   adapter: TrialStateAdapter | undefined,
 ): adapter is TrialStateAdapter &
-  Required<Pick<TrialStateAdapter, "getWritableFields" | "setPatientField">> {
-  return Boolean(adapter?.getWritableFields && adapter?.setPatientField);
+  Required<Pick<TrialStateAdapter, "getWritableFields" | "setPatientFields">> {
+  return Boolean(adapter?.getWritableFields && adapter?.setPatientFields);
 }
 
 interface PromopStateArgs {
@@ -231,23 +236,28 @@ export function createPromopState({
     // the person in the path and reads nothing from the query string, so
     // sending it would encode the same id twice with only one of them
     // consulted.
-    setPatientField: async (field, value) => {
+    setPatientFields: async (fields) => {
       const response = await client.patch<Record<string, unknown>>(
         `${records}/${person}/`,
-        { [field]: value },
+        fields,
       );
       const body = response.data;
-      if (!body || typeof body !== "object" || !(field in body)) {
-        return { status: "unconfirmed" };
+      const outcomes: Record<string, WriteOutcome> = {};
+      for (const [field, value] of Object.entries(fields)) {
+        if (!body || typeof body !== "object" || !(field in body)) {
+          outcomes[field] = { status: "unconfirmed" };
+          continue;
+        }
+        const echoed = body[field];
+        // Stringified, because the wire does not preserve the distinction: a
+        // number sent as 12 comes back as "12" from a decimal column, and an
+        // option sent as a string may return as one of several equal spellings
+        // of the same value. Both are the value the record took.
+        outcomes[field] = sameValue(echoed, value)
+          ? { status: "saved", value: echoed }
+          : { status: "differs", value: echoed };
       }
-      const echoed = body[field];
-      // Stringified, because the wire does not preserve the distinction: a
-      // number sent as 12 comes back as "12" from a decimal column, and an
-      // option sent as a string may return as one of several equal spellings
-      // of the same value. Both are the value the record took.
-      return sameValue(echoed, value)
-        ? { status: "saved", value: echoed }
-        : { status: "differs", value: echoed };
+      return outcomes;
     },
   };
 }

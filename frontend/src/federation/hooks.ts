@@ -26,6 +26,7 @@ import {
   fetchTrialsGraph,
 } from "./api";
 import { canEditFields } from "./state";
+import { PatientFieldWriter } from "./patientWriter";
 import type { AdvancedStatus, TrialId, TrialStateAdapter } from "./state";
 import type { WritableFields } from "./writable";
 import type {
@@ -139,52 +140,202 @@ export function useWritableFields(
   });
 }
 
-/** Write one patient attribute.
+/** The queue behind inline editing, and what the page paints from it.
  *
- *  Every outcome ends in a re-read, and that is deliberate. `saved` still
- *  re-reads because the value the record keeps is derived from the OMOP fact
- *  the write produced, so the row's match status and the trial's score are
- *  both downstream of it — the whole point of the phase is that the match
- *  recomputes. `differs` re-reads because the record holds something other
- *  than what was sent and the reader should see what it actually holds.
- *  `unconfirmed` re-reads because nothing was learned.
+ *  `save` returns nothing and takes no time: the reader has pressed Save, the
+ *  row shows their value on trust, and the request goes out with whatever else
+ *  they change in the same breath. What comes back decides what the row shows
+ *  next.
  *
- *  What none of them do is report failure. A refused write REJECTS — 403, 404,
- *  a 400 from the serializer — and that is the only failure the caller should
- *  show. Treating `differs` as an error would put "could not save" in front of
- *  a reader whose value was saved and then canonicalised, which is most of the
- *  unit-bearing fields in the record.
+ *  `outstanding` is that trust, by field — the value shown until the record
+ *  answers. It is retired on EVERY outcome, including a refusal: leaving it up
+ *  would show the reader a value the record does not hold, which is the
+ *  failure this phase exists to prevent. A refusal instead names the field in
+ *  `failed`, so the row can say so.
  */
-export function useSetPatientField(
+export function useQueuedPatientFields(
   state: TrialStateAdapter | undefined,
   key: string,
-) {
+): {
+  save: (field: string, value: unknown) => void;
+  outstanding: Record<string, unknown>;
+  failed: Record<string, unknown>;
+} {
   const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ field, value }: { field: string; value: unknown }) =>
-      state!.setPatientField!(field, value),
-    onSuccess: () => {
-      // The detail invalidation is AWAITED — returned from `onSuccess`, which
-      // is what makes `mutateAsync` wait for it — so that resolving really
-      // does mean the record has been re-read. Without it the editor closes
-      // on the old value and reopens on the old value, which reads as an edit
-      // that did not take.
-      //
-      // This is the opposite call from `useSetTrialState`, deliberately.
-      // There the id list can be patched in the cache, so the control is
-      // right immediately and the round trip need not be waited for; here the
-      // row's value, its match status and the trial's score are all computed
-      // by the server from what was just written, and none of them can be
-      // guessed client-side.
-      //
-      // The other two are not awaited: the list is behind the detail page the
-      // reader is looking at, and the descriptor rarely changes. Holding the
-      // Save button through three round trips would cost what it is worth.
-      queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
-      queryClient.invalidateQueries({ queryKey: ["exact-writable-fields", key] });
-      return queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
-    },
-  });
+  const [outstanding, setOutstanding] = useState<Record<string, unknown>>({});
+  // Keyed by field and holding the VALUE that failed, not just the name. The
+  // row shows the record's value — the truthful one — and the editor opens on
+  // what the reader typed, so a refusal costs them a click and not the work.
+  // PROMOP validates a PATCH as a whole inside one transaction, so a single
+  // bad field takes the rest of the batch down with it; retyping three good
+  // values because of a fourth is not a thing to ask of anyone.
+  const [failed, setFailed] = useState<Record<string, unknown>>({});
+
+  // Read through a ref so the writer below is not rebuilt when a host hands
+  // over a new adapter object for the same patient — rebuilding would drop
+  // whatever it had queued.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // Which patient that ref currently belongs to. Both are written during
+  // render, so by the time an unmount cleanup runs after a patient switch
+  // they already describe the NEW patient — which is exactly why the writer
+  // below must not reach through them blindly.
+  const keyRef = useRef(key);
+  keyRef.current = key;
+  const can = canEditFields(state);
+
+  // What was last sent for each field, read when a refusal comes back — by
+  // then the optimistic state has been retired and the value would be gone.
+  const sentRef = useRef<Record<string, unknown>>({});
+  // How many edits to each field have not been answered yet.
+  //
+  // Without this the state is keyed by field alone and knows nothing about
+  // WHICH edit it belongs to: a reader who changes the same value twice while
+  // the first request is out has the first answer retire the second one's
+  // optimistic value — the row dropping back to the server's older number,
+  // with no "Saving…" on it, until the second re-read lands. The same
+  // mistake, mirrored, makes a refusal of the first blame the second's value
+  // and clear a pending indicator for an edit the writer is about to send.
+  //
+  // So an answer only settles a field that has nothing newer waiting.
+  const owed = useRef<Record<string, number>>({});
+  const retire = (fields: string[]) =>
+    setOutstanding((current) => {
+      const next = { ...current };
+      for (const field of fields) delete next[field];
+      return next;
+    });
+
+  // A batch settling is what makes the match move, so the invalidation
+  // belongs to the writer rather than to each field: one re-read per request,
+  // not one per value.
+  const settledRef = useRef<() => Promise<void>>(async () => {});
+  // Fields reported in the current batch, retired together once the re-read
+  // above has landed.
+  const settledFields = useRef<string[]>([]);
+  settledRef.current = () => {
+    queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+    queryClient.invalidateQueries({ queryKey: ["exact-writable-fields", key] });
+    // Returned, because the optimistic values are retired when it resolves:
+    // the row's own `uvalue` only changes when this lands, so retiring before
+    // it would put the OLD value back on screen for a whole round trip —
+    // "13 → Saving… → 12 → 13", which is the save-that-did-nothing this
+    // overlay exists to prevent, moved later rather than removed.
+    return queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
+  };
+
+  // Whose verdicts the state below belongs to. A patient switch builds a new
+  // writer while the old one's flush is still in the air, and that answer
+  // lands afterwards — under the new patient, about the previous one's row.
+  const writerRef = useRef<PatientFieldWriter | null>(null);
+  const writer = useMemo(() => {
+    if (!can) {
+      writerRef.current = null;
+      return null;
+    }
+    // The adapter is CAPTURED here and only reached for through the ref while
+    // the patient is unchanged. The two ways `state` can move need opposite
+    // answers, and `useSavedFilters` settles them the same way:
+    //
+    //  - same patient, new adapter object (a host writing
+    //    `state={createPromopState(...)}` inline, or a refreshed client): use
+    //    the current one, or a write would go through an expired client.
+    //  - different patient: use the captured one. This writer belongs to the
+    //    previous patient and its flush carries values edited FOR them —
+    //    sent through the ref they would be written into the NEXT patient's
+    //    record. For a saved search that is an annoyance; for a haemoglobin
+    //    it is one person's lab value in another person's chart.
+    const captured = stateRef.current;
+    const live = () =>
+      (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
+    const built: PatientFieldWriter = new PatientFieldWriter(
+      (fields) => live().setPatientFields!(fields),
+      {
+        onSettled: (field) => {
+          if (writerRef.current !== built) return;
+          owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
+          // Superseded: a newer edit to this field has not been answered yet,
+          // and ITS value is what the row is showing.
+          if (owed.current[field] > 0) return;
+          settledFields.current.push(field);
+          setFailed((current) => {
+            if (!(field in current)) return current;
+            const next = { ...current };
+            delete next[field];
+            return next;
+          });
+        },
+        onBatchSettled: () => {
+          const reported = settledFields.current;
+          settledFields.current = [];
+          if (writerRef.current !== built) return;
+          void settledRef.current().then(() => {
+            if (writerRef.current !== built) return;
+            retire(reported);
+          });
+        },
+        onError: (fields) => {
+          if (writerRef.current !== built) return;
+          const settled = fields.filter((field) => {
+            owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
+            return owed.current[field] === 0;
+          });
+          if (settled.length === 0) return;
+          setFailed((current) => {
+            const next = { ...current };
+            for (const field of settled) next[field] = sentRef.current[field];
+            return next;
+          });
+          retire(settled);
+        },
+      },
+    );
+    writerRef.current = built;
+    return built;
+    // `can` rather than `state`: see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [can, key]);
+
+  // An edit made in the last quarter second should survive the reader
+  // navigating away, or the host switching patients — which rebuilds the
+  // writer and runs this cleanup against the OLD one, carrying edits made for
+  // the previous patient.
+  useEffect(() => {
+    if (!writer) return;
+    return () => {
+      writer.flush();
+    };
+  }, [writer]);
+
+  // A patient switch is not an edit: the previous patient's optimistic values
+  // must not be painted over the new one's rows.
+  useEffect(() => {
+    setOutstanding({});
+    setFailed({});
+    sentRef.current = {};
+    owed.current = {};
+  }, [key]);
+
+  return useMemo(
+    () => ({
+      save: (field: string, value: unknown) => {
+        if (!writer) return;
+        owed.current[field] = (owed.current[field] ?? 0) + 1;
+        sentRef.current[field] = value;
+        setOutstanding((current) => ({ ...current, [field]: value }));
+        setFailed((current) => {
+          if (!(field in current)) return current;
+          const next = { ...current };
+          delete next[field];
+          return next;
+        });
+        writer.save(field, value);
+      },
+      outstanding,
+      failed,
+    }),
+    [writer, outstanding, failed],
+  );
 }
 
 /** Whether an adapter can answer the advanced-status question at all.
