@@ -5,7 +5,7 @@
 
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { fakeApi, fakeState, renderTrialMatches, trialDetail } from "../test/renderTrialMatches";
 import type { WritableFields } from "./writable";
@@ -348,6 +348,138 @@ describe("inside the dialog", () => {
     );
 
     expect(within(screen.getByRole("dialog")).getByText("mg/dL")).toBeInTheDocument();
+  });
+
+  it("says a subform write was refused, even after the dialog is closed", async () => {
+    // A row paints only its own attribute's failure, and a subform input is by
+    // construction a different one — so a refusal there had nowhere to appear
+    // once the dialog was shut. A write that vanishes with nothing said is
+    // exactly what this phase exists to prevent.
+    const state = fakeState({ writable: WRITABLE });
+    state.adapter.setPatientFields = vi.fn(async () => {
+      throw new Error("400");
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([composite()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Edit Estrogen receptor status" }),
+    );
+    await userEvent.selectOptions(
+      within(dialog).getByRole("combobox", { name: "Estrogen receptor status" }),
+      "ER+",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    // Closed before the answer comes back, which is the whole difficulty.
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const notice = await screen.findByRole("alert");
+    // Named the way the reader saw it, not `estrogen_receptor_status`.
+    expect(notice).toHaveTextContent("Estrogen receptor status");
+    expect(notice).toHaveTextContent("could not be saved");
+  });
+
+  it("does not repeat a refusal the row already shows", async () => {
+    // The row that carries the control paints its own failure in place, so the
+    // notice above the table must stay out of it: two alerts about one
+    // refusal is worse than one.
+    const state = fakeState({
+      writable: { hemoglobin_g_dl: { kind: "direct", writable: true, value_kind: "number" } },
+    });
+    state.adapter.setPatientFields = vi.fn(async () => {
+      throw new Error("400");
+    });
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        {
+          name: "hemoglobinMin",
+          label: "Hemoglobin",
+          type: "number",
+          value: 10,
+          ufield: "hemoglobinLevel",
+          upatientField: "hemoglobin_g_dl",
+          upatientRecomputed: false,
+          uvalue: 11.2,
+          matchingType: "matched",
+        },
+      ]),
+    );
+    renderTrialMatches(api, { state: state.adapter });
+    await open();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent("Couldn't save that");
+  });
+
+  it("names every refused field, not just the first", async () => {
+    const state = fakeState({
+      writable: {
+        ...WRITABLE,
+        progesterone_receptor_status: {
+          kind: "direct", writable: true, value_kind: "string",
+          options: [{ value: "PR-" }, { value: "PR+" }],
+        },
+      },
+    });
+    state.adapter.setPatientFields = vi.fn(async () => {
+      throw new Error("400");
+    });
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        composite({
+          subform_details: [
+            entry(),
+            entry({
+              name: "progesteroneReceptorStatus",
+              label: "Progesterone receptor status",
+              value: "PR-",
+              options: [
+                { value: "PR-", label: "PR-" },
+                { value: "PR+", label: "PR+" },
+              ],
+              upatientField: "progesterone_receptor_status",
+            }),
+          ],
+        }),
+      ]),
+    );
+    renderTrialMatches(api, { state: state.adapter });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+    const dialog = screen.getByRole("dialog");
+    for (const label of ["Estrogen receptor status", "Progesterone receptor status"]) {
+      await userEvent.click(within(dialog).getByRole("button", { name: `Edit ${label}` }));
+      await userEvent.selectOptions(
+        within(dialog).getByRole("combobox", { name: label }),
+        label.startsWith("Estrogen") ? "ER+" : "PR+",
+      );
+      await userEvent.click(
+        within(dialog).getAllByRole("button", { name: "Save" })[0],
+      );
+    }
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent("Estrogen receptor status");
+    expect(notice).toHaveTextContent("Progesterone receptor status");
   });
 
   it("stays open when the reader clicks inside it", async () => {

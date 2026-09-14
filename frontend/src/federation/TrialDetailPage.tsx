@@ -147,6 +147,46 @@ export interface RowEditing {
   failed: Record<string, unknown>;
 }
 
+/** The fields whose last write was refused, named the way the reader saw them.
+ *
+ *  Only the ones no row will speak for. A row that carries the control paints
+ *  its own refusal in place, and saying it twice is worse than saying it once.
+ *  But a subform input is by construction a DIFFERENT attribute from the row
+ *  that opened the dialog, so a refusal there had nowhere to appear at all
+ *  once the dialog was closed — and a write that vanishes with nothing said is
+ *  the failure this whole phase was built to prevent, reached through the one
+ *  surface the reader can shut.
+ *
+ *  Labels come from the payload rather than the canonical names, because
+ *  `serum_calcium_level` is not what the reader was looking at when they
+ *  typed. A field with no label to find is still named: leaving it out would
+ *  under-report the failure to keep the sentence tidy.
+ */
+function failedFieldLabels(
+  fields: TrialDetailField[],
+  failed: Record<string, unknown>,
+  editableRows: Set<string>,
+): string[] {
+  const names = Object.keys(failed);
+  if (names.length === 0) return [];
+  const labels = new Map<string, string>();
+  const spokenFor = new Set<string>();
+  for (const field of fields) {
+    if (field.upatientField) {
+      labels.set(field.upatientField, field.label);
+      // A row that carries the control says so itself, in place. Repeating it
+      // up here would put two alerts on screen about one refusal.
+      if (editableRows.has(field.name)) spokenFor.add(field.upatientField);
+    }
+    for (const entry of field.subform_details ?? []) {
+      if (entry.upatientField) labels.set(entry.upatientField, entry.label);
+    }
+  }
+  return names
+    .filter((name) => !spokenFor.has(name))
+    .map((name) => labels.get(name) ?? name);
+}
+
 /** Which rows may carry an edit control.
  *
  *  Two rows in three can name the same patient attribute, because `ufield` is
@@ -525,6 +565,10 @@ export function TrialDetailPage({
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
   const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
   const subformRows = useMemo(() => subformRowNames(eligibility), [eligibility]);
+  const failedLabels = useMemo(
+    () => failedFieldLabels(eligibility, editing?.failed ?? {}, editableRows),
+    [eligibility, editing?.failed, editableRows],
+  );
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
@@ -627,6 +671,16 @@ export function TrialDetailPage({
                 <h2 className="exact-panel__title">Summary</h2>
                 <p className="exact-detail__summary-text">{summary}</p>
               </section>
+            ) : null}
+
+            {failedLabels.length ? (
+              <p className="exact-detail__write-error" role="alert">
+                {failedLabels.length === 1
+                  ? `Your ${failedLabels[0]} could not be saved.`
+                  : `These could not be saved: ${failedLabels.join(", ")}.`}{" "}
+                The record still holds what it had. Open the field and try
+                again.
+              </p>
             ) : null}
 
             <section className="exact-panel exact-detail__elig">

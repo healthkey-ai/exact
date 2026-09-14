@@ -1634,3 +1634,16 @@
 .exact-root .exact-subform__value {
   font-size: 0.875rem;
 }
+
+/* A refused write, said where the reader will see it whatever they closed.
+   Above the table rather than inside it: the row that failed may be a subform
+   input, which has no row of its own. */
+.exact-root .exact-detail__write-error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--exact-color-not-eligible);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font-size: 0.875rem;
+  color: var(--exact-color-not-eligible);
+}
