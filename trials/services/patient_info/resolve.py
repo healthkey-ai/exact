@@ -54,6 +54,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from rest_framework.exceptions import APIException
 
 from trials.services.patient_info.normalize import normalize_patient_info
 
@@ -67,7 +68,9 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     Resolution order:
       1. Inline `patient_info` payload (existing contract — unchanged).
-      2. `person_id` query param or body field — fetch from PROMOP.
+      2. `person_id` query param or body field — fetch from PROMOP. A named
+         patient that can't be fetched raises `PatientContextUnavailable`
+         (502); it never degrades into case 3.
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
@@ -77,11 +80,12 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     person_id = _extract_person_id(request)
     if person_id:
-        # IDOR gate (#150/#108): the PROMOP fetch uses a static service token
-        # not bound to the caller, and PROMOP doesn't enforce row-level authz
-        # for it — so honoring an arbitrary person_id leaks other patients'
-        # PHI. Off by default outside local/DEBUG; reject rather than silently
-        # ignore so the disabled path can't masquerade as a no-patient search.
+        # IDOR gate (#150/#108): the PROMOP fetch uses EXACT's own service
+        # credential, which is not bound to the caller, and PROMOP doesn't
+        # enforce row-level authz for a service identity — so honoring an
+        # arbitrary person_id leaks other patients' PHI. Off by default outside
+        # local/DEBUG; reject rather than silently ignore so the disabled path
+        # can't masquerade as a no-patient search.
         from django.conf import settings
         if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
             from rest_framework.exceptions import PermissionDenied
@@ -120,8 +124,32 @@ def _extract_person_id(request) -> Optional[Any]:
     return body_pid or None
 
 
+class PatientContextUnavailable(APIException):
+    """A `person_id` was named but its patient could not be fetched.
+
+    502, not 404 or 500: every reason `fetch_patient` gives up on — an
+    unreachable PROMOP, a non-2xx status, a body that isn't a row, or (since
+    #448) no usable credential at all — is a failure of the upstream hop or of
+    our own configuration, and none of them tells us the patient doesn't exist.
+    """
+    status_code = 502
+    default_detail = ('Could not fetch the requested patient from PROMOP. '
+                      'No trial results are returned for an unresolved patient.')
+    default_code = 'patient_context_unavailable'
+
+
 def _resolve_from_promop(person_id: Any) -> Optional['PatientInfo']:
-    """Fetch the PROMOP row and adapt it to a PatientInfo. None on any error."""
+    """Fetch the PROMOP row and adapt it to a PatientInfo.
+
+    Raises `PatientContextUnavailable` rather than returning None when the row
+    can't be fetched. Returning None here would be read by the caller as "this
+    request has no patient" — and a search with no patient answers with the
+    whole corpus, unscored and unfiltered, which looks like a valid result
+    (#156). A caller that named a `person_id` asked about *that* patient; the
+    honest answer to "we couldn't get them" is an error, not every trial we
+    know. Failing closed on the credential (#448) would otherwise have created
+    exactly this: a dropped secret answering 200 with a full trial list.
+    """
     from trials.services.patient_info.promop_adapter import (
         build_patient_info_from_promop_row,
     )
@@ -129,7 +157,7 @@ def _resolve_from_promop(person_id: Any) -> Optional['PatientInfo']:
 
     row = PromopClient().fetch_patient(person_id)
     if not row:
-        return None
+        raise PatientContextUnavailable()
     return build_patient_info_from_promop_row(row)
 
 

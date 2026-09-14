@@ -270,10 +270,11 @@ ENABLE_DRF_TOKEN_AUTH = os.environ.get(
     'ENABLE_DRF_TOKEN_AUTH', _token_auth_default
 ).lower() in ('1', 'true')
 
-# The server-side `?person_id=` resolver fetches a patient from PROMOP using a
-# STATIC service token with no binding to the authenticated caller, and PROMOP
-# does not enforce row-level authz for that token — so any authenticated caller
-# can enumerate person_ids and read other patients' PHI (IDOR, #150/#108).
+# The server-side `?person_id=` resolver fetches a patient from PROMOP using
+# EXACT's own SERVICE credential (`urn:service|exact`, #448), which is not bound
+# to the authenticated caller, and PROMOP does not enforce row-level authz for a
+# service identity — so any authenticated caller can enumerate person_ids and
+# read other patients' PHI (IDOR, #150/#108).
 # No production caller uses this path (the federation host fetches the patient
 # via PROMOP `/patient-info/me/` under the end-user's own token and forwards it
 # inline), so gate it off by default outside local/DEBUG. Re-enable only once

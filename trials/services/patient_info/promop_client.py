@@ -177,10 +177,8 @@ class PromopClient:
         an OAuth token can't be minted, or static-token mode has an empty token.
         """
         if self.oauth_config_incomplete:
-            logger.warning(
-                'PromopClient: refusing to build an Authorization header from a '
-                'partial OAuth config.',
-            )
+            # __init__ already warned about the config, and `fetch_patient`
+            # warns about the refused request — no third line per request.
             return None
         if self.use_oauth:
             tok = _get_service_access_token(

@@ -12,7 +12,10 @@ import pytest
 from django.test import override_settings
 from rest_framework.exceptions import PermissionDenied
 
-from trials.services.patient_info.resolve import resolve_patient_info
+from trials.services.patient_info.resolve import (
+    PatientContextUnavailable,
+    resolve_patient_info,
+)
 
 
 def _mock_request(data=None, query_params=None):
@@ -133,8 +136,12 @@ class TestResolvePatientInfoDispatch:
         assert pi.patient_age == 51            # not None
         assert pi.gender == 'F'                # not None
 
-    def test_promop_client_returns_none_propagates(self):
-        """Client failure (network, 4xx/5xx, malformed JSON) → resolver returns None."""
+    def test_unfetchable_person_id_is_an_error_not_a_patientless_search(self):
+        """Client failure (network, 4xx/5xx, malformed JSON, or — since #448 —
+        no usable credential) must NOT resolve to None: the caller named a
+        patient, and a patientless search answers with the whole corpus,
+        unscored, which looks like a valid result (#156). 502, and the adapter
+        is never reached."""
         req = _mock_request(query_params={'person_id': '9001'})
         with patch(
             'trials.services.patient_info.promop_client.PromopClient', autospec=True,
@@ -142,8 +149,9 @@ class TestResolvePatientInfoDispatch:
             'trials.services.patient_info.promop_adapter.build_patient_info_from_promop_row',
         ) as mock_build:
             MockClient.return_value.fetch_patient.return_value = None
-            assert resolve_patient_info(req) is None
-            # Adapter not invoked on missing row.
+            with pytest.raises(PatientContextUnavailable) as exc:
+                resolve_patient_info(req)
+            assert exc.value.status_code == 502
             mock_build.assert_not_called()
 
 

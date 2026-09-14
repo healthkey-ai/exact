@@ -159,7 +159,49 @@ class TestVocabCredential:
         assert 'write' not in captured['data']['scope']
         assert captured['auth'] == ('cid', 'sec')
 
-    def test_default_scope_is_the_vocab_read_scope(self, settings):
-        settings.PROMOP_VOCAB_BASE = 'http://promop'
-        assert PromopVocabClient().oauth_scope == 'system/*.read'
+    def test_scope_falls_back_to_the_vocab_read_scope_when_unconfigured(self, settings):
+        """Deleted rather than assigned — assigning would assert the test's own
+        value. The vocab fallback is a read scope, and a distinct one from the
+        patient client's."""
+        del settings.PROMOP_VOCAB_OAUTH_SCOPE
+        client = PromopVocabClient(base_url='http://promop')
+        assert client.oauth_scope == 'system/*.read'
+        assert 'write' not in client.oauth_scope
+
+    @pytest.mark.parametrize('call', ['latest', 'snapshot'])
+    def test_requests_assert_no_actor_and_carry_no_body(self, monkeypatch, call):
+        """`_headers(extra=...)` takes arbitrary extra headers (If-None-Match
+        uses it) — that is the seam an actor or provenance header would enter
+        through. promop rejects unsigned actor claims from a service credential
+        (#448), and this client has no business making one."""
+        captured = {}
+
+        class _LatestResp(_FakeStreamResp):
+            headers = {'ETag': '"e"'}
+
+            @staticmethod
+            def json():
+                return {'release_id': 2}
+
+        def fake_get(url, headers=None, **kwargs):
+            captured.update(url=url, headers=headers, kwargs=kwargs)
+            if call == 'latest':
+                return _LatestResp([])
+            return _FakeStreamResp([json.dumps({'__done': True, 'rows': 0})])
+
+        monkeypatch.setattr(pvc.requests, 'get', fake_get)
+        client = _client()
+        if call == 'latest':
+            client.get_latest_release(if_none_match='"etag"')
+        else:
+            list(client.stream_snapshot(2, 'concept'))
+
+        assert captured, 'no request was made — this assertion would prove nothing'
+        blob = ' '.join(f'{k}:{v}' for k, v in captured['headers'].items()).lower()
+        for field in ('actor_iss', 'actor_sub', 'provenance', 'on-behalf-of'):
+            assert field not in blob
+        assert captured['kwargs'].get('json') is None
+        assert captured['kwargs'].get('data') is None
+        assert not captured['kwargs'].get('params')
+        assert '?' not in captured['url']
 

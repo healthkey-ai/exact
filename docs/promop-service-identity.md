@@ -18,7 +18,8 @@ Tracked as [#448](https://github.com/healthkey-ai/exact/issues/448).
 | `trials/services/patient_info/promop_client.py` | `PROMOP_OAUTH_CLIENT_ID`/`_SECRET` (scope `patient/*.read`), or the static bearer `PROMOP_SERVICE_TOKEN` | `GET /api/v1/patient-records/{person_id}/`, plus `POST /o/token/` in OAuth mode | one patient row |
 | `vocab_mirror/promop_vocab_client.py` | `PROMOP_VOCAB_OAUTH_CLIENT_ID`/`_SECRET` (scope `system/*.read`) | `GET /api/v1/vocab-releases/latest/`, `.../snapshot/{table}/` | vocabulary, no PHI |
 
-Both reach v1 only; the deprecated `/api/patient-info/` prefix was dropped in
+Both service clients reach v1 only; the deprecated `/api/patient-info/` prefix
+was dropped in
 [#387](https://github.com/healthkey-ai/exact/issues/387). They are **two
 distinct service credentials with two distinct scopes** and are not
 interchangeable — a grant covering only `patient/*.read` leaves the vocab mirror
@@ -30,8 +31,10 @@ unable to sync (it fails closed with `VocabSyncError`).
   token pass-through, no token exchange — the two clients send `Accept` and
   `Authorization` and no request body at all. Pinned by
   `tests/services/patient_info/test_promop_client.py::TestNoAssertedUserIdentity`.
-- **EXACT writes nothing to PRomop.** The only non-GET is the OAuth token POST.
-  None of the four endpoints the migration calls out —
+- **Neither service client writes to PRomop.** Their only non-GET is the OAuth
+  token POST. (The browser dev harness does POST `/api/auth/login/` and
+  `/api/auth/logout/` — a session login, under no service credential; see
+  below.) None of the four endpoints the migration calls out —
   `/api/lab-results/sync/`, `/api/fhir/sync/`, `/api/persons/find_or_create/`,
   `/api/v1/patients/signup/` — is called from anywhere in this repository.
   EXACT's grant should therefore be **read-only**: `patient/*.read` for the
@@ -50,23 +53,35 @@ unable to sync (it fails closed with `VocabSyncError`).
   the token *callers* present **to** EXACT. Same name as PRomop's setting,
   opposite direction.
 - **The dev harness is not a service caller.** `frontend/src/dev/promopClient.ts`
-  logs into PRomop with a browser session cookie and is excluded from the
-  federation bundle (`rollupOptions.input: {}` in `vite.remote.config.ts`).
+  logs into PRomop with a browser session cookie (hence its two POSTs) and is
+  excluded from the federation bundle (`rollupOptions.input: {}` in
+  `vite.remote.config.ts`). It is also the one in-repo caller still on the
+  `/api/patient-info/` prefix, whose stated sunset (2026-09-01) has passed —
+  worth moving to v1 independently of this migration, since a dev-only tool is
+  not covered by the service-identity work either way.
 
 ### Out of band: direct database access
 
-Several analysis commands read PRomop's `patient_info` table **directly over
-psql** using `PATIENT_DATABASE_URL`, bypassing the API, the service identity and
+Six analysis commands read the `patient_info` table **directly over psql**
+using `PATIENT_DATABASE_URL`, bypassing the API, the service identity and
 PRomop's audit trail entirely: `fetch_exact_for_patients`,
 `search_trials_for_patients`, `explain_trial_match`, `compare_status_equivalence`,
-`compare_trials`, `evaluate_ethalon_live`, `probe_eligibility`, and
-`docker/init_patients_db.sh` (which restores a dump from
-`PATIENT_DATABASE_BACKUP_URL`).
+`compare_trials`, `probe_eligibility`. Separately, `docker/init_patients_db.sh`
+*populates* a local patients database — it drops the public schema and restores
+a dump downloaded from `PATIENT_DATABASE_BACKUP_URL` — so that URL is a third
+credential-bearing setting alongside the database URL itself.
 
 These are developer/evaluation tooling, not the deployed request path, and
-PRomop's enforcement release does not constrain them. They are named here so
-the credential inventory is complete: retiring the shared API token does not
-retire this channel, and the database credential deserves its own review.
+PRomop's enforcement release does not constrain them. Retiring the shared API
+token does not retire this channel, and the database credential deserves its own
+review.
+
+Two limits on this inventory, stated so it isn't read as more exhaustive than it
+is. Some evaluator commands are git-ignored (`.gitignore`: `evaluate_ethalon_live`
+and its test) and therefore outside anything a tree search can check, though they
+read the same patient data. And `compare_trials` carries a second live service
+credential that is not PRomop's at all: a CancerBot API token, read from its
+input file and sent as `Authorization: Token …` to `app.cancerbot.org`.
 
 ## Fail-closed rules the code now enforces
 
@@ -81,6 +96,12 @@ retire this channel, and the database credential deserves its own review.
   shared-credential behaviour this migration removes.
 - The same rule applies to the vocab client, which raises `VocabSyncError`
   before requesting a token rather than posting half a credential.
+- Failing closed on the credential must not fail *open* on the answer. A
+  `person_id` that can't be fetched now raises `PatientContextUnavailable`
+  (502) instead of resolving to "no patient" — a patientless search returns the
+  whole corpus, unscored and unfiltered, which looks like a valid result in a
+  clinical matcher (#156). Without this, a dropped client secret would answer
+  200 with every trial we know.
 
 ## Rollout notes
 

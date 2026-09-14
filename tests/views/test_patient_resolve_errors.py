@@ -67,6 +67,31 @@ class TestPatientResolveErrors:
         resp = authed_client.get('/trials/?person_id=123')
         assert resp.status_code == 403
 
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    def test_unfetchable_person_id_returns_502_not_the_whole_corpus(self, authed_client):
+        """The gate's other half (#448): with the path *enabled*, a person_id
+        whose patient can't be fetched — upstream down, or no usable credential
+        after a botched secret rotation — must not answer 200 with every trial
+        in the corpus. That is the #156 failure mode arriving through the
+        person_id door instead of the inline one."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.PromopClient.fetch_patient',
+            return_value=None,
+        ) as mock_fetch:
+            resp = authed_client.get('/trials/?person_id=9001')
+        assert mock_fetch.called
+        assert resp.status_code == 502
+        assert 'patient' in str(resp.data).lower()
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    def test_no_person_id_is_still_a_patientless_search(self, authed_client):
+        """The complement: the 502 above is about a patient who was *named*.
+        A request that names nobody is public browsing and still answers 200."""
+        TrialFactory(disease='Multiple Myeloma')
+        resp = authed_client.get('/trials/')
+        assert resp.status_code == 200
+
     @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
     def test_inline_match_still_works_when_person_id_gate_off(self, authed_client):
         # The gate must not affect the inline path the real host uses.
