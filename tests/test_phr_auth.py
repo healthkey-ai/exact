@@ -46,6 +46,7 @@ def phr_settings(settings):
     settings.PHR_JWKS_CACHE_TTL = 3600
     settings.PHR_JWKS_MIN_REFRESH_INTERVAL = 60
     settings.PHR_ALLOW_INTROSPECTION = False
+    settings.PHR_INTROSPECT_AUTH = ''
     settings.PHR_INTROSPECT_MAX_CALLS = 30
     settings.PHR_INTROSPECT_RATE_INTERVAL = 60
     return settings
@@ -120,8 +121,10 @@ def rs256_without(rsa_key):
 
 @pytest.fixture
 def hs256():
-    def make(**overrides):
-        return jwt.encode(_claims(**overrides), HS_SECRET, algorithm='HS256')
+    # `_alg` is underscored so it cannot collide with a claim name in
+    # **overrides; the allowlist has three members and they need exercising.
+    def make(_alg='HS256', **overrides):
+        return jwt.encode(_claims(**overrides), HS_SECRET, algorithm=_alg)
     return make
 
 
@@ -193,7 +196,10 @@ def introspect(monkeypatch):
     double = _Double({'active': True, 'user_id': 7})
 
     def fake_post(url, **kwargs):
-        double.calls.append(kwargs.get('json'))
+        # The whole call, not `kwargs['json']`: the request is form-encoded per
+        # RFC 7662 §2.1, so recording the JSON body would record `None` for
+        # every call and quietly stop asserting anything about the wire format.
+        double.calls.append({'url': url, **kwargs})
         if double.error is not None:
             raise double.error
         return _Resp(double.body)
@@ -253,6 +259,15 @@ class TestPathDispatch:
     @pytest.fixture(autouse=True)
     def introspection_enabled(self, phr_settings):
         phr_settings.PHR_ALLOW_INTROSPECTION = True
+
+    @pytest.mark.parametrize('alg', ['HS256', 'HS384', 'HS512'])
+    def test_every_allowlisted_alg_routes_to_introspection(
+        self, provider, hs256, introspect, alg
+    ):
+        """The allowlist has three members and only one was exercised, in
+        either direction — so widening or narrowing it silently was free."""
+        assert provider.verify(hs256(_alg=alg)) is not None
+        assert len(introspect.calls) == 1
 
     @pytest.mark.parametrize('alg', NON_ALLOWLISTED_ALGS)
     def test_unexpected_algs_are_rejected_without_an_outbound_call(
@@ -445,8 +460,10 @@ class TestJwksCache:
 class TestIntrospectionGate:
     """Off by default: the path delegates the signature check to the portal.
 
-    Both PHR_*_URLs derive from one PHR_BASE_URL, so before the gate existed
-    every RS256 deployment silently enabled this too — and the caller chose it.
+    Both PHR_*_URLs used to derive from one PHR_BASE_URL, so before the gate
+    existed every RS256 deployment silently enabled this too — and the caller
+    chose it. PHR_INTROSPECT_URL no longer derives, but the gate is what fails
+    closed on an unset ENVIRONMENT, so it is still the load-bearing half.
     """
 
     def test_disabled_rejects_without_calling_the_portal(
@@ -462,6 +479,87 @@ class TestIntrospectionGate:
         claims = provider.verify(hs256())
         assert claims is not None
         assert claims.sub == 'phr:7'
+        assert len(introspect.calls) == 1
+
+
+class TestIntrospectionRequestShape:
+    """RFC 7662 §2.1: the request is form-encoded and client-authenticated.
+
+    JSON is the failure that looks like success — a spec-compliant portal
+    parses the body as a form, finds no `token` parameter, and answers
+    "not active" for a token that is perfectly good.
+    """
+
+    @pytest.fixture(autouse=True)
+    def enabled(self, phr_settings):
+        phr_settings.PHR_ALLOW_INTROSPECTION = True
+
+    def test_the_token_goes_in_a_form_body_not_json(
+        self, provider, hs256, introspect
+    ):
+        assert provider.verify(hs256()) is not None
+        call = introspect.calls[0]
+        assert 'json' not in call
+        assert call['data']['token_type_hint'] == 'access_token'
+        assert call['data']['token']
+
+    def test_client_credentials_are_sent_when_configured(
+        self, provider, hs256, introspect, phr_settings
+    ):
+        phr_settings.PHR_INTROSPECT_AUTH = 'client:secret'
+        assert provider.verify(hs256()) is not None
+        assert introspect.calls[0]['auth'] == ('client', 'secret')
+
+    def test_a_secret_containing_a_colon_survives_intact(
+        self, provider, hs256, introspect, phr_settings
+    ):
+        phr_settings.PHR_INTROSPECT_AUTH = 'client:se:cr:et'
+        assert provider.verify(hs256()) is not None
+        assert introspect.calls[0]['auth'] == ('client', 'se:cr:et')
+
+    def test_no_credentials_configured_sends_none(
+        self, provider, hs256, introspect
+    ):
+        assert provider.verify(hs256()) is not None
+        assert introspect.calls[0]['auth'] is None
+
+    @pytest.mark.parametrize(
+        'value', ['client-id-only', 'client-id-only:', ':secret-only', ':'],
+    )
+    def test_a_half_credential_is_refused_not_sent_as_a_blank_half(
+        self, provider, hs256, introspect, phr_settings, caplog, value
+    ):
+        """A Basic header with an empty half reads as "authenticated" in a
+        portal log and is not. Refusing it loudly beats sending it quietly.
+
+        The trailing-colon spellings matter as much as the bare one: a typo in
+        `PHR_INTROSPECT_AUTH` is exactly how you arrive here, and testing only
+        for a missing colon would let `"id:"` through the guard written to stop
+        it."""
+        phr_settings.PHR_INTROSPECT_AUTH = value
+        with caplog.at_level(logging.WARNING):
+            assert provider.verify(hs256()) is not None
+        assert introspect.calls[0]['auth'] is None
+        assert any('PHR_INTROSPECT_AUTH' in r.message for r in caplog.records)
+
+    def test_allowed_but_unconfigured_endpoint_makes_no_call(
+        self, provider, hs256, introspect, phr_settings
+    ):
+        """Allowed and configured are different questions. Without a URL the
+        call would go to '' — an httpx error reported as an introspection
+        failure, which is a misleading thing to put in front of an operator."""
+        phr_settings.PHR_INTROSPECT_URL = ''
+        phr_settings.PHR_INTROSPECT_MAX_CALLS = 2
+        for _ in range(5):
+            assert provider.verify(hs256()) is None
+        assert introspect.calls == []
+
+        # And it must cost no allowance. The check is free, so it belongs ahead
+        # of the budget; behind it, those five attempts would have spent an
+        # allowance of two, and the first properly configured call would be
+        # refused by a budget exhausted on calls that never happened.
+        phr_settings.PHR_INTROSPECT_URL = 'https://portal.example/introspect/'
+        assert provider.verify(hs256()) is not None
         assert len(introspect.calls) == 1
 
 

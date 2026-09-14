@@ -77,9 +77,11 @@ class TestPhrIntrospectionDefault:
     It delegates the signature check to another service — an `active` response
     is taken as vouching for the token, and where the response is silent about
     the subject the token's *unverified* payload supplies it. Both PHR_*_URLs
-    derive from one PHR_BASE_URL, so before the flag existed every deployment
-    that configured RS256 verification silently enabled this path too, and the
-    caller chose which one to use by writing the `alg` header."""
+    used to derive from one PHR_BASE_URL, so before the flag existed every
+    deployment that configured RS256 verification silently enabled this path
+    too, and the caller chose which one to use by writing the `alg` header.
+    PHR_INTROSPECT_URL no longer derives, but this flag is the half that fails
+    closed on an unset ENVIRONMENT, so it stays load-bearing."""
 
     def test_introspection_defaults_off_outside_local_and_debug(self):
         source = _settings_source()
