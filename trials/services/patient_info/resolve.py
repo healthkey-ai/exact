@@ -151,6 +151,14 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     _normalize_structured_json_fields(filtered)
 
     pi = PatientInfo(**filtered)
+    if 'tp53_disruption' in filtered:
+        value = filtered['tp53_disruption']
+        if value is not None and type(value) is not bool:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'tp53_disruption': 'Expected a boolean or null.'})
+        # An explicit aggregate is supplied by the caller (including unknown).
+        # Retain it across normalization and later attribute-service instances.
+        pi._provided_tp53_disruption = value
 
     # Attach M2M as synthetic attributes so matchers can read them
     if pre_existing_ids:
