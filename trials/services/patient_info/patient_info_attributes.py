@@ -492,6 +492,9 @@ class PatientInfoAttributes:
         - del17p13 in molecular_markers OR
         - tp53Mutation in molecular_markers
         """
+        if hasattr(self.patient_info, '_provided_tp53_disruption'):
+            return self.patient_info._provided_tp53_disruption
+
         cytogenic = self.patient_info.cytogenic_markers or ''
         molecular = self.patient_info.molecular_markers or ''
 
