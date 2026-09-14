@@ -106,7 +106,9 @@ const trials: TrialsResponse = {
   // `matchingType` so the numbers match the cards on screen.
   tabCounts: {
     eligible: results.filter((t) => t.matchingType === "eligible").length,
-    potential: results.filter((t) => t.matchingType !== "eligible").length,
+    // Not `!== "eligible"`: a row from a patient-less search carries
+    // `matchingType: null`, which that spelling counts as potential (#456).
+    potential: results.filter((t) => t.matchingType === "potential").length,
   },
 };
 
