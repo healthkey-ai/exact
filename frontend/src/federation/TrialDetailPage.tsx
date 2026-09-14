@@ -147,6 +147,53 @@ export interface RowEditing {
   failed: Record<string, unknown>;
 }
 
+/** The fields whose last write was refused, named the way the reader saw them.
+ *
+ *  Only the ones no row will speak for. A row that carries the control paints
+ *  its own refusal in place, and saying it twice is worse than saying it once.
+ *  But a subform input is by construction a DIFFERENT attribute from the row
+ *  that opened the dialog, so a refusal there had nowhere to appear at all
+ *  once the dialog was closed — and a write that vanishes with nothing said is
+ *  the failure this whole phase was built to prevent, reached through the one
+ *  surface the reader can shut.
+ *
+ *  Labels come from the payload rather than the canonical names, because
+ *  `serum_calcium_level` is not what the reader was looking at when they
+ *  typed. A field with no label to find is still named: leaving it out would
+ *  under-report the failure to keep the sentence tidy.
+ */
+function failedFieldLabels(
+  fields: TrialDetailField[],
+  failed: Record<string, unknown>,
+  editableRows: Set<string>,
+  openHere: Set<string>,
+): string[] {
+  const names = Object.keys(failed);
+  // eslint-disable-next-line no-console
+  if (names.length === 0) return [];
+  const labels = new Map<string, string>();
+  const spokenFor = new Set<string>();
+  for (const field of fields) {
+    if (field.upatientField) {
+      labels.set(field.upatientField, field.label);
+      // A row that carries the control says so itself, in place. Repeating it
+      // up here would put two alerts on screen about one refusal.
+      if (editableRows.has(field.name)) spokenFor.add(field.upatientField);
+    }
+    for (const entry of field.subform_details ?? []) {
+      if (entry.upatientField) labels.set(entry.upatientField, entry.label);
+    }
+  }
+  return names
+    .filter((name) => !spokenFor.has(name) && !openHere.has(name))
+    // A name with no label is not on this page. `failed` belongs to the
+    // PATIENT's queue, which outlives any one trial, so a refusal from the
+    // trial the reader was looking at a minute ago would otherwise be
+    // announced on this one — under a canonical name nothing here shows.
+    .filter((name) => labels.has(name))
+    .map((name) => labels.get(name)!);
+}
+
 /** Which rows may carry an edit control.
  *
  *  Two rows in three can name the same patient attribute, because `ufield` is
@@ -205,11 +252,15 @@ function EligibilityRow({
   editing,
   editableHere,
   subformHere,
+  openSubform,
+  onSubformOpen,
 }: {
   field: TrialDetailField;
   editing?: RowEditing;
   editableHere?: boolean;
   subformHere?: boolean;
+  openSubform?: string | null;
+  onSubformOpen?: (name: string | null) => void;
 }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
@@ -247,7 +298,7 @@ function EligibilityRow({
   // be worse than the silence. Surfacing them needs curated wording, and that
   // is a decision, not an oversight.
   const [editorOpen, setEditorOpen] = useState(false);
-  const [subformOpen, setSubformOpen] = useState(false);
+  const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
@@ -325,7 +376,7 @@ function EligibilityRow({
             type="button"
             className="exact-elig__subform"
             aria-label={`Change what ${field.label} is worked out from`}
-            onClick={() => setSubformOpen(true)}
+            onClick={() => onSubformOpen?.(field.name)}
           >
             Change what this is from
           </button>
@@ -335,7 +386,7 @@ function EligibilityRow({
             field={field}
             entries={field.subform_details}
             editing={editing}
-            onClose={() => setSubformOpen(false)}
+            onClose={() => onSubformOpen?.(null)}
           />
         ) : null}
         {editable.can === "edit" && editing ? (
@@ -525,6 +576,28 @@ export function TrialDetailPage({
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
   const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
   const subformRows = useMemo(() => subformRowNames(eligibility), [eligibility]);
+  // Which row's dialog is open, if any. Held here rather than in the row so
+  // the notice below can stay quiet about what an open dialog is already
+  // saying to the reader's face.
+  const [openSubform, setOpenSubform] = useState<string | null>(null);
+  const openSubformFields = useMemo(() => {
+    const row = eligibility.find((field) => field.name === openSubform);
+    return new Set(
+      (row?.subform_details ?? [])
+        .map((entry) => entry.upatientField)
+        .filter((name): name is string => Boolean(name)),
+    );
+  }, [eligibility, openSubform]);
+  const failedLabels = useMemo(
+    () =>
+      failedFieldLabels(
+        eligibility,
+        editing?.failed ?? {},
+        editableRows,
+        openSubformFields,
+      ),
+    [eligibility, editing?.failed, editableRows, openSubformFields],
+  );
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
@@ -629,6 +702,16 @@ export function TrialDetailPage({
               </section>
             ) : null}
 
+            {failedLabels.length ? (
+              <p className="exact-detail__write-error" role="alert">
+                {failedLabels.length === 1
+                  ? `Your ${failedLabels[0]} could not be saved.`
+                  : `These could not be saved: ${failedLabels.join(", ")}.`}{" "}
+                The record still holds what it had. Open the field and try
+                again.
+              </p>
+            ) : null}
+
             <section className="exact-panel exact-detail__elig">
               <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
               {eligibility.length ? (
@@ -645,6 +728,8 @@ export function TrialDetailPage({
                       editing={editing}
                       editableHere={editableRows.has(field.name)}
                       subformHere={subformRows.has(field.name)}
+                      openSubform={openSubform}
+                      onSubformOpen={setOpenSubform}
                     />
                   ))}
                 </div>
