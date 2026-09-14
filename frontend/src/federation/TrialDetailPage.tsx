@@ -33,6 +33,7 @@ import { FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit } from "./FieldEdit";
+import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { editabilityOf } from "./writable";
 import type { WritableFields } from "./writable";
 
@@ -225,6 +226,8 @@ function EligibilityRow({
   // be worse than the silence. Surfacing them needs curated wording, and that
   // is a decision, not an oversight.
   const [editorOpen, setEditorOpen] = useState(false);
+  const [subformOpen, setSubformOpen] = useState(false);
+  const canOpenSubform = subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
       ? editabilityOf(field.upatientField, editing.fields)
@@ -289,6 +292,29 @@ function EligibilityRow({
           <span className="exact-elig__error" role="alert">
             Couldn't save that. Your value is not in the record.
           </span>
+        ) : null}
+        {/* A computed row cannot be written, but what it is computed FROM
+            can — and the payload names those values. Offered only where at
+            least one of them is actually writable: a dialog listing four
+            values none of which can be changed is a door onto a wall, which
+            is what the therapy groups would be. */}
+        {canOpenSubform ? (
+          <button
+            type="button"
+            className="exact-elig__subform"
+            aria-label={`Change what ${field.label} is worked out from`}
+            onClick={() => setSubformOpen(true)}
+          >
+            Change what this is from
+          </button>
+        ) : null}
+        {subformOpen && editing && field.subform_details ? (
+          <SubformDialog
+            field={field}
+            entries={field.subform_details}
+            editing={editing}
+            onClose={() => setSubformOpen(false)}
+          />
         ) : null}
         {editable.can === "edit" && editing ? (
           <FieldEdit

@@ -1547,3 +1547,90 @@
   color: var(--exact-color-not-eligible);
   font-size: 0.8125rem;
 }
+
+/* The subform dialog (#421): the only route a computed row has to being
+   changed, so it is a dialog rather than an expander — the reader is leaving
+   the table to work on something else and comes back to a recomputed row. */
+.exact-root .exact-elig__subform {
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+.exact-root .exact-elig__subform:hover {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-subform__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  /* Its own ground rather than a tint of the host's: this remote does not
+     know what it is mounted on, and a translucent white over a dark host
+     leaves the panel unreadable. */
+  background: rgb(0 0 0 / 45%);
+}
+.exact-root .exact-subform {
+  width: min(32rem, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+  color: var(--exact-color-text);
+}
+.exact-root .exact-subform__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.exact-root .exact-subform__title {
+  margin: 0;
+  font-size: 1rem;
+}
+.exact-root .exact-subform__close {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.exact-root .exact-subform__note {
+  margin: 4px 0 12px;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-subform__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.exact-root .exact-subform__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--exact-color-border);
+}
+.exact-root .exact-subform__label {
+  flex: 1 1 10rem;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-subform__value {
+  font-size: 0.875rem;
+}

@@ -104,6 +104,31 @@ export interface TrialsResponse {
  *  `value` is the trial's required value; `uvalue` is the patient's value;
  *  `matchingType` is the per-attribute verdict. Permissive — the server adds
  *  fields as the templates evolve. Source: `trials/services/trial_details/`. */
+/** One value a composite row is computed from.
+ *
+ *  Sent under `subform_details` — snake_case, because EXACT does not camelise
+ *  its responses and these keys are built by hand.
+ *
+ *  This is how a computed row is edited. The row itself carries no control:
+ *  EXACT derives TNBC status from the receptor statuses, CRAB from calcium
+ *  and creatinine and the rest, so writing the row would be undone by the
+ *  next match. The entries beside it are those inputs, and they are raw data
+ *  — with one exception worth knowing, the therapy groups, whose entries
+ *  EXACT derives as well and which therefore say so. */
+export interface SubformEntry {
+  /** camelCase, for display and for React keys. */
+  name: string;
+  label: string;
+  type: string;
+  value: unknown;
+  options?: { value: unknown; label: string }[] | null;
+  /** The patient attribute this entry IS, in the record's spelling. Sent
+   *  rather than derived: un-camelising is not reliable here. */
+  upatientField?: string | null;
+  /** Whether EXACT recomputes it — see `TrialDetailField.upatientRecomputed`. */
+  upatientRecomputed?: boolean;
+}
+
 export interface TrialDetailField {
   name: string;
   label: string;
@@ -140,6 +165,9 @@ export interface TrialDetailField {
    *  PROMOP offers a box whose effect is undone with no error anywhere
    *  (#449). */
   upatientRecomputed?: boolean;
+  /** The values this row is computed from, when it is computed from any.
+   *  Snake_case on the wire. */
+  subform_details?: SubformEntry[] | null;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;

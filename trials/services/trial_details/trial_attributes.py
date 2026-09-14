@@ -871,6 +871,24 @@ class TrialAttributes:
                     'type': utype,
                     'value': self.get_value(field_name, value),
                     'options': options,
+                    # The patient attribute this entry IS — taken from the
+                    # mapping rather than derived from `name`, which is the
+                    # camelCase spelling and cannot be turned back reliably
+                    # (`p53_ihc` camelises to `p53Ihc`, which a snake-caser
+                    # returns as `p_53_ihc`). The row's own `upatientField`
+                    # has to be derived; this one does not, and taking the
+                    # harder route here would be inventing a problem.
+                    'upatientField': pi_field_name,
+                    # Same question as on a row, and it is asked here for the
+                    # opposite reason. A subform exists because the value
+                    # above it is COMPUTED: the reader cannot write
+                    # `tnbc_status`, they write the receptor statuses it is
+                    # computed from. So the entries are the writable part —
+                    # except where an entry is itself computed, as
+                    # `creatinine_clearance_rate` is under CRAB, and then it
+                    # is no more writable than the row that opened the
+                    # dialog.
+                    'upatientRecomputed': pi_field_name in RECOMPUTED_ATTRIBUTES,
                 }
 
                 tmp[pi_field_name] = val
