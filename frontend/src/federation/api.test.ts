@@ -197,8 +197,29 @@ describe("fetchTrials — the search path", () => {
 
   it("maps the phase and lastUpdate filters the panel will send", () => {
     expect(
-      filterStateToParams({ phase: "PHASE3", lastUpdate: "2026-01-01" }),
-    ).toEqual({ phase: "PHASE3", lastUpdate: "2026-01-01" });
+      filterStateToParams({ phase: "PHASE3", lastUpdate: "2" }),
+    ).toEqual({ phase: "PHASE3", lastUpdate: "2" });
+  });
+
+  it("sends no lastUpdate the backend would mishandle", () => {
+    // This used to forward whatever it was given. `"0"` the server reads as
+    // no limit at all; a large number overflows `timedelta` into a 500 on
+    // every search — which is what the 2000 cap is for, and why `2001` is
+    // refused as a COUNT rather than read as a calendar year. A host's
+    // `initialFilters` reaches here without passing through storage, so the
+    // check has to be at the wire as well — which is what `distance` already
+    // does.
+    for (const junk of ["0", "3000", "2001", "2026-13-45"]) {
+      expect(filterStateToParams({ lastUpdate: junk })).toEqual({});
+    }
+    // An ISO date now goes through: since #429 the server reads it as "on or
+    // after that day", and it is the spelling CB's own panel writes.
+    expect(filterStateToParams({ lastUpdate: "2026-01-01" })).toEqual({
+      lastUpdate: "2026-01-01",
+    });
+    // …while a count the backend handles goes through, even one the panel
+    // does not offer: a host may legitimately ask for four years.
+    expect(filterStateToParams({ lastUpdate: "4" })).toEqual({ lastUpdate: "4" });
   });
 });
 
