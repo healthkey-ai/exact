@@ -88,8 +88,9 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     # Serves the Module Federation remote bundle (remoteEntry.js + chunks)
-    # from WHITENOISE_ROOT with cross-origin headers so the ht-phr host can
-    # load it. Active only when WHITENOISE_ROOT resolves (Dockerfile.gcp).
+    # from WHITENOISE_ROOT with cross-origin headers so a federation host can
+    # load it. Active only when WHITENOISE_ROOT resolves — both Dockerfile
+    # and Dockerfile.gcp build the remote into the image.
     'exact.middleware.CorsWhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -199,6 +200,25 @@ TRIALS_DB_MIGRATE = os.environ.get('TRIALS_DB_MIGRATE', 'false').lower() == 'tru
 
 DATABASE_ROUTERS = ['exact.db_router.TrialsDatabaseRouter']
 
+# The trials corpus is data-only and externally owned: it has no
+# django_migrations table, and the router above refuses to migrate the trials
+# app into it for that reason. So the models can drift ahead of it, and the
+# first sign is a 500 naming a column the corpus does not have.
+#
+# With this on, the trial endpoints introspect the corpus once and defer the
+# columns it lacks, which keeps a read-only consumer working against an older
+# schema. A stopgap for exact#360, not a substitute for it — leave it off
+# wherever the database does match the models.
+#
+# It only ever applies to the 'trials' alias, and refuses to arm at all when
+# that alias is not configured: the router falls back to 'default' for trials
+# models in single-database mode, and tolerating drift there would read an
+# un-applied migration as external drift and answer with less data instead of
+# failing. See trials/db_compat.py.
+TRIALS_DB_TOLERATE_MISSING_COLUMNS = os.environ.get(
+    'TRIALS_DB_TOLERATE_MISSING_COLUMNS', 'false'
+).lower() in ('1', 'true', 'yes', 'on')
+
 # Shared Redis cache when REDIS_URL is configured (deploys), else per-process
 # LocMemCache (local dev / CI / tests). Keyed off the *raw* env var, not the
 # Celery-defaulted `redis_url` below, so an unset REDIS_URL never points the
@@ -238,9 +258,78 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # below); SessionAuthentication stays for the browsable API/admin. Production
 # callers use Firebase or the service token. Default-deny stays (IsAuthenticated).
 # ---------------------------------------------------------------------------
+# Deployments differ in which identity providers exist: the PHR portal is the
+# family's identity service, while Firebase only exists where a legacy host
+# does. Listing a provider that cannot work is misleading, so the chain is
+# configurable — set PARTNER_AUTH_PROVIDERS to the ones a deployment has.
+_DEFAULT_AUTH_PROVIDERS = (
+    'accounts.providers.firebase.FirebaseTokenProvider,'
+    'accounts.providers.phr.PhrTokenProvider'
+)
 PARTNER_AUTH_PROVIDERS = [
-    'accounts.providers.firebase.FirebaseTokenProvider',
+    p.strip()
+    for p in os.environ.get('PARTNER_AUTH_PROVIDERS', _DEFAULT_AUTH_PROVIDERS).split(',')
+    if p.strip()
 ]
+
+# ── PHR portal identity ───────────────────────────────────────────────
+# The portal issues the tokens a signed-in patient carries into this
+# service. RS256 tokens verify offline against its JWKS; deployments still
+# on the HS256 dev fallback verify by introspection instead.
+PHR_ISSUER = os.environ.get('PHR_ISSUER', 'healthkey-phr')
+# Introspection fallback — opt-in, and off in staging/prod by default.
+# It delegates the signature check to the portal (an `active` response is
+# taken as vouching for the token, and the subject may come from the token's
+# *unverified* payload), so a portal that introspects without fully verifying
+# signatures would let a forged token through. Both PHR_*_URLs used to derive
+# from one PHR_BASE_URL, so without this flag every RS256 deployment silently
+# enabled the fallback too — and the caller picked which path to use.
+# PHR_INTROSPECT_URL no longer derives (below), which is the second half of the
+# same fix; the gate stays because it is the one that fails closed on an unset
+# ENVIRONMENT, and because a deployment may configure the URL later.
+# Same fail-closed shape as ENABLE_DRF_TOKEN_AUTH: `os.environ.get(...)`, not
+# the module-level ENVIRONMENT, which defaults to 'local' — a deploy that
+# forgets to set ENVIRONMENT would otherwise read as local and turn this ON,
+# which is precisely the misconfigured deploy the gate exists for.
+_phr_introspection_default = (
+    'true' if (DEBUG or os.environ.get('ENVIRONMENT') == 'local') else 'false'
+)
+PHR_ALLOW_INTROSPECTION = os.environ.get(
+    'PHR_ALLOW_INTROSPECTION', _phr_introspection_default
+).lower() in ('1', 'true')
+# Cap on outbound introspection calls per interval. Reaching this provider
+# needs only an unverified `iss`, and DRF authenticates before it throttles,
+# so without a cap an anonymous caller could hold every sync worker in a 5s
+# POST and use this service to flood the portal. Sized to sit well above real
+# sign-in volume on the dev deployments that use this path at all.
+PHR_INTROSPECT_MAX_CALLS = int(os.environ.get('PHR_INTROSPECT_MAX_CALLS', '30'))
+PHR_INTROSPECT_RATE_INTERVAL = int(
+    os.environ.get('PHR_INTROSPECT_RATE_INTERVAL', '60')
+)
+_phr_base_url = os.environ.get('PHR_BASE_URL', '').rstrip('/')
+PHR_JWKS_URL = os.environ.get(
+    'PHR_JWKS_URL',
+    f'{_phr_base_url}/api/v1/auth/jwks/' if _phr_base_url else '',
+)
+# Introspection is the HS256 dev-key fallback ONLY, and it is OPT-IN: it must
+# be set explicitly and is deliberately NOT derived from PHR_BASE_URL. An
+# RS256 production deployment sets PHR_BASE_URL for JWKS but leaves this empty,
+# so a forged non-RS256 token bearing iss=PHR_ISSUER cannot drive a blocking
+# outbound introspection call (would otherwise be an unauthenticated DoS /
+# amplification vector — the JWKS path is throttled, this one was not).
+PHR_INTROSPECT_URL = os.environ.get('PHR_INTROSPECT_URL', '')
+# Optional client credentials for the RFC 7662 introspection call, as
+# "client_id:client_secret" -> HTTP Basic. Empty = unauthenticated (dev only).
+PHR_INTROSPECT_AUTH = os.environ.get('PHR_INTROSPECT_AUTH', '')
+PHR_JWKS_CACHE_TTL = int(os.environ.get('PHR_JWKS_CACHE_TTL', '3600'))
+# Floor between JWKS refetches. A kid the cache has not seen triggers a
+# refresh, so without a floor every token carrying an unknown kid would drive
+# its own blocking outbound fetch — and retries against a JWKS endpoint that
+# is down would be unbounded. Must stay well under PHR_JWKS_CACHE_TTL so key
+# rotation is still picked up promptly.
+PHR_JWKS_MIN_REFRESH_INTERVAL = int(
+    os.environ.get('PHR_JWKS_MIN_REFRESH_INTERVAL', '60')
+)
 FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID', 'exact-test' if DEBUG else '')
 FIREBASE_SKIP_REVOCATION_CHECK = os.environ.get(
     'FIREBASE_SKIP_REVOCATION_CHECK', 'true' if DEBUG else 'false'

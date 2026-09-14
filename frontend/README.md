@@ -26,14 +26,94 @@ Federated React 19 remote that ships the `TrialMatches` component. Toolchain mir
 ```ts
 // In the host:
 import("exact_remote/TrialMatches").then(({ TrialMatches }) => { /* … */ });
-import("exact_remote/types").then(({ /* TrialMatchesProps, … */ }) => { /* … */ });
+import("exact_remote/TrialMatchesBridge").then((mod) => { /* … */ });
+import("exact_remote/types").then(({ /* TrialMatchesProps, TrialMatchesBridgeProps, … */ }) => { /* … */ });
 ```
+
+### `./TrialMatches` — React hosts
 
 The host must provide:
 
 - An `axios.AxiosInstance` with `baseURL` (typically `/api`) and `Authorization: Token <…>`.
 - A TanStack `QueryClient` (optional — the component spins up its own otherwise).
 - Either a CTOMOP `personId` or an inline `patientInfo` payload (mutually exclusive; `patientInfo` wins to match the server-side `resolve_patient_info` precedence).
+
+### `./TrialMatchesBridge` — hosts that are not React
+
+HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.
+Props are data-only: the host passes `baseUrl` + `getToken` rather than a live
+axios instance, so it needs neither axios nor react-query.
+
+```ts
+const { default: provider } = await loadRemote("exact_remote/TrialMatchesBridge");
+
+await provider().render({
+  dom,                                     // the container element
+  baseUrl: "https://exact.example",        // EXACT origin
+  apiBasePath: "/api",                     // defaults to "" — pass it if the
+                                           // API is not at the origin itself
+  ctomopBaseUrl: "https://promop.example", // optional — see below
+  ctomopApiBasePath: "/api",               // optional, defaults to "/api"
+  getToken,                                // any function; see sessionKey below
+  sessionKey: auth.userId,                 // change it when the user changes
+});
+
+provider().destroy({ moduleName: "exact_remote/TrialMatchesBridge", dom });
+```
+
+The bridge sends `Authorization: Bearer <token>` — note this differs from the
+`Token <…>` scheme the `./TrialMatches` section above documents for the axios
+instance a React host builds itself.
+
+`provider()` is memoised on purpose: bridge-react keys its mounted roots in a
+map private to each factory call, so a `render` and a `destroy` that went
+through two different calls would unmount nothing.
+
+Patient resolution:
+
+- Pass `patientInfo` or `personId` and the host owns it — the bridge does not
+  fetch. An explicit prop wins on every render, including after a resolution
+  has already happened, so switching profile or starting impersonation takes
+  effect immediately.
+- Pass `ctomopBaseUrl` and nothing else, and the bridge resolves the signed-in
+  patient itself: PRomop's `/patient-info/me/`, then EXACT's
+  `/normalize-ctomop-row/`. It must be the caller's own token — EXACT's
+  server-side `person_id` resolver is disabled by default because its service
+  token is not bound to the caller (IDOR), so fetching "me" is what makes
+  PRomop enforce access. The same token goes to both origins, so it has to be
+  valid at both.
+- Pass neither and you get the same "nothing to match against" state as
+  `./TrialMatches` on its own.
+
+`sessionKey` identifies the signed-in user: change it and the bridge re-resolves,
+keep it and the bridge holds what it has. It must be a scalar that is stable
+within a session; `null`, `""`, `NaN` and booleans are treated as "not passed"
+(they are what `?? null`, `?? ""`, `Number(sub)` and `ready && id` produce when
+there is nothing to read), and an object would be a new value on every render. Without one, `getToken`'s identity is
+used as the signal instead — safe, but blunt, because a host that builds
+`getToken` inline rebuilds it on every render and each rebuild sends the user
+back to the loading state, losing their filters and the query cache. Pass a
+`sessionKey` and `getToken` can be as unstable as you like.
+
+Either way the bridge must be able to tell sessions apart: a mount reused
+across a logout/login with no changing signal keeps showing the previous
+user's matches.
+
+### Cascade-layer contract (both exports)
+
+The remote appends its stylesheet to the **host's** `<head>`, so the host
+should declare the layer order before anything else:
+
+```css
+@layer properties, theme, base, components, mf-remote, utilities;
+```
+
+Everything this remote injects goes into `mf-remote`, which puts it above the
+host's preflight (our screens still style themselves) and below the host's
+utilities (we cannot restyle the host's chrome). A host that declares no order
+still gets the layer — but note that unlayered host declarations then outrank
+every rule of ours regardless of specificity, which is the trade this contract
+makes on purpose. See `src/federation/cssLayer.ts`.
 
 ## CSS token contract
 

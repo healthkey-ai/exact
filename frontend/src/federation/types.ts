@@ -190,3 +190,86 @@ export interface TrialMatchesProps {
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
 }
+
+/** Public props for the federated `./TrialMatchesBridge` export — the
+ *  framework-agnostic mount used by hosts that are not React.
+ *
+ *  Lives here rather than in `TrialMatchesBridge.tsx` so a TypeScript host can
+ *  type its `provider().render({ … })` call against the contract: `./types` is
+ *  exposed, the bridge module is loaded at runtime.
+ *
+ *  `apiClient` and `queryClient` are omitted deliberately — the host passes
+ *  data, not live objects, so it needs neither axios nor react-query. */
+export interface TrialMatchesBridgeProps
+  extends Omit<TrialMatchesProps, "apiClient" | "queryClient" | "personId"> {
+  /** As `TrialMatchesProps["personId"]`, but `null` is accepted and means the
+   *  same as omitting it: the hosts this bridge exists for have no types, and
+   *  `personId: pid ?? null` is how they spell "I do not have one". Normalised
+   *  before it reaches TrialMatches. */
+  personId?: string | number | null;
+  /** Service origin, e.g. `"https://exact-staging-….run.app"`. */
+  baseUrl: string;
+  /**
+   * PRomop origin. When given (and neither `patientInfo` nor `personId` is
+   * passed), the bridge loads the signed-in patient itself: PRomop's
+   * `/patient-info/me/` with the caller's own token, then EXACT's
+   * `/normalize-ctomop-row/`.
+   *
+   * That two-step is EXACT's business, not the host's, so it lives in the
+   * bridge rather than being reimplemented by every host. It also has to be
+   * the caller's token: EXACT's server-side `person_id` resolver is disabled
+   * by default because its CTOMOP service token is not bound to the caller and
+   * would let any `person_id` through (IDOR). Fetching "me" makes PRomop
+   * enforce access.
+   *
+   * Note that passing `patientInfo: null` explicitly counts as the host having
+   * answered ("this patient has no profile") and suppresses the fetch; omit
+   * the prop entirely to have the bridge resolve.
+   */
+  ctomopBaseUrl?: string;
+  /** Joined onto `baseUrl` to form the axios baseURL. Leading/trailing
+   *  slashes are normalised, so `"api"` and `"/api"` behave the same.
+   *
+   *  Defaults to `""`, i.e. EXACT's API is assumed to live at the origin
+   *  itself. Most deployments mount it under `/api` — pass it, or every call
+   *  404s behind the generic error card. */
+  apiBasePath?: string;
+  /** Joined onto `ctomopBaseUrl` the same way. Defaults to `"/api"`; set it
+   *  when PRomop is mounted elsewhere (e.g. `"/api/v1"`), otherwise the
+   *  `/patient-info/me/` call 404s behind the generic error card. */
+  ctomopApiBasePath?: string;
+  /**
+   * Resolves the caller's bearer token; the host owns authentication.
+   *
+   * The same token is sent to both `baseUrl` and `ctomopBaseUrl`, so it must
+   * be valid at both services — an EXACT-only, audience-scoped token is not
+   * enough when `ctomopBaseUrl` is set.
+   *
+   * Its *identity* is the session signal when no `sessionKey` is passed, in
+   * which case changing it re-runs the self-driven patient resolution. Pass a stable function (module-level,
+   * or memoised) so a re-render does not cost a redundant round trip — and do
+   * hand over a new one when the signed-in user changes, or a mount reused
+   * across a logout/login will keep showing the previous user's matches.
+   */
+  getToken?: () => Promise<string | null | undefined> | string | null | undefined;
+  /**
+   * Identifies the signed-in user. Change it and the bridge drops whatever it
+   * resolved and resolves again; keep it and the bridge holds what it has.
+   *
+   * A mount reused across a logout/login would otherwise keep showing the
+   * previous user's matches, so without a `sessionKey` the bridge falls back
+   * to `getToken`'s identity as the signal. That is safe but blunt: a host
+   * that builds `getToken` inline rebuilds it on every render, and each one
+   * sends the user back to the loading state, losing the filters and the
+   * query cache. Pass a `sessionKey` (a user id, a session id — any scalar
+   * that changes with the user) and `getToken` can be as unstable as you like.
+   *
+   * `null`, `""`, `NaN` and a boolean all count as not passing one, and fall back to the
+   * `getToken` signal rather than pinning every user to the same key: they are
+   * what `auth.userId ?? null`, `user?.id ?? ""` and `Number(sub)` produce
+   * when there is nothing to read, not user ids. Pass a scalar, and one that
+   * is stable within a session — an object is a new value on every render, so
+   * every render would reset the mount and re-resolve the patient.
+   */
+  sessionKey?: string | number | null;
+}
