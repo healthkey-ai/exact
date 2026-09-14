@@ -198,6 +198,16 @@ reads/writes to the external database and blocks migrations from running on it.
 When `TRIALS_DATABASE_URL` is not set, the router is inactive and everything
 falls back to `default` (standalone mode — everything in one database).
 
+Because the router blocks migrations on `trials`, the models and that database
+can drift apart, and the first sign is a 500 naming a column the corpus does
+not have. `TRIALS_DB_TOLERATE_MISSING_COLUMNS` drops such columns from the root
+model's `SELECT` so the rows still load. It is off by default, it is a stopgap
+for #360 rather than the mechanism that keeps the two sides in step, and its
+coverage is narrow enough that the limits decide whether it helps at all: it
+does nothing for a column that is filtered on, rendered, or reached through a
+join. See
+[Tolerating a corpus behind the models](setup.md#tolerating-a-corpus-behind-the-models).
+
 ### Key indexes (on the external trials database)
 
 - `GistIndex` on `Location.geo_point` for fast distance queries.

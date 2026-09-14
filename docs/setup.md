@@ -366,6 +366,7 @@ environment variables — never commit secret values to git.
 | `DATABASE_PORT` | `5432` | PostgreSQL port |
 | `TRIALS_DATABASE_URL` | _(unset)_ | External trials DB URL — enables split-database mode (`postgresql://user:pass@host:5432/db`) |
 | `PATIENT_DATABASE_URL` | _(unset)_ | External patient DB URL — used by `search_trials_for_patients` CLI command |
+| `TRIALS_DB_TOLERATE_MISSING_COLUMNS` | `false` | Let the trial endpoints read a corpus whose schema is behind the models, by deferring the columns it lacks. A stopgap for #360 with real limits — see [below](#tolerating-a-corpus-behind-the-models). Leave unset unless the database actually has drifted. |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL for Celery (only needed for async tasks) |
 | `GDAL_LIBRARY_PATH` | `/opt/homebrew/lib/libgdal.dylib` | Path to GDAL shared library |
 | `GEOS_LIBRARY_PATH` | `/opt/homebrew/lib/libgeos_c.dylib` | Path to GEOS shared library |
@@ -411,6 +412,89 @@ python manage.py runserver
 
 **Do not** run `migrate --database=trials` — the external schema is managed by
 its owner.
+
+### Tolerating a corpus behind the models
+
+`TRIALS_DB_TOLERATE_MISSING_COLUMNS=true`
+
+**What it is for.** The trials corpus is data-only and owned by somebody else:
+it carries no `django_migrations` table, and the router deliberately refuses to
+migrate the `trials` app into it. So EXACT's models can move ahead of the
+corpus, and nothing notices until a query names a column the corpus does not
+have — at which point the endpoint returns 500, naming the column.
+
+**What it does.** On the first queryset for a model, EXACT asks the corpus
+which columns the table actually has (one `information_schema.columns` query,
+cached per model and database alias for the life of the process) and adds a
+`.defer()` for every column the models declare and the corpus lacks. The
+`SELECT` then names only columns that exist.
+
+**How to turn it on.** Set the variable; nothing else. With it unset — the
+default — no manager is patched and no introspection query is issued, so a
+deployment whose database does match the models behaves exactly as before.
+
+```dotenv
+TRIALS_DB_TOLERATE_MISSING_COLUMNS=true
+```
+
+Introspection is lazy, so the log line below appears on the first request that
+touches the model, not at startup, and once per table:
+
+```
+trials_trial on 'trials' is missing 2 column(s) the models declare:
+lesion_size_mcl_min, lesion_size_mcl_max. Deferring them; see exact#360.
+```
+
+#### What it covers, and what it does not
+
+Read this before relying on the flag. It is much narrower than "the endpoints
+keep working".
+
+**It covers exactly one thing: the root model's own `SELECT` list.** A drifted
+column is omitted from that query, so the rows load. Everything downstream of
+the rows is unaffected, and a deferred attribute raises the moment anything
+reads it (Django re-queries the missing column on access). That is deliberate —
+a value the corpus does not carry should fail loudly rather than be invented —
+but it means the flag only helps for **columns that nothing reads**.
+
+Measured consequences:
+
+- **The trial details page still 500s** on a drifted column that is a rendered
+  or computed criterion. Skipping absent attributes in the details loop is not
+  enough: the same view computes a match score, and the matcher reads trial
+  fields directly, which triggers the deferred load.
+- **Filtering still 500s.** A `WHERE` clause naming a drifted column is never
+  deferred, so search and the potential-attribute counts fail regardless.
+- **Joined tables are not covered.** `select_related()` / `prefetch_related()`
+  pull a related model's columns into the query, and only the root model's are
+  deferred. This is common here — the list endpoint joins locations, the
+  detail distance uses a related manager, the matcher prefetches therapy
+  components — so a corpus that has drifted on more than one table is largely
+  uncovered. `ValueOptions` joins `Therapy`, so form settings is one such case.
+- **Inserts are not covered.** An `INSERT` names every column the model
+  declares. (A `save()` on an already-loaded, deferred instance does succeed —
+  Django narrows it to the fields it loaded.) Both are moot for a read-only
+  corpus, which is the only thing this is scoped to.
+- **Missing tables are left to fail.** Only columns are handled; serving empty
+  results for an absent relation would hide a real gap rather than bridge a
+  small one.
+
+Two quiet failure modes worth knowing:
+
+- The "table absent" branch is **silent** — no warning is logged, because the
+  warning fires only when something was deferred. The same branch is taken when
+  the table exists but is invisible to this connection, e.g. a `search_path`
+  that does not include its schema, or column-level grants that hide it from
+  `information_schema`. The symptom is the original 500 with nothing in the log
+  to explain it.
+- An introspection **failure** is logged but not cached, so it is retried — and
+  logged again — on every queryset.
+
+**It is a stopgap.** The honest fix is for the corpus and the models to be
+versioned together; see #360. Given how narrow the coverage above is, check
+first whether the specific drifted column is read anywhere: if it is, this flag
+will not save the endpoint, and if it is not, the flag may be more machinery
+than the problem needs.
 
 ### Standalone mode
 
