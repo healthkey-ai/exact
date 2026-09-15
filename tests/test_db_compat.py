@@ -686,6 +686,44 @@ class TestInstall:
         apps.clear_cache()
         assert Trial.objects._defers_missing_columns is True
 
+    @pytest.mark.django_db
+    def test_a_related_manager_keeps_its_filter_through_using(
+        self, corpus, restore_managers, monkeypatch
+    ):
+        """`.using()` on a related manager must still be about the relation.
+
+        Django builds a related manager as
+        `RelatedManager(related_model._default_manager.__class__)`, so after
+        `install()` the MRO is `[RelatedManager, Deferring, Manager, ...]` —
+        `Deferring` sits in the MIDDLE. An override reaching for
+        `super(Deferring, self).get_queryset()` starts AFTER it and skips
+        `RelatedManager.get_queryset`, which is where the `core_filters` live.
+        No exception, no log line, just the whole table.
+
+        Measured on a corpus before the fix: `trial.locationtrial_set.count()`
+        gave 6 and `.using('trials').count()` gave 43021, every row in
+        `trials_locationtrial`.
+
+        An UNSAVED instance is enough: `_apply_rel_filters` builds the queryset
+        without touching the database, so this exercises the real
+        `RelatedManager` rather than a stand-in, even though the `corpus` alias
+        has no live connection.
+        """
+        config = restore_managers
+        monkeypatch.setattr(db_compat, 'missing_columns', lambda model, using: ())
+        db_compat.install(config)
+        # In production `ready()` runs before any descriptor caches its manager
+        # class. In-process the cache may predate `install()`, so drop it and
+        # let it rebuild — otherwise this passes vacuously.
+        Trial.locationtrial_set.__dict__.pop('related_manager_cls', None)
+
+        queryset = Trial(pk=4242).locationtrial_set.using('default')
+
+        assert queryset.db == 'default'
+        assert '4242' in str(queryset.query), (
+            'the relation filter was dropped: the query selects the whole table'
+        )
+
     def test_manager_using_decides_against_the_target_alias(
         self, corpus, restore_managers, monkeypatch
     ):
@@ -917,3 +955,19 @@ def test_details_skips_columns_the_database_lacks(settings, monkeypatch):
         trial=trial, patient_info=PatientInfo(disease='breast cancer')
     ).details()
     assert out
+
+
+def test_ready_installs_the_tolerance(monkeypatch):
+    """The one wire between this module and Django.
+
+    Every other test calls `install()` by hand, so deleting the call in
+    `TrialsConfig.ready` left the whole suite green — the defect the
+    off-switch commit exists to remove, in the wiring itself.
+    """
+    from django.apps import apps
+
+    called = []
+    monkeypatch.setattr(db_compat, 'install', lambda config: called.append(config))
+    config = apps.get_app_config('trials')
+    config.ready()
+    assert called == [config]

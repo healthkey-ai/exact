@@ -321,9 +321,38 @@ def _deferring_manager_class(cls):
             # then move the query somewhere else — carrying corpus deferrals
             # onto `default` and dropping columns that database really has.
             # Choose the alias first, then decide.
-            return defer_missing_columns(
-                super(Deferring, self).get_queryset().using(alias)
-            )
+            #
+            # `db_manager`, NOT `super(Deferring, self).get_queryset()`. Django
+            # builds a related manager as
+            # `RelatedManager(related_model._default_manager.__class__)`, so
+            # after `install()` the MRO is
+            # `[RelatedManager, Deferring, Manager, ...]` and
+            # `super(Deferring, self)` starts AFTER `Deferring` — skipping
+            # `RelatedManager.get_queryset`, which is where the `core_filters`
+            # live. Measured on a corpus: `trial.locationtrial_set.count()`
+            # gave 6 and `.using('trials').count()` gave 43021, the entire
+            # table, with no error and no log line.
+            #
+            # `db_manager` copies the manager with `_db` set and then dispatches
+            # `get_queryset()` through the WHOLE MRO, so the relation filter runs
+            # and `Deferring.get_queryset` still decides the deferral against the
+            # alias that was chosen.
+            # `.using(alias)` again on the way out. When the relation is
+            # already PREFETCHED, `RelatedManager.get_queryset` returns the
+            # cached queryset directly and never consults the copied manager's
+            # `_db`, so without this the query stays on whichever database the
+            # prefetch used. Django's own `Manager.using` applies the alias
+            # after fetching for exactly that reason.
+            #
+            # NOT covered by a test, and that is a known gap rather than an
+            # oversight: the distinguishing case is prefetch-on-A then
+            # `.using(B)`, and the attempts to build it in-process did not
+            # reproduce — removing this line leaves the suite green. It is kept
+            # on a corpus measurement (prefetch cache on `trials`, ask for
+            # `default`: with the line `default`, without it `trials`) and on
+            # Django doing the same thing for the same reason. Anyone touching
+            # this line should reproduce that measurement first.
+            return self.db_manager(alias).get_queryset().using(alias)
 
     qualifier = cls.__module__.replace('.', '_')
     Deferring.__name__ = f'{qualifier}_{cls.__name__}DeferringMissingColumns'
