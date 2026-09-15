@@ -20,7 +20,8 @@
 // supplies no state still keep filters across a reload instead of losing the
 // feature.
 
-import type { TrialStateAdapter } from "./state";
+import { PreconditionFailed } from "./state";
+import type { Precondition, TrialStateAdapter } from "./state";
 import type { FilterState } from "./types";
 
 /** Just the preference half of `TrialStateAdapter`.
@@ -31,7 +32,7 @@ import type { FilterState } from "./types";
  *  more than is true. */
 export type PreferenceMethods = Pick<
   TrialStateAdapter,
-  "getPreferences" | "savePreferences" | "resetPreferences"
+  "getPreferences" | "savePreferences" | "resetPreferences" | "preferenceVersioning"
 >;
 
 /** How long to coalesce rapid edits. Long enough to swallow a slider drag,
@@ -96,6 +97,48 @@ export function adapterPreferences(
   // `stored` was seeded — and under a wholesale replace that payload IS the
   // row, so everything they had saved would go with it.
   let firstRead: Promise<unknown> | null = null;
+  // The row's entity-tag as last seen. Three states, and collapsing any two
+  // of them produces a wrong precondition:
+  //
+  //   a tag       — write with `If-Match`.
+  //   `null`      — the read said there is NO row, so `If-None-Match: *`.
+  //   `undefined` — we do not know: nothing has read it yet, a write could
+  //                 not report the new one, or a retry was refused so the
+  //                 tag we hold no longer describes `stored`. Read before
+  //                 writing. Guessing `If-None-Match: *` here would 412
+  //                 against a row that exists, and `If-Match` needs a tag we
+  //                 do not have.
+  //
+  // This is what `stored` alone could never be. `stored` is a belief only
+  // this instance updates, so another tab writing the row leaves it stale and
+  // confident; the tag makes the SERVER the one that decides whether the
+  // belief still holds. Without it the merge below faithfully reconstructs a
+  // set that is no longer true and writes it back over the other tab's edit.
+  let version: string | null | undefined = undefined;
+  // Absent on a host adapter written before promop#1312, and on the
+  // `localStorage` transport, which has no second writer to race. Both then
+  // take the unconditional path unchanged.
+  const versioning = state.preferenceVersioning;
+  // A WRITE answers with the row's new tag, or `null` when the transport
+  // cannot say. That `null` must not land in `version`, where it would read
+  // as "there is no row" and aim the next `If-None-Match: *` at a row the
+  // write itself just left in place. Applies to `clear` for the same reason:
+  // PROMOP's reset EMPTIES the row, it does not delete it.
+  const normalise = (tag: string | null): string | undefined =>
+    tag ?? undefined;
+  // Nulls are keys an older build cleared by writing one, not set values.
+  // Used by the unknown-version refresh and the 412 re-read; the read and
+  // the blind retry strip inline, in the same loop that copies. The three
+  // places that assign merge output are not stripped and do not need to be:
+  // `FilterState` has no nullable member, so the reader's own payload cannot
+  // introduce one.
+  const withoutNulls = (from: FilterState | undefined): FilterState => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(from ?? {})) {
+      if (v !== null && v !== undefined) out[k] = v;
+    }
+    return out as FilterState;
+  };
   //
   // NOT handled here, on purpose: clearing a filter the HOST seeded via
   // `initialFilters` does not persist across a remount. The host's seed is its
@@ -107,9 +150,11 @@ export function adapterPreferences(
     get: async () => {
       const era = generation;
       const read = (async () => {
-        const fromServer = (await state.getPreferences()) ?? {};
+        const fromServer = versioning
+          ? await versioning.read()
+          : { filters: (await state.getPreferences()) ?? {}, version: null };
         const out: FilterState = {};
-        for (const [k, v] of Object.entries(fromServer)) {
+        for (const [k, v] of Object.entries(fromServer.filters ?? {})) {
           // A null is a key an older build cleared by writing one, not a set
           // value. Nothing writes them any more.
           if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
@@ -117,6 +162,7 @@ export function adapterPreferences(
         if (era === generation) {
           stored = { ...out };
           seeded = true;
+          version = fromServer.version;
         }
         return out;
       })();
@@ -133,15 +179,24 @@ export function adapterPreferences(
         // twice, and the alternative is losing the reader's edit.
         const era = generation;
         try {
-          const retry = (await state.getPreferences()) ?? {};
+          // Through the versioning transport when there is one, so `stored`
+          // and `version` are seeded by the SAME read. Seeding only `stored`
+          // here left the version at "no row yet", and the next write then
+          // sent `If-None-Match: *` at a row that plainly exists — a
+          // guaranteed 412 and a wasted round trip, from the one place the
+          // two were filled in by different code.
+          const fromServer = versioning
+            ? await versioning.read()
+            : { filters: (await state.getPreferences()) ?? {}, version: undefined };
           const out: FilterState = {};
-          for (const [k, v] of Object.entries(retry)) {
+          for (const [k, v] of Object.entries(fromServer.filters ?? {})) {
             if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
           }
           // Same era check as `get`: a Reset during the retry wins.
           if (era === generation) {
             stored = out;
             seeded = true;
+            version = fromServer.version;
           }
         } catch {
           // Still blind. Refusing costs the reader this one edit, which they
@@ -154,15 +209,136 @@ export function adapterPreferences(
       // The reader's payload over what the server holds. A key they cleared is
       // present-and-`undefined` and drops out on the way through JSON; a key
       // they never saw survives.
-      const payload: Record<string, unknown> = { ...stored };
-      for (const [k, v] of Object.entries(filters)) {
-        if (v === undefined) delete payload[k];
-        else payload[k] = v;
+      const merge = (base: FilterState): FilterState => {
+        const out: Record<string, unknown> = { ...base };
+        for (const [k, v] of Object.entries(filters)) {
+          if (v === undefined) delete out[k];
+          else out[k] = v;
+        }
+        return out as FilterState;
+      };
+
+      if (!versioning) {
+        const payload = merge(stored);
+        await state.savePreferences(payload);
+        // AFTER it resolves. Recording a payload that failed means the next
+        // one is built against a row that does not exist.
+        stored = { ...payload };
+        return;
       }
-      await state.savePreferences(payload as FilterState);
-      // AFTER it resolves. Recording a payload that failed means the next one
-      // is built against a row that does not exist.
-      stored = { ...payload } as FilterState;
+
+      // Conditional. `version === null` means the read said there is no row,
+      // so this is the first write — the one `If-Match` cannot describe.
+      // Total, deliberately. The earlier `version as string` was a cast over
+      // a value that really could be `undefined`, and `If-Match: undefined`
+      // is not a weak precondition — axios DELETES a header with an
+      // undefined value, so the request went out unconditional and a
+      // concurrent writer's edit was destroyed with no 412 and nothing on
+      // `onError`. A mechanism that fails open in silence is worse than no
+      // mechanism, because the caller believes it is protected.
+      const precondition = (): Precondition =>
+        typeof version === "string"
+          ? { kind: "ifMatch", version }
+          : version === null
+            ? { kind: "ifNoneMatch" }
+            : // Still unknown: either a refresh has just run and the server
+              // would not describe the row, or a refusal carried no tag and
+              // neither did the re-read. Nothing to quote either way. Writing
+              // unconditionally is what every client did before #1312 and is
+              // the same thing a host adapter without versioning does — but
+              // it IS a degradation, and it is here rather than hidden
+              // behind a cast so the next reader can see it.
+              { kind: "none" };
+
+      if (version === undefined) {
+        // A write that could not report its new tag, or a retry that was
+        // refused, leaves us here. One read costs a round trip; writing on a
+        // guess costs the reader whatever the other tab had just saved.
+        const era = generation;
+        const refreshed = await versioning.read();
+        if (era !== generation) {
+          // A Reset landed while we were looking. Returning is the point:
+          // merely declining to adopt the refresh would leave this save to
+          // write the pending edit against the version Reset installed,
+          // which resurrects exactly what Reset removed. The refusal path
+          // below already returns here; this one used to fall through.
+          return;
+        }
+        stored = withoutNulls(refreshed.filters);
+        version = refreshed.version;
+      }
+      const payload = merge(stored);
+      // The tag the refusal reported, kept for the recovery below.
+      let refusedWith: string | null | undefined;
+      const writeEra = generation;
+      try {
+        const tag = normalise(await versioning.write(payload, precondition()));
+        if (writeEra !== generation) {
+          // A Reset landed while this write was on the wire. Recording its
+          // payload would carry the reader's pre-reset filters forward into
+          // the next save, with a precondition that passes. The retry below
+          // and the two refresh paths guard the same way.
+          return;
+        }
+        version = tag;
+        stored = { ...payload };
+        return;
+      } catch (error) {
+        if (!PreconditionFailed.is(error)) throw error;
+        refusedWith = (error as PreconditionFailed).version ?? undefined;
+      }
+
+      // Someone else wrote between our read and our write. Re-read, re-apply
+      // the reader's OWN edit over what is there now, and try once more.
+      //
+      // Re-applying over the fresh row is the whole point: resending `payload`
+      // would be the lost update with an extra round trip, since it was built
+      // from a `stored` we have just been told is out of date.
+      const era = generation;
+      const fresh = await versioning.read();
+      if (era !== generation) {
+        // A Reset landed while we were re-reading. Its clear is the newer
+        // intent; putting this edit back on top of what Reset removed is
+        // what `generation` exists to prevent.
+        return;
+      }
+      stored = withoutNulls(fresh.filters);
+      // The read is the authority on CONTENT, but it may be unable to
+      // describe the row — see `VersionedPreferences.version`. The refusal we
+      // are recovering from carried the tag the server had at that moment;
+      // it is a better answer than "unknown", and it is what stops a row
+      // without `updated_at` failing every save forever.
+      version = fresh.version === undefined ? refusedWith : fresh.version;
+      const retried = merge(stored);
+      const retryEra = generation;
+      try {
+        const tag = normalise(await versioning.write(retried, precondition()));
+        if (retryEra !== generation) {
+          // A Reset landed while the retry was on the wire. Same reason as
+          // the first write: recording this payload would carry the
+          // reader's pre-reset filters into the next save.
+          return;
+        }
+        version = tag;
+        stored = { ...retried };
+      } catch (error) {
+        if (!PreconditionFailed.is(error)) throw error;
+        // Twice in a row is not a stale cache, it is live contention, and a
+        // third attempt would be a loop rather than a fix. `PreferenceWriter`
+        // surfaces this through `onError`, which exists for the one path that
+        // deliberately drops an edit.
+        // NOT the tag the server just reported. `stored` still holds the
+        // row from the FIRST re-read, so adopting the newer tag would leave
+        // the two describing different states — and the tag is the newer
+        // one, so the next save's precondition would PASS and overwrite a
+        // row this client never read. That is the lost update again, one
+        // step further along, which is the whole thing being prevented.
+        // Unknown is the truthful answer, and it makes the next save read.
+        version = undefined;
+        throw new Error(
+          "saved filters were changed elsewhere while saving, so this edit was not applied",
+        );
+      }
     },
     reset: async () => {
       generation += 1;
@@ -180,9 +356,33 @@ export function adapterPreferences(
       // a good read is different: the old contents are still known, and
       // writing only what the reader holds is the repair.
       const knew = seeded;
+      const knownVersion = version;
       stored = {};
       seeded = knew;
-      await state.resetPreferences();
+      if (!versioning) {
+        await state.resetPreferences();
+        seeded = true;
+        return;
+      }
+      try {
+        // A reset with no known version is still worth sending: there is
+        // nothing to protect, since clearing is what a concurrent writer
+        // would lose anyway and the reader asked for it explicitly.
+        version = normalise(
+          await versioning.clear(
+            typeof knownVersion === "string"
+              ? { kind: "ifMatch", version: knownVersion }
+              : { kind: "none" },
+          ),
+        );
+      } catch (error) {
+        if (!PreconditionFailed.is(error)) throw error;
+        // The row moved under us. A reset does not need to preserve what it
+        // is about to delete, so clear unconditionally rather than spending
+        // a read to earn a tag we would only use to delete the row anyway —
+        // the reader's intent has not changed.
+        version = normalise(await versioning.clear({ kind: "none" }));
+      }
       seeded = true;
     },
   };

@@ -156,20 +156,115 @@ describe("the saved filters", () => {
     expect(client.patch).toHaveBeenCalledWith(
       "/api/v1/trial-search-preferences/upsert/",
       { preferences: { phase: "PHASE3" } },
-      { params: { person_id: "9001" } },
+      { params: { person_id: "9001" }, headers: {} },
     );
   });
 
   it("resets through its own call, not by saving an empty object", async () => {
-    // A partial update merges, so saving `{}` would leave every key in place
-    // — the reset would appear to do nothing.
+    // Not because a partial update merges key by key — it does not, which is
+    // what promop#1201 had to say out loud — but because a body that omits
+    // `preferences` leaves the stored object untouched. `savePreferences({})`
+    // sends the field carrying `{}` and WOULD clear; the separate call is so
+    // "reset" is one request the caller cannot get subtly wrong.
     const client = fakeClient();
     await adapter(client).resetPreferences();
     expect(client.patch).toHaveBeenCalledWith(
       "/api/v1/trial-search-preferences/reset/",
       {},
-      { params: { person_id: "9001" } },
+      { params: { person_id: "9001" }, headers: {} },
     );
+  });
+
+  it("builds the version from updated_at, because a list carries no ETag", async () => {
+    // One header cannot describe a collection, which is why promop#1312 made
+    // the entity-tag a value the body already carries — quoted verbatim.
+    const client = fakeClient({
+      results: [{ preferences: { phase: "PHASE3" }, updated_at: "2026-09-14T13:46:38.625960Z" }],
+    });
+    expect(await adapter(client).preferenceVersioning!.read()).toEqual({
+      filters: { phase: "PHASE3" },
+      version: '"2026-09-14T13:46:38.625960Z"',
+    });
+  });
+
+  it("says 'cannot describe' for a row that carries no updated_at", async () => {
+    // This is where the third state is born, and collapsing it into `null`
+    // told the transport "no row" — which sent `If-None-Match: *` at a row
+    // that exists, was refused, re-read the same answer and was refused
+    // again, so saved filters stopped working for that patient permanently.
+    const client = fakeClient({ results: [{ preferences: { phase: "PHASE3" } }] });
+    expect(await adapter(client).preferenceVersioning!.read()).toEqual({
+      filters: { phase: "PHASE3" },
+      version: undefined,
+    });
+  });
+
+  it("reports no version when there is no row", async () => {
+    // Distinct from "a row whose version I have not read": the first is
+    // `If-None-Match: *`, the second cannot be written safely at all.
+    expect(await adapter(fakeClient({ results: [] })).preferenceVersioning!.read()).toEqual({
+      filters: {},
+      version: null,
+    });
+  });
+
+  it("sends the precondition it was given", async () => {
+    const client = fakeClient();
+    const versioning = adapter(client).preferenceVersioning!;
+
+    await versioning.write({ phase: "PHASE3" }, { kind: "ifMatch", version: '"v1"' });
+    expect(client.patch.mock.calls[0][2].headers).toEqual({ "If-Match": '"v1"' });
+
+    await versioning.write({ phase: "PHASE3" }, { kind: "ifNoneMatch" });
+    expect(client.patch.mock.calls[1][2].headers).toEqual({ "If-None-Match": "*" });
+
+    await versioning.clear({ kind: "ifMatch", version: '"v2"' });
+    expect(client.patch.mock.calls[2][2].headers).toEqual({ "If-Match": '"v2"' });
+  });
+
+  it("turns a 412 into something the caller can act on", async () => {
+    // A refusal is the mechanism working, not a transport failure, and the
+    // current tag comes back so the retry needs no extra round trip.
+    const client = fakeClient();
+    client.patch.mockRejectedValueOnce({
+      response: {
+        status: 412,
+        headers: { etag: '"from-header"' },
+        data: { etag: '"from-body"', error: "preferences have changed since they were read" },
+      },
+    });
+    const versioning = adapter(client).preferenceVersioning!;
+
+    await expect(
+      versioning.write({ phase: "PHASE3" }, { kind: "ifMatch", version: '"stale"' }),
+    ).rejects.toMatchObject({
+      isPreconditionFailed: true,
+      // The body over the header: it is the one that survives a proxy which
+      // strips headers, and it is null exactly when there is no row.
+      version: '"from-body"',
+    });
+  });
+
+  it("lets a rejection that is not an object through unchanged", async () => {
+    // This function is the sole error gateway for four call sites, and
+    // reading `.response` off a null rejection would replace the real
+    // failure with a TypeError the caller cannot act on.
+    const client = fakeClient();
+    client.patch.mockRejectedValueOnce(null);
+    await expect(
+      adapter(client).preferenceVersioning!.write({}, { kind: "none" }),
+    ).rejects.toBeNull();
+  });
+
+  it("lets a failure that is not a 412 through unchanged", async () => {
+    // A 500 or a dropped connection is not a precondition answer, and
+    // dressing it as one would have the caller retry a broken transport.
+    const client = fakeClient();
+    const boom = { response: { status: 500 }, message: "boom" };
+    client.patch.mockRejectedValueOnce(boom);
+    await expect(
+      adapter(client).preferenceVersioning!.write({}, { kind: "none" }),
+    ).rejects.toBe(boom);
   });
 });
 
