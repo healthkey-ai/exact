@@ -92,7 +92,12 @@ class TestResolvePatientInfoDispatch:
 
             result = resolve_patient_info(req)
 
-        mock_inline.assert_called_once_with({'disease': 'multiple myeloma'})
+        # `strict=True`: the inline payload is the one caller that is a client,
+        # so a malformed value there is a 400 rather than a quiet fall back to
+        # the marker derivation.
+        mock_inline.assert_called_once_with(
+            {'disease': 'multiple myeloma'}, strict=True
+        )
         MockClient.return_value.fetch_patient.assert_not_called()
         assert result == 'inline_pi'
 
