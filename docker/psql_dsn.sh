@@ -112,16 +112,19 @@ psql_dsn_split() {
         if [[ "$userinfo" == *":"* ]]; then
             user="${userinfo%%:*}"
             password="${userinfo#*:}"
-            if [ -n "$password" ]; then
-                # The trailing `x` survives the command substitution that
-                # would otherwise eat a decoded password's trailing newlines --
-                # `%0A` decoded correctly and was then truncated after the
-                # fact, authenticating with a different password than libpq
-                # would have used.
-                PGPASSWORD="$(_psql_dsn_percent_decode "$password"; printf x)"
-                PGPASSWORD="${PGPASSWORD%x}"
-                export PGPASSWORD
-            fi
+            # Exported even when empty: reaching here means the userinfo
+            # carried a `:`, so the DSN specified a password, and an empty one
+            # is a value rather than an absence. These scripts run under an
+            # inherited environment, so leaving it unset would let an ambient
+            # PGPASSWORD stand in for the empty one the DSN asked for.
+            #
+            # The trailing `x` survives the command substitution that would
+            # otherwise eat a decoded password's trailing newlines -- `%0A`
+            # decoded correctly and was then truncated after the fact,
+            # authenticating with a different password than libpq would use.
+            PGPASSWORD="$(_psql_dsn_percent_decode "$password"; printf x)"
+            PGPASSWORD="${PGPASSWORD%x}"
+            export PGPASSWORD
             if [ -n "$user" ]; then
                 authority="$user@$hostinfo"
             else

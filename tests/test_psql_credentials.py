@@ -258,6 +258,55 @@ class TestPsqlDsnAndEnv:
         assert env['PGPASSWORD'] == password
 
 
+class TestAnExplicitlyEmptyPassword:
+    """An empty password is not a credential, but it IS a value, and the
+    difference decides which one psql ends up using. The env handed to the
+    child is built on `os.environ`, so dropping an explicit empty password lets
+    an ambient PGPASSWORD — another database's, exported by whoever ran the
+    command — stand in for it. The DSN said "no password"; libpq would then
+    send one."""
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u:@h/db',
+        "host=h password=''",
+        'host=h password=',
+        'postgresql://u@h/db?password=',
+    ])
+    def test_it_overrides_an_ambient_pgpassword(self, url, monkeypatch):
+        monkeypatch.setenv('PGPASSWORD', 'ANOTHER-DATABASES-SECRET')
+
+        _dsn, env = psql_dsn_and_env(url)
+
+        assert env['PGPASSWORD'] == ''
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u@h/db',
+        'host=h dbname=d',
+    ])
+    def test_no_password_field_leaves_the_environment_alone(self, url, monkeypatch):
+        """The complement: a DSN that says nothing about a password must not
+        clear one. That is libpq's own precedence — environment and .pgpass
+        apply exactly when the connection string is silent."""
+        monkeypatch.setenv('PGPASSWORD', 'AMBIENT')
+
+        _dsn, env = psql_dsn_and_env(url)
+
+        assert env['PGPASSWORD'] == 'AMBIENT'
+
+    def test_the_shell_twin_agrees(self):
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; psql_dsn_split "postgresql://u:@h/db"; '
+             'printf "[%s]" "${PGPASSWORD-UNSET}"'],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, 'PGPASSWORD': 'ANOTHER-DATABASES-SECRET'},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == '[]', result.stdout
+
+
 class TestWhatCountsAsAUri:
     """Which strings take the URI path decides whether a credential is
     rewritten or waved through, and the two implementations have to agree on
@@ -623,9 +672,13 @@ class TestTheShellTwinAgreesWithPython:
         # is the input. This is what a stub cannot satisfy — asserting only
         # "not refused" let one that returns an empty string pass every case.
         assert '\n'.join(out[:-1]) == url, f'bash altered a clean DSN: {out!r}'
-        # Python may tidy an empty `password=` out of the query; what it must
-        # not do is find a credential where libpq sees none.
-        assert 'PGPASSWORD' not in py_env
+        # Python may tidy an empty `password=` out of the query, and sets
+        # PGPASSWORD to the empty string when the DSN named one — what it must
+        # not do is come up with a credential where libpq sees none.
+        assert not py_env.get('PGPASSWORD'), (
+            f'python invented a credential for a clean DSN: '
+            f'{py_env["PGPASSWORD"]!r}'
+        )
 
     @pytest.mark.parametrize(
         'url',

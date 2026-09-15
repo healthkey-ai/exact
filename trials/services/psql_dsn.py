@@ -84,11 +84,18 @@ def psql_dsn_and_env(db_url: str, **extra_env: str) -> tuple[str, dict[str, str]
         # form is decided by the scheme, not by a substring search.
         dsn, password = _strip_keyword_password(db_url)
 
-    # An empty password is not a password. `postgres://u:@h/db` and
+    # An empty password is not a credential, but it IS a value. `postgres://u:@h/db` and
     # `postgres://u@h/db` mean the same thing to libpq, but an *empty*
     # PGPASSWORD does not mean the same as an unset one, so the credential is
     # still stripped from the DSN while the variable is left alone.
-    if password:
+    if password is not None:
+        # `is not None`, not truthiness: an EMPTY password is still a password
+        # *field*, and the difference decides which credential psql uses. The
+        # env handed to the child is `{**os.environ, ...}`, so dropping an
+        # explicit empty one lets an ambient PGPASSWORD -- another database's,
+        # exported by whoever ran the command -- take its place. The DSN said
+        # "no password"; libpq would then send one. Absent means absent, empty
+        # means empty.
         env["PGPASSWORD"] = password
 
     _assert_no_password(dsn)
