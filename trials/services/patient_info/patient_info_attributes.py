@@ -1,4 +1,5 @@
-from math import log10
+from decimal import Decimal
+from math import isfinite, log10
 
 import inflection
 from django.db import models
@@ -8,6 +9,7 @@ from django.utils.functional import cached_property
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from trials.services.patient_info.convertors.base_convertor import BaseConvertor
 from trials.services.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
+from trials.services.patient_info.convertors.egfr_calculator import EgfrCalculator
 from trials.services.patient_info.convertors.serum_creatinine_convertor import SerumCreatinineConvertor
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
@@ -100,6 +102,34 @@ BULKY_DISEASE_CRITERIA_SOURCES = {
 # `None` is a MEANINGFUL supplied value here (an unresolved aggregate), so
 # "was it supplied at all?" needs a marker that is not None.
 _NOT_SUPPLIED = object()
+
+
+
+def _as_reading(value):
+    """A number we can compare against a threshold, or None.
+
+    `_coerce_numerics` only touches strings, so a JSON payload can still put a
+    list, dict or bool in a numeric column, and those reach the comparisons
+    intact. The old truthiness checks absorbed the falsy ones by accident — `[]`
+    simply skipped the branch — so replacing them with `is not None` turns that
+    into `TypeError: '<' not supported between 'float' and 'list'`, raised inside
+    `normalize_patient_info`. The inline path answers 400 "Could not build
+    patient context" and the person_id path 500: the search fails and EVERY
+    trial is hidden, which is the exact harm this file is trying to remove.
+
+    Non-finite values are excluded for the same reason they are dangerous rather
+    than merely odd: `Decimal('nan')` survives coercion and every comparison
+    against NaN is False, so a NaN creatinine walked through the screen as
+    "adequate"; infinity clears every threshold outright.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    try:
+        if not isfinite(value):
+            return None
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    return value
 
 
 class PatientInfoAttributes:
@@ -538,14 +568,60 @@ class PatientInfoAttributes:
         return None
 
     @cached_property
+    def _screening_egfr(self):
+        """The eGFR this screen should be decided on (#502).
+
+        Read the field and you get whatever `normalize` has filled in SO FAR.
+        It derives the eGFR one line BELOW the point it copies this status out,
+        so for every patient whose eGFR is calculated rather than stated the
+        field was still empty here: the derivation fell through to its "inputs
+        missing" branch and answered False. That is not one unmet criterion —
+        `match_score_and_status()` short-circuits the trial to `not_eligible`
+        and the SQL prefilter drops it. Measured on the base branch: a patient
+        with a derived eGFR of 129.93 and a clearance of 110, both far above the
+        threshold, was removed from trials. Computing the value HERE removes the
+        ordering dependency rather than reordering two lines and hoping.
+
+        When the record states an eGFR and the labs imply a different one, screen
+        on the worse of the two. Disagreement means one of them is stale, and on
+        a prefilter the optimistic reading is the one that offers a trial the
+        protocol excludes. It also settles a contradiction the base branch
+        shipped: a caller echoing an old derived eGFR back alongside fresh
+        creatinine was published with the RECALCULATED 21.94 in the field and
+        `renal_adequacy_status: True` beside it, because the status was read
+        before the recalculation landed.
+
+        Nothing consults this after normalization: `renal_adequacy_status` is
+        read exactly once (`normalize.py`), stored as a field, and every later
+        consumer — `get_value` included — reads the field.
+        """
+        supplied = _as_reading(self.patient_info.estimated_glomerular_filtration_rate)
+        derived = _as_reading(EgfrCalculator.call(self.patient_info))
+
+        if supplied is None:
+            return derived
+        if derived is None:
+            return supplied
+        return min(supplied, derived)
+
+    @cached_property
     def renal_adequacy_status(self):
-        if self.patient_info.estimated_glomerular_filtration_rate and self.patient_info.estimated_glomerular_filtration_rate < 60:
+        # `is not None`, not truthiness: ZERO is falsy, so `if egfr and ... < 60`
+        # skipped the check for the worst value either measure can carry and,
+        # with the other measure adequate, fell through to `True` — a trial
+        # offered to a patient with effectively no renal function. Measured on
+        # the base branch, both halves: eGFR 0 with clearance 110, and clearance
+        # 0 with eGFR 90, each answered `True`.
+        egfr = self._screening_egfr
+        clearance = _as_reading(self.patient_info.creatinine_clearance_rate)
+
+        if egfr is not None and egfr < 60:
             return False
 
-        if self.patient_info.creatinine_clearance_rate and self.patient_info.creatinine_clearance_rate < 60:
+        if clearance is not None and clearance < 60:
             return False
 
-        if self.patient_info.estimated_glomerular_filtration_rate is None or self.patient_info.creatinine_clearance_rate is None:
+        if egfr is None or clearance is None:
             return False
 
         return True
