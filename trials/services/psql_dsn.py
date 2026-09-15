@@ -34,6 +34,11 @@ _KEYWORD_PASSWORD = re.compile(
 # the same secret, and unlike `password` it has nowhere to go: checked against
 # libpq 17, the environment it reads offers PGPASSWORD and fifteen PGSSL* names,
 # and no PGSSLPASSWORD among them. So it cannot be relocated, only refused.
+# Every keyword spelling of a secret, whatever the case — the backstop's net,
+# not the rewrite's (which follows libpq exactly, and libpq is case-sensitive).
+_KEYWORD_SECRET_ANY_CASE = re.compile(
+    r"(?:^|\s)(?:password|sslpassword)\s*=", re.IGNORECASE
+)
 _DB_PASSWORD_QUERY_KEYS = {"password"}
 _UNRELOCATABLE_QUERY_KEYS = {"sslpassword"}
 _PASSWORD_QUERY_KEYS = _DB_PASSWORD_QUERY_KEYS | _UNRELOCATABLE_QUERY_KEYS
@@ -104,6 +109,22 @@ _URI_SCHEME = re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 
 def _is_uri(db_url: str) -> bool:
     return _URI_SCHEME.match(db_url.lstrip()) is not None
+
+
+def _looks_like_uri(db_url: str) -> bool:
+    """URI-shaped enough for the backstop to scan as one.
+
+    Accepts what `_is_uri` accepts, plus the near-misses it declines — an
+    invalid scheme, or none at all — because those are exactly the strings the
+    rewrite leaves untouched and the backstop therefore has to examine.
+    Excludes keyword conninfo, where a `://` inside a value is not an
+    authority: libpq decides the same way, by what comes first.
+    """
+    stripped = db_url.lstrip()
+    head, equals, _rest = stripped.partition("=")
+    if equals and "://" not in head:
+        return False
+    return "://" in stripped
 
 
 def _split_authority(db_url: str) -> tuple[str, str, str]:
@@ -243,13 +264,19 @@ def _assert_no_password(dsn: str) -> None:
     would agree with it exactly where both are wrong -- which is how the `#`
     case passed silently.
     """
-    # The URI scan runs on anything containing `://`, not only on what
-    # `_is_uri` accepted for rewriting. Gating the *assertion* on the same
-    # predicate as the rewrite means a string the rewrite declined to touch is
-    # also never checked: `my_scheme://u:pw@h/db` came back unchanged, password
-    # and all, and was reported clean. A backstop that trusts the same judgement
-    # as the code it backs is not one.
-    if "://" in dsn:
+    # Wider than `_is_uri`, narrower than "contains `://`". Gating the
+    # assertion on the rewrite's own predicate means a string the rewrite
+    # declined is never checked either — `my_scheme://u:pw@h/db` came back
+    # unchanged, password and all, and was reported clean. But scanning
+    # everything containing `://` reads a keyword conninfo whose *value*
+    # happens to hold one (`options='-c a://u:p@h'`) as an authority and
+    # refuses a DSN that carries no credential at all, which kills the command
+    # outright.
+    #
+    # libpq's own rule is positional: a URI is what *starts* with a scheme.
+    # Mirror it — if a `=` comes first, this is keyword conninfo and the `://`
+    # is inside a value.
+    if _looks_like_uri(dsn):
         _, authority, tail = _split_authority(dsn)
         userinfo, at, _ = authority.rpartition("@")
         if at and ":" in userinfo:
@@ -268,3 +295,14 @@ def _assert_no_password(dsn: str) -> None:
     # accident must not exempt it from this one.
     if _KEYWORD_PASSWORD.search(dsn):
         raise DsnStillCarriesPassword("conninfo still contains password=")
+
+    # Case-insensitively, and including `sslpassword`, neither of which the
+    # rewrite handles. libpq's keyword lookup is strcmp, so `PassWord=` is not
+    # a credential it would accept — but argv exposure on a connection libpq
+    # refuses is exactly the harm this module prevents, and nothing else in it
+    # would have caught the spelling.
+    if _KEYWORD_SECRET_ANY_CASE.search(dsn):
+        raise DsnStillCarriesPassword(
+            "conninfo still contains a password= spelling libpq would not "
+            "accept, but a reader of the process table would"
+        )

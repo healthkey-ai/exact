@@ -48,6 +48,7 @@ _psql_dsn_refuse() {
 psql_dsn_split() {
     local dsn="$1"
     local scheme rest authority tail userinfo hostinfo user password
+    local _psql_dsn_is_uri=0
 
     PSQL_DSN="$dsn"
     [ -n "$dsn" ] || return 0
@@ -67,16 +68,32 @@ psql_dsn_split() {
     # rebuilt identical to the input, and both end guards miss it because
     # neither pattern matches. Returned clean, password and all, straight into
     # psql's argv. Fail-open in the function whose whole job is to fail closed.
-    if [[ "$lowered" =~ ^[a-z][a-z0-9+.-]*:// ]]; then
-        :
+    #
+    # Leading whitespace is trimmed before the test, because the Python twin
+    # lstrips and an anchored pattern that does not is a different predicate on
+    # the same input: one space in front of a DSN sent it down the keyword
+    # branch, whose only check looks for a `password=` token that a URI
+    # userinfo does not contain -- so `  postgresql://u:s3cr3t@h/db` came back
+    # untouched and was reported clean. Measured against real psql: the
+    # credential then reached argv AND the container log, via the probe's own
+    # error handler printing the DSN psql rejected.
+    local trimmed
+    trimmed="${lowered#"${lowered%%[![:space:]]*}"}"
+    if [[ "$trimmed" =~ ^[a-z][a-z0-9+.-]*:// ]]; then
+        _psql_dsn_is_uri=1
     else
+        _psql_dsn_is_uri=0
         # Keyword conninfo. Not handled here -- refuse if it carries one.
-        if [[ "$dsn" =~ (^|[[:space:]])password[[:space:]]*= ]]; then
+        # Case-insensitive: libpq's own lookup is strcmp, so `PassWord=` is not
+        # a credential it would accept -- but it is still a secret, and argv
+        # exposure on a connection libpq refuses is exactly the harm this
+        # module exists to prevent.
+        if [[ "$lowered" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*= ]]; then
             _psql_dsn_refuse "keyword conninfo carries password=" || return 1
         fi
-        return 0
     fi
 
+    if [ "$_psql_dsn_is_uri" = "1" ]; then
     scheme="${dsn%%://*}"
     rest="${dsn#*://}"
 
@@ -114,10 +131,34 @@ psql_dsn_split() {
     fi
 
     PSQL_DSN="$scheme://$authority$tail"
+    fi
 
+    # Guards, for EVERY shape -- not only the ones the rewrite above handled.
+    # They used to live inside the URI branch, so a string the classifier
+    # declined (`my_scheme://u:pw@h/db`, `://u:pw@h`) was returned unexamined:
+    # narrowing the classifier without an unconditional backstop moves the
+    # fail-open rather than closing it. The Python twin ungated its own
+    # `_assert_no_password` for the same reason.
+    #
     # Same check the Python twin makes, on the value actually about to be used.
-    if [[ "$PSQL_DSN" =~ ^[^:]+://[^/]*:[^/]*@ ]]; then
-        _psql_dsn_refuse "authority still contains a password" || return 1
+    # URI-shaped enough to have an authority: what the rewrite accepts, plus
+    # the near-misses it declines (invalid scheme, or none) -- but NOT keyword
+    # conninfo, where a `://` inside a value is not an authority. libpq decides
+    # the same way, by what comes first; so does the Python twin's
+    # `_looks_like_uri`. Without this, `host=h options='-c a://u:p@h'` -- a DSN
+    # carrying no credential at all -- was refused, and a refusal here aborts
+    # container start.
+    local guard_target guard_head
+    guard_target="$(printf '%s' "$PSQL_DSN" | tr '[:upper:]' '[:lower:]')"
+    guard_target="${guard_target#"${guard_target%%[![:space:]]*}"}"
+    guard_head="${guard_target%%=*}"
+    if [[ "$guard_target" != *=* || "$guard_head" == *://* ]]; then
+        # `[^:]*`, not `[^:]+`: an empty scheme (`://u:pw@h/db`) is not a DSN
+        # the rewrite touches, and requiring a character before `://` let
+        # precisely that shape past the guard meant to catch what it skipped.
+        if [[ "$guard_target" =~ ^[^:]*://[^/]*:[^/]*@ ]]; then
+            _psql_dsn_refuse "authority still contains a password" || return 1
+        fi
     fi
     # Case-insensitively, and over percent-encoded spellings: libpq decodes
     # parameter *names*, so `%70assword=` is `password=`, and matching the

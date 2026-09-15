@@ -539,6 +539,65 @@ class TestTheShellTwinAgreesWithPython:
         )
         return result.returncode, result.stdout.split('\n')
 
+    # Every shape where the two have drifted, plus the ones that must keep
+    # working. Because bash refuses where Python strips, the only invariant
+    # statable across both is the one that matters: what comes back must not
+    # carry a credential, and a DSN carrying none must not be refused.
+    SECRET = 's3cr3t'
+    CREDENTIALED = [
+        'postgresql://u:s3cr3t@h/db',
+        '  postgresql://u:s3cr3t@h/db',      # lstrip: Python did, bash did not
+        '\tpostgresql://u:s3cr3t@h/db',
+        'POSTGRESQL://u:s3cr3t@h/db',
+        'postgis://u:s3cr3t@h/db',
+        'my_scheme://u:s3cr3t@h/db',         # rewrite declines it; backstop must not
+        '://u:s3cr3t@h/db',                  # no scheme at all
+        'postgresql://u@h/db?password=s3cr3t',
+        ' postgresql://u@h/db?password=s3cr3t',
+        'postgresql://u@h/db?Password=s3cr3t',
+        'postgresql://u@h/db?%70assword=s3cr3t',
+        'postgresql://u@h/db?sslpassword=s3cr3t',
+        'host=h password=s3cr3t',
+        'host=h PassWord=s3cr3t',            # libpq rejects it; argv still shows it
+        'host=h sslpassword=s3cr3t',
+    ]
+    CREDENTIAL_FREE = [
+        'postgresql://u@h/db',
+        'postgresql://u@h:5432/db?sslmode=require',
+        'postgis://u@h/db',
+        'postgresql:///db?host=/var/run/postgresql',
+        'host=h dbname=d user=u',
+        "host=h options='-c a://u:p@h'",     # `://` in a value is not an authority
+        'host=h application_name=svc://alice@registry',
+        'postgresql://u@h/db?passfile=%2Fsecrets%2F.pgpass',
+    ]
+
+    @pytest.mark.parametrize('url', CREDENTIALED)
+    def test_neither_implementation_hands_back_the_secret(self, url):
+        """Refused or stripped, never returned. The one property both halves
+        must share, on the inputs where they drifted apart."""
+        code, out = self._split(url)
+        # A refusal prints nothing, so there is no DSN to inspect — that is the
+        # pass condition for the bash half, which refuses where Python strips.
+        if code != 3:
+            assert self.SECRET not in out[0], (
+                f'bash returned the credential: {out[0]!r}'
+            )
+
+        try:
+            py_dsn, _env = psql_dsn_and_env(url)
+        except DsnStillCarriesPassword:
+            return
+        assert self.SECRET not in py_dsn, f'python returned the credential: {py_dsn!r}'
+
+    @pytest.mark.parametrize('url', CREDENTIAL_FREE)
+    def test_neither_implementation_refuses_a_clean_dsn(self, url):
+        """A false refusal aborts container start — worse than what it guards."""
+        code, _out = self._split(url)
+        assert code != 3, f'bash refused a credential-free DSN: {url!r}'
+
+        psql_dsn_and_env(url)  # must not raise
+
     @pytest.mark.parametrize(
         'url',
         [
