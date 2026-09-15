@@ -300,8 +300,10 @@ PHR_ALLOW_INTROSPECTION = os.environ.get(
 # Cap on outbound introspection calls per interval. Reaching this provider
 # needs only an unverified `iss`, and DRF authenticates before it throttles,
 # so without a cap an anonymous caller could hold every sync worker in a 5s
-# POST and use this service to flood the portal. Sized to sit well above real
-# sign-in volume on the dev deployments that use this path at all.
+# POST and use this service to flood the portal. This default was sized against
+# real *sign-in* volume, when a verified token was cached; since #404 removed
+# that cache it bounds *requests* instead, and one page can spend several. Raise
+# it (PHR_INTROSPECT_MAX_CALLS) on any deployment that enables introspection.
 PHR_INTROSPECT_MAX_CALLS = int(os.environ.get('PHR_INTROSPECT_MAX_CALLS', '30'))
 PHR_INTROSPECT_RATE_INTERVAL = int(
     os.environ.get('PHR_INTROSPECT_RATE_INTERVAL', '60')

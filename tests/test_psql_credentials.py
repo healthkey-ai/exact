@@ -86,7 +86,6 @@ def _dsn_positions(argv):
             if element.value in _DSN_FLAGS:
                 expect_dsn_next = True
             elif element.value in _VALUE_FLAGS:
-                skip_next = True
                 expect_dsn_next = False
                 # the flag's value is not a DSN; drop it
                 positions.append(None)

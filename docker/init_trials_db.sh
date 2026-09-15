@@ -29,10 +29,6 @@ fi
 # conninfo rather than passing a credentialed string through as if it were
 # clean -- a silent pass would make the sentence above false exactly where it
 # mattered.
-# shellcheck source=docker/psql_dsn.sh
-source "$(dirname "${BASH_SOURCE[0]}")/psql_dsn.sh"
-psql_dsn_split "$TRIALS_DATABASE_URL"
-
 case "${TRIALS_DATABASE_INIT_FROM_BACKUP,,}" in
     1|true|yes|on) ;;
     *)
@@ -41,6 +37,10 @@ case "${TRIALS_DATABASE_INIT_FROM_BACKUP,,}" in
         exit 0
         ;;
 esac
+
+# shellcheck source=docker/psql_dsn.sh
+source "$(dirname "${BASH_SOURCE[0]}")/psql_dsn.sh"
+psql_dsn_split "$TRIALS_DATABASE_URL"
 
 log "Checking trials database status..."
 

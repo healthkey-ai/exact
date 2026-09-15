@@ -80,9 +80,22 @@ def psql_dsn_and_env(db_url: str, **extra_env: str) -> tuple[str, dict[str, str]
     return dsn, env
 
 
+# libpq itself only connects to `postgres://` and `postgresql://`, but this
+# codebase hands these URLs to Django through `dj_database_url`, which accepts
+# more — `postgis://` is the documented deploy convention for the shared Cloud
+# SQL instance (see `exact/settings.py`). Scheme-matching on the libpq pair left
+# every other scheme falling through to the keyword-conninfo branch, where a
+# URI-shaped credential contains no `password=` token: the URL came back
+# unchanged, password included, and `_assert_no_password` waved it through on
+# the same test. Reported clean, sent to psql in argv. libpq would refuse to
+# connect, but the credential is in `/proc/<pid>/cmdline` for as long as the
+# child lives, which is the whole thing this module prevents. Anything with an
+# authority is now treated as a URI.
+_URI_SCHEME = re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+
 def _is_uri(db_url: str) -> bool:
-    lowered = db_url.lstrip().lower()
-    return lowered.startswith("postgres://") or lowered.startswith("postgresql://")
+    return _URI_SCHEME.match(db_url.lstrip()) is not None
 
 
 def _split_authority(db_url: str) -> tuple[str, str, str]:

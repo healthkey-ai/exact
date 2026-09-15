@@ -57,7 +57,10 @@ psql_dsn_split() {
     local lowered
     lowered="$(printf '%s' "$dsn" | tr '[:upper:]' '[:lower:]')"
     case "$lowered" in
-        postgres://*|postgresql://*) ;;
+        # Any scheme with an authority, not just the two libpq connects to:
+        # `postgis://` is this deployment's convention, and treating it as
+        # keyword conninfo let a URI-shaped credential through untouched.
+        *://*) ;;
         *)
             # Keyword conninfo. Not handled here -- refuse if it carries one.
             if [[ "$dsn" =~ (^|[[:space:]])password[[:space:]]*= ]]; then

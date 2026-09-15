@@ -28,10 +28,18 @@ class _CallBudget:
     """Fixed-window counter bounding outbound introspection calls.
 
     The JWKS path is protected by a refresh floor; the introspection path had
-    nothing.  Routing into this provider takes only an *unverified* `iss`, and
-    only *successful* verifications are cached upstream, so every failed
-    attempt re-issued a blocking 5s POST.  DRF runs authentication before
+    nothing.  Routing into this provider takes only an *unverified* `iss`, so
+    an attempt re-issues a blocking 5s POST.  DRF runs authentication before
     throttling (`APIView.initial`), so `AnonRateThrottle` cannot reach this.
+
+    This used to say that *successful* verifications were cached upstream, so
+    that only failures re-issued the POST.  That cache is gone (#404 — it never
+    re-read the token, so a revoked one kept authenticating for its lifetime),
+    which means the budget now counts **requests, not sign-ins**: one page that
+    fires several API calls spends several of them.  The default of 30/60s was
+    chosen against the old reading; on a deployment that actually enables
+    introspection it deserves re-sizing, or the window empties under ordinary
+    use and every introspection caller gets a 401 until it rolls.
 
     A budget rather than a one-call-per-interval floor: a floor would reject
     every legitimate concurrent sign-in for the rest of the window.
