@@ -35,6 +35,88 @@ export const MAX_TRIAL_IDS = 500;
  *  here. Set by a study team, not by the patient. */
 export type AdvancedStatus = "entered" | "completed";
 
+/** A preferences read that also yields the row's version.
+ *
+ *  The entity-tag is PROMOP's, quoted as the header wants it —
+ *  `"2026-09-14T13:46:38.625960Z"`. It is `updated_at` verbatim rather than
+ *  a hash precisely so a client that reads the LIST, which carries no
+ *  `ETag` header, can still build one (promop#1312).
+ */
+export interface VersionedPreferences {
+  filters: FilterState;
+  /** The row's tag; `null` when there is NO row; `undefined` when a row
+   *  exists but this read cannot describe it.
+   *
+   *  The third state is not pedantry. Collapsing it into `null` tells the
+   *  caller "no row", which makes the next write send `If-None-Match: *` at
+   *  a row that plainly exists — refused, re-read, refused again, and every
+   *  save for that patient fails from then on. One missing optional field
+   *  in a list response must not switch saved filters off. */
+  version?: string | null;
+}
+
+/** What a conditional write asks of the row before it lands.
+ *
+ *  A discriminated union rather than two optional fields, because "match
+ *  this version" and "there must be no row" are mutually exclusive and
+ *  sending both would leave the server to pick — which it does, by
+ *  evaluating `If-Match` first (RFC 9110 §13.2.2), but a caller should not
+ *  have to know that to be correct.
+ */
+export type Precondition =
+  | { kind: "ifMatch"; version: string }
+  | { kind: "ifNoneMatch" }
+  | { kind: "none" };
+
+/** Thrown by a versioning transport when the server refused the write.
+ *
+ *  `version` is what the row holds now; `null` when there is no row to
+ *  describe. The caller still has to re-read for the CONTENT — a tag says
+ *  nothing about what the other writer put there — but it is the tag of
+ *  last resort when that read comes back unable to describe the row.
+ *
+ *  The marker property, not `instanceof`, is the supported test: this
+ *  module can be loaded twice in a federated page — once in the host, once
+ *  in the remote — and two copies of the class would fail `instanceof`
+ *  against each other while being the same error.
+ */
+export class PreconditionFailed extends Error {
+  readonly isPreconditionFailed = true as const;
+
+  constructor(
+    readonly version: string | null,
+    message = "saved filters changed since they were read",
+  ) {
+    super(message);
+    this.name = "PreconditionFailed";
+  }
+
+  static is(error: unknown): error is PreconditionFailed {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      (error as { isPreconditionFailed?: unknown }).isPreconditionFailed === true
+    );
+  }
+}
+
+/** Conditional reads and writes, when the transport can do them.
+ *
+ *  Kept off `TrialStateAdapter`'s own methods and behind one optional
+ *  property so that widening the contract breaks nothing: a host adapter
+ *  written before this — ht-phr's, CB's — simply does not set it, and the
+ *  caller falls back to the unconditional path it used before. The
+ *  `localStorage` transport never sets it either, having no second writer
+ *  to race.
+ */
+export interface PreferenceVersioning {
+  read(): Promise<VersionedPreferences>;
+  /** Returns the row's NEW version, so a caller need not re-read to earn
+   *  the right to write again. `null` if the transport cannot say. */
+  write(filters: FilterState, precondition: Precondition): Promise<string | null>;
+  clear(precondition: Precondition): Promise<string | null>;
+}
+
 export interface TrialStateAdapter {
   /** The patient's bookmarked trial ids. */
   listFavoriteIds(): Promise<TrialId[]>;
@@ -63,6 +145,14 @@ export interface TrialStateAdapter {
    *  while `upsert` with `{}` is a partial update that leaves `preferences`
    *  untouched. */
   resetPreferences(): Promise<void>;
+  /** Conditional preference access, when this transport supports it.
+   *
+   *  Optional: absent means the caller writes unconditionally, exactly as
+   *  every client did before promop#1312. Present means it can send a
+   *  precondition and be told 412 rather than silently overwriting a
+   *  concurrent writer — which is the whole point, since one client
+   *  implementation is not one writer: two tabs instantiate it twice. */
+  preferenceVersioning?: PreferenceVersioning;
 
   /** Which patient attributes this caller may edit for this patient, and how.
    *
@@ -169,6 +259,82 @@ export function createPromopState({
       })
       .then(() => undefined);
 
+  // The row's entity-tag, as PROMOP spells it: `updated_at` quoted verbatim.
+  // Built here rather than read from an `ETag` header because the read is a
+  // LIST, and one header cannot describe a collection — which is exactly why
+  // promop#1312 made the tag a value the body already carries.
+  const tagOf = (updatedAt: unknown): string | null =>
+    typeof updatedAt === "string" && updatedAt ? `"${updatedAt}"` : null;
+
+  const conditionalHeaders = (precondition: Precondition): Record<string, string> => {
+    if (precondition.kind === "ifMatch") return { "If-Match": precondition.version };
+    if (precondition.kind === "ifNoneMatch") return { "If-None-Match": "*" };
+    return {};
+  };
+
+  // A 412 is the mechanism working, not a transport failure, so it is
+  // translated into something the caller can act on. The current tag comes
+  // back in the header and the body both; the body is the one that survives
+  // a proxy that strips headers, and it is null exactly when there is no row.
+  const asPrecondition = (error: unknown): never => {
+    // Guarded because this is the sole error gateway for four call sites,
+    // and reading `.response` off a null rejection would replace the real
+    // failure with a TypeError.
+    if (typeof error !== "object" || error === null) throw error;
+    const response = (error as {
+      response?: { status?: number; headers?: Record<string, string>; data?: { etag?: string | null; error?: string } };
+    }).response;
+    if (response?.status !== 412) throw error;
+    const fromBody = response.data?.etag ?? null;
+    const fromHeader = response.headers?.etag ?? response.headers?.ETag ?? null;
+    throw new PreconditionFailed(
+      fromBody ?? fromHeader ?? null,
+      response.data?.error ?? "saved filters changed since they were read",
+    );
+  };
+
+  const readPreferences = async (): Promise<VersionedPreferences> => {
+    const response = await client.get<{
+      results?: { preferences?: FilterState; updated_at?: string }[];
+    }>(`${preferences}/`, { params: { person_id: person } });
+    const rows = response.data?.results ?? (response.data as unknown as
+      { preferences?: FilterState; updated_at?: string }[]);
+    const first = Array.isArray(rows) ? rows[0] : undefined;
+    return {
+      filters: first?.preferences ?? {},
+      // `first` is what separates the two nulls: no row at all, versus a row
+      // whose `updated_at` this response did not carry.
+      version: first === undefined ? null : tagOf(first.updated_at) ?? undefined,
+    };
+  };
+
+  const writePreferences = async (
+    filters: FilterState,
+    precondition: Precondition,
+  ): Promise<string | null> => {
+    const response = await client
+      .patch<{ updated_at?: string }>(
+        `${preferences}/upsert/`,
+        { preferences: filters },
+        { params: { person_id: person }, headers: conditionalHeaders(precondition) },
+      )
+      .catch(asPrecondition);
+    // Prefer the body's `updated_at` over the `ETag` header for the same
+    // reason `read` does: it is the value this client can always see.
+    return tagOf(response.data?.updated_at) ?? response.headers?.etag ?? null;
+  };
+
+  const clearPreferences = async (precondition: Precondition): Promise<string | null> => {
+    const response = await client
+      .patch<{ updated_at?: string }>(
+        `${preferences}/reset/`,
+        {},
+        { params: { person_id: person }, headers: conditionalHeaders(precondition) },
+      )
+      .catch(asPrecondition);
+    return tagOf(response.data?.updated_at) ?? response.headers?.etag ?? null;
+  };
+
   return {
     listFavoriteIds: () => ids({ is_favorite: "true" }),
     setFavorite: (trialId, isFavorite) => upsert(trialId, { is_favorite: isFavorite }),
@@ -199,26 +365,16 @@ export function createPromopState({
     setRegistered: (trialId, registered) =>
       upsert(trialId, { status: registered ? "registered" : "withdrawn" }),
 
-    getPreferences: async () => {
-      const response = await client.get<{ results?: { preferences?: FilterState }[] }>(
-        `${preferences}/`,
-        { params: { person_id: person } },
-      );
-      const rows = response.data?.results ?? (response.data as unknown as
-        { preferences?: FilterState }[]);
-      const first = Array.isArray(rows) ? rows[0] : undefined;
-      return first?.preferences ?? {};
-    },
+    getPreferences: async () => (await readPreferences()).filters,
     savePreferences: (filters) =>
-      client
-        .patch(`${preferences}/upsert/`, { preferences: filters }, {
-          params: { person_id: person },
-        })
-        .then(() => undefined),
+      writePreferences(filters, { kind: "none" }).then(() => undefined),
     resetPreferences: () =>
-      client
-        .patch(`${preferences}/reset/`, {}, { params: { person_id: person } })
-        .then(() => undefined),
+      clearPreferences({ kind: "none" }).then(() => undefined),
+    preferenceVersioning: {
+      read: readPreferences,
+      write: writePreferences,
+      clear: clearPreferences,
+    },
 
     // `person_id` is not optional here even though the endpoint accepts its
     // absence. Without it the answer describes the deployment — "could

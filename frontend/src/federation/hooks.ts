@@ -17,6 +17,7 @@ import {
   PreferenceWriter,
   adapterPreferences,
   localStoragePreferences,
+  type PreferenceMethods,
 } from "./preferences";
 
 import {
@@ -400,6 +401,73 @@ interface UseTrialsArgs {
   enabled?: boolean;
 }
 
+/** The preference half of an adapter, re-resolved per call.
+ *
+ *  Extracted from the hook so it can be tested at all. This is a seam that
+ *  fails SILENTLY when it is wrong: a wrapper that forgets a method leaves
+ *  the transport working perfectly in its own tests and inert in the
+ *  application — which is exactly what happened to `preferenceVersioning`
+ *  before this function existed.
+ *
+ *  `live` picks the adapter on each call rather than closing over one; see
+ *  the caller for why the two ways `state` can change need opposite answers.
+ */
+export function preferenceMethodsThrough(
+  captured: TrialStateAdapter,
+  live: () => TrialStateAdapter,
+): PreferenceMethods {
+  return {
+    getPreferences: () => live().getPreferences(),
+    savePreferences: (f) => live().savePreferences(f),
+    resetPreferences: () => live().resetPreferences(),
+    // Spread in ONLY when the adapter has it: the transport decides whether
+    // it may send a precondition by asking whether this property exists, so
+    // handing it an object unconditionally would claim conditional writes on
+    // behalf of an adapter that cannot do them.
+    //
+    // Each call re-resolves through `live()` like the three above. If the
+    // live adapter turns out not to support versioning after all the write
+    // still goes through — unprotected, as it was before — rather than
+    // throwing at the reader, answering `null` for "cannot say", which the
+    // transport normalises to unknown.
+    //
+    // The reverse pairing is the one to watch: a captured adapter WITHOUT
+    // versioning and a live one with it keeps the unconditional path for the
+    // life of this memo, because the property is decided once from
+    // `captured`. Nothing produces that today — `createPromopState` either
+    // supplies versioning or the host supplies none — and re-deciding per
+    // call would mean the transport's belief about its own capabilities
+    // could change underneath it mid-write.
+    ...(captured.preferenceVersioning
+      ? {
+          preferenceVersioning: {
+            read: async () => {
+              const versioning = live().preferenceVersioning;
+              return versioning
+                ? versioning.read()
+                // `undefined`, not `null`: this read cannot describe the
+                // row, which is not the same as knowing there is none.
+                : { filters: await live().getPreferences(), version: undefined };
+            },
+            write: async (filters, precondition) => {
+              const versioning = live().preferenceVersioning;
+              if (versioning) return versioning.write(filters, precondition);
+              await live().savePreferences(filters);
+              return null;
+            },
+            clear: async (precondition) => {
+              const versioning = live().preferenceVersioning;
+              if (versioning) return versioning.clear(precondition);
+              await live().resetPreferences();
+              return null;
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+
 export function useTrials({
   apiClient,
   patientInfo,
@@ -602,11 +670,7 @@ export function useSavedFilters(
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     return captured
-      ? adapterPreferences({
-          getPreferences: () => live().getPreferences(),
-          savePreferences: (f) => live().savePreferences(f),
-          resetPreferences: () => live().resetPreferences(),
-        })
+      ? adapterPreferences(preferenceMethodsThrough(captured, live))
       : localStoragePreferences(key);
     // `hasAdapter` rather than `state`: see above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
