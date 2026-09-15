@@ -20,6 +20,7 @@
 // supplies no state still keep filters across a reload instead of losing the
 // feature.
 
+import { sameValue } from "./filters";
 import { PreconditionFailed } from "./state";
 import type { Precondition, TrialStateAdapter } from "./state";
 import type { FilterState } from "./types";
@@ -115,6 +116,27 @@ export function adapterPreferences(
   // belief still holds. Without it the merge below faithfully reconstructs a
   // set that is no longer true and writes it back over the other tab's edit.
   let version: string | null | undefined = undefined;
+  // What the PANEL was showing when we last processed a save — which is NOT
+  // `stored`, what the server holds. Conflating the two makes the delta right
+  // for exactly one save: after a 412 the transport adopts the other tab's
+  // row, the panel is never told (nothing reconciles it back into React
+  // state), and the next keystroke therefore measures the panel's unchanged
+  // value against a row that no longer has it. It scores as a genuine edit,
+  // goes out with a VALID `If-Match`, returns 200 — and puts back the filter
+  // the other tab cleared, with no 412 and nothing on `onError`.
+  //
+  // "Did the reader change this?" is a question about the panel, so it is
+  // asked against the panel's own last-known state.
+  let believed: FilterState = {};
+  // Merged, never replaced. A payload carries only the fields the panel
+  // OWNS, so replacing would forget everything the reader did not submit
+  // this time — and a later clear of one of those fields then reads as
+  // "nothing to clear" and silently never fires. Spreading keeps an explicit
+  // `undefined`, which is what makes a tombstone stick for the one save that
+  // should act on it and no later one.
+  const remember = (submitted: FilterState) => {
+    believed = { ...believed, ...submitted };
+  };
   // Absent on a host adapter written before promop#1312, and on the
   // `localStorage` transport, which has no second writer to race. Both then
   // take the unconditional path unchanged.
@@ -161,6 +183,9 @@ export function adapterPreferences(
         }
         if (era === generation) {
           stored = { ...out };
+          // The caller loads the panel from exactly this, so it is also what
+          // the panel is about to show.
+          believed = { ...out };
           seeded = true;
           version = fromServer.version;
         }
@@ -195,6 +220,13 @@ export function adapterPreferences(
           // Same era check as `get`: a Reset during the retry wins.
           if (era === generation) {
             stored = out;
+            // The panel was loaded from whatever the caller showed; this
+            // read is the first thing we know about the row, so it is also
+            // the best available account of what the panel is showing.
+            // Leaving `believed` empty here made a clear unrecognisable —
+            // `before[k]` is undefined, so "nothing to clear" — and the
+            // reader's clear silently never fired.
+            believed = { ...out };
             seeded = true;
             version = fromServer.version;
           }
@@ -218,12 +250,70 @@ export function adapterPreferences(
         return out as FilterState;
       };
 
+      // What this save actually CHANGED, as opposed to what it carries.
+      //
+      // The caller hands over the whole panel (`TrialMatches.handleFiltersChange` persists
+      // `userOwnedFilters`, every field the reader owns), not the one control
+      // they touched. Re-applying all of it over a re-read is therefore not
+      // "re-apply the reader's edit" — it re-asserts the panel's stale view
+      // and puts back exactly what the other tab cleared. Measured in a real
+      // browser, two tabs, a real server: the refusal fired, the retry went
+      // out with the correct fresh tag, and the cleared filter came back
+      // anyway. The precondition was working; the payload defeated it.
+      //
+      // The difference against what the server was believed to hold IS the
+      // edit, and it is derivable here without changing the caller.
+      const edited = (against: FilterState): FilterState => {
+        const out: Record<string, unknown> = {};
+        const before = against as Record<string, unknown>;
+        for (const [k, v] of Object.entries(filters)) {
+          // `undefined` is how a cleared control arrives; it is a change only
+          // if the key was there to clear.
+          if (v === undefined) {
+            // A clear is an edit only if the panel HELD something to clear.
+            // Not `k in before`: once a clear lands, `believed` records the
+            // tombstone, and `userOwnedFilters` keeps emitting it for as long
+            // as the field stays owned — so presence-of-key would re-issue
+            // the delete on every later save, against whatever the other tab
+            // has since put there.
+            if (before[k] !== undefined) out[k] = undefined;
+          } else if (!sameValue(before[k], v)) {
+            // `sameValue`, not `!==`. A multi-select arrives as a NEW array
+            // every render, so reference equality calls an untouched
+            // `trialPurpose` an edit — and then re-applies the reader's stale
+            // copy of it over the other tab's change, which is the whole
+            // failure this function exists to stop. `filters.ts` says as much
+            // in its own docstring; this walked into it anyway.
+            //
+            // It is order- and case-insensitive, so a REORDER of the same
+            // selection is not an edit and does not reach the server. That
+            // follows `filters.ts`'s reasoning — the backend ORs the codes,
+            // so a reordering is not a different search — but it does mean
+            // the stored order can drift from the panel's.
+            out[k] = v;
+          }
+        }
+        return out as FilterState;
+      };
+
+      const mergeEdit = (base: FilterState, edit: FilterState): FilterState => {
+        const out: Record<string, unknown> = { ...base };
+        for (const [k, v] of Object.entries(edit)) {
+          if (v === undefined) delete out[k];
+          else out[k] = v;
+        }
+        return out as FilterState;
+      };
+
       if (!versioning) {
         const payload = merge(stored);
         await state.savePreferences(payload);
         // AFTER it resolves. Recording a payload that failed means the next
         // one is built against a row that does not exist.
         stored = { ...payload };
+        // No `believed` here: `versioning` is captured once, so a transport
+        // that took this branch never takes the conditional one, and nothing
+        // ever reads it.
         return;
       }
 
@@ -267,7 +357,18 @@ export function adapterPreferences(
         stored = withoutNulls(refreshed.filters);
         version = refreshed.version;
       }
-      const payload = merge(stored);
+      // The edit, measured once against what was believed when it was made.
+      const edit = edited(believed);
+      // …and applied to the best-known server state, for the FIRST write as
+      // well as the retry. `merge(stored)` here would put the panel's whole
+      // stale view on the wire, and when the refresh above has just fetched
+      // a current tag that write SUCCEEDS — no 412, no retry, the other
+      // tab's change gone. Guarding only the retry left that door open.
+      //
+      // With no refresh in between this is the same payload `merge` would
+      // have built: the keys it omits are exactly the ones already equal to
+      // what `stored` holds.
+      const payload = mergeEdit(stored, edit);
       // The tag the refusal reported, kept for the recovery below.
       let refusedWith: string | null | undefined;
       const writeEra = generation;
@@ -282,6 +383,7 @@ export function adapterPreferences(
         }
         version = tag;
         stored = { ...payload };
+        remember(filters);
         return;
       } catch (error) {
         if (!PreconditionFailed.is(error)) throw error;
@@ -309,7 +411,9 @@ export function adapterPreferences(
       // it is a better answer than "unknown", and it is what stops a row
       // without `updated_at` failing every save forever.
       version = fresh.version === undefined ? refusedWith : fresh.version;
-      const retried = merge(stored);
+      // Only what changed, over what is there NOW. `merge(stored)` here
+      // would re-assert the whole stale panel — see `edited` above.
+      const retried = mergeEdit(stored, edit);
       const retryEra = generation;
       try {
         const tag = normalise(await versioning.write(retried, precondition()));
@@ -321,6 +425,7 @@ export function adapterPreferences(
         }
         version = tag;
         stored = { ...retried };
+        remember(filters);
       } catch (error) {
         if (!PreconditionFailed.is(error)) throw error;
         // Twice in a row is not a stale cache, it is live contention, and a
@@ -358,6 +463,9 @@ export function adapterPreferences(
       const knew = seeded;
       const knownVersion = version;
       stored = {};
+      // Reset empties the panel as well, so the next save's delta is measured
+      // against an empty one.
+      believed = {};
       seeded = knew;
       if (!versioning) {
         await state.resetPreferences();
