@@ -35,11 +35,12 @@ class _CallBudget:
     This used to say that *successful* verifications were cached upstream, so
     that only failures re-issued the POST.  That cache is gone (#404 — it never
     re-read the token, so a revoked one kept authenticating for its lifetime),
-    which means the budget now counts **requests, not sign-ins**: one page that
-    fires several API calls spends several of them.  The default of 30/60s was
-    chosen against the old reading; on a deployment that actually enables
-    introspection it deserves re-sizing, or the window empties under ordinary
-    use and every introspection caller gets a 401 until it rolls.
+    so this counts **requests, not sign-ins**: one page firing several API
+    calls spends several of them.  The ceiling still covers every outbound
+    call, successful ones included — a caller holding one valid token occupies
+    a worker in a 5s POST exactly like a caller holding none — so the answer
+    was a larger allowance, not an exemption for the happy path.  See
+    `PHR_INTROSPECT_MAX_CALLS`, raised when that cache went.
 
     A budget rather than a one-call-per-interval floor: a floor would reject
     every legitimate concurrent sign-in for the rest of the window.
