@@ -106,13 +106,22 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         holder = getattr(store, '_exact_patient_info', None)
         if holder is not None:
             if isinstance(holder[0], APIException):
-                # A failure is memoized too, and re-raised rather than re-tried:
-                # an unreachable PROMOP costs one timeout per request, not one
-                # per call site. (The browsable renderer resolves again while
-                # rendering, i.e. after handle_exception, so an HTML client sees
-                # that re-raise as a 500 where a JSON client gets the 502. The
-                # `?person_id=` route is gated off outside local/DEBUG.)
-                raise holder[0]
+                # A failure is memoized too, so an unreachable PROMOP costs one
+                # timeout per request rather than one per call site — but it is
+                # NOT re-raised. Reaching this branch means the exception has
+                # already been through handle_exception and become the response;
+                # the only caller left is DRF's browsable renderer, which clones
+                # the request and re-enters the view to build its form *during*
+                # rendering. A raise there escapes response rendering and Django
+                # turns the designed 502 into a 500. The status is already
+                # decided, so tell the renderer what it is actually asking —
+                # there is no patient — and let the real error render.
+                logger.debug(
+                    'patient context already failed this request (%s); '
+                    'returning None to the second caller',
+                    type(holder[0]).__name__,
+                )
+                return None
             return holder[0]
 
         data = getattr(self.request, 'data', None)

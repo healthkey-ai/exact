@@ -116,6 +116,28 @@ class TestPatientResolveErrors:
         assert mock_fetch.call_count == 1
 
     @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    @pytest.mark.parametrize('accept', ['application/json', 'text/html'])
+    def test_the_error_survives_the_browsable_renderer(self, authed_client, accept):
+        """Same cause must produce the same status to every client.
+
+        On a POST route the browsable renderer builds a raw-data form, which
+        clones the request and re-enters the view — *during* rendering, after
+        handle_exception has already turned the failure into a 502. Re-raising
+        there escapes rendering and Django reports a 500 instead. (A GET-only
+        route never builds that form, so it does not exercise this.)"""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.PromopClient.fetch_patient',
+            return_value=None,
+        ) as mock_fetch:
+            resp = authed_client.post(
+                '/trials/match/', {'person_id': 9001}, format='json',
+                HTTP_ACCEPT=accept,
+            )
+        assert resp.status_code == 502
+        assert mock_fetch.call_count == 1
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_no_person_id_is_still_a_patientless_search(self, authed_client):
         """The complement: the 502 above is about a patient who was *named*.
         A request that names nobody is public browsing and still answers 200."""

@@ -136,7 +136,11 @@ input file and sent as `Authorization: Token …` to `app.cancerbot.org`.
   (502) instead of resolving to "no patient" — a patientless search returns the
   whole corpus, unscored and unfiltered, which looks like a valid result in a
   clinical matcher (#156). Without this, a dropped client secret would answer
-  200 with every trial we know.
+  200 with every trial we know. The same status reaches every client: the
+  failure is memoized per request, and the browsable renderer's second pass —
+  which runs after the error has already become the response — is answered with
+  "no patient" rather than a second raise, which would escape rendering and
+  report a 500.
 
 ## Rollout notes
 
