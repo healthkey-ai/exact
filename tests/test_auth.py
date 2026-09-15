@@ -9,6 +9,7 @@ import base64
 import json
 
 import pytest
+from django.core.cache import cache as django_cache
 from django.test import override_settings
 from rest_framework.test import APIClient
 
@@ -23,6 +24,31 @@ SERVICE_TOKEN = "test-service-token-value"
 @pytest.fixture
 def trial(db):
     return TrialFactory(disease="Multiple Myeloma")
+
+
+@pytest.fixture(autouse=True)
+def _assert_no_auth_state_is_cached():
+    """There is no verified-token cache any more (#404), and there must not be.
+
+    A reintroduced cache would let one test's bearer authenticate a later test,
+    so correctness would rest on collection order -- and in production an
+    expired token would keep working until the entry aged out.
+
+    The assertion inspects LocMem's actual keyspace. An earlier version asked
+    `django_cache.get("auth:partner:sentinel")`, which can never be non-None
+    because real keys are `auth:partner:<sha256 digest>` -- so it could not
+    fail, and did not fire even with the cache fully restored.
+    """
+    from django.core.cache.backends.locmem import _caches
+
+    django_cache.clear()
+    yield
+    leaked = [
+        key for store in _caches.values() for key in store
+        if "auth:partner:" in key
+    ]
+    django_cache.clear()
+    assert not leaked, f"a verified-token cache was reintroduced: {leaked[:3]}"
 
 
 def _match(client):
@@ -113,3 +139,270 @@ class TestDefaultDeny:
         client = APIClient()
         client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
         assert _match(client).status_code == 401
+
+
+@pytest.mark.django_db
+class TestInactiveIdentityIsRejected:
+    """`is_active=False` must revoke API access on both house backends.
+
+    `IsAuthenticated` only consults `is_authenticated`, which `AbstractBaseUser`
+    hardcodes to True — so without an explicit check the admin's `is_active`
+    toggle is a control that silently does nothing, and an offboarded partner
+    keeps full access. DRF's own backends reject inactive users; these tests
+    lock the house backends to the same behaviour.
+    """
+
+    @override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN)
+    def test_deactivated_service_identity_is_rejected(self, trial):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {SERVICE_TOKEN}")
+        assert _match(client).status_code == 200
+
+        Identity.objects.filter(
+            issuer=ServiceTokenAuthentication.SERVICE_ISSUER,
+            sub=ServiceTokenAuthentication.SERVICE_SUB,
+        ).update(is_active=False)
+
+        assert _match(client).status_code == 401
+
+    def test_already_inactive_partner_identity_is_rejected_on_fresh_verification(
+        self, trial, monkeypatch
+    ):
+        """Cold cache: the identity is already inactive before the first request.
+
+        Covers the freshly-verified path independently of the cached one — the
+        provider verifies the token successfully and the rejection has to come
+        from the is_active check on `_get_or_create_identity`'s result.
+        """
+        Identity.objects.create(
+            issuer=_FakeFirebaseProvider.ISSUER,
+            sub=_FakeFirebaseProvider.SUB,
+            is_active=False,
+        )
+        monkeypatch.setattr(
+            "accounts.authentication.get_providers",
+            lambda: [_FakeFirebaseProvider()],
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Bearer fake.partner.jwt")
+        assert _match(client).status_code == 401
+
+    def test_every_request_is_verified_again(self, trial, monkeypatch):
+        """No cached path: the second request must reach `provider.verify` too.
+
+        This is the property that closes #404. A verification cache returned
+        the stored identity without looking at the token again, so an expired
+        token kept authenticating until the entry aged out. Counting
+        `verify` calls asserts the absence of that path directly, rather than
+        asserting that some cache happens to be empty.
+        """
+        verify_calls = []
+
+        class _CountingProvider(_FakeFirebaseProvider):
+            def verify(self, token):
+                verify_calls.append(token)
+                return super().verify(token)
+
+        monkeypatch.setattr(
+            "accounts.authentication.get_providers",
+            lambda: [_CountingProvider()],
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Bearer fake.partner.jwt")
+
+        assert _match(client).status_code == 200
+        assert _match(client).status_code == 200
+
+        assert len(verify_calls) == 2, (
+            "the second request was served without re-verifying the token"
+        )
+
+    def test_deactivation_bites_on_the_next_request(self, trial, monkeypatch):
+        """`is_active` was already checked on both paths (#398); with the cache
+        gone there is only one path, and this pins that it still bites."""
+        monkeypatch.setattr(
+            "accounts.authentication.get_providers",
+            lambda: [_FakeFirebaseProvider()],
+        )
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION="Bearer fake.partner.jwt")
+        assert _match(client).status_code == 200
+
+        Identity.objects.filter(
+            issuer=_FakeFirebaseProvider.ISSUER, sub=_FakeFirebaseProvider.SUB,
+        ).update(is_active=False)
+
+        assert _match(client).status_code == 401
+
+
+def _jwt_with_payload(payload: dict) -> str:
+    """A JWT-shaped string whose payload decodes to *payload*.
+
+    The signature is nonsense on purpose: `can_handle` runs on the payload
+    decoded WITHOUT verification, so routing happens before any signature is
+    checked. That is what makes every field here attacker-controlled.
+    """
+    def _b64(obj):
+        raw = json.dumps(obj).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f'{_b64({"alg": "none"})}.{_b64(payload)}.not-a-signature'
+
+
+class TestUnverifiedClaimTypes:
+    """A hostile `iss` type must route, not raise (#405).
+
+    `decode_jwt_unverified` already refuses a payload that is not an object,
+    but an object can still carry a claim of the wrong type. `.startswith` on
+    a list or an int raises `AttributeError` before any provider verifies
+    anything -- an anonymous caller turning one header into a 500.
+    """
+
+    HOSTILE = [
+        ["https://securetoken.google.com/p"],
+        5,
+        {"nested": "object"},
+        None,
+        True,
+    ]
+
+    @pytest.mark.parametrize("iss", HOSTILE)
+    def test_every_registered_provider_survives_a_hostile_iss(self, iss):
+        """Asserted across the registry, not just Firebase.
+
+        `can_handle` is the only place today that reads the unverified payload
+        before verification. Iterating every configured provider is what keeps
+        it that way when a second provider is added.
+        """
+        from accounts.providers.base import decode_jwt_unverified
+        from accounts.providers.registry import get_providers
+
+        # Every claim hostile, not just `iss`: a second provider routing on
+        # `aud` or a custom claim would reproduce #405 exactly, and a test that
+        # only poisons `iss` would pass while it did.
+        payload = {key: iss for key in ("iss", "aud", "sub", "tid", "azp")}
+        token = _jwt_with_payload(payload)
+        unverified = decode_jwt_unverified(token)
+
+        assert unverified is not None, "the payload is a valid object; only its claims are hostile"
+
+        providers = get_providers()
+        assert providers, (
+            "an empty registry would make this loop assert nothing; "
+            "PARTNER_AUTH_PROVIDERS must be configured for this guard to guard"
+        )
+
+        for provider in providers:
+            # The assertion is that this does not raise. A provider may
+            # legitimately answer True or False.
+            provider.can_handle(token, unverified)
+
+    @pytest.mark.django_db
+    def test_a_hostile_iss_is_rejected_not_a_500(self, trial):
+        """One representative value end to end.
+
+        `test_every_registered_provider_survives_a_hostile_iss` already covers
+        every hostile type at unit level; running all five through the HTTP
+        stack and the DB fixture would buy nothing but wall-clock.
+        """
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {_jwt_with_payload({"iss": ["x"], "sub": "u1"})}'
+        )
+
+        response = _match(client)
+
+        assert response.status_code == 401, (
+            "a hostile unverified claim must be an authentication refusal, "
+            "not a server error"
+        )
+
+    def test_a_well_formed_iss_still_routes_to_firebase(self):
+        """The guard must not break routing -- otherwise it would 'fix' #405
+        by making every Firebase token unroutable."""
+        from accounts.providers.base import decode_jwt_unverified
+        from accounts.providers.firebase import FirebaseTokenProvider
+
+        token = _jwt_with_payload(
+            {"iss": "https://securetoken.google.com/exact-test", "sub": "u1"}
+        )
+
+        assert FirebaseTokenProvider().can_handle(
+            token, decode_jwt_unverified(token)
+        ) is True
+
+    def test_a_missing_iss_does_not_route(self):
+        from accounts.providers.base import decode_jwt_unverified
+        from accounts.providers.firebase import FirebaseTokenProvider
+
+        token = _jwt_with_payload({"sub": "u1"})
+
+        assert FirebaseTokenProvider().can_handle(
+            token, decode_jwt_unverified(token)
+        ) is False
+
+
+@pytest.mark.django_db
+class TestNonAsciiBearerIsNotA500:
+    """`Authorization: Bearer <non-ascii>` must be a refusal, not a crash.
+
+    `hmac.compare_digest` raises TypeError when either str argument is
+    non-ASCII, and Django hands the header over latin-1-decoded, so any byte in
+    0x80-0xFF arrives as a non-ASCII str. `ServiceTokenAuthentication` runs
+    FIRST in DEFAULT_AUTHENTICATION_CLASSES, so this needs no JWT shape and no
+    provider at all -- one header from an anonymous caller.
+
+    Same class as #405, found while reviewing its fix.
+    """
+
+    # What actually arrives. An HTTP header carries bytes; Django decodes them
+    # latin-1, so a client sending UTF-8 Cyrillic produces a str of characters
+    # in 0x80-0xFF -- the mojibake below, not the original text. Parametrising
+    # on unencodable strings would only test Django's test client, which
+    # refuses to encode them at all.
+    @pytest.mark.parametrize(
+        "bearer",
+        [
+            "\u00e9",
+            "caf\u00e9",
+            "\u0442\u043e\u043a\u0435\u043d".encode("utf-8").decode("latin-1"),
+            "\U0001f600".encode("utf-8").decode("latin-1"),
+            "\u00ff" * 64,
+        ],
+    )
+    def test_non_ascii_bearer_is_rejected(self, trial, bearer):
+        with override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN):
+            client = APIClient()
+            client.credentials(HTTP_AUTHORIZATION=f"Bearer {bearer}")
+
+            assert _match(client).status_code == 401
+
+    def test_the_real_service_token_still_authenticates(self, trial):
+        """The byte comparison must not break the credential it guards."""
+        with override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN):
+            client = APIClient()
+            client.credentials(HTTP_AUTHORIZATION=f"Bearer {SERVICE_TOKEN}")
+
+            assert _match(client).status_code == 200
+
+    def test_a_non_ascii_service_token_still_authenticates(self, trial):
+        """The inverse of the server's decode must be latin-1, not utf-8.
+
+        gunicorn (`str(b, 'latin1')`) and Django's ASGI handler both decode
+        header bytes latin-1. An honest client holding a non-ASCII token sends
+        its UTF-8 bytes; those arrive decoded latin-1. Re-encoding them utf-8
+        double-encodes -- `b'caf\xc3\xa9'` becomes `b'caf\xc3\x83\xc2\xa9'` --
+        and the token then never matches, forever, with nothing in the log.
+        A silent permanent 401 is a worse failure than the 500 this replaced.
+        """
+        token = "café-token"
+        wire_bytes = token.encode("utf-8")
+
+        with override_settings(SERVICE_AUTH_TOKEN=token):
+            client = APIClient()
+            # What the server sees after its own latin-1 decode.
+            client.credentials(
+                HTTP_AUTHORIZATION=f"Bearer {wire_bytes.decode('latin-1')}"
+            )
+
+            assert _match(client).status_code == 200
