@@ -140,7 +140,7 @@ function isEmpty(value: unknown): boolean {
  *  `by_trial_purpose` ORs the codes — so a reordering is not a different
  *  search and must not light up the badge. Case-insensitive for the same
  *  reason: the codes are matched `iexact`. */
-function sameValue(a: unknown, b: unknown): boolean {
+export function sameValue(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) || Array.isArray(b)) {
     const left = Array.isArray(a) ? a : [];
     const right = Array.isArray(b) ? b : [];
