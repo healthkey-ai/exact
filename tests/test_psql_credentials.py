@@ -560,6 +560,9 @@ class TestTheShellTwinAgreesWithPython:
         'host=h password=s3cr3t',
         'host=h PassWord=s3cr3t',            # libpq rejects it; argv still shows it
         'host=h sslpassword=s3cr3t',
+        '\npostgresql://u:s3cr3t@h/db',      # a newline hid this from the check
+        'postgresql://u@h/db?password%20=s3cr3t',   # libpq rejects; argv shows it
+        'postgresql://u@h/db?PASSWORD=s3cr3t',
     ]
     CREDENTIAL_FREE = [
         'postgresql://u@h/db',
@@ -570,6 +573,13 @@ class TestTheShellTwinAgreesWithPython:
         "host=h options='-c a://u:p@h'",     # `://` in a value is not an authority
         'host=h application_name=svc://alice@registry',
         'postgresql://u@h/db?passfile=%2Fsecrets%2F.pgpass',
+        # An empty password is not a password — libpq parses no credential out
+        # of these, and refusing them aborts container start on the realistic
+        # `?password=${SECRET}` with SECRET unset.
+        'postgresql://u@h/db?password=',
+        'host=h password=',
+        "host=h options='-c ?password=x'",   # `?` in a value is not a query
+        'postgresql://u@h/dbname password=s3cr3t',  # libpq: that is the dbname
     ]
 
     @pytest.mark.parametrize('url', CREDENTIALED)
@@ -580,8 +590,14 @@ class TestTheShellTwinAgreesWithPython:
         # A refusal prints nothing, so there is no DSN to inspect — that is the
         # pass condition for the bash half, which refuses where Python strips.
         if code != 3:
-            assert self.SECRET not in out[0], (
-                f'bash returned the credential: {out[0]!r}'
+            # Every line of the DSN, not just out[0]: the helper prints the
+            # DSN and then the password, so a DSN containing a newline hides
+            # everything after its first line — including, for
+            # `\npostgresql://u:s3cr3t@h/db`, the credential itself. The last
+            # line is PGPASSWORD, where the secret is SUPPOSED to be.
+            returned_dsn = '\n'.join(out[:-1])
+            assert self.SECRET not in returned_dsn, (
+                f'bash returned the credential: {returned_dsn!r}'
             )
 
         try:
@@ -592,11 +608,24 @@ class TestTheShellTwinAgreesWithPython:
 
     @pytest.mark.parametrize('url', CREDENTIAL_FREE)
     def test_neither_implementation_refuses_a_clean_dsn(self, url):
-        """A false refusal aborts container start — worse than what it guards."""
-        code, _out = self._split(url)
+        """A false refusal aborts container start — worse than what it guards.
+
+        And the DSN has to come back intact. Asserting only "not refused" let a
+        stub that returns an empty string for every input pass every case in
+        this class: nothing checked that the connection string survived.
+        """
+        code, out = self._split(url)
         assert code != 3, f'bash refused a credential-free DSN: {url!r}'
 
-        psql_dsn_and_env(url)  # must not raise
+        _py_dsn, py_env = psql_dsn_and_env(url)  # must not raise
+
+        # bash rewrites nothing when there is nothing to strip, so its output
+        # is the input. This is what a stub cannot satisfy — asserting only
+        # "not refused" let one that returns an empty string pass every case.
+        assert '\n'.join(out[:-1]) == url, f'bash altered a clean DSN: {out!r}'
+        # Python may tidy an empty `password=` out of the query; what it must
+        # not do is find a credential where libpq sees none.
+        assert 'PGPASSWORD' not in py_env
 
     @pytest.mark.parametrize(
         'url',

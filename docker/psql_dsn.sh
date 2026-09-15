@@ -48,7 +48,7 @@ _psql_dsn_refuse() {
 psql_dsn_split() {
     local dsn="$1"
     local scheme rest authority tail userinfo hostinfo user password
-    local _psql_dsn_is_uri=0
+    local _psql_dsn_is_uri
 
     PSQL_DSN="$dsn"
     [ -n "$dsn" ] || return 0
@@ -82,32 +82,26 @@ psql_dsn_split() {
     if [[ "$trimmed" =~ ^[a-z][a-z0-9+.-]*:// ]]; then
         _psql_dsn_is_uri=1
     else
+        # Keyword conninfo: nothing to rewrite here. The refusal lives with the
+        # other guards below, so every shape is checked in one place.
         _psql_dsn_is_uri=0
-        # Keyword conninfo. Not handled here -- refuse if it carries one.
-        # Case-insensitive: libpq's own lookup is strcmp, so `PassWord=` is not
-        # a credential it would accept -- but it is still a secret, and argv
-        # exposure on a connection libpq refuses is exactly the harm this
-        # module exists to prevent.
-        if [[ "$lowered" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*= ]]; then
-            _psql_dsn_refuse "keyword conninfo carries password=" || return 1
-        fi
     fi
 
     if [ "$_psql_dsn_is_uri" = "1" ]; then
-    scheme="${dsn%%://*}"
-    rest="${dsn#*://}"
+        scheme="${dsn%%://*}"
+        rest="${dsn#*://}"
 
-    # The authority ends at the first '/'. Splitting on the whole remainder
-    # would let a '@' in the PATH decide the split: for
-    # postgresql://reader:s@h:5432/pat@ients the host became "ients" and the
-    # password became garbage -- and a DSN with no password at all was rewritten
-    # into an unusable one with a bogus PGPASSWORD exported.
-    if [[ "$rest" == */* ]]; then
-        authority="${rest%%/*}"
-        tail="/${rest#*/}"
-    else
-        authority="$rest"
-        tail=""
+        # The authority ends at the first '/'. Splitting on the whole remainder
+        # would let a '@' in the PATH decide the split: for
+        # postgresql://reader:s@h:5432/pat@ients the host became "ients" and the
+        # password became garbage -- and a DSN with no password at all was rewritten
+        # into an unusable one with a bogus PGPASSWORD exported.
+        if [[ "$rest" == */* ]]; then
+            authority="${rest%%/*}"
+            tail="/${rest#*/}"
+        else
+            authority="$rest"
+            tail=""
     fi
 
     # The last '@' of the authority separates userinfo from host, so a '@'
@@ -119,7 +113,13 @@ psql_dsn_split() {
             user="${userinfo%%:*}"
             password="${userinfo#*:}"
             if [ -n "$password" ]; then
-                PGPASSWORD="$(_psql_dsn_percent_decode "$password")"
+                # The trailing `x` survives the command substitution that
+                # would otherwise eat a decoded password's trailing newlines --
+                # `%0A` decoded correctly and was then truncated after the
+                # fact, authenticating with a different password than libpq
+                # would have used.
+                PGPASSWORD="$(_psql_dsn_percent_decode "$password"; printf x)"
+                PGPASSWORD="${PGPASSWORD%x}"
                 export PGPASSWORD
             fi
             if [ -n "$user" ]; then
@@ -159,27 +159,53 @@ psql_dsn_split() {
         if [[ "$guard_target" =~ ^[^:]*://[^/]*:[^/]*@ ]]; then
             _psql_dsn_refuse "authority still contains a password" || return 1
         fi
-    fi
-    # Case-insensitively, and over percent-encoded spellings: libpq decodes
-    # parameter *names*, so `%70assword=` is `password=`, and matching the
-    # literal lowercase text let both that and `?Password=` through with the
-    # credential still in the DSN — the exact exposure this refuses. The
-    # Python twin strips both (it decodes the key), so a literal match here
-    # also left the two disagreeing about the same input.
-    #
-    # Decoding in bash is the part worth not attempting: the obvious
-    # `printf '%b' "${k//%/\\x}"` also interprets backslash escapes, so it
-    # mangles keys it should pass through. Since this function refuses rather
-    # than strips, it can be blunt instead: any `%` in a parameter *name* is
-    # itself grounds to refuse, which covers every encoding of `password`
-    # without decoding anything.
-    local query_lower
-    query_lower="$(printf '%s' "$PSQL_DSN" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$query_lower" =~ [?\&](password|sslpassword)= ]]; then
-        _psql_dsn_refuse "query string still contains a password" || return 1
-    fi
-    if [[ "$query_lower" =~ [?\&][^=\&]*%[^=\&]*= ]]; then
-        _psql_dsn_refuse "query string has a percent-encoded parameter name" || return 1
+        # Case-insensitively, and over percent-encoded spellings: libpq decodes
+        # parameter *names*, so `%70assword=` is `password=`, and matching the
+        # literal lowercase text let both that and `?Password=` through with
+        # the credential still in the DSN. The Python twin strips both (it
+        # decodes the key), so a literal match here also left the two
+        # disagreeing about the same input.
+        #
+        # Decoding in bash is the part worth not attempting: the obvious
+        # `printf '%b' "${k//%/\\x}"` also interprets backslash escapes, so it
+        # mangles keys it should pass through. Since this function refuses
+        # rather than strips, it can be blunt instead: any `%` in a parameter
+        # *name* is grounds to refuse, covering every encoding of `password`
+        # without decoding anything.
+        #
+        # Inside the positional gate with the authority check, not beside it: a
+        # `?` in a keyword-conninfo VALUE is not a query separator, and scanning
+        # the whole string for one refused `host=h options='-c ?password=x'` --
+        # a DSN carrying no credential, and a refusal aborts container start.
+        # `=.` not `=`: an EMPTY value is not a password. libpq parses no
+        # credential out of `?password=`, the Python twin returns it untouched,
+        # and refusing it aborts container start for the realistic case of
+        # `?password=${SECRET}` with SECRET unset.
+        if [[ "$guard_target" =~ [?\&](password|sslpassword)=[^\&] ]]; then
+            _psql_dsn_refuse "query string still contains a password" || return 1
+        fi
+        if [[ "$guard_target" =~ [?\&][^=\&]*%[^=\&]*= ]]; then
+            _psql_dsn_refuse "query string has a percent-encoded parameter name" || return 1
+        fi
+    else
+        # Keyword conninfo only. Case-insensitive and including `sslpassword`:
+        # libpq's lookup is strcmp, so `PassWord=` is not a credential it would
+        # accept -- but it is still a secret, and argv exposure on a connection
+        # libpq refuses is exactly the harm this module prevents.
+        #
+        # Only for conninfo: applied to a URI it refused
+        # `postgresql://u@h/dbname password=s3cr3t`, where libpq reads the whole
+        # tail as the database name and there is no credential to move.
+        # Same rule as the query form: an empty value carries nothing. `''` is
+        # how libpq spells an empty value in conninfo, and it is equally not a
+        # credential.
+        if [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*=[[:space:]]*$ ]]; then
+            :
+        elif [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*=\'\'([[:space:]]|$) ]]; then
+            :
+        elif [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*= ]]; then
+            _psql_dsn_refuse "keyword conninfo carries password=" || return 1
+        fi
     fi
     return 0
 }

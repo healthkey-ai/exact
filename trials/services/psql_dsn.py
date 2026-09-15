@@ -37,7 +37,12 @@ _KEYWORD_PASSWORD = re.compile(
 # Every keyword spelling of a secret, whatever the case — the backstop's net,
 # not the rewrite's (which follows libpq exactly, and libpq is case-sensitive).
 _KEYWORD_SECRET_ANY_CASE = re.compile(
-    r"(?:^|\s)(?:password|sslpassword)\s*=", re.IGNORECASE
+    r"(?:^|\s)(?:password|sslpassword)\s*=\s*(?!$|\s|''(?:\s|$))", re.IGNORECASE
+)
+# The same net for the query form, including percent-encoded parameter names.
+# An empty value is not a credential, so it does not match.
+_QUERY_SECRET_ANY_CASE = re.compile(
+    r"[?&](?:[^=&]*%[^=&]*|password|sslpassword)\s*=[^&\s]", re.IGNORECASE
 )
 _DB_PASSWORD_QUERY_KEYS = {"password"}
 _UNRELOCATABLE_QUERY_KEYS = {"sslpassword"}
@@ -129,6 +134,14 @@ def _looks_like_uri(db_url: str) -> bool:
 
 def _split_authority(db_url: str) -> tuple[str, str, str]:
     """Return `(prefix, authority, tail)` by scanning the raw string.
+
+    The authority's userinfo is taken up to the LAST `@`, which libpq does not
+    do — verified against libpq 17, it ends the userinfo at the FIRST `@`, so
+    `postgresql://u:s@v:s@h/db` is user `u`, password `s`, host `v`. Ours is the
+    wider reading: everything libpq calls userinfo, we do too, plus more. It
+    therefore strips credentials libpq would leave in the host, and never the
+    reverse — which is the direction this module needs to be wrong in, if it is
+    going to be wrong.
 
     `urlsplit` must not be used for this. It ends the netloc at the first `#`
     or `?`, so `postgresql://u:pa#ss@h/db` gives it a netloc of `u:pa` -- no
@@ -273,9 +286,13 @@ def _assert_no_password(dsn: str) -> None:
     # refuses a DSN that carries no credential at all, which kills the command
     # outright.
     #
-    # libpq's own rule is positional: a URI is what *starts* with a scheme.
-    # Mirror it — if a `=` comes first, this is keyword conninfo and the `://`
-    # is inside a value.
+    # Positional, like libpq: if a `=` comes first, this is keyword conninfo
+    # and the `://` is inside a value. NOT a mirror of libpq, though —
+    # verified against libpq 17, its test is `strncmp(connstr, "postgresql://")`
+    # / `"postgres://"`: exact, case-sensitive, and not whitespace-tolerant. So
+    # ` postgresql://…`, `POSTGRESQL://…` and `postgis://…` are all conninfo to
+    # libpq and URIs to us. That direction is deliberate: we strip more than
+    # libpq would read, never less.
     if _looks_like_uri(dsn):
         _, authority, tail = _split_authority(dsn)
         userinfo, at, _ = authority.rpartition("@")
@@ -290,9 +307,22 @@ def _assert_no_password(dsn: str) -> None:
                         f"query string still contains {unquote(key)}="
                     )
 
-    # Checked for every shape, not just non-URIs: a keyword conninfo whose
-    # value contains `://` is not a URI, and reaching the scan above by that
-    # accident must not exempt it from this one.
+        # The query form, case-insensitively and over encoded spellings —
+        # `?password%20=` is not a parameter libpq accepts, but the secret is
+        # in argv either way, which is the standard this module applies to
+        # `PassWord=`. The bash twin refuses these; without this it did not,
+        # and the two disagreed.
+        if _QUERY_SECRET_ANY_CASE.search(tail):
+            raise DsnStillCarriesPassword(
+                "query string still contains a password= spelling libpq would "
+                "not accept, but a reader of the process table would"
+            )
+        return
+
+    # Keyword conninfo only. Applied to a URI this refused
+    # `postgresql://u@h/dbname password=s3cr3t`, where libpq reads the whole
+    # tail as the database name: a false refusal on a DSN that carries no
+    # credential, and these run management commands.
     if _KEYWORD_PASSWORD.search(dsn):
         raise DsnStillCarriesPassword("conninfo still contains password=")
 
