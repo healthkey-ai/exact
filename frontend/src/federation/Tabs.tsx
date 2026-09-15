@@ -56,7 +56,11 @@ export function Tabs({
             // The label and the count are separate elements with no
             // whitespace between them, so the accessible name computes to
             // "Eligible19". Spelled out here instead.
-            aria-label={count != null ? `${tab.label}, ${count} trials` : tab.label}
+            aria-label={
+              count != null
+                ? `${tab.label}, ${count} ${count === 1 ? "trial" : "trials"}`
+                : tab.label
+            }
             className={`exact-tab${isActive ? " is-active" : ""}`}
             onClick={() => onChange(tab.value)}
           >

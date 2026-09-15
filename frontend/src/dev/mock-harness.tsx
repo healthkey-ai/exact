@@ -337,7 +337,14 @@ const apiClient = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any;
 
-const patientInfo = { disease: "MM", country: "US" };
+// `disease` is the TITLE, lowercased — the values `/form-settings/` itself
+// offers ("multiple myeloma", "follicular lymphoma", …). It is not the code
+// from `trials_disease`: the search filters `disease__iexact` against the
+// title column, so a code matches nothing and the patient is answered with an
+// empty list and no error. This fixture said "MM" and got away with it only
+// because the axios stand-in below ignores params; pointed at a real backend
+// it showed 0 trials out of 3114. Found by QA, 2026-09-14.
+const patientInfo = { disease: "multiple myeloma", country: "US" };
 
 // An adapter in memory, so the whole write path can be tried without PROMOP.
 //

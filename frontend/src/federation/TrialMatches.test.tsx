@@ -122,7 +122,7 @@ describe("filters", () => {
 
   it("counts only what the reader changed", async () => {
     const api = fakeApi();
-    renderTrialMatches(api, { patientInfo: { disease: "mm", country: "US" } });
+    renderTrialMatches(api, { patientInfo: { disease: "multiple myeloma", country: "US" } });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     // The seeded country is not a filter the reader applied.
@@ -137,7 +137,7 @@ describe("filters", () => {
 
   it("resets to the baseline, keeping the patient's country", async () => {
     const api = fakeApi();
-    renderTrialMatches(api, { patientInfo: { disease: "mm", country: "US" } });
+    renderTrialMatches(api, { patientInfo: { disease: "multiple myeloma", country: "US" } });
     await waitFor(() => expect(listed(api).length).toBe(1));
     expect(listed(api)[0].params.country).toBe("US");
 
@@ -254,7 +254,7 @@ describe("the derived filters reach everything the reader sees", () => {
     // without the patient's country and could score, rank by distance and
     // judge eligibility differently from the card just clicked.
     const api = fakeApi();
-    renderTrialMatches(api, { patientInfo: { disease: "mm", country: "US" } });
+    renderTrialMatches(api, { patientInfo: { disease: "multiple myeloma", country: "US" } });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     // Exact name: the card itself is a `role="button"` whose accessible
@@ -484,7 +484,7 @@ describe("with a state adapter", () => {
     const state = fakeState({ favorites: ["1", "2"], registered: ["3"] });
     renderTrialMatches(api, { state: state.adapter });
     await screen.findByRole("button", { name: "Favorites, 2 trials" });
-    await screen.findByRole("button", { name: "Registered, 1 trials" });
+    await screen.findByRole("button", { name: "Registered, 1 trial" });
   });
 
   it("narrows the list by the saved ids when the tab is opened", async () => {
@@ -771,14 +771,14 @@ describe("counts while a state tab is active", () => {
     // for a reader with one bookmarked eligible trial and many matching.
     const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Fully matched, 1 trials" });
+    await screen.findByRole("button", { name: "Fully matched, 1 trial" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /Fully matched, / })).toBeNull(),
     );
     // The state tab's own count still comes from the adapter.
-    await screen.findByRole("button", { name: "Favorites, 1 trials" });
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
   });
 
   it("runs no matcher query behind a failed saved-ids read", async () => {
@@ -893,7 +893,7 @@ describe("two patients who look alike", () => {
       </QueryClientProvider>
     );
     const view = render(ui("1"));
-    await screen.findByRole("button", { name: "Favorites, 1 trials" });
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
 
     current = "2";
     view.rerender(ui("2"));
@@ -1473,13 +1473,13 @@ describe("the controls on the detail page", () => {
         />
       </QueryClientProvider>
     );
-    const view = render(ui({ disease: "mm", id: 1 }));
+    const view = render(ui({ disease: "multiple myeloma", id: 1 }));
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
     await screen.findByText(/Couldn't update your favorites/);
 
-    view.rerender(ui({ disease: "mm", id: 2 }));
+    view.rerender(ui({ disease: "multiple myeloma", id: 2 }));
     await waitFor(() =>
       expect(screen.queryByText(/Couldn't update your favorites/)).toBeNull(),
     );
@@ -1517,11 +1517,11 @@ describe("the controls on the detail page", () => {
         />
       </QueryClientProvider>
     );
-    const view = render(ui({ disease: "mm", id: 1 }));
+    const view = render(ui({ disease: "multiple myeloma", id: 1 }));
     await waitFor(() => expect(listed(api).length).toBe(1));
     await userEvent.click(await screen.findByRole("button", { name: /Add .* to favorites/ }));
 
-    view.rerender(ui({ disease: "mm", id: 2 }));
+    view.rerender(ui({ disease: "multiple myeloma", id: 2 }));
     await waitFor(() => expect(listed(api).length).toBeGreaterThan(1));
 
     reject(new Error("nope"));
@@ -2604,7 +2604,7 @@ describe("the gate while the saved filters load", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm", ref }}
+          patientInfo={{ disease: "multiple myeloma", ref }}
           state={state.adapter}
         />
       </QueryClientProvider>
@@ -2644,7 +2644,7 @@ describe("the gate while the saved filters load", () => {
           <TrialMatches
             apiClient={api.client}
             queryClient={queryClient}
-            patientInfo={{ disease: "mm" }}
+            patientInfo={{ disease: "multiple myeloma" }}
             state={state.adapter}
           />
         </QueryClientProvider>
@@ -2675,7 +2675,7 @@ describe("the gate while the saved filters load", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm" }}
+          patientInfo={{ disease: "multiple myeloma" }}
           state={withAdapter ? state.adapter : undefined}
         />
       </QueryClientProvider>
@@ -2716,7 +2716,7 @@ describe("the gate while the saved filters load", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm", ref }}
+          patientInfo={{ disease: "multiple myeloma", ref }}
           state={state.adapter}
         />
       </QueryClientProvider>
@@ -2751,7 +2751,7 @@ describe("the gate while the saved filters load", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm", ref }}
+          patientInfo={{ disease: "multiple myeloma", ref }}
           state={state.adapter}
         />
       </QueryClientProvider>
@@ -2786,7 +2786,7 @@ describe("the gate while the saved filters load", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm", ref }}
+          patientInfo={{ disease: "multiple myeloma", ref }}
           state={state.adapter}
         />
       </QueryClientProvider>
@@ -2838,7 +2838,7 @@ describe("what the gate holds back besides the request", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm", ref }}
+          patientInfo={{ disease: "multiple myeloma", ref }}
           state={state.adapter}
         />
       </QueryClientProvider>
@@ -2901,7 +2901,7 @@ describe("what the gate holds back besides the request", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm" }}
+          patientInfo={{ disease: "multiple myeloma" }}
           state={withAdapter ? state.adapter : undefined}
         />
       </QueryClientProvider>
@@ -3116,7 +3116,7 @@ describe("the pager across a patient switch", () => {
         <TrialMatches
           apiClient={api.client}
           queryClient={queryClient}
-          patientInfo={{ disease: "mm", ref }}
+          patientInfo={{ disease: "multiple myeloma", ref }}
           state={state.adapter}
         />
       </QueryClientProvider>
