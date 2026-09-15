@@ -237,6 +237,49 @@ class TestPsqlDsnAndEnv:
         assert env['PGPASSWORD'] == password
 
 
+class TestAUriWithNoDatabasePath:
+    """`postgresql://user@host?password=secret` is a valid libpq URI, and the
+    authority split ended at the first `/` — which a pathless URI has none of,
+    so the query went into the authority, the strip never saw it, and neither
+    did the `_assert_no_password` backstop. The credential reached psql in argv:
+    the one outcome this module exists to prevent, on the shape most likely to
+    appear in a hand-written DSN."""
+
+    @pytest.mark.parametrize('url, expected_dsn', [
+        ('postgresql://user@host?password=secret',
+         'postgresql://user@host'),
+        ('postgresql://user@host:5432?password=secret&sslmode=require',
+         'postgresql://user@host:5432?sslmode=require'),
+        ('postgresql://user@host?sslpassword=secret',
+         'postgresql://user@host'),
+    ])
+    def test_a_pathless_uri_still_loses_its_password(self, url, expected_dsn):
+        dsn, env = psql_dsn_and_env(url)
+
+        assert 'secret' not in dsn
+        assert env['PGPASSWORD'] == 'secret'
+        # The rest of the DSN has to survive: dropping `sslmode` here would turn
+        # a credential fix into a silent downgrade of the connection.
+        assert dsn == expected_dsn
+
+    def test_a_question_mark_inside_the_password_is_not_a_query(self):
+        """The query only terminates the authority *after* the userinfo — libpq
+        reads `?` before the `@` as part of the password, and so must we, or a
+        working credential is truncated into an authentication failure that
+        looks like a bad password."""
+        dsn, env = psql_dsn_and_env('postgresql://user:pa?ss@host/db')
+
+        assert env['PGPASSWORD'] == 'pa?ss'
+        assert dsn == 'postgresql://user@host/db'
+
+    def test_a_pathless_uri_without_a_password_is_untouched(self):
+        url = 'postgresql://user@host:5432?sslmode=require'
+        dsn, env = psql_dsn_and_env(url)
+
+        assert dsn == url
+        assert 'PGPASSWORD' not in env
+
+
 class TestNoCommandPassesAUrlToPsql:
     """The regression guard for every command at once.
 

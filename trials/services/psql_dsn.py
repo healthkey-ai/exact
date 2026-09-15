@@ -99,9 +99,25 @@ def _split_authority(db_url: str) -> tuple[str, str, str]:
     scheme, sep, rest = db_url.partition("://")
     prefix = f"{scheme}{sep}"
     slash = rest.find("/")
-    if slash == -1:
+    if slash != -1:
+        return prefix, rest[:slash], rest[slash:]
+
+    # No database path -- but `postgresql://user@host?password=secret` is a
+    # valid libpq URI, and treating its query as part of the authority left the
+    # credential in the returned DSN: nothing downstream looked at a tail that
+    # was never produced, so neither the strip nor the `_assert_no_password`
+    # backstop saw the password, and it went to psql in argv. Exactly the leak
+    # this module exists to prevent.
+    #
+    # The query is only a terminator *after* the userinfo, for the same reason
+    # the authority runs to the first `/`: a password may legitimately contain
+    # `?`, and libpq reads it as part of the credential rather than as the start
+    # of a parameter list.
+    at = rest.rfind("@")
+    question = rest.find("?", at + 1)
+    if question == -1:
         return prefix, rest, ""
-    return prefix, rest[:slash], rest[slash:]
+    return prefix, rest[:question], rest[question:]
 
 
 def _strip_uri_password(db_url: str) -> tuple[str, str | None]:

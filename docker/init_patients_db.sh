@@ -70,7 +70,16 @@ if [ -z "$table_ref" ]; then
     # Absent from public, but visible through search_path elsewhere? Then this
     # database is not the fresh one it looks like, and dropping public would be
     # destroying a schema we never inspected.
-    if [ -n "$(psql "$PSQL_DSN" -tAXc "SELECT to_regclass('patient_info')" 2>/dev/null | tr -d '[:space:]')" ]; then
+    # Same rule as the probes above, which this one broke: its status was
+    # discarded and its stderr thrown away, so a transient failure produced an
+    # empty string, read as "nothing outside public", and fell through to
+    # DROP SCHEMA. A failed probe is not evidence of anything.
+    unqualified="$(psql "$PSQL_DSN" -tAXc "SELECT to_regclass('patient_info')" 2>&1)" || {
+        log "ERROR: could not probe for patient_info outside schema public — refusing to restore."
+        log "       psql: ${unqualified}"
+        exit 1
+    }
+    if [ -n "${unqualified//[[:space:]]/}" ]; then
         log "ERROR: patient_info resolves outside schema public — refusing to restore."
         exit 1
     fi
