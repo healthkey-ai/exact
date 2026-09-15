@@ -114,7 +114,11 @@ function TrialMatchesBridgeRoot({
   }, [shouldLoad, ctomopBaseUrl, getToken, apiClient]);
 
   if (load.status === "loading") {
-    return <div className="exact-root" style={{ padding: "1rem" }}>Loading your health profile…</div>;
+    // Names what the visitor is waiting for, not what we are doing. This
+    // bridge fetches the patient record from PRomop before it can match
+    // anything, but "Loading your health profile" on a page headed Clinical
+    // Trials just reads as the wrong screen.
+    return <div className="exact-root" style={{ padding: "1rem" }}>Finding your trial matches…</div>;
   }
 
   if (load.status === "error") {
