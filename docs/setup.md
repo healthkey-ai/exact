@@ -371,6 +371,22 @@ environment variables — never commit secret values to git.
 | `GEOS_LIBRARY_PATH` | `/opt/homebrew/lib/libgeos_c.dylib` | Path to GEOS shared library |
 | `ENVIRONMENT` | `local` | Environment name (`local` / `dev` / `staging` / `prod`) |
 | `ADD_SEARCH_TRIALS_TRACES` | `false` | Set to `true` to log detailed trial-search reasoning |
+| `PROMOP_BASE` | _(empty)_ | PRomop base URL for the patient client |
+| `PROMOP_SERVICE_TOKEN` | _(empty)_ | EXACT's own PRomop bearer token — used when no OAuth client is configured |
+| `PROMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | PRomop OAuth2 client credentials; **both or neither** — half a pair refuses every patient request |
+| `PROMOP_OAUTH_SCOPE` | `patient/*.read` | Scope requested for the patient client. EXACT never writes — keep it read-only |
+| `PROMOP_OAUTH_TOKEN_URL` | `{PROMOP_BASE}/o/token/` | Token endpoint override |
+| `PROMOP_API_BASE` | _(empty)_ | PRomop API base; the fallback the vocabulary mirror uses before `PROMOP_BASE` |
+| `PROMOP_VOCAB_BASE` | falls back to `PROMOP_API_BASE` / `PROMOP_BASE` | Base URL for the vocabulary mirror |
+| `PROMOP_VOCAB_SERVICE_TOKEN` | _(empty)_ | Bearer for the vocabulary endpoints — set to the **same** named token as `PROMOP_SERVICE_TOKEN` so PRomop sees one service identity |
+| `PROMOP_VOCAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | Vocabulary OAuth2 credentials; both or neither. Wins over the static token when set — clear them to use the named token |
+| `PROMOP_VOCAB_OAUTH_SCOPE` | `system/*.read` | Scope for the vocabulary mirror |
+| `PROMOP_VOCAB_OAUTH_TOKEN_URL` | `{base}/o/token/` | Token endpoint override |
+| `EXACT_ALLOW_PERSON_ID_LOOKUP` | `true` in DEBUG/`local`, else `false` | Enables the server-side `?person_id=` lookup — a PHI IDOR outside local use (#150/#108) |
+
+These credentials are EXACT's *service identity* to PRomop; see
+[promop-service-identity.md](promop-service-identity.md) for which one each
+client uses, the read-only grant EXACT needs, and the rollout order.
 
 ---
 

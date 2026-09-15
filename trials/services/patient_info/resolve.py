@@ -16,12 +16,13 @@ the migration without breaking).
 
 ## Authorization boundary
 
-The PROMOP `person_id` path calls PROMOP with a static service token
-(`PROMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
-and PROMOP does not enforce row-level authz for that token — so honoring
-an arbitrary `person_id` lets any authenticated caller enumerate other
-patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
-patients (it's stateless for patient data — see project memory
+The PROMOP `person_id` path calls PROMOP with EXACT's own service
+credential, which authenticates EXACT as a service (`urn:service|exact`)
+and is NOT bound to the authenticated caller. PROMOP does not enforce
+row-level authz for a service credential — so honoring an arbitrary
+`person_id` lets any authenticated caller enumerate other patients' PHI
+(IDOR, #150/#108). EXACT also has no model linking users to patients
+(it's stateless for patient data — see project memory
 `feedback_exact_no_own_db.md`), so there's nothing in-tree to verify
 against.
 
@@ -32,22 +33,40 @@ local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
 `person_id` while the gate is off gets a 403.
 
 Re-enabling it in production requires BOTH:
-- forwarding the caller's identity to PROMOP (token exchange / pass-through
-  bearer or actor_iss/actor_sub — see hk-labs `promop_client.py`), AND
+- a *verified* end-user identity reaching PROMOP: either the caller's own
+  bearer forwarded through, or a token exchanged for it — matched to
+  PROMOP's audience, token type and scopes. Asserting `actor_iss`/
+  `actor_sub` alongside a service credential is NOT one of the options:
+  PROMOP rejects unsigned actor claims from a service identity outright
+  (#448 / promop #147, #568), and EXACT sends no such field anywhere, AND
 - PROMOP enforcing per-user authz (its `PatientUser`/consent models), or
   using the self-scoped `/patient-info/me/` route.
 
-Tracked as #150/#108.
+Neither exists today, so the gate stays closed in production: the
+service-identity migration does not re-open this path.
+
+Tracked as #150/#108, #448.
 """
 import ast
 import datetime as dt
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
+
+# Distinguishes "no person_id supplied" from a supplied-but-falsy one.
+_MISSING = object()
+# Bounded on purpose. A person_id is a database primary key, so bigint's range
+# is the honest ceiling — and the bound must be applied *before* int(), because
+# CPython refuses to convert a string of more than 4300 digits at all
+# (ValueError), which would escape the ValidationError below as a 500.
+_MAX_PERSON_ID = 9223372036854775807  # PostgreSQL bigint
+_DIGITS_ONLY = re.compile(r'[0-9]{1,19}')
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -59,7 +78,10 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     Resolution order:
       1. Inline `patient_info` payload (existing contract — unchanged).
-      2. `person_id` query param or body field — fetch from PROMOP.
+      2. `person_id` query param or body field — fetch from PROMOP. A
+         malformed `person_id` is a 400; a well-formed one whose patient can't
+         be fetched raises `PatientContextUnavailable` (502). Neither ever
+         degrades into case 3.
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
@@ -68,12 +90,13 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
         return _build_in_memory(patient_info_data)
 
     person_id = _extract_person_id(request)
-    if person_id:
-        # IDOR gate (#150/#108): the PROMOP fetch uses a static service token
-        # not bound to the caller, and PROMOP doesn't enforce row-level authz
-        # for it — so honoring an arbitrary person_id leaks other patients'
-        # PHI. Off by default outside local/DEBUG; reject rather than silently
-        # ignore so the disabled path can't masquerade as a no-patient search.
+    if person_id is not _MISSING:
+        # IDOR gate (#150/#108): the PROMOP fetch uses EXACT's own service
+        # credential, which is not bound to the caller, and PROMOP doesn't
+        # enforce row-level authz for a service identity — so honoring an
+        # arbitrary person_id leaks other patients' PHI. Off by default outside
+        # local/DEBUG; reject rather than silently ignore so the disabled path
+        # can't masquerade as a no-patient search.
         from django.conf import settings
         if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
             from rest_framework.exceptions import PermissionDenied
@@ -94,34 +117,111 @@ def _get_body_field(request, name: str) -> Any:
     return data.get(name)
 
 
-def _extract_person_id(request) -> Optional[Any]:
-    """Return person_id from query params first, then body. None if absent.
+def _extract_person_id(request) -> Any:
+    """Return the supplied person_id, or `_MISSING` when the caller named none.
+
+    Presence, not truthiness. A JSON body can carry `{"person_id": 0}`, and
+    `0` is falsy — reading this field with `or` turned that into "no patient
+    supplied", which meant a bad id was answered with a whole-corpus search
+    (and slipped past the 403 gate, since the gate only fires when a person_id
+    is present). An empty `?person_id=` is the same mistake in the query
+    string. Both are now *supplied but invalid*, and validation rejects them.
 
     The return is `Any` (not `str`) because the body path can carry a JSON
-    integer (e.g. `{"person_id": 9003}`) while the query-string path always
-    yields `str`. `PromopClient.fetch_patient` coerces both to int before
-    constructing the URL.
+    integer while the query-string path always yields `str`.
     """
     query_params = getattr(request, 'query_params', None)
     if query_params:
-        pid = query_params.get('person_id') or query_params.get('personId')
-        if pid:
-            return pid
+        for key in ('person_id', 'personId'):
+            if key in query_params:
+                return query_params[key]
 
-    body_pid = _get_body_field(request, 'person_id') or _get_body_field(request, 'personId')
-    return body_pid or None
+    data = getattr(request, 'data', None)
+    if isinstance(data, dict):
+        for key in ('person_id', 'personId'):
+            if key in data:
+                return data[key]
+
+    return _MISSING
 
 
-def _resolve_from_promop(person_id: Any) -> Optional['PatientInfo']:
-    """Fetch the PROMOP row and adapt it to a PatientInfo. None on any error."""
+class PatientContextUnavailable(APIException):
+    """A well-formed `person_id` was named but its patient could not be fetched.
+
+    502 rather than 404: `fetch_patient` collapses every failure to None, and
+    this code deliberately does not take them apart. PROMOP's 404 would say the
+    patient doesn't exist — reporting that back would turn this route into a
+    patient-existence oracle, on a route whose whole problem is that a service
+    credential can read any patient (the IDOR the gate exists for, #150/#108).
+    One conservative code for "we could not get them", whatever the reason:
+    unreachable PROMOP, non-2xx, a body that isn't a row, or (since #448) no
+    usable credential. Operators diagnose the real cause from the WARNING the
+    client logs, which does distinguish them.
+
+    A malformed `person_id` is NOT this error — see `_reject_malformed_person_id`.
+    """
+    status_code = 502
+    default_detail = ('Could not fetch the requested patient from PROMOP. '
+                      'No trial results are returned for an unresolved patient.')
+    default_code = 'patient_context_unavailable'
+
+
+def _reject_malformed_person_id(person_id: Any) -> None:
+    """400 for a `person_id` that isn't a positive integer, before any fetch.
+
+    `PromopClient.fetch_patient` also rejects these — without a network call, as
+    a URL-injection guard — but it reports the rejection as None, which here
+    would read as "PROMOP could not give us the patient" and answer 502. Blaming
+    an upstream that was never called turns a permanently-unsatisfiable client
+    mistake into a 5xx: alert noise, and a retry loop in any client that retries
+    5xx. The shape check belongs to whoever can still tell the caller.
+
+    Checked by type, not by `int()`. A JSON body carries real types, and `int()`
+    *truncates* rather than refusing: `int(1.5)` is 1 and `int(True)` is 1, so
+    `{"person_id": 1.5}` would have quietly fetched and matched patient 1 — a
+    different, real patient's record. Anything that is not an integer, or an
+    all-digit string of at most bigint's 19 digits, is rejected rather than
+    rounded into somebody — or handed to an `int()` that refuses to convert it.
+    """
+    bad = ValidationError({'person_id': (
+        'Must be a positive integer no larger than 9223372036854775807.'
+    )})
+    if isinstance(person_id, bool):
+        # bool is a subclass of int; `True` would otherwise pass as patient 1.
+        raise bad
+    if isinstance(person_id, int):
+        value = person_id
+    elif isinstance(person_id, str) and _DIGITS_ONLY.fullmatch(person_id):
+        # Not str.isdigit(): that accepts non-ASCII digit characters, which
+        # int() then happily converts.
+        value = int(person_id)
+    else:
+        raise bad
+    if not 0 < value <= _MAX_PERSON_ID:
+        raise bad
+
+
+def _resolve_from_promop(person_id: Any) -> 'PatientInfo':
+    """Fetch the PROMOP row and adapt it to a PatientInfo.
+
+    Raises `PatientContextUnavailable` rather than returning None when the row
+    can't be fetched. Returning None here would be read by the caller as "this
+    request has no patient" — and a search with no patient answers with the
+    whole corpus, unscored and unfiltered, which looks like a valid result
+    (#156). A caller that named a `person_id` asked about *that* patient; the
+    honest answer to "we couldn't get them" is an error, not every trial we
+    know. Failing closed on the credential (#448) would otherwise have created
+    exactly this: a dropped secret answering 200 with a full trial list.
+    """
     from trials.services.patient_info.promop_adapter import (
         build_patient_info_from_promop_row,
     )
     from trials.services.patient_info.promop_client import PromopClient
 
+    _reject_malformed_person_id(person_id)
     row = PromopClient().fetch_patient(person_id)
     if not row:
-        return None
+        raise PatientContextUnavailable()
     return build_patient_info_from_promop_row(row)
 
 

@@ -270,10 +270,11 @@ ENABLE_DRF_TOKEN_AUTH = os.environ.get(
     'ENABLE_DRF_TOKEN_AUTH', _token_auth_default
 ).lower() in ('1', 'true')
 
-# The server-side `?person_id=` resolver fetches a patient from PROMOP using a
-# STATIC service token with no binding to the authenticated caller, and PROMOP
-# does not enforce row-level authz for that token — so any authenticated caller
-# can enumerate person_ids and read other patients' PHI (IDOR, #150/#108).
+# The server-side `?person_id=` resolver fetches a patient from PROMOP using
+# EXACT's own SERVICE credential (`urn:service|exact`, #448), which is not bound
+# to the authenticated caller, and PROMOP does not enforce row-level authz for a
+# service identity — so any authenticated caller can enumerate person_ids and
+# read other patients' PHI (IDOR, #150/#108).
 # No production caller uses this path (the federation host fetches the patient
 # via PROMOP `/patient-info/me/` under the end-user's own token and forwards it
 # inline), so gate it off by default outside local/DEBUG. Re-enable only once
@@ -382,11 +383,13 @@ ADD_SEARCH_TRIALS_TRACES = os.environ.get('ADD_SEARCH_TRIALS_TRACES', 'false') =
 PROMOP_BASE = os.environ.get('PROMOP_BASE', '')
 PROMOP_SERVICE_TOKEN = os.environ.get('PROMOP_SERVICE_TOKEN', '')
 
-# OAuth2 client_credentials for the v1 patient endpoint (#237). When client id +
-# secret are set, PromopClient reads /api/v1/patient-records/ with an OAuth bearer
-# (scope patient/*.read) minted at {PROMOP_BASE}/o/token/ — replacing the static
-# PROMOP_SERVICE_TOKEN + legacy /api/patient-info/ endpoint (sunsets 2026-09-01).
-# Register the client in promop with `manage.py create_service_client`.
+# OAuth2 client_credentials for the v1 patient endpoint (#237). An ALTERNATIVE
+# to PROMOP_SERVICE_TOKEN above, not the preferred one: only the static bearer
+# authenticates as `urn:service|exact` (promop builds that identity from the
+# matched credential's service id), which is the whole point of #448. Prefer the
+# named token and leave these unset — when both are set, OAuth wins, so a
+# deployment can be configured one way and behave the other. Half a pair refuses
+# every request rather than falling back. See docs/promop-service-identity.md.
 PROMOP_OAUTH_CLIENT_ID = os.environ.get('PROMOP_OAUTH_CLIENT_ID', '')
 PROMOP_OAUTH_CLIENT_SECRET = os.environ.get('PROMOP_OAUTH_CLIENT_SECRET', '')
 PROMOP_OAUTH_SCOPE = os.environ.get('PROMOP_OAUTH_SCOPE', 'patient/*.read')
@@ -400,15 +403,27 @@ PROMOP_API_BASE = os.environ.get('PROMOP_API_BASE', '')
 
 # promop vocabulary MIRROR sync (#250; ADR 0002 / promop#334). EXACT keeps a
 # release-pinned local mirror of the OMOP vocab tables and syncs it from promop's
-# vocab-releases snapshot API. This needs its OWN OAuth client + scope: the
-# snapshot endpoints are vocabulary-scoped, distinct from the patient client's
-# PROMOP_OAUTH_* (scope patient/*.read). Base falls back to PROMOP_API_BASE /
+# vocab-releases snapshot API. It has its OWN credential settings, but it should
+# carry the SAME named token as the patient client (#448): one logical service
+# with two credentials appears in promop's audit as two principals. It does not
+# need a scope of its own either — promop's VocabReadPermission accepts
+# patient/*.read alongside system/*.read. Base falls back to PROMOP_API_BASE /
 # PROMOP_BASE (same promop host); token_url defaults to {base}/o/token/.
 PROMOP_VOCAB_BASE = os.environ.get('PROMOP_VOCAB_BASE', '')
+# Static bearer for the vocabulary endpoints — EXACT's named PRomop service
+# token (#448). Only this path authenticates as `urn:service|exact`; set it to
+# the same token as PROMOP_SERVICE_TOKEN to keep one service identity. Kept as
+# its own setting so the two clients can hold different credentials if they ever
+# need to, rather than one module reading the other's configuration.
+PROMOP_VOCAB_SERVICE_TOKEN = os.environ.get('PROMOP_VOCAB_SERVICE_TOKEN', '')
 PROMOP_VOCAB_OAUTH_CLIENT_ID = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_ID', '')
 PROMOP_VOCAB_OAUTH_CLIENT_SECRET = os.environ.get('PROMOP_VOCAB_OAUTH_CLIENT_SECRET', '')
-# Scope required by promop's vocab-releases endpoints (confirm with promop; the
-# snapshot views use ScopedTokenPermission).
+# Scope requested when the vocabulary mirror runs on OAuth rather than the named
+# token. Only meaningful on that path — a static bearer carries its scopes on
+# promop's side and sends none. NOTE the coupling: EXACT's named grant is
+# patient/*.read, which promop's VocabReadPermission accepts, so an OAuth client
+# minting with the default below needs its own system/*.read grant or every sync
+# fails closed. Another reason to run both clients on the named token.
 PROMOP_VOCAB_OAUTH_SCOPE = os.environ.get('PROMOP_VOCAB_OAUTH_SCOPE', 'system/*.read')
 PROMOP_VOCAB_OAUTH_TOKEN_URL = os.environ.get('PROMOP_VOCAB_OAUTH_TOKEN_URL', '')
 

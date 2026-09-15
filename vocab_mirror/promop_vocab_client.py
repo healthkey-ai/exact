@@ -1,9 +1,19 @@
 """HTTP client for promop's vocabulary-release snapshot API (promop#334, #250).
 
-Distinct from the patient client (``trials.services.patient_info.promop_client``):
-the vocab-releases / snapshot endpoints are vocabulary-scoped, so this uses its
-own OAuth client + scope (``PROMOP_VOCAB_OAUTH_*``). It reuses that module's
-generic ``client_credentials`` token minter (DRY) but nothing else.
+Distinct from the patient client (``trials.services.patient_info.promop_client``)
+only in having its own settings (``PROMOP_VOCAB_*``) and its own endpoints; it
+should carry the SAME credential. It reuses that module's generic
+``client_credentials`` token minter (DRY) but nothing else.
+
+Two credentials, same choice as the patient client (#448): a static bearer
+(``PROMOP_VOCAB_SERVICE_TOKEN``) or OAuth2 ``client_credentials``
+(``PROMOP_VOCAB_OAUTH_*``); OAuth wins when both are configured. The static
+bearer is what a PRomop *named service application* issues, and only that path
+authenticates as ``urn:service|exact`` — promop builds that identity from the
+matched credential's service id, so an OAuth client is a different principal in
+its audit trail. Point both clients at EXACT's one named token to keep one
+service identity. `patient/*.read` is enough for these endpoints: promop's
+``VocabReadPermission`` accepts it alongside ``system/*.read``.
 
 Two calls the sync needs (promop#334):
 - ``get_latest_release(if_none_match=...)`` — conditional poll of
@@ -50,14 +60,17 @@ class LatestRelease:
 
 
 class PromopVocabClient:
-    def __init__(self, base_url=None, oauth_client_id=None, oauth_client_secret=None,
-                 oauth_scope=None, oauth_token_url=None, timeout=DEFAULT_TIMEOUT_SECONDS):
+    def __init__(self, base_url=None, token=None, oauth_client_id=None,
+                 oauth_client_secret=None, oauth_scope=None, oauth_token_url=None,
+                 timeout=DEFAULT_TIMEOUT_SECONDS):
         self.base_url = (
             base_url if base_url is not None
             else (getattr(settings, 'PROMOP_VOCAB_BASE', '')
                   or getattr(settings, 'PROMOP_API_BASE', '')
                   or getattr(settings, 'PROMOP_BASE', ''))
         ).rstrip('/')
+        self.token = (token if token is not None
+                      else getattr(settings, 'PROMOP_VOCAB_SERVICE_TOKEN', ''))
         self.oauth_client_id = (oauth_client_id if oauth_client_id is not None
                                 else getattr(settings, 'PROMOP_VOCAB_OAUTH_CLIENT_ID', ''))
         self.oauth_client_secret = (oauth_client_secret if oauth_client_secret is not None
@@ -70,15 +83,51 @@ class PromopVocabClient:
             or (f'{self.base_url}/o/token/' if self.base_url else '')
         )
         self.timeout = timeout
+        # Surface a broken pair at construction, like the patient client does —
+        # otherwise the misconfiguration stays silent until the next sync run.
+        if self.oauth_config_incomplete:
+            logger.warning(
+                'PromopVocabClient: partial OAuth config (only %s set); vocab '
+                'requests will be refused until both are set.',
+                'client_id' if self.oauth_client_id else 'client_secret',
+            )
+
+    @property
+    def use_oauth(self):
+        """OAuth when both client credentials are set; else the static token."""
+        return bool(self.oauth_client_id and self.oauth_client_secret)
+
+    @property
+    def oauth_config_incomplete(self):
+        """Exactly one of client_id/client_secret — a broken credential (#448)."""
+        return bool(self.oauth_client_id) != bool(self.oauth_client_secret)
 
     def _authorization(self):
-        tok = _get_service_access_token(
-            self.oauth_token_url, self.oauth_client_id, self.oauth_client_secret,
-            self.oauth_scope, self.timeout,
+        # Every failure here is local and raises before a request goes out
+        # (#448). A half-configured OAuth pair must not degrade into the static
+        # bearer — that would substitute one credential for another on a dropped
+        # secret — and no credential at all must not become an anonymous read.
+        if self.oauth_config_incomplete:
+            missing = 'client_secret' if self.oauth_client_id else 'client_id'
+            raise VocabSyncError(
+                f'vocab OAuth credential incomplete (no {missing}); refusing to '
+                f'request a token (fail closed)'
+            )
+        if self.use_oauth:
+            tok = _get_service_access_token(
+                self.oauth_token_url, self.oauth_client_id, self.oauth_client_secret,
+                self.oauth_scope, self.timeout,
+            )
+            if not tok:
+                raise VocabSyncError('could not mint a vocab OAuth token (fail closed)')
+            return f'Bearer {tok}'
+        if self.token:
+            return f'Bearer {self.token}'
+        raise VocabSyncError(
+            'no vocab credential configured (set PROMOP_VOCAB_SERVICE_TOKEN or '
+            'PROMOP_VOCAB_OAUTH_CLIENT_ID/_SECRET); refusing to request '
+            'vocabulary anonymously (fail closed)'
         )
-        if not tok:
-            raise VocabSyncError('could not mint a vocab OAuth token (fail closed)')
-        return f'Bearer {tok}'
 
     def _headers(self, accept='application/json', extra=None):
         h = {'Authorization': self._authorization(), 'Accept': accept}

@@ -16,6 +16,7 @@ Patient profiles are passed inline with each API request. They can also be retri
 | [docs/evaluator.md](docs/evaluator.md) | Evaluating EXACT results against ground truth |
 | [docs/setup.md](docs/setup.md) | Local development setup |
 | [docs/api.md](docs/api.md) | REST API reference |
+| [docs/promop-service-identity.md](docs/promop-service-identity.md) | PRomop credentials, service identity, and the fail-closed rules |
 
 ## Running trial search for patients
 

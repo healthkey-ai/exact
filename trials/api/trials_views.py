@@ -96,8 +96,32 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # several times. Re-resolving re-runs the PROMOP round-trip, so a
         # slow upstream multiplies per request (#159, #160). The holder is a
         # 1-tuple so a legitimately-resolved None is still cached.
-        holder = getattr(self.request, '_exact_patient_info', None)
+        #
+        # Memoize on the underlying HttpRequest, not on the DRF Request:
+        # `clone_request` (the browsable renderer builds forms through it)
+        # hands the view a *different* Request wrapping the same HttpRequest,
+        # so a DRF-Request memo misses on every clone — measured at three
+        # PROMOP round-trips for one browser GET.
+        store = getattr(self.request, '_request', self.request)
+        holder = getattr(store, '_exact_patient_info', None)
         if holder is not None:
+            if isinstance(holder[0], APIException):
+                # A failure is memoized too, so an unreachable PROMOP costs one
+                # timeout per request rather than one per call site — but it is
+                # NOT re-raised. Reaching this branch means the exception has
+                # already been through handle_exception and become the response;
+                # the only caller left is DRF's browsable renderer, which clones
+                # the request and re-enters the view to build its form *during*
+                # rendering. A raise there escapes response rendering and Django
+                # turns the designed 502 into a 500. The status is already
+                # decided, so tell the renderer what it is actually asking —
+                # there is no patient — and let the real error render.
+                logger.debug(
+                    'patient context already failed this request (%s); '
+                    'returning None to the second caller',
+                    type(holder[0]).__name__,
+                )
+                return None
             return holder[0]
 
         data = getattr(self.request, 'data', None)
@@ -105,9 +129,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         try:
             patient_info = resolve_patient_info(self.request)
-        except APIException:
+        except APIException as exc:
             # Already an HTTP-meaningful response (e.g. PermissionDenied from
-            # the person_id IDOR gate, #150) — let DRF render it as-is.
+            # the person_id IDOR gate #150, or PatientContextUnavailable when a
+            # named patient can't be fetched #448) — let DRF render it as-is.
+            store._exact_patient_info = (exc,)
             raise
         except Exception:
             # Don't swallow into a silent None: that would run the matcher with
@@ -115,17 +141,19 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             # that looks valid — dangerous in a clinical matcher (#156).
             logger.exception('Failed to build patient_info from request payload')
             # Only a supplied inline payload that fails to build is client error
-            # (400). The PROMOP fetch returns None on network failure (handled in
-            # PromopClient), so an exception on the person_id path is a real
-            # server/upstream bug — let it propagate as a 500 rather than masking
-            # it as a misleading 400.
+            # (400). The person_id path raises its own HTTP-meaningful errors
+            # (400 for a malformed id, 502 when PROMOP can't supply the patient
+            # — #448), all of them APIException and so already re-raised above;
+            # anything still arriving here from that path is a real
+            # server/upstream bug — let it propagate as a 500 rather than
+            # masking it as a misleading 400.
             if has_inline:
                 raise serializers.ValidationError(
                     {'patient_info': 'Could not build patient context from the supplied payload.'}
                 )
             raise
 
-        self.request._exact_patient_info = (patient_info,)
+        store._exact_patient_info = (patient_info,)
         return patient_info
 
     def _resolve_study_preferences(self) -> StudyPreferences:

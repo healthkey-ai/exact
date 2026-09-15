@@ -5,21 +5,36 @@ field `person_id`) instead of an inline `patient_info` payload.
 
 Always reads `GET /api/v1/patient-records/{person_id}/` (#387). Only the
 credential differs, chosen by configuration (#237):
-- **OAuth2** (preferred): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set, the
-  client authenticates via OAuth2 `client_credentials` against promop `/o/token/`
-  (scope `patient/*.read`).
-- **static service token**: otherwise it sends `PROMOP_SERVICE_TOKEN` as a bearer.
-  promop accepts it on v1 as well, so this mode is no longer a reason to fall back
-  to the deprecated, sunsetting `/api/patient-info/` prefix.
+- **static service token** (preferred, #448): `PROMOP_SERVICE_TOKEN` sent as a
+  bearer — EXACT's own named promop credential. Only this path authenticates as
+  `urn:service|exact`, because promop builds that identity from the matched
+  credential's service id. promop accepts it on v1, so it is no reason to fall
+  back to the deprecated `/api/patient-info/` prefix.
+- **OAuth2** (alternative): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set, the
+  client mints via `client_credentials` against promop `/o/token/` instead. Its
+  principal is whatever user the OAuth Application is bound to — a different
+  identity in promop's audit. It wins whenever both are configured, so leave it
+  unset unless it is deliberately what you want.
+
+Service identity (#448): whichever credential is configured, it authenticates
+EXACT *as a service* (`urn:service|exact`) and nothing else. promop no longer
+honours an unsigned `actor_iss`/`actor_sub` claim from a service credential, so
+this client never sends one — it sends no request body and no provenance headers
+at all, only `Accept` and `Authorization`. Attributing a read to an end user
+would require forwarding that user's own verified token (or a token exchanged
+for it), which this client does not do; see the authorization boundary in
+`resolve.py`. Missing or half-configured credentials fail closed: no credential
+means no request, never an anonymous one.
 
 Either way `fetch_patient(person_id)` returns the flat row dict (the shape
 `normalize_promop_row` expects) or `None` on any error path (network failure,
-4xx/5xx, malformed JSON, missing config, OAuth token failure). Returning `None`
-rather than raising lets the resolver treat the failure like a missing payload —
-the caller can proceed without patient context (e.g. public trial browsing).
+4xx/5xx, malformed JSON, missing config, OAuth token failure). `None` is this
+client's only failure vocabulary; deciding what it means for the HTTP response
+belongs to the resolver, which turns it into a 502 rather than a patientless
+search (#448) — see `resolve.py`.
 
 Config comes from Django settings (each read from the matching env var, empty
-defaults): `PROMOP_BASE`, `PROMOP_SERVICE_TOKEN` (legacy), and
+defaults): `PROMOP_BASE`, `PROMOP_SERVICE_TOKEN` (the named token), and
 `PROMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_SCOPE` / `_TOKEN_URL` (OAuth).
 Uses `requests` (already in requirements) rather than adding `httpx`.
 """
@@ -123,20 +138,32 @@ class PromopClient:
              else getattr(settings, 'PROMOP_OAUTH_TOKEN_URL', ''))
             or (f'{self.base_url}/o/token/' if self.base_url else '')
         )
-        # A half-configured OAuth setup (exactly one of id/secret) silently
-        # drops to the legacy path — surface it so the misconfiguration isn't
-        # mistaken for a working OAuth deployment.
-        if bool(self.oauth_client_id) != bool(self.oauth_client_secret):
+        # A half-configured OAuth setup (exactly one of id/secret) used to drop
+        # to the static token. Under per-service credentials that silently
+        # substitutes one service identity for another — a dropped secret would
+        # revive the shared credential we are migrating off (#448) — so it is
+        # now a hard misconfiguration: no credential, no request.
+        if self.oauth_config_incomplete:
             logger.warning(
-                'PromopClient: partial OAuth config (only %s set); falling back '
-                'to legacy static-token transport.',
+                'PromopClient: partial OAuth config (only %s set); patient '
+                'requests will be refused until both are set.',
                 'client_id' if self.oauth_client_id else 'client_secret',
             )
 
     @property
     def use_oauth(self) -> bool:
-        """v1 + OAuth when both client credentials are configured; else legacy."""
+        """OAuth when both client credentials are set; else the static token."""
         return bool(self.oauth_client_id and self.oauth_client_secret)
+
+    @property
+    def oauth_config_incomplete(self) -> bool:
+        """Exactly one of client_id/client_secret is set — a broken credential.
+
+        Distinct from `not use_oauth`: no OAuth config at all is the valid
+        static-token mode, while half of one is a misconfiguration that must not
+        fall through to another credential (#448).
+        """
+        return bool(self.oauth_client_id) != bool(self.oauth_client_secret)
 
     def _patient_url(self, person_id_int: int) -> str:
         # Always v1. The URL is deliberately NOT tied to `use_oauth` (#387):
@@ -148,7 +175,16 @@ class PromopClient:
         return f'{self.base_url}/api/v1/patient-records/{person_id_int}/'
 
     def _authorization(self) -> str | None:
-        """Bearer header value, or None when it can't be built (caller fails closed)."""
+        """Bearer header value, or None when it can't be built (caller fails closed).
+
+        None means *no usable credential* — the caller must then make no request
+        at all (#448). Three ways to get there: the OAuth pair is half-configured,
+        an OAuth token can't be minted, or static-token mode has an empty token.
+        """
+        if self.oauth_config_incomplete:
+            # __init__ already warned about the config, and `fetch_patient`
+            # warns about the refused request — no third line per request.
+            return None
         if self.use_oauth:
             tok = _get_service_access_token(
                 self.oauth_token_url, self.oauth_client_id,
@@ -172,10 +208,12 @@ class PromopClient:
         anything else returns None without a network call — a guard against URL
         path injection that would otherwise leak the Bearer token to a crafted path.
 
-        Returns None when: `PROMOP_BASE` is unset; the OAuth token can't be
-        obtained (OAuth mode); the network call fails; the status is non-2xx; or
-        the body isn't a JSON object. Logs at WARNING so failures surface without
-        short-circuiting the caller.
+        Returns None when: `PROMOP_BASE` is unset; no usable credential is
+        configured (an empty static token, a half-configured OAuth pair, or an
+        OAuth token that can't be minted — #448); the network call fails; the
+        status is non-2xx; or the body isn't a JSON object. Logs at WARNING —
+        that log is where an operator tells these apart, because the caller only
+        ever sees `None`.
         """
         if not self.base_url:
             logger.warning(
@@ -197,16 +235,24 @@ class PromopClient:
             )
             return None
 
-        headers = {'Accept': 'application/json'}
         authorization = self._authorization()
-        if self.use_oauth and authorization is None:
+        if authorization is None:
+            # No credential ⇒ no request, in every mode (#448). The static-token
+            # mode used to send an unauthenticated GET here, which promop answers
+            # with a 401 anyway — but it put a person_id on the wire (and in
+            # promop's logs) under no identity at all, and it read as a working
+            # transport in local setups whose promop happened to allow anonymous
+            # reads. An unauthenticated patient read is never what we want.
             logger.warning(
-                'PromopClient could not obtain an OAuth token; returning None (person_id=%s)',
-                person_id,
+                'PromopClient has no usable credential; returning None without a '
+                'request (person_id=%s)', person_id,
             )
             return None
-        if authorization:
-            headers['Authorization'] = authorization
+
+        # Only these two headers, and never a body: a service credential proves
+        # the service, so there is nothing for an actor/provenance field to say
+        # that promop would honour (#448).
+        headers = {'Accept': 'application/json', 'Authorization': authorization}
 
         url = self._patient_url(person_id_int)
         try:

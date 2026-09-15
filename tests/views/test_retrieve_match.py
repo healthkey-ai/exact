@@ -65,7 +65,7 @@ def test_detail_no_explain_leaves_matchreasons_none():
     assert data['matchingType'] in ('eligible', 'potential', 'not_eligible')
 
 
-@override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN)
+@override_settings(SERVICE_AUTH_TOKEN=SERVICE_TOKEN, EXACT_ALLOW_PERSON_ID_LOOKUP=True)
 def test_retrieve_endpoint_reports_match_via_view():
     """End-to-end through the DRF view: ?person_id resolves the patient (mocked
     PROMOP fetch), and the detail response carries the match fields."""

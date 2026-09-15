@@ -79,8 +79,14 @@ passed inline per request; nothing is persisted.
 
 Builds an unsaved `PatientInfo` instance from the `"patientInfo": {...}` key
 in the request body. Converts camelCase to snake_case, filters to known fields,
-attaches synthetic M2M attributes, and calls `normalize_patient_info`. Returns
-`None` if no `patientInfo` payload is present.
+attaches synthetic M2M attributes, and calls `normalize_patient_info`.
+
+Returns `None` when the request names no patient at all — public browsing. A
+request that *does* name one never degrades into that case: a `person_id`
+lookup is rejected outright while the gate is off (403, #150/#108), a malformed
+`person_id` is a 400, and a well-formed one whose patient PROMOP can't supply
+is a 502 (#448). Answering "no patient" there would return the whole corpus,
+unscored, which looks like a valid result (#156).
 
 ### `study_preferences_from_query_params` (`trials/services/study_preferences.py`)
 
