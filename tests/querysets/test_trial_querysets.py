@@ -111,16 +111,16 @@ class TestTrialQuerySet:
         assert Trial.objects.eligible_for_prior_therapy('').count() == 9
 
         prior_therapy = 'None'
-        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy)) == [t1, t2, t4, t7]
+        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy).order_by('id')) == [t1, t2, t4, t7]
 
         prior_therapy = 'One line'
-        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy)) == [t1, t3, t4, t5, t7]
+        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy).order_by('id')) == [t1, t3, t4, t5, t7]
 
         prior_therapy = 'Two lines'
-        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy)) == [t1, t3, t6, t7, t8]
+        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy).order_by('id')) == [t1, t3, t6, t7, t8]
 
         prior_therapy = 'More than two lines of therapy'
-        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy)) == [t1, t3, t6, t9]
+        assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy).order_by('id')) == [t1, t3, t6, t9]
 
     @pytest.mark.django_db
     def test_eligible_for_required_and_excluded_lists(self):
@@ -143,42 +143,42 @@ class TestTrialQuerySet:
         therapy_from_line = ['foo']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t4]
+        ).order_by('id')) == [t1, t4]
 
         therapy_from_line = ['val1']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t2, t3, t5]
+        ).order_by('id')) == [t1, t2, t3, t5]
 
         therapy_from_line = ['val2']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t2, t4, t5]
+        ).order_by('id')) == [t1, t2, t4, t5]
 
         therapy_from_line = ['val3']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t4, t6]
+        ).order_by('id')) == [t1, t4, t6]
 
         therapy_from_line = ['val4']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t4, t7]
+        ).order_by('id')) == [t1, t4, t7]
 
         therapy_from_line = ['val1', 'val4']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t3, t5, t7]
+        ).order_by('id')) == [t1, t3, t5, t7]
 
         therapy_from_line = ['val1', 'val4', 'foo']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t3, t5, t7]
+        ).order_by('id')) == [t1, t3, t5, t7]
 
         therapy_from_line = ['val2', 'val4']
         assert list(Trial.objects.eligible_for_required_and_excluded_lists(
             therapy_from_line, required_attr_name='therapies_required', excluded_attr_name='therapies_excluded'
-        )) == [t1, t4, t5]
+        ).order_by('id')) == [t1, t4, t5]
 
     @pytest.mark.django_db
     @override_settings(EXACT_OMOP_THERAPY=False)
@@ -201,51 +201,51 @@ class TestTrialQuerySet:
         assert Trial.objects.eligible_for_therapy_related_things_from_lines([]).count() == 7
 
         therapy_from_line = ['foo']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4]
 
         therapy_from_line = ['vrd']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t2, t3, t5]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t2, t3, t5]
 
         therapy_from_line = ['val2']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t2, t4, t5]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t2, t4, t5]
 
         therapy_from_line = ['val3']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t6]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4, t6]
 
         therapy_from_line = ['val4']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t7]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4, t7]
 
         therapy_from_line = ['vrd', 'val4']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t3, t5, t7]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t3, t5, t7]
 
         therapy_from_line = ['vrd', 'val4', 'foo']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t3, t5, t7]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t3, t5, t7]
 
         therapy_from_line = ['val2', 'val4']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t5]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4, t5]
 
         # with components
         t8 = TrialFactory(therapy_components_required=['bortezomib'], therapy_components_excluded=[])
         t9 = TrialFactory(therapy_components_required=[], therapy_components_excluded=['cyclophosphamide'])
 
         therapy_from_line = ['vrd']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t2, t3, t5, t8, t9]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t2, t3, t5, t8, t9]
 
         therapy_from_line = ['dara_vrd']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t8, t9]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4, t8, t9]
 
         therapy_from_line = ['cy_bor_d']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t8]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4, t8]
 
         # with types
         t10 = TrialFactory(therapy_types_required=['proteasome_inhibitor'], therapy_types_excluded=[])
         t11 = TrialFactory(therapy_types_required=[], therapy_types_excluded=['monoclonal_antibody_(anti_cd38)'])
 
         therapy_from_line = ['vrd']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t2, t3, t5, t8, t9, t10, t11]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t2, t3, t5, t8, t9, t10, t11]
 
         therapy_from_line = ['dara_vrd']
-        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line)) == [t1, t4, t8, t9, t10]
+        assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(therapy_from_line).order_by('id')) == [t1, t4, t8, t9, t10]
 
     @pytest.mark.django_db
     @override_settings(EXACT_OMOP_THERAPY=False)
@@ -314,13 +314,13 @@ class TestTrialQuerySet:
         # With has_no_prior_therapy=True: only t1 qualifies regardless of codes passed
         assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(
             [], has_no_prior_therapy=True
-        )) == [t1]
+        ).order_by('id')) == [t1]
         assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(
             ['vrd'], has_no_prior_therapy=True
-        )) == [t1]
+        ).order_by('id')) == [t1]
         assert list(Trial.objects.eligible_for_therapy_related_things_from_lines(
             None, has_no_prior_therapy=True
-        )) == [t1]
+        ).order_by('id')) == [t1]
 
         # Sanity check: without the flag the normal path returns all 5 (codes=None → no filter)
         assert Trial.objects.eligible_for_therapy_related_things_from_lines(None).count() == 5
@@ -340,11 +340,11 @@ class TestTrialQuerySet:
         assert Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, None).count() == 4
         assert Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 0).count() == 4
 
-        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 16)) == [t3, t4]
-        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 18)) == [t1, t2, t3, t4]
-        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 45)) == [t1, t2, t3, t4]
-        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 60)) == [t1, t2, t3, t4]
-        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 75)) == [t2, t4]
+        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 16).order_by('id')) == [t3, t4]
+        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 18).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 45).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 60).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_min_max_value(attr_min_name, attr_max_name, 75).order_by('id')) == [t2, t4]
 
     @pytest.mark.django_db
     def test_eligible_for_bool_value(self):
@@ -358,8 +358,8 @@ class TestTrialQuerySet:
 
         assert Trial.objects.eligible_for_bool_value(attr_name, None).count() == 3
 
-        assert list(Trial.objects.eligible_for_bool_value(attr_name, False)) == [t1, t2]
-        assert list(Trial.objects.eligible_for_bool_value(attr_name, True)) == [t1, t3]
+        assert list(Trial.objects.eligible_for_bool_value(attr_name, False).order_by('id')) == [t1, t2]
+        assert list(Trial.objects.eligible_for_bool_value(attr_name, True).order_by('id')) == [t1, t3]
 
     @pytest.mark.django_db
     def test_eligible_for_str_value(self):
@@ -376,16 +376,16 @@ class TestTrialQuerySet:
         assert Trial.objects.eligible_for_str_value(attr_name, None, allow_blank).count() == 4
         assert Trial.objects.eligible_for_str_value(attr_name, '', allow_blank).count() == 4
 
-        assert list(Trial.objects.eligible_for_str_value(attr_name, "multiple myeloma", allow_blank)) == [t1, t2, t3]
-        assert list(Trial.objects.eligible_for_str_value(attr_name, "follicular lymphoma", allow_blank)) == [t1, t2, t4]
+        assert list(Trial.objects.eligible_for_str_value(attr_name, "multiple myeloma", allow_blank).order_by('id')) == [t1, t2, t3]
+        assert list(Trial.objects.eligible_for_str_value(attr_name, "follicular lymphoma", allow_blank).order_by('id')) == [t1, t2, t4]
 
         allow_blank = False
 
         assert Trial.objects.eligible_for_str_value(attr_name, None, allow_blank).count() == 4
         assert Trial.objects.eligible_for_str_value(attr_name, '', allow_blank).count() == 4
 
-        assert list(Trial.objects.eligible_for_str_value(attr_name, "multiple myeloma", allow_blank)) == [t3]
-        assert list(Trial.objects.eligible_for_str_value(attr_name, "follicular lymphoma", allow_blank)) == [t4]
+        assert list(Trial.objects.eligible_for_str_value(attr_name, "multiple myeloma", allow_blank).order_by('id')) == [t3]
+        assert list(Trial.objects.eligible_for_str_value(attr_name, "follicular lymphoma", allow_blank).order_by('id')) == [t4]
 
     @pytest.mark.django_db
     def test_eligible_for_relation(self):
@@ -401,8 +401,8 @@ class TestTrialQuerySet:
         assert Trial.objects.eligible_for_str_value(attr_name, None).count() == 3
         assert Trial.objects.eligible_for_str_value(attr_name, '').count() == 3
 
-        assert list(Trial.objects.eligible_for_str_value(attr_name, value)) == [t1, t3]
-        assert list(Trial.objects.eligible_for_str_value(attr_name, "foo")) == [t3]
+        assert list(Trial.objects.eligible_for_str_value(attr_name, value).order_by('id')) == [t1, t3]
+        assert list(Trial.objects.eligible_for_str_value(attr_name, "foo").order_by('id')) == [t3]
 
     @pytest.mark.django_db
     def test_eligible_for_inversed_bool_restriction_value(self):
@@ -413,13 +413,13 @@ class TestTrialQuerySet:
         assert Trial.objects.count() == 3
 
         assert list(Trial.objects.eligible_for_inversed_bool_restriction_value(
-            'no_tobacco_use_required', True)) == [t2, t3]
+            'no_tobacco_use_required', True).order_by('id')) == [t2, t3]
 
         assert list(Trial.objects.eligible_for_inversed_bool_restriction_value(
-            'no_tobacco_use_required', False)) == [t1, t2, t3]
+            'no_tobacco_use_required', False).order_by('id')) == [t1, t2, t3]
 
         assert list(Trial.objects.eligible_for_inversed_bool_restriction_value(
-            'no_tobacco_use_required', None)) == [t1, t2, t3]
+            'no_tobacco_use_required', None).order_by('id')) == [t1, t2, t3]
 
     @pytest.mark.django_db
     def test_eligible_for_bool_requirement_value(self):
@@ -431,23 +431,23 @@ class TestTrialQuerySet:
 
         is_under_user_control = False
         assert list(Trial.objects.eligible_for_bool_requirement_value(
-            'consent_capability_required', True, is_under_user_control)) == [t1, t2, t3]
+            'consent_capability_required', True, is_under_user_control).order_by('id')) == [t1, t2, t3]
 
         assert list(Trial.objects.eligible_for_bool_requirement_value(
-            'consent_capability_required', False, is_under_user_control)) == [t2, t3]
+            'consent_capability_required', False, is_under_user_control).order_by('id')) == [t2, t3]
 
         assert list(Trial.objects.eligible_for_bool_requirement_value(
-            'consent_capability_required', None, is_under_user_control)) == [t2, t3]
+            'consent_capability_required', None, is_under_user_control).order_by('id')) == [t2, t3]
 
         is_under_user_control = True
         assert list(Trial.objects.eligible_for_bool_requirement_value(
-            'consent_capability_required', True, is_under_user_control)) == [t1, t2, t3]
+            'consent_capability_required', True, is_under_user_control).order_by('id')) == [t1, t2, t3]
 
         assert list(Trial.objects.eligible_for_bool_requirement_value(
-            'consent_capability_required', False, is_under_user_control)) == [t1, t2, t3]
+            'consent_capability_required', False, is_under_user_control).order_by('id')) == [t1, t2, t3]
 
         assert list(Trial.objects.eligible_for_bool_requirement_value(
-            'consent_capability_required', None, is_under_user_control)) == [t1, t2, t3]
+            'consent_capability_required', None, is_under_user_control).order_by('id')) == [t1, t2, t3]
 
     @pytest.mark.django_db
     def test_eligible_for_stage(self):
@@ -459,16 +459,16 @@ class TestTrialQuerySet:
 
         assert Trial.objects.count() == 5
 
-        assert list(Trial.objects.eligible_for_stage(None)) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_stage('')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stage(None).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stage('').order_by('id')) == [t1, t2, t3, t4, t5]
 
-        assert list(Trial.objects.eligible_for_stage('I')) == [t1, t2]
+        assert list(Trial.objects.eligible_for_stage('I').order_by('id')) == [t1, t2]
 
-        assert list(Trial.objects.eligible_for_stage('II')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_stage('II').order_by('id')) == [t1, t2, t3, t4]
 
-        assert list(Trial.objects.eligible_for_stage('III')) == [t1, t3, t5]
+        assert list(Trial.objects.eligible_for_stage('III').order_by('id')) == [t1, t3, t5]
 
-        assert list(Trial.objects.eligible_for_stage('IV')) == [t1]
+        assert list(Trial.objects.eligible_for_stage('IV').order_by('id')) == [t1]
 
     @pytest.mark.django_db
     def test_eligible_for_pre_existing_condition(self) -> None:
@@ -478,13 +478,13 @@ class TestTrialQuerySet:
         t4 = TrialFactory(pre_existing_conditions_excluded=["Hypertension"])
 
         assert Trial.objects.count() == 4
-        assert list(Trial.objects.eligible_for_pre_existing_condition(None)) == [t1, t2, t3, t4]
-        assert list(Trial.objects.eligible_for_pre_existing_condition('')) == [t1, t2, t3, t4]
-        assert list(Trial.objects.eligible_for_pre_existing_condition([])) == [t1, t2, t3, t4]
-        assert list(Trial.objects.eligible_for_pre_existing_condition(['Diabetes'])) == [t1, t4]
-        assert list(Trial.objects.eligible_for_pre_existing_condition(['Hypertension'])) == [t1, t2]
-        assert list(Trial.objects.eligible_for_pre_existing_condition(['Diabetes', 'Hypertension'])) == [t1]
-        assert list(Trial.objects.eligible_for_pre_existing_condition(['Cancer'])) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_pre_existing_condition(None).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_pre_existing_condition('').order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_pre_existing_condition([]).order_by('id')) == [t1, t2, t3, t4]
+        assert list(Trial.objects.eligible_for_pre_existing_condition(['Diabetes']).order_by('id')) == [t1, t4]
+        assert list(Trial.objects.eligible_for_pre_existing_condition(['Hypertension']).order_by('id')) == [t1, t2]
+        assert list(Trial.objects.eligible_for_pre_existing_condition(['Diabetes', 'Hypertension']).order_by('id')) == [t1]
+        assert list(Trial.objects.eligible_for_pre_existing_condition(['Cancer']).order_by('id')) == [t1, t2, t3, t4]
 
     @pytest.mark.django_db
     def test_eligible_for_stem_cell_transplant_history(self) -> None:
@@ -510,17 +510,17 @@ class TestTrialQuerySet:
         )
 
         assert Trial.objects.count() == 5
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(None)) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('')) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history([])) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('none')) == [t1, t3, t4]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['Autologous'])) == [t1, t2]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['Allogeneic'])) == [t1, t2, t3]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['Autologous', 'Allogeneic'])) == [t1, t2]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['AnythingElse'])) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('AnythingElse')) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['completedASCT'])) == [t1, t2, t3, t5]
-        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('completedASCT')) == [t1, t2, t3, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(None).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('').order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history([]).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('none').order_by('id')) == [t1, t3, t4]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['Autologous']).order_by('id')) == [t1, t2]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['Allogeneic']).order_by('id')) == [t1, t2, t3]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['Autologous', 'Allogeneic']).order_by('id')) == [t1, t2]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['AnythingElse']).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('AnythingElse').order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history(['completedASCT']).order_by('id')) == [t1, t2, t3, t5]
+        assert list(Trial.objects.eligible_for_stem_cell_transplant_history('completedASCT').order_by('id')) == [t1, t2, t3, t5]
 
     @pytest.mark.django_db
     def test_eligible_for_concomitant_medications_and_washout_period(self) -> None:
@@ -546,21 +546,21 @@ class TestTrialQuerySet:
         )
 
         assert Trial.objects.count() == 5
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications=None, concomitant_medication_date=None)) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='', concomitant_medication_date=None)) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications=[], concomitant_medication_date=None)) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='none', concomitant_medication_date=None)) == [t1, t2, t3, t4, t5]
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='anticoagulants', concomitant_medication_date=None)) == [t1, t4, t5]
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='anticoagulants,foo', concomitant_medication_date=None)) == [t1, t4, t5]
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids, anticoagulants', concomitant_medication_date=None)) == [t1]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications=None, concomitant_medication_date=None).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='', concomitant_medication_date=None).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications=[], concomitant_medication_date=None).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='none', concomitant_medication_date=None).order_by('id')) == [t1, t2, t3, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='anticoagulants', concomitant_medication_date=None).order_by('id')) == [t1, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='anticoagulants,foo', concomitant_medication_date=None).order_by('id')) == [t1, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids, anticoagulants', concomitant_medication_date=None).order_by('id')) == [t1]
         concomitant_medication_date = None
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date)) == [t1, t2]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date).order_by('id')) == [t1, t2]
         concomitant_medication_date = dt.date.today() - dt.timedelta(days=25)
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date)) == [t1, t2]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date).order_by('id')) == [t1, t2]
         concomitant_medication_date = dt.date.today() - dt.timedelta(days=75)
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date)) == [t1, t2, t4]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date).order_by('id')) == [t1, t2, t4]
         concomitant_medication_date = dt.date.today() - dt.timedelta(days=110)
-        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date)) == [t1, t2, t4, t5]
+        assert list(Trial.objects.eligible_for_concomitant_medications_and_washout_period(concomitant_medications='corticosteroids', concomitant_medication_date=concomitant_medication_date).order_by('id')) == [t1, t2, t4, t5]
 
     @pytest.mark.django_db
     def test_eligible_for_washout_period_duration(self) -> None:
@@ -571,16 +571,16 @@ class TestTrialQuerySet:
         assert Trial.objects.count() == 3
 
         last_treatment = None
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1, t2, t3]
+        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment).order_by('id')) == [t1, t2, t3]
 
         last_treatment = dt.date.today() - dt.timedelta(days=25)
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1]
+        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment).order_by('id')) == [t1]
 
         last_treatment = dt.date.today() - dt.timedelta(days=75)
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1, t2]
+        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment).order_by('id')) == [t1, t2]
 
         last_treatment = dt.date.today() - dt.timedelta(days=110)
-        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment)) == [t1, t2, t3]
+        assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment).order_by('id')) == [t1, t2, t3]
 
     @pytest.mark.django_db
     def test_eligible_for_molecular_marker(self) -> None:
@@ -630,11 +630,11 @@ class TestTrialQuerySet:
 
         patient_last_update = 1
         assert Trial.objects.by_last_update(patient_last_update).count() == 2
-        assert list(Trial.objects.by_last_update(patient_last_update)) == [t1, t3]
+        assert list(Trial.objects.by_last_update(patient_last_update).order_by('id')) == [t1, t3]
 
         patient_last_update = "1"
         assert Trial.objects.by_last_update(patient_last_update).count() == 2
-        assert list(Trial.objects.by_last_update(patient_last_update)) == [t1, t3]
+        assert list(Trial.objects.by_last_update(patient_last_update).order_by('id')) == [t1, t3]
 
         patient_last_update = 3
         assert Trial.objects.by_last_update(patient_last_update).count() == 3
@@ -699,13 +699,13 @@ class TestTrialQuerySet:
 
         assert Trial.objects.count() == 3
 
-        assert list(Trial.objects.by_register("")) == [t1, t2, t3]
+        assert list(Trial.objects.by_register("").order_by('id')) == [t1, t2, t3]
 
-        assert list(Trial.objects.by_register("THE")) == []
+        assert list(Trial.objects.by_register("THE").order_by('id')) == []
 
-        assert list(Trial.objects.by_register("register2")) == [t1]
+        assert list(Trial.objects.by_register("register2").order_by('id')) == [t1]
 
-        assert list(Trial.objects.by_register("register1")) == [t2]
+        assert list(Trial.objects.by_register("register1").order_by('id')) == [t2]
 
     @pytest.mark.django_db
     def test_by_validated_only(self):
@@ -714,11 +714,11 @@ class TestTrialQuerySet:
 
         assert Trial.objects.count() == 2
 
-        assert list(Trial.objects.by_validated_only(None)) == [t1, t2]
+        assert list(Trial.objects.by_validated_only(None).order_by('id')) == [t1, t2]
 
-        assert list(Trial.objects.by_validated_only(False)) == [t1, t2]
+        assert list(Trial.objects.by_validated_only(False).order_by('id')) == [t1, t2]
 
-        assert list(Trial.objects.by_validated_only(True)) == [t2]
+        assert list(Trial.objects.by_validated_only(True).order_by('id')) == [t2]
 
     @pytest.mark.django_db
     def test_by_recruitment_status(self):
@@ -963,15 +963,15 @@ class TestTrialQuerySet:
 
         assert Trial.objects.count() == 3
 
-        assert list(Trial.objects.by_sponsor("")) == [t1, t2, t3]
+        assert list(Trial.objects.by_sponsor("").order_by('id')) == [t1, t2, t3]
 
-        assert list(Trial.objects.by_sponsor("THE")) == [t3]
+        assert list(Trial.objects.by_sponsor("THE").order_by('id')) == [t3]
 
-        assert list(Trial.objects.by_sponsor("anderson")) == [t1]
+        assert list(Trial.objects.by_sponsor("anderson").order_by('id')) == [t1]
 
-        assert list(Trial.objects.by_sponsor("Md")) == [t1]
+        assert list(Trial.objects.by_sponsor("Md").order_by('id')) == [t1]
 
-        assert list(Trial.objects.by_sponsor("MD Anderson")) == [t1]
+        assert list(Trial.objects.by_sponsor("MD Anderson").order_by('id')) == [t1]
 
     @pytest.mark.django_db
     def test_by_first_enrolment_date(self):
@@ -1147,7 +1147,7 @@ class TestTrialQuerySet:
 
         assert list(scoped_trials(Trial.objects.all(), user_geo_point, 400, 'miles').order_by('distance')) == [t2, t4]
         assert list(scoped_trials(Trial.objects.all(), user_geo_point, 400, 'miles').order_by('-distance')) == [t4, t2]
-        assert list(scoped_trials(Trial.objects.all(), user_geo_point, 400, 'kilometers')) == [t2]
+        assert list(scoped_trials(Trial.objects.all(), user_geo_point, 400, 'kilometers').order_by('id')) == [t2]
 
         distance = scoped_trials(Trial.objects.all(), user_geo_point, 400, 'kilometers').first().distance
         assert int(distance.km + 0.5) == 198
