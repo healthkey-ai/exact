@@ -30,8 +30,13 @@ _KEYWORD_PASSWORD = re.compile(
     r"(?:^|\s)password\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S*))"
 )
 # Query parameters that carry a credential. `sslpassword` is the passphrase for
-# the client key and is just as much a secret as `password`.
-_PASSWORD_QUERY_KEYS = {"password", "sslpassword"}
+# the client key and is just as much a secret as `password` -- but it is NOT
+# the same secret, and unlike `password` it has nowhere to go: checked against
+# libpq 17, the environment it reads offers PGPASSWORD and fifteen PGSSL* names,
+# and no PGSSLPASSWORD among them. So it cannot be relocated, only refused.
+_DB_PASSWORD_QUERY_KEYS = {"password"}
+_UNRELOCATABLE_QUERY_KEYS = {"sslpassword"}
+_PASSWORD_QUERY_KEYS = _DB_PASSWORD_QUERY_KEYS | _UNRELOCATABLE_QUERY_KEYS
 
 
 class DsnStillCarriesPassword(ValueError):
@@ -194,9 +199,25 @@ def _strip_query_password(query: str) -> tuple[str, str | None]:
         if not pair:
             continue
         raw_key, _, raw_value = pair.partition("=")
-        if unquote(raw_key).lower() in _PASSWORD_QUERY_KEYS:
-            if password is None:
-                password = unquote(raw_value)
+        key = unquote(raw_key).lower()
+        if key in _UNRELOCATABLE_QUERY_KEYS:
+            # `sslpassword` decrypts the client key; it is not the database
+            # user's password and libpq has no environment variable for it.
+            # Treating it as one lost the passphrase AND authenticated with it
+            # — a certificate-authenticated connection broken two ways, which
+            # is worse than the argv exposure being fixed. Nothing to relocate
+            # it to, so refuse and say why.
+            raise DsnStillCarriesPassword(
+                f"{unquote(raw_key)}= cannot be moved out of the DSN: libpq has "
+                f"no environment variable for it. Configure the key passphrase "
+                f"another way, or use an unencrypted client key."
+            )
+        if key in _DB_PASSWORD_QUERY_KEYS:
+            # Last wins, as in libpq: a later setting of a keyword replaces the
+            # earlier one, so `?password=old&password=new` connects as `new`.
+            # Keeping the first stripped both and then used the one libpq would
+            # have discarded.
+            password = unquote(raw_value)
             continue
         kept.append(pair)
     return "&".join(kept), password

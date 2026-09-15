@@ -187,8 +187,6 @@ class TestPsqlDsnAndEnv:
             'postgresql://u:pa?ss@h/db',
             # libpq percent-decodes parameter NAMES too.
             'postgresql://u@h/db?%70assword=s3cr3t',
-            # The client-key passphrase is a credential as much as `password`.
-            'postgresql://u@h/db?sslpassword=s3cr3t',
         ],
     )
     def test_credentials_libpq_accepts_do_not_survive(self, url):
@@ -196,6 +194,30 @@ class TestPsqlDsnAndEnv:
 
         assert 's3cr3t' not in dsn and 'pa#ss' not in dsn and 'pa?ss' not in dsn
         assert env['PGPASSWORD']
+
+    def test_an_ssl_key_passphrase_is_refused_not_repurposed(self):
+        """`sslpassword` is a credential too, but it is not the database
+        user's password and libpq has no environment variable for it — checked
+        against libpq 17, which offers PGPASSWORD and fifteen PGSSL* names,
+        none of them PGSSLPASSWORD. Handing it back as PGPASSWORD lost the key
+        passphrase and authenticated with it: a certificate-authenticated
+        connection broken twice over, which is worse than the argv exposure
+        being fixed. With nowhere to relocate it, the only honest answer is to
+        refuse — loudly, and saying why."""
+        with pytest.raises(DsnStillCarriesPassword) as exc:
+            psql_dsn_and_env('postgresql://u@h/db?sslpassword=s3cr3t')
+
+        assert 'sslpassword' in str(exc.value)
+        assert 'no environment variable' in str(exc.value)
+
+    def test_the_last_password_parameter_wins(self):
+        """libpq applies a repeated keyword's later value, so
+        `?password=old&password=new` connects as `new`. Keeping the first
+        stripped both and used the one libpq would have discarded."""
+        dsn, env = psql_dsn_and_env('postgresql://u@h/db?password=old&password=new')
+
+        assert env['PGPASSWORD'] == 'new'
+        assert 'old' not in dsn and 'new' not in dsn
 
     def test_an_at_sign_in_the_path_does_not_truncate_the_host(self):
         dsn, env = psql_dsn_and_env('postgresql://reader:s3cr3t@h:5432/pat@ients')
@@ -321,7 +343,6 @@ class TestSpellingsOfTheQueryPassword:
         'postgresql://u@h/db?Password=s3cr3t',
         'postgresql://u@h/db?PASSWORD=s3cr3t',
         'postgresql://u@h/db?%70assword=s3cr3t',
-        'postgresql://u@h/db?sslpassword=s3cr3t',
         'postgresql://u@h/db?sslmode=require&Password=s3cr3t',
     ])
     def test_python_strips_every_spelling(self, url):
@@ -380,8 +401,6 @@ class TestAUriWithNoDatabasePath:
          'postgresql://user@host'),
         ('postgresql://user@host:5432?password=secret&sslmode=require',
          'postgresql://user@host:5432?sslmode=require'),
-        ('postgresql://user@host?sslpassword=secret',
-         'postgresql://user@host'),
     ])
     def test_a_pathless_uri_still_loses_its_password(self, url, expected_dsn):
         dsn, env = psql_dsn_and_env(url)
