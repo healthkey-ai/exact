@@ -83,6 +83,14 @@ class PromopVocabClient:
             or (f'{self.base_url}/o/token/' if self.base_url else '')
         )
         self.timeout = timeout
+        # Surface a broken pair at construction, like the patient client does —
+        # otherwise the misconfiguration stays silent until the next sync run.
+        if self.oauth_config_incomplete:
+            logger.warning(
+                'PromopVocabClient: partial OAuth config (only %s set); vocab '
+                'requests will be refused until both are set.',
+                'client_id' if self.oauth_client_id else 'client_secret',
+            )
 
     @property
     def use_oauth(self):

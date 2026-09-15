@@ -5,12 +5,16 @@ field `person_id`) instead of an inline `patient_info` payload.
 
 Always reads `GET /api/v1/patient-records/{person_id}/` (#387). Only the
 credential differs, chosen by configuration (#237):
-- **OAuth2** (preferred): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set, the
-  client authenticates via OAuth2 `client_credentials` against promop `/o/token/`
-  (scope `patient/*.read`).
-- **static service token**: otherwise it sends `PROMOP_SERVICE_TOKEN` as a bearer.
-  promop accepts it on v1 as well, so this mode is no longer a reason to fall back
-  to the deprecated, sunsetting `/api/patient-info/` prefix.
+- **static service token** (preferred, #448): `PROMOP_SERVICE_TOKEN` sent as a
+  bearer — EXACT's own named promop credential. Only this path authenticates as
+  `urn:service|exact`, because promop builds that identity from the matched
+  credential's service id. promop accepts it on v1, so it is no reason to fall
+  back to the deprecated `/api/patient-info/` prefix.
+- **OAuth2** (alternative): when `PROMOP_OAUTH_CLIENT_ID` / `_SECRET` are set, the
+  client mints via `client_credentials` against promop `/o/token/` instead. Its
+  principal is whatever user the OAuth Application is bound to — a different
+  identity in promop's audit. It wins whenever both are configured, so leave it
+  unset unless it is deliberately what you want.
 
 Service identity (#448): whichever credential is configured, it authenticates
 EXACT *as a service* (`urn:service|exact`) and nothing else. promop no longer
@@ -30,7 +34,7 @@ belongs to the resolver, which turns it into a 502 rather than a patientless
 search (#448) — see `resolve.py`.
 
 Config comes from Django settings (each read from the matching env var, empty
-defaults): `PROMOP_BASE`, `PROMOP_SERVICE_TOKEN` (legacy), and
+defaults): `PROMOP_BASE`, `PROMOP_SERVICE_TOKEN` (the named token), and
 `PROMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_SCOPE` / `_TOKEN_URL` (OAuth).
 Uses `requests` (already in requirements) rather than adding `httpx`.
 """

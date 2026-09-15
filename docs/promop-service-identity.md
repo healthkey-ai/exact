@@ -45,11 +45,16 @@ nothing else.** This is settled by PRomop's code rather than by preference:
 - **`patient/*.read` is sufficient for every endpoint EXACT calls.** The
   vocabulary endpoints use `VocabReadPermission`, whose
   `read_scopes = {patient/*.read, user/*.read, system/*.read}` — `system/*.read`
-  is *additionally accepted*, not required. The patient route
-  (`PatientRecordV1ViewSet`, verified: `permission_classes =
-  [ScopedTokenPermission, PatientSelfScopePermission]`) grants safe methods on
-  `patient/*.read`, and a service token bypasses the object-ownership check. All
-  three calls EXACT makes are GETs.
+  is *additionally accepted*, not required. The patient route is
+  `PatientRecordV1ViewSet`, which inherits `permission_classes =
+  [ScopedTokenPermission, PatientSelfScopePermission]` from `PatientRecordViewSet`:
+  safe methods pass on a read scope, a service token bypasses the
+  object-ownership check, and — the part that actually makes the retrieve work —
+  `get_queryset` returns the unscoped queryset for a service token, so the
+  ownership bypass has something to find. All three calls EXACT makes are GETs.
+
+  Read from PRomop's source at `dev`, not exercised against a deployment; the
+  smoke GETs in the rollout notes are what turns this into a verified claim.
 - **Do not leave both configured.** OAuth wins whenever both OAuth settings are
   present, in both clients — a deployment configured one way would behave the
   other. And the OAuth access-token cache is keyed without the client secret, so

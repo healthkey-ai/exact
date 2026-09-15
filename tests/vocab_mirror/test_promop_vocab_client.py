@@ -101,9 +101,11 @@ def test_stream_snapshot_tolerates_absent_release_id_header(monkeypatch):
 
 
 class TestVocabCredential:
-    """The vocab client carries its own service credential and its own scope
-    (#448). It must fail closed locally on a broken one rather than posting half
-    a credential to promop, and it must never ask for more than vocabulary reads.
+    """The vocab client has its own credential *settings* but should carry the
+    same named token as the patient client (#448) — one logical service must not
+    appear in promop's audit as two principals. Its rules match the patient
+    client's: fail closed locally on a broken credential rather than posting half
+    of one, and never ask for more than reads.
     """
 
     @pytest.mark.parametrize('kwargs, expected', [
@@ -189,9 +191,11 @@ class TestVocabCredential:
         assert PromopVocabClient()._authorization() == 'Bearer from-settings'
 
     def test_token_request_uses_the_vocab_scope(self, monkeypatch):
-        """The vocab grant is `system/*.read`, distinct from the patient
-        client's `patient/*.read` — the two credentials are not interchangeable,
-        and neither asks for write."""
+        """On the OAuth path the scope reaching promop is the configured one.
+        `system/*.read` is what promop's VocabReadPermission accepts *in addition
+        to* `patient/*.read`, so this is not a second grant EXACT requires — it
+        is what an OAuth client would need if it ran on that path instead of the
+        named token. Either way, no write."""
         from trials.services.patient_info.promop_client import _clear_token_cache
 
         _clear_token_cache()
@@ -227,8 +231,7 @@ class TestVocabCredential:
 
     def test_scope_falls_back_to_the_vocab_read_scope_when_unconfigured(self, settings):
         """Deleted rather than assigned — assigning would assert the test's own
-        value. The vocab fallback is a read scope, and a distinct one from the
-        patient client's."""
+        value. The fallback is a read scope; write never appears."""
         del settings.PROMOP_VOCAB_OAUTH_SCOPE
         client = PromopVocabClient(base_url='http://promop')
         assert client.oauth_scope == 'system/*.read'
@@ -270,3 +273,23 @@ class TestVocabCredential:
         assert captured['kwargs'].get('data') is None
         assert not captured['kwargs'].get('params')
         assert '?' not in captured['url']
+
+    @pytest.mark.parametrize('call', ['latest', 'snapshot'])
+    def test_no_credential_means_no_request_through_the_public_api(
+            self, monkeypatch, call):
+        """The other tests drive `_authorization()` directly, which pins the
+        decision but not the consequence. What matters is that nothing reaches
+        the network uncredentialed — so exercise the two public methods and
+        watch `requests.get`, the way the patient client's tests do."""
+        called = []
+        monkeypatch.setattr(pvc.requests, 'get',
+                            lambda *a, **k: called.append(a) or None)
+        client = PromopVocabClient(base_url='http://promop', token='',
+                                   oauth_client_id='', oauth_client_secret='')
+        with pytest.raises(pvc.VocabSyncError):
+            if call == 'latest':
+                client.get_latest_release()
+            else:
+                list(client.stream_snapshot(2, 'concept'))
+        assert called == []
+
