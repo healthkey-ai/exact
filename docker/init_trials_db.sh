@@ -21,14 +21,6 @@ if [ -z "$TRIALS_DATABASE_URL" ]; then
     exit 0
 fi
 
-# Move the password out of argv before any psql call (#403). psql invocations
-# below use "$PSQL_DSN"; the credential travels in PGPASSWORD, which
-# /proc/<pid>/environ keeps owner-only, instead of in a world-readable argv.
-# psql_dsn_split covers the URI form this deployment uses and REFUSES (exits
-# non-zero, aborting the container start) on a `?password=` query or keyword
-# conninfo rather than passing a credentialed string through as if it were
-# clean -- a silent pass would make the sentence above false exactly where it
-# mattered.
 case "${TRIALS_DATABASE_INIT_FROM_BACKUP,,}" in
     1|true|yes|on) ;;
     *)
@@ -38,6 +30,14 @@ case "${TRIALS_DATABASE_INIT_FROM_BACKUP,,}" in
         ;;
 esac
 
+# Move the password out of argv before any psql call (#403). psql invocations
+# below use "$PSQL_DSN"; the credential travels in PGPASSWORD, which
+# /proc/<pid>/environ keeps owner-only, instead of in a world-readable argv.
+# psql_dsn_split covers the URI form this deployment uses and REFUSES (exits
+# non-zero, aborting the container start) on a `?password=` query or keyword
+# conninfo rather than passing a credentialed string through as if it were
+# clean -- a silent pass would make the sentence above false exactly where it
+# mattered.
 # shellcheck source=docker/psql_dsn.sh
 source "$(dirname "${BASH_SOURCE[0]}")/psql_dsn.sh"
 psql_dsn_split "$TRIALS_DATABASE_URL"

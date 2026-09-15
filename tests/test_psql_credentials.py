@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 
-from trials.services.psql_dsn import psql_dsn_and_env
+from trials.services.psql_dsn import DsnStillCarriesPassword, psql_dsn_and_env
 
 DSN_WITH_PASSWORD = 'postgresql://reader:s3cr3t@db.example.invalid:5432/patients'
 
@@ -234,6 +234,66 @@ class TestPsqlDsnAndEnv:
         assert password not in dsn
         assert quote(password, safe='') not in dsn
         assert env['PGPASSWORD'] == password
+
+
+class TestWhatCountsAsAUri:
+    """Which strings take the URI path decides whether a credential is
+    rewritten or waved through, and the two implementations have to agree on
+    it. `postgis://` is this deployment's documented DSN scheme and must be
+    rewritten; a keyword conninfo whose *value* merely contains `://` must not
+    be, or the URI parse rebuilds it unchanged and both end guards miss it."""
+
+    @pytest.mark.parametrize('url, expected_dsn', [
+        ('postgis://u:pw@h:5432/db', 'postgis://u@h:5432/db'),
+        ('postgresql://u:pw@h/db', 'postgresql://u@h/db'),
+        ('postgres://u:pw@h/db', 'postgres://u@h/db'),
+    ])
+    def test_any_real_scheme_is_rewritten(self, url, expected_dsn):
+        dsn, env = psql_dsn_and_env(url)
+
+        assert dsn == expected_dsn
+        assert env['PGPASSWORD'] == 'pw'
+
+    def test_a_conninfo_value_containing_a_scheme_is_not_a_uri(self):
+        """`password=p://w` is a keyword conninfo, not a URI. Reading it as one
+        leaves it rebuilt identical to the input — credential included — and
+        reported clean."""
+        dsn, env = psql_dsn_and_env('host=h user=u password=p://w')
+
+        assert dsn == 'host=h user=u'
+        assert env['PGPASSWORD'] == 'p://w'
+
+    @pytest.mark.parametrize('url', [
+        'my_scheme://u:pw@h/db',   # `_` is not a scheme character
+        '://u:pw@h/db',            # no scheme at all
+    ])
+    def test_a_shape_the_rewrite_declines_is_still_refused(self, url):
+        """The backstop must not ask the same question as the rewrite: a string
+        it declines to touch would otherwise be returned untouched *and*
+        reported clean — the silent pass this module says cannot happen."""
+        with pytest.raises(DsnStillCarriesPassword):
+            psql_dsn_and_env(url)
+
+    @pytest.mark.parametrize('url, expect_refusal', [
+        ('postgis://u:pw@h/db', False),
+        ('host=h user=u password=p://w', True),
+        ('host=h dbname=d', False),
+    ])
+    def test_the_shell_twin_classifies_them_the_same_way(self, url, expect_refusal):
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; psql_dsn_split {url!r} && echo "DSN=$PSQL_DSN"'],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        if expect_refusal:
+            assert result.returncode != 0, result.stdout
+        else:
+            assert result.returncode == 0, result.stderr
+        # Either way, what it hands back must not carry the credential.
+        assert 'pw@' not in result.stdout
+        assert 'password=p://w' not in result.stdout
 
 
 class TestBothPasswordLocationsAtOnce:

@@ -56,19 +56,26 @@ psql_dsn_split() {
     # portable is what makes the function testable outside the container.
     local lowered
     lowered="$(printf '%s' "$dsn" | tr '[:upper:]' '[:lower:]')"
-    case "$lowered" in
-        # Any scheme with an authority, not just the two libpq connects to:
-        # `postgis://` is this deployment's convention, and treating it as
-        # keyword conninfo let a URI-shaped credential through untouched.
-        *://*) ;;
-        *)
-            # Keyword conninfo. Not handled here -- refuse if it carries one.
-            if [[ "$dsn" =~ (^|[[:space:]])password[[:space:]]*= ]]; then
-                _psql_dsn_refuse "keyword conninfo carries password=" || return 1
-            fi
-            return 0
-            ;;
-    esac
+    # Any scheme with an authority, not just the two libpq connects to:
+    # `postgis://` is this deployment's convention, and treating it as keyword
+    # conninfo let a URI-shaped credential through untouched.
+    #
+    # ANCHORED, and matching the Python twin's `[a-z][a-z0-9+.-]*://` exactly.
+    # An unanchored `*://*` glob reads `host=h user=u password=p://w` -- a
+    # keyword conninfo whose *value* happens to contain `://` -- as a URI:
+    # `${dsn%%://*}` then swallows the left half, no `@` is found, the DSN is
+    # rebuilt identical to the input, and both end guards miss it because
+    # neither pattern matches. Returned clean, password and all, straight into
+    # psql's argv. Fail-open in the function whose whole job is to fail closed.
+    if [[ "$lowered" =~ ^[a-z][a-z0-9+.-]*:// ]]; then
+        :
+    else
+        # Keyword conninfo. Not handled here -- refuse if it carries one.
+        if [[ "$dsn" =~ (^|[[:space:]])password[[:space:]]*= ]]; then
+            _psql_dsn_refuse "keyword conninfo carries password=" || return 1
+        fi
+        return 0
+    fi
 
     scheme="${dsn%%://*}"
     rest="${dsn#*://}"

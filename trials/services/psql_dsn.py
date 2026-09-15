@@ -83,7 +83,10 @@ def psql_dsn_and_env(db_url: str, **extra_env: str) -> tuple[str, dict[str, str]
 # libpq itself only connects to `postgres://` and `postgresql://`, but this
 # codebase hands these URLs to Django through `dj_database_url`, which accepts
 # more — `postgis://` is the documented deploy convention for the shared Cloud
-# SQL instance (see `exact/settings.py`). Scheme-matching on the libpq pair left
+# SQL instance (see `exact/settings.py`). Any RFC-3986 scheme, then; a string
+# with `://` but no valid scheme (`://u:pw@h`, `my_scheme://…`) is still not
+# rewritten, which is why `_assert_no_password` no longer asks this question
+# before deciding whether to look. Scheme-matching on the libpq pair left
 # every other scheme falling through to the keyword-conninfo branch, where a
 # URI-shaped credential contains no `password=` token: the URL came back
 # unchanged, password included, and `_assert_no_password` waved it through on
@@ -219,7 +222,13 @@ def _assert_no_password(dsn: str) -> None:
     would agree with it exactly where both are wrong -- which is how the `#`
     case passed silently.
     """
-    if _is_uri(dsn):
+    # The URI scan runs on anything containing `://`, not only on what
+    # `_is_uri` accepted for rewriting. Gating the *assertion* on the same
+    # predicate as the rewrite means a string the rewrite declined to touch is
+    # also never checked: `my_scheme://u:pw@h/db` came back unchanged, password
+    # and all, and was reported clean. A backstop that trusts the same judgement
+    # as the code it backs is not one.
+    if "://" in dsn:
         _, authority, tail = _split_authority(dsn)
         userinfo, at, _ = authority.rpartition("@")
         if at and ":" in userinfo:
@@ -232,7 +241,9 @@ def _assert_no_password(dsn: str) -> None:
                     raise DsnStillCarriesPassword(
                         f"query string still contains {unquote(key)}="
                     )
-        return
 
+    # Checked for every shape, not just non-URIs: a keyword conninfo whose
+    # value contains `://` is not a URI, and reaching the scan above by that
+    # accident must not exempt it from this one.
     if _KEYWORD_PASSWORD.search(dsn):
         raise DsnStillCarriesPassword("conninfo still contains password=")
