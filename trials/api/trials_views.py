@@ -9,7 +9,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import APIException
 from rest_framework.views import APIView
 
-from trials.api.pagination import TrialsPagination
+from trials.api.pagination import TrialsPagination, count_over_keys
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
 from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
 from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
@@ -255,7 +255,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     @action(methods=['get'], detail=False)
     def count(self, request, *args, **kwargs):
         queryset = self.get_queryset()
-        return Response({'count': queryset.count()})
+        # The endpoint whose whole job is the count was the one still paying
+        # for it: a country scope carries `.distinct()` from `by_location`, and
+        # counting it row-wise measured 7.1s against 0.018s (#492).
+        return Response({'count': count_over_keys(queryset)})
 
     @action(methods=['post'], detail=False, url_path='match')
     def match(self, request, *args, **kwargs):
