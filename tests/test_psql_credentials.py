@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 
-from trials.services.psql_dsn import psql_dsn_and_env
+from trials.services.psql_dsn import DsnStillCarriesPassword, psql_dsn_and_env
 
 DSN_WITH_PASSWORD = 'postgresql://reader:s3cr3t@db.example.invalid:5432/patients'
 
@@ -187,8 +187,6 @@ class TestPsqlDsnAndEnv:
             'postgresql://u:pa?ss@h/db',
             # libpq percent-decodes parameter NAMES too.
             'postgresql://u@h/db?%70assword=s3cr3t',
-            # The client-key passphrase is a credential as much as `password`.
-            'postgresql://u@h/db?sslpassword=s3cr3t',
         ],
     )
     def test_credentials_libpq_accepts_do_not_survive(self, url):
@@ -196,6 +194,30 @@ class TestPsqlDsnAndEnv:
 
         assert 's3cr3t' not in dsn and 'pa#ss' not in dsn and 'pa?ss' not in dsn
         assert env['PGPASSWORD']
+
+    def test_an_ssl_key_passphrase_is_refused_not_repurposed(self):
+        """`sslpassword` is a credential too, but it is not the database
+        user's password and libpq has no environment variable for it — checked
+        against libpq 17, which offers PGPASSWORD and fifteen PGSSL* names,
+        none of them PGSSLPASSWORD. Handing it back as PGPASSWORD lost the key
+        passphrase and authenticated with it: a certificate-authenticated
+        connection broken twice over, which is worse than the argv exposure
+        being fixed. With nowhere to relocate it, the only honest answer is to
+        refuse — loudly, and saying why."""
+        with pytest.raises(DsnStillCarriesPassword) as exc:
+            psql_dsn_and_env('postgresql://u@h/db?sslpassword=s3cr3t')
+
+        assert 'sslpassword' in str(exc.value)
+        assert 'no environment variable' in str(exc.value)
+
+    def test_the_last_password_parameter_wins(self):
+        """libpq applies a repeated keyword's later value, so
+        `?password=old&password=new` connects as `new`. Keeping the first
+        stripped both and used the one libpq would have discarded."""
+        dsn, env = psql_dsn_and_env('postgresql://u@h/db?password=old&password=new')
+
+        assert env['PGPASSWORD'] == 'new'
+        assert 'old' not in dsn and 'new' not in dsn
 
     def test_an_at_sign_in_the_path_does_not_truncate_the_host(self):
         dsn, env = psql_dsn_and_env('postgresql://reader:s3cr3t@h:5432/pat@ients')
@@ -236,6 +258,185 @@ class TestPsqlDsnAndEnv:
         assert env['PGPASSWORD'] == password
 
 
+class TestAnExplicitlyEmptyPassword:
+    """An empty password is not a credential, but it IS a value, and the
+    difference decides which one psql ends up using. The env handed to the
+    child is built on `os.environ`, so dropping an explicit empty password lets
+    an ambient PGPASSWORD — another database's, exported by whoever ran the
+    command — stand in for it. The DSN said "no password"; libpq would then
+    send one."""
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u:@h/db',
+        "host=h password=''",
+        'host=h password=',
+        'postgresql://u@h/db?password=',
+    ])
+    def test_it_overrides_an_ambient_pgpassword(self, url, monkeypatch):
+        monkeypatch.setenv('PGPASSWORD', 'ANOTHER-DATABASES-SECRET')
+
+        _dsn, env = psql_dsn_and_env(url)
+
+        assert env['PGPASSWORD'] == ''
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u@h/db',
+        'host=h dbname=d',
+    ])
+    def test_no_password_field_leaves_the_environment_alone(self, url, monkeypatch):
+        """The complement: a DSN that says nothing about a password must not
+        clear one. That is libpq's own precedence — environment and .pgpass
+        apply exactly when the connection string is silent."""
+        monkeypatch.setenv('PGPASSWORD', 'AMBIENT')
+
+        _dsn, env = psql_dsn_and_env(url)
+
+        assert env['PGPASSWORD'] == 'AMBIENT'
+
+    def test_the_shell_twin_agrees(self):
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; psql_dsn_split "postgresql://u:@h/db"; '
+             'printf "[%s]" "${PGPASSWORD-UNSET}"'],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, 'PGPASSWORD': 'ANOTHER-DATABASES-SECRET'},
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == '[]', result.stdout
+
+
+class TestWhatCountsAsAUri:
+    """Which strings take the URI path decides whether a credential is
+    rewritten or waved through, and the two implementations have to agree on
+    it. `postgis://` is this deployment's documented DSN scheme and must be
+    rewritten; a keyword conninfo whose *value* merely contains `://` must not
+    be, or the URI parse rebuilds it unchanged and both end guards miss it."""
+
+    @pytest.mark.parametrize('url, expected_dsn', [
+        ('postgis://u:pw@h:5432/db', 'postgis://u@h:5432/db'),
+        ('postgresql://u:pw@h/db', 'postgresql://u@h/db'),
+        ('postgres://u:pw@h/db', 'postgres://u@h/db'),
+    ])
+    def test_any_real_scheme_is_rewritten(self, url, expected_dsn):
+        dsn, env = psql_dsn_and_env(url)
+
+        assert dsn == expected_dsn
+        assert env['PGPASSWORD'] == 'pw'
+
+    def test_a_conninfo_value_containing_a_scheme_is_not_a_uri(self):
+        """`password=p://w` is a keyword conninfo, not a URI. Reading it as one
+        leaves it rebuilt identical to the input — credential included — and
+        reported clean."""
+        dsn, env = psql_dsn_and_env('host=h user=u password=p://w')
+
+        assert dsn == 'host=h user=u'
+        assert env['PGPASSWORD'] == 'p://w'
+
+    @pytest.mark.parametrize('url', [
+        'my_scheme://u:pw@h/db',   # `_` is not a scheme character
+        '://u:pw@h/db',            # no scheme at all
+    ])
+    def test_a_shape_the_rewrite_declines_is_still_refused(self, url):
+        """The backstop must not ask the same question as the rewrite: a string
+        it declines to touch would otherwise be returned untouched *and*
+        reported clean — the silent pass this module says cannot happen."""
+        with pytest.raises(DsnStillCarriesPassword):
+            psql_dsn_and_env(url)
+
+    @pytest.mark.parametrize('url, expect_refusal', [
+        ('postgis://u:pw@h/db', False),
+        ('host=h user=u password=p://w', True),
+        ('host=h dbname=d', False),
+    ])
+    def test_the_shell_twin_classifies_them_the_same_way(self, url, expect_refusal):
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; psql_dsn_split {url!r} && echo "DSN=$PSQL_DSN"'],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        if expect_refusal:
+            assert result.returncode != 0, result.stdout
+        else:
+            assert result.returncode == 0, result.stderr
+        # Either way, what it hands back must not carry the credential.
+        assert 'pw@' not in result.stdout
+        assert 'password=p://w' not in result.stdout
+
+
+class TestBothPasswordLocationsAtOnce:
+    """libpq parses the userinfo first and then the query, and a later setting
+    of a keyword replaces the earlier one — so a DSN carrying both connects
+    with the *query* password. Taking the authority one stripped both and then
+    authenticated with the value libpq would have discarded: a working DSN
+    turned into a password failure by the fix meant to keep it working."""
+
+    def test_the_query_password_wins(self):
+        dsn, env = psql_dsn_and_env('postgresql://u:old@h/db?password=new')
+
+        assert env['PGPASSWORD'] == 'new'
+        assert 'old' not in dsn and 'new' not in dsn
+        assert dsn == 'postgresql://u@h/db'
+
+
+class TestSpellingsOfTheQueryPassword:
+    """libpq percent-decodes parameter *names*, so `%70assword=` is
+    `password=`. Matching the literal lowercase text reports success on a DSN
+    whose credential is still in it."""
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u@h/db?password=s3cr3t',
+        'postgresql://u@h/db?Password=s3cr3t',
+        'postgresql://u@h/db?PASSWORD=s3cr3t',
+        'postgresql://u@h/db?%70assword=s3cr3t',
+        'postgresql://u@h/db?sslmode=require&Password=s3cr3t',
+    ])
+    def test_python_strips_every_spelling(self, url):
+        dsn, env = psql_dsn_and_env(url)
+
+        assert 's3cr3t' not in dsn
+        assert env['PGPASSWORD'] == 's3cr3t'
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u@h/db?password=s3cr3t',
+        'postgresql://u@h/db?Password=s3cr3t',
+        'postgresql://u@h/db?%70assword=s3cr3t',
+        'postgresql://u@h/db?sslmode=require&Password=s3cr3t',
+    ])
+    def test_the_shell_twin_refuses_every_spelling(self, url):
+        """The shell twin refuses where Python strips — but it has to refuse
+        the *same set*, or the container init keeps a credential the migrated
+        management commands would have removed."""
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; psql_dsn_split {url!r} && echo "DSN=$PSQL_DSN"'],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        assert result.returncode != 0, result.stdout
+        assert 's3cr3t' not in result.stdout
+
+    def test_the_shell_twin_still_accepts_an_ordinary_dsn(self):
+        """The blunt rule must not refuse DSNs that carry no credential in the
+        query — a refusal aborts container start."""
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; '
+             "psql_dsn_split 'postgresql://u:pw@h/db?sslmode=require' && "
+             'echo "DSN=$PSQL_DSN PG=$PGPASSWORD"'],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert 'DSN=postgresql://u@h/db?sslmode=require' in result.stdout
+        assert 'PG=pw' in result.stdout
+
+
 class TestAUriWithNoDatabasePath:
     """`postgresql://user@host?password=secret` is a valid libpq URI, and the
     authority split ended at the first `/` — which a pathless URI has none of,
@@ -249,8 +450,6 @@ class TestAUriWithNoDatabasePath:
          'postgresql://user@host'),
         ('postgresql://user@host:5432?password=secret&sslmode=require',
          'postgresql://user@host:5432?sslmode=require'),
-        ('postgresql://user@host?sslpassword=secret',
-         'postgresql://user@host'),
     ])
     def test_a_pathless_uri_still_loses_its_password(self, url, expected_dsn):
         dsn, env = psql_dsn_and_env(url)
@@ -388,6 +587,98 @@ class TestTheShellTwinAgreesWithPython:
             capture_output=True, text=True,
         )
         return result.returncode, result.stdout.split('\n')
+
+    # Every shape where the two have drifted, plus the ones that must keep
+    # working. Because bash refuses where Python strips, the only invariant
+    # statable across both is the one that matters: what comes back must not
+    # carry a credential, and a DSN carrying none must not be refused.
+    SECRET = 's3cr3t'
+    CREDENTIALED = [
+        'postgresql://u:s3cr3t@h/db',
+        '  postgresql://u:s3cr3t@h/db',      # lstrip: Python did, bash did not
+        '\tpostgresql://u:s3cr3t@h/db',
+        'POSTGRESQL://u:s3cr3t@h/db',
+        'postgis://u:s3cr3t@h/db',
+        'my_scheme://u:s3cr3t@h/db',         # rewrite declines it; backstop must not
+        '://u:s3cr3t@h/db',                  # no scheme at all
+        'postgresql://u@h/db?password=s3cr3t',
+        ' postgresql://u@h/db?password=s3cr3t',
+        'postgresql://u@h/db?Password=s3cr3t',
+        'postgresql://u@h/db?%70assword=s3cr3t',
+        'postgresql://u@h/db?sslpassword=s3cr3t',
+        'host=h password=s3cr3t',
+        'host=h PassWord=s3cr3t',            # libpq rejects it; argv still shows it
+        'host=h sslpassword=s3cr3t',
+        '\npostgresql://u:s3cr3t@h/db',      # a newline hid this from the check
+        'postgresql://u@h/db?password%20=s3cr3t',   # libpq rejects; argv shows it
+        'postgresql://u@h/db?PASSWORD=s3cr3t',
+    ]
+    CREDENTIAL_FREE = [
+        'postgresql://u@h/db',
+        'postgresql://u@h:5432/db?sslmode=require',
+        'postgis://u@h/db',
+        'postgresql:///db?host=/var/run/postgresql',
+        'host=h dbname=d user=u',
+        "host=h options='-c a://u:p@h'",     # `://` in a value is not an authority
+        'host=h application_name=svc://alice@registry',
+        'postgresql://u@h/db?passfile=%2Fsecrets%2F.pgpass',
+        # An empty password is not a password — libpq parses no credential out
+        # of these, and refusing them aborts container start on the realistic
+        # `?password=${SECRET}` with SECRET unset.
+        'postgresql://u@h/db?password=',
+        'host=h password=',
+        "host=h options='-c ?password=x'",   # `?` in a value is not a query
+        'postgresql://u@h/dbname password=s3cr3t',  # libpq: that is the dbname
+    ]
+
+    @pytest.mark.parametrize('url', CREDENTIALED)
+    def test_neither_implementation_hands_back_the_secret(self, url):
+        """Refused or stripped, never returned. The one property both halves
+        must share, on the inputs where they drifted apart."""
+        code, out = self._split(url)
+        # A refusal prints nothing, so there is no DSN to inspect — that is the
+        # pass condition for the bash half, which refuses where Python strips.
+        if code != 3:
+            # Every line of the DSN, not just out[0]: the helper prints the
+            # DSN and then the password, so a DSN containing a newline hides
+            # everything after its first line — including, for
+            # `\npostgresql://u:s3cr3t@h/db`, the credential itself. The last
+            # line is PGPASSWORD, where the secret is SUPPOSED to be.
+            returned_dsn = '\n'.join(out[:-1])
+            assert self.SECRET not in returned_dsn, (
+                f'bash returned the credential: {returned_dsn!r}'
+            )
+
+        try:
+            py_dsn, _env = psql_dsn_and_env(url)
+        except DsnStillCarriesPassword:
+            return
+        assert self.SECRET not in py_dsn, f'python returned the credential: {py_dsn!r}'
+
+    @pytest.mark.parametrize('url', CREDENTIAL_FREE)
+    def test_neither_implementation_refuses_a_clean_dsn(self, url):
+        """A false refusal aborts container start — worse than what it guards.
+
+        And the DSN has to come back intact. Asserting only "not refused" let a
+        stub that returns an empty string for every input pass every case in
+        this class: nothing checked that the connection string survived.
+        """
+        code, out = self._split(url)
+        assert code != 3, f'bash refused a credential-free DSN: {url!r}'
+
+        _py_dsn, py_env = psql_dsn_and_env(url)  # must not raise
+
+        # bash rewrites nothing when there is nothing to strip, so its output
+        # is the input. This is what a stub cannot satisfy — asserting only
+        # "not refused" let one that returns an empty string pass every case.
+        assert '\n'.join(out[:-1]) == url, f'bash altered a clean DSN: {out!r}'
+        # Python may tidy an empty `password=` out of the query, and sets
+        # PGPASSWORD to the empty string when the DSN named one — what it must
+        # not do is come up with a credential where libpq sees none.
+        assert not py_env.get('PGPASSWORD'), (
+            f'python invented a credential for a clean DSN: '
+            f'{py_env["PGPASSWORD"]!r}'
+        )
 
     @pytest.mark.parametrize(
         'url',

@@ -30,8 +30,23 @@ _KEYWORD_PASSWORD = re.compile(
     r"(?:^|\s)password\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S*))"
 )
 # Query parameters that carry a credential. `sslpassword` is the passphrase for
-# the client key and is just as much a secret as `password`.
-_PASSWORD_QUERY_KEYS = {"password", "sslpassword"}
+# the client key and is just as much a secret as `password` -- but it is NOT
+# the same secret, and unlike `password` it has nowhere to go: checked against
+# libpq 17, the environment it reads offers PGPASSWORD and fifteen PGSSL* names,
+# and no PGSSLPASSWORD among them. So it cannot be relocated, only refused.
+# Every keyword spelling of a secret, whatever the case — the backstop's net,
+# not the rewrite's (which follows libpq exactly, and libpq is case-sensitive).
+_KEYWORD_SECRET_ANY_CASE = re.compile(
+    r"(?:^|\s)(?:password|sslpassword)\s*=\s*(?!$|\s|''(?:\s|$))", re.IGNORECASE
+)
+# The same net for the query form, including percent-encoded parameter names.
+# An empty value is not a credential, so it does not match.
+_QUERY_SECRET_ANY_CASE = re.compile(
+    r"[?&](?:[^=&]*%[^=&]*|password|sslpassword)\s*=[^&\s]", re.IGNORECASE
+)
+_DB_PASSWORD_QUERY_KEYS = {"password"}
+_UNRELOCATABLE_QUERY_KEYS = {"sslpassword"}
+_PASSWORD_QUERY_KEYS = _DB_PASSWORD_QUERY_KEYS | _UNRELOCATABLE_QUERY_KEYS
 
 
 class DsnStillCarriesPassword(ValueError):
@@ -69,11 +84,18 @@ def psql_dsn_and_env(db_url: str, **extra_env: str) -> tuple[str, dict[str, str]
         # form is decided by the scheme, not by a substring search.
         dsn, password = _strip_keyword_password(db_url)
 
-    # An empty password is not a password. `postgres://u:@h/db` and
+    # An empty password is not a credential, but it IS a value. `postgres://u:@h/db` and
     # `postgres://u@h/db` mean the same thing to libpq, but an *empty*
     # PGPASSWORD does not mean the same as an unset one, so the credential is
     # still stripped from the DSN while the variable is left alone.
-    if password:
+    if password is not None:
+        # `is not None`, not truthiness: an EMPTY password is still a password
+        # *field*, and the difference decides which credential psql uses. The
+        # env handed to the child is `{**os.environ, ...}`, so dropping an
+        # explicit empty one lets an ambient PGPASSWORD -- another database's,
+        # exported by whoever ran the command -- take its place. The DSN said
+        # "no password"; libpq would then send one. Absent means absent, empty
+        # means empty.
         env["PGPASSWORD"] = password
 
     _assert_no_password(dsn)
@@ -83,7 +105,10 @@ def psql_dsn_and_env(db_url: str, **extra_env: str) -> tuple[str, dict[str, str]
 # libpq itself only connects to `postgres://` and `postgresql://`, but this
 # codebase hands these URLs to Django through `dj_database_url`, which accepts
 # more — `postgis://` is the documented deploy convention for the shared Cloud
-# SQL instance (see `exact/settings.py`). Scheme-matching on the libpq pair left
+# SQL instance (see `exact/settings.py`). Any RFC-3986 scheme, then; a string
+# with `://` but no valid scheme (`://u:pw@h`, `my_scheme://…`) is still not
+# rewritten, which is why `_assert_no_password` no longer asks this question
+# before deciding whether to look. Scheme-matching on the libpq pair left
 # every other scheme falling through to the keyword-conninfo branch, where a
 # URI-shaped credential contains no `password=` token: the URL came back
 # unchanged, password included, and `_assert_no_password` waved it through on
@@ -98,8 +123,32 @@ def _is_uri(db_url: str) -> bool:
     return _URI_SCHEME.match(db_url.lstrip()) is not None
 
 
+def _looks_like_uri(db_url: str) -> bool:
+    """URI-shaped enough for the backstop to scan as one.
+
+    Accepts what `_is_uri` accepts, plus the near-misses it declines — an
+    invalid scheme, or none at all — because those are exactly the strings the
+    rewrite leaves untouched and the backstop therefore has to examine.
+    Excludes keyword conninfo, where a `://` inside a value is not an
+    authority: libpq decides the same way, by what comes first.
+    """
+    stripped = db_url.lstrip()
+    head, equals, _rest = stripped.partition("=")
+    if equals and "://" not in head:
+        return False
+    return "://" in stripped
+
+
 def _split_authority(db_url: str) -> tuple[str, str, str]:
     """Return `(prefix, authority, tail)` by scanning the raw string.
+
+    The authority's userinfo is taken up to the LAST `@`, which libpq does not
+    do — verified against libpq 17, it ends the userinfo at the FIRST `@`, so
+    `postgresql://u:s@v:s@h/db` is user `u`, password `s`, host `v`. Ours is the
+    wider reading: everything libpq calls userinfo, we do too, plus more. It
+    therefore strips credentials libpq would leave in the host, and never the
+    reverse — which is the direction this module needs to be wrong in, if it is
+    going to be wrong.
 
     `urlsplit` must not be used for this. It ends the netloc at the first `#`
     or `?`, so `postgresql://u:pa#ss@h/db` gives it a netloc of `u:pa` -- no
@@ -165,7 +214,13 @@ def _strip_uri_password(db_url: str) -> tuple[str, str | None]:
     path, question, query = tail.partition("?")
     if question:
         query, query_password = _strip_query_password(query)
-        if password is None:
+        if query_password is not None:
+            # libpq parses the userinfo first and then the query, and a later
+            # setting of the same keyword replaces the earlier one — so with
+            # `postgresql://u:old@h/db?password=new` it connects as `new`.
+            # Keeping `old` here stripped both and then authenticated with the
+            # one libpq would have discarded: a working DSN turned into a
+            # password failure by the fix meant to leave it working.
             password = query_password
         tail = f"{path}?{query}" if query else path
 
@@ -185,9 +240,25 @@ def _strip_query_password(query: str) -> tuple[str, str | None]:
         if not pair:
             continue
         raw_key, _, raw_value = pair.partition("=")
-        if unquote(raw_key).lower() in _PASSWORD_QUERY_KEYS:
-            if password is None:
-                password = unquote(raw_value)
+        key = unquote(raw_key).lower()
+        if key in _UNRELOCATABLE_QUERY_KEYS:
+            # `sslpassword` decrypts the client key; it is not the database
+            # user's password and libpq has no environment variable for it.
+            # Treating it as one lost the passphrase AND authenticated with it
+            # — a certificate-authenticated connection broken two ways, which
+            # is worse than the argv exposure being fixed. Nothing to relocate
+            # it to, so refuse and say why.
+            raise DsnStillCarriesPassword(
+                f"{unquote(raw_key)}= cannot be moved out of the DSN: libpq has "
+                f"no environment variable for it. Configure the key passphrase "
+                f"another way, or use an unencrypted client key."
+            )
+        if key in _DB_PASSWORD_QUERY_KEYS:
+            # Last wins, as in libpq: a later setting of a keyword replaces the
+            # earlier one, so `?password=old&password=new` connects as `new`.
+            # Keeping the first stripped both and then used the one libpq would
+            # have discarded.
+            password = unquote(raw_value)
             continue
         kept.append(pair)
     return "&".join(kept), password
@@ -213,7 +284,23 @@ def _assert_no_password(dsn: str) -> None:
     would agree with it exactly where both are wrong -- which is how the `#`
     case passed silently.
     """
-    if _is_uri(dsn):
+    # Wider than `_is_uri`, narrower than "contains `://`". Gating the
+    # assertion on the rewrite's own predicate means a string the rewrite
+    # declined is never checked either — `my_scheme://u:pw@h/db` came back
+    # unchanged, password and all, and was reported clean. But scanning
+    # everything containing `://` reads a keyword conninfo whose *value*
+    # happens to hold one (`options='-c a://u:p@h'`) as an authority and
+    # refuses a DSN that carries no credential at all, which kills the command
+    # outright.
+    #
+    # Positional, like libpq: if a `=` comes first, this is keyword conninfo
+    # and the `://` is inside a value. NOT a mirror of libpq, though —
+    # verified against libpq 17, its test is `strncmp(connstr, "postgresql://")`
+    # / `"postgres://"`: exact, case-sensitive, and not whitespace-tolerant. So
+    # ` postgresql://…`, `POSTGRESQL://…` and `postgis://…` are all conninfo to
+    # libpq and URIs to us. That direction is deliberate: we strip more than
+    # libpq would read, never less.
+    if _looks_like_uri(dsn):
         _, authority, tail = _split_authority(dsn)
         userinfo, at, _ = authority.rpartition("@")
         if at and ":" in userinfo:
@@ -226,7 +313,33 @@ def _assert_no_password(dsn: str) -> None:
                     raise DsnStillCarriesPassword(
                         f"query string still contains {unquote(key)}="
                     )
+
+        # The query form, case-insensitively and over encoded spellings —
+        # `?password%20=` is not a parameter libpq accepts, but the secret is
+        # in argv either way, which is the standard this module applies to
+        # `PassWord=`. The bash twin refuses these; without this it did not,
+        # and the two disagreed.
+        if _QUERY_SECRET_ANY_CASE.search(tail):
+            raise DsnStillCarriesPassword(
+                "query string still contains a password= spelling libpq would "
+                "not accept, but a reader of the process table would"
+            )
         return
 
+    # Keyword conninfo only. Applied to a URI this refused
+    # `postgresql://u@h/dbname password=s3cr3t`, where libpq reads the whole
+    # tail as the database name: a false refusal on a DSN that carries no
+    # credential, and these run management commands.
     if _KEYWORD_PASSWORD.search(dsn):
         raise DsnStillCarriesPassword("conninfo still contains password=")
+
+    # Case-insensitively, and including `sslpassword`, neither of which the
+    # rewrite handles. libpq's keyword lookup is strcmp, so `PassWord=` is not
+    # a credential it would accept — but argv exposure on a connection libpq
+    # refuses is exactly the harm this module prevents, and nothing else in it
+    # would have caught the spelling.
+    if _KEYWORD_SECRET_ANY_CASE.search(dsn):
+        raise DsnStillCarriesPassword(
+            "conninfo still contains a password= spelling libpq would not "
+            "accept, but a reader of the process table would"
+        )

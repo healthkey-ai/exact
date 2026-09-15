@@ -146,6 +146,22 @@ class TestPhrIntrospectionDefault:
             r"PHR_INTROSPECT_RATE_INTERVAL\s*=\s*int\(\s*os\.environ\.get\(", source
         ), 'PHR_INTROSPECT_RATE_INTERVAL must be present and env-resolved.'
 
+    def test_the_cap_is_sized_for_requests_not_sign_ins(self):
+        """The shipped default, not just its shape. 30 was sized against
+        sign-ins, back when a verified token was cached for a minute; #404
+        removed that cache, so the same number bounds *requests* and empties
+        under ordinary use, 401ing every introspection caller until the window
+        rolls. Nothing else in the suite would notice a revert: the PHR tests
+        set their own value, and the check above only asserts it comes from the
+        environment."""
+        source = _settings_source()
+
+        assert re.search(
+            r"PHR_INTROSPECT_MAX_CALLS\s*=\s*int\(\s*os\.environ\.get\(\s*"
+            r"'PHR_INTROSPECT_MAX_CALLS',\s*'300'\s*\)\s*\)",
+            source,
+        ), 'PHR_INTROSPECT_MAX_CALLS must default to 300 (see #404).'
+
 
 class TestRedisTlsCertVerification:
     """rediss:// Celery SSL must not disable cert verification unconditionally.
