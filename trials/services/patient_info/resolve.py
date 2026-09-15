@@ -43,6 +43,7 @@ import ast
 import datetime as dt
 import json
 import logging
+from math import isfinite
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -249,13 +250,47 @@ def _coerce_numerics(data: dict, model_cls):
         if not hasattr(f, 'column') or f.name not in data:
             continue
         val = data[f.name]
-        if not isinstance(val, str) or val == '':
+        if not isinstance(val, str):
             continue
+        # '' used to short-circuit here (`or val == ''`), which left a `str`
+        # sitting in a numeric column: the first comparison against a threshold
+        # raises TypeError from inside request resolution, the search fails, and
+        # every trial is hidden. `creatinine_clearance_rate: ""` does exactly
+        # that on the base branch via `meets_crab_r_renal_insufficiency`.
+        # Letting it reach the branches below turns it into None — an empty
+        # string is an ABSENT reading, and None is how this file spells that.
+        # Non-numeric columns are untouched: they match no branch and keep ''.
         if isinstance(f, IntegerField):
             try:
                 data[f.name] = int(val)
             except (ValueError, TypeError):
-                data[f.name] = None
+                try:
+                    # "40.5" is a stated measurement and `int()` refuses it.
+                    # This module's own docstring says CB sends decimal strings,
+                    # so discarding one throws away a reading the caller gave us
+                    # — for eGFR that silently hands the screen to the derived
+                    # value instead.
+                    #
+                    # `float`, NOT `int(float(...))`. Truncating would make the
+                    # quoted and unquoted forms of the same number mean different
+                    # things across all 31 IntegerField columns, several of which
+                    # are physiologically fractional: "990.9"/"9.95" for the FLC
+                    # pair floors to 990/9, a ratio of 110 against a true 99.59,
+                    # which trips `meets_slim` and republishes a smoldering
+                    # patient as active. Floor is also biased on every ceiling
+                    # criterion ("2.9" vs `ecog_max=2` becomes a match). Nothing
+                    # enforces the column type here — `PatientInfo` is a plain
+                    # object, and `normalize` already writes a float 129.93 into
+                    # this very "IntegerField".
+                    coerced = float(val)
+                    if not isfinite(coerced):
+                        # "inf" parses where int() refused it. Infinity clears
+                        # every ceiling criterion and reads as adequate renal
+                        # function; it is not a measurement.
+                        raise ValueError(val)
+                    data[f.name] = coerced
+                except (ValueError, TypeError, OverflowError):
+                    data[f.name] = None
         elif isinstance(f, FloatField):
             try:
                 data[f.name] = float(val)
