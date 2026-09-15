@@ -236,6 +236,77 @@ class TestPsqlDsnAndEnv:
         assert env['PGPASSWORD'] == password
 
 
+class TestBothPasswordLocationsAtOnce:
+    """libpq parses the userinfo first and then the query, and a later setting
+    of a keyword replaces the earlier one — so a DSN carrying both connects
+    with the *query* password. Taking the authority one stripped both and then
+    authenticated with the value libpq would have discarded: a working DSN
+    turned into a password failure by the fix meant to keep it working."""
+
+    def test_the_query_password_wins(self):
+        dsn, env = psql_dsn_and_env('postgresql://u:old@h/db?password=new')
+
+        assert env['PGPASSWORD'] == 'new'
+        assert 'old' not in dsn and 'new' not in dsn
+        assert dsn == 'postgresql://u@h/db'
+
+
+class TestSpellingsOfTheQueryPassword:
+    """libpq percent-decodes parameter *names*, so `%70assword=` is
+    `password=`. Matching the literal lowercase text reports success on a DSN
+    whose credential is still in it."""
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u@h/db?password=s3cr3t',
+        'postgresql://u@h/db?Password=s3cr3t',
+        'postgresql://u@h/db?PASSWORD=s3cr3t',
+        'postgresql://u@h/db?%70assword=s3cr3t',
+        'postgresql://u@h/db?sslpassword=s3cr3t',
+        'postgresql://u@h/db?sslmode=require&Password=s3cr3t',
+    ])
+    def test_python_strips_every_spelling(self, url):
+        dsn, env = psql_dsn_and_env(url)
+
+        assert 's3cr3t' not in dsn
+        assert env['PGPASSWORD'] == 's3cr3t'
+
+    @pytest.mark.parametrize('url', [
+        'postgresql://u@h/db?password=s3cr3t',
+        'postgresql://u@h/db?Password=s3cr3t',
+        'postgresql://u@h/db?%70assword=s3cr3t',
+        'postgresql://u@h/db?sslmode=require&Password=s3cr3t',
+    ])
+    def test_the_shell_twin_refuses_every_spelling(self, url):
+        """The shell twin refuses where Python strips — but it has to refuse
+        the *same set*, or the container init keeps a credential the migrated
+        management commands would have removed."""
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; psql_dsn_split {url!r} && echo "DSN=$PSQL_DSN"'],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        assert result.returncode != 0, result.stdout
+        assert 's3cr3t' not in result.stdout
+
+    def test_the_shell_twin_still_accepts_an_ordinary_dsn(self):
+        """The blunt rule must not refuse DSNs that carry no credential in the
+        query — a refusal aborts container start."""
+        helper = Path(settings.BASE_DIR) / 'docker' / 'psql_dsn.sh'
+        result = subprocess.run(
+            ['bash', '-c',
+             f'source {helper}; '
+             "psql_dsn_split 'postgresql://u:pw@h/db?sslmode=require' && "
+             'echo "DSN=$PSQL_DSN PG=$PGPASSWORD"'],
+            capture_output=True, text=True, timeout=30,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert 'DSN=postgresql://u@h/db?sslmode=require' in result.stdout
+        assert 'PG=pw' in result.stdout
+
+
 class TestAUriWithNoDatabasePath:
     """`postgresql://user@host?password=secret` is a valid libpq URI, and the
     authority split ended at the first `/` — which a pathless URI has none of,

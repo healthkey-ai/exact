@@ -112,8 +112,26 @@ psql_dsn_split() {
     if [[ "$PSQL_DSN" =~ ^[^:]+://[^/]*:[^/]*@ ]]; then
         _psql_dsn_refuse "authority still contains a password" || return 1
     fi
-    if [[ "$PSQL_DSN" =~ [?\&](password|sslpassword)= ]]; then
+    # Case-insensitively, and over percent-encoded spellings: libpq decodes
+    # parameter *names*, so `%70assword=` is `password=`, and matching the
+    # literal lowercase text let both that and `?Password=` through with the
+    # credential still in the DSN — the exact exposure this refuses. The
+    # Python twin strips both (it decodes the key), so a literal match here
+    # also left the two disagreeing about the same input.
+    #
+    # Decoding in bash is the part worth not attempting: the obvious
+    # `printf '%b' "${k//%/\\x}"` also interprets backslash escapes, so it
+    # mangles keys it should pass through. Since this function refuses rather
+    # than strips, it can be blunt instead: any `%` in a parameter *name* is
+    # itself grounds to refuse, which covers every encoding of `password`
+    # without decoding anything.
+    local query_lower
+    query_lower="$(printf '%s' "$PSQL_DSN" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$query_lower" =~ [?\&](password|sslpassword)= ]]; then
         _psql_dsn_refuse "query string still contains a password" || return 1
+    fi
+    if [[ "$query_lower" =~ [?\&][^=\&]*%[^=\&]*= ]]; then
+        _psql_dsn_refuse "query string has a percent-encoded parameter name" || return 1
     fi
     return 0
 }

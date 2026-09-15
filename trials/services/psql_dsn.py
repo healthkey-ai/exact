@@ -165,7 +165,13 @@ def _strip_uri_password(db_url: str) -> tuple[str, str | None]:
     path, question, query = tail.partition("?")
     if question:
         query, query_password = _strip_query_password(query)
-        if password is None:
+        if query_password is not None:
+            # libpq parses the userinfo first and then the query, and a later
+            # setting of the same keyword replaces the earlier one — so with
+            # `postgresql://u:old@h/db?password=new` it connects as `new`.
+            # Keeping `old` here stripped both and then authenticated with the
+            # one libpq would have discarded: a working DSN turned into a
+            # password failure by the fix meant to leave it working.
             password = query_password
         tail = f"{path}?{query}" if query else path
 
