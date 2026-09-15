@@ -42,6 +42,7 @@ Tracked as #150/#108.
 import ast
 import datetime as dt
 import json
+import logging
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -51,6 +52,9 @@ from trials.services.patient_info.normalize import normalize_patient_info
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
+
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_patient_info(request) -> Optional['PatientInfo']:
@@ -65,7 +69,8 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
     """
     patient_info_data = _get_body_field(request, 'patient_info')
     if patient_info_data:
-        return _build_in_memory(patient_info_data)
+        # The one caller that is a client, so the one that gets 400s.
+        return _build_in_memory(patient_info_data, strict=True)
 
     person_id = _extract_person_id(request)
     if person_id:
@@ -125,8 +130,16 @@ def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
     return build_patient_info_from_ctomop_row(row)
 
 
-def _build_in_memory(data: dict) -> 'PatientInfo':
-    """Build an unsaved PatientInfo from a dict, compute derived fields."""
+def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
+    """Build an unsaved PatientInfo from a dict, compute derived fields.
+
+    `strict` refuses a malformed value instead of falling back to the
+    derivation. It is a property of the HTTP boundary, not of this helper, so
+    it defaults OFF and exactly one caller turns it on: the inline payload in
+    `resolve_patient_info`, where the caller is a client and 400 is the right
+    answer. The CTOMOP adapter and the management commands leave it off —
+    there a raise blames the wrong party (see below).
+    """
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
 
@@ -151,6 +164,57 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     _normalize_structured_json_fields(filtered)
 
     pi = PatientInfo(**filtered)
+    if 'tp53_disruption' in filtered:
+        value = filtered['tp53_disruption']
+        if value is not None and type(value) is not bool and strict:
+            # The inline path only: a client sent something that is not an
+            # aggregate, and 400 names the right party.
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError(
+                {'patient_info': {'tp53_disruption': 'Expected a boolean or null.'}}
+            )
+        if value is None or type(value) is bool:
+            # An explicit aggregate is supplied by the caller (including
+            # unknown). Retain it across normalization and later
+            # attribute-service instances.
+            pi._provided_tp53_disruption = value
+        else:
+            # Anything else is not an aggregate we can trust, so no provenance
+            # is recorded and the legacy derivation runs — exactly what these
+            # values did before the aggregate was honoured at all, since
+            # `normalize` overwrote the field unconditionally.
+            #
+            # Deliberately not a ValidationError. This helper is shared: the
+            # CTOMOP adapter and four management commands
+            # (`search_trials_for_patients`, `explain_trial_match`,
+            # `probe_eligibility`, `compare_trials`) all reach it, so a raise
+            # here turns a malformed UPSTREAM row into a client 400 —
+            # `trials_views._resolve_patient_info` re-raises `APIException`
+            # unchanged, and its own comment says a person_id-path failure
+            # must surface as 500 "rather than masking it as a misleading
+            # 400". In a batch command it is not a 400 at all, it is a
+            # traceback. It also breaks the contract this function documents
+            # and implements next door: `_coerce_dates`, `_coerce_numerics`
+            # ("CB API can send \"10.20\"") and `_coerce_json_fields` all
+            # accept loose input, and the module docstring says of the inline
+            # path "CancerBot depends on this contract — do not change".
+            #
+            # Reached only with `strict` off, i.e. from the CTOMOP adapter or
+            # a management command. Raising there blames the wrong party: the
+            # value came from UPSTREAM, and `trials_views._resolve_patient_info`
+            # re-raises `APIException` unchanged while its own comment says a
+            # person_id-path failure must surface as 500 "rather than masking
+            # it as a misleading 400". In a batch command it is not a 400 at
+            # all, it is a traceback that ends the run.
+            #
+            # Falling back is also what these values did before the aggregate
+            # was honoured at all, since `normalize` overwrote the field
+            # regardless — the status quo, not new leniency.
+            logger.warning(
+                'Ignoring tp53_disruption of unsupported type %s for person_id '
+                '%s; falling back to the marker derivation.',
+                type(value).__name__, data.get('person_id', '<inline>'),
+            )
 
     # Attach M2M as synthetic attributes so matchers can read them
     if pre_existing_ids:

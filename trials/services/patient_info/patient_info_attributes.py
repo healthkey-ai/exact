@@ -97,6 +97,11 @@ BULKY_DISEASE_CRITERIA_SOURCES = {
 }
 
 
+# `None` is a MEANINGFUL supplied value here (an unresolved aggregate), so
+# "was it supplied at all?" needs a marker that is not None.
+_NOT_SUPPLIED = object()
+
+
 class PatientInfoAttributes:
     def __init__(self, patient_info):
         self.patient_info = patient_info
@@ -622,6 +627,14 @@ class PatientInfoAttributes:
         - tp53Mutation in molecular_markers OR
         - p53_ihc >= 50%
         """
+        provided = getattr(self.patient_info, '_provided_tp53_disruption', _NOT_SUPPLIED)
+
+        # An explicit TRUE carries information the markers may not: the source
+        # knows of a disruption this record does not spell out. Nothing below
+        # can contradict it, so take it and stop.
+        if provided is True:
+            return True
+
         cytogenic = self.patient_info.cytogenic_markers or ''
         molecular = self.patient_info.molecular_markers or ''
 
@@ -629,13 +642,45 @@ class PatientInfoAttributes:
         molecular_list = [m.strip() for m in molecular.split(',') if m.strip()]
 
         if 'del17p13' in cytogenic_list or 'del17p13' in molecular_list or 'tp53Mutation' in molecular_list:
-            return True
+            return self._tp53_contradiction() if provided is False else True
 
         # p53 IHC overexpression (>= 50%) is a TP53-disruption surrogate (CB).
         if self.patient_info.p53_ihc is not None and self.patient_info.p53_ihc >= 50:
-            return True
+            return self._tp53_contradiction() if provided is False else True
+
+        # Nothing above found positive evidence.
+        #
+        # An explicit NULL means the aggregate was not resolved upstream, which
+        # is not evidence of absence — so it yields unknown rather than the
+        # `False` this derivation would otherwise return. That is the point of
+        # honouring the aggregate at all.
+        if provided is None:
+            return None
 
         return False
+
+    def _tp53_contradiction(self):
+        """Only reached when the caller said FALSE and the markers say TRUE.
+
+        Resolved as unknown rather than as either side, because the `False` is
+        not reliably an assertion. `tp53_disruption` is a field EXACT DERIVES
+        (`normalize.py`) and `PatientInfoSerializer.to_representation` emits it
+        verbatim, so a caller that reads a patient record and sends it back
+        carries EXACT's own derivation on the wire. Measured: a record with no
+        markers serialises `tp53_disruption: False`, and echoing that back
+        alongside `tp53Mutation` used to silence the marker entirely.
+
+        `None` dominates `False` in both directions of harm. Against a trial
+        that EXCLUDES TP53-disrupted patients, `False` reads as `matched` and
+        offers the trial outright; `None` reads as `unknown` and leaves it a
+        candidate to be resolved. Against one that REQUIRES the disruption,
+        `False` reads as `not_matched` and denies the patient a trial their own
+        markers qualify them for; `None` again leaves it open.
+
+        So a contradiction is surfaced as a gap rather than silently decided in
+        favour of whichever side happened to arrive last.
+        """
+        return None
 
     def profile_completeness(self) -> int | None:
         disease_code = self.disease_code
