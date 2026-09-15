@@ -50,6 +50,7 @@ Tracked as #150/#108, #448.
 import ast
 import datetime as dt
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -57,6 +58,15 @@ from django.db.models import DateField, DateTimeField, DecimalField, FloatField,
 from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
+
+# Distinguishes "no person_id supplied" from a supplied-but-falsy one.
+_MISSING = object()
+# Bounded on purpose. A person_id is a database primary key, so bigint's range
+# is the honest ceiling — and the bound must be applied *before* int(), because
+# CPython refuses to convert a string of more than 4300 digits at all
+# (ValueError), which would escape the ValidationError below as a 500.
+_MAX_PERSON_ID = 9223372036854775807  # PostgreSQL bigint
+_DIGITS_ONLY = re.compile(r'[0-9]{1,19}')
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -80,7 +90,7 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
         return _build_in_memory(patient_info_data)
 
     person_id = _extract_person_id(request)
-    if person_id:
+    if person_id is not _MISSING:
         # IDOR gate (#150/#108): the PROMOP fetch uses EXACT's own service
         # credential, which is not bound to the caller, and PROMOP doesn't
         # enforce row-level authz for a service identity — so honoring an
@@ -107,22 +117,32 @@ def _get_body_field(request, name: str) -> Any:
     return data.get(name)
 
 
-def _extract_person_id(request) -> Optional[Any]:
-    """Return person_id from query params first, then body. None if absent.
+def _extract_person_id(request) -> Any:
+    """Return the supplied person_id, or `_MISSING` when the caller named none.
+
+    Presence, not truthiness. A JSON body can carry `{"person_id": 0}`, and
+    `0` is falsy — reading this field with `or` turned that into "no patient
+    supplied", which meant a bad id was answered with a whole-corpus search
+    (and slipped past the 403 gate, since the gate only fires when a person_id
+    is present). An empty `?person_id=` is the same mistake in the query
+    string. Both are now *supplied but invalid*, and validation rejects them.
 
     The return is `Any` (not `str`) because the body path can carry a JSON
-    integer (e.g. `{"person_id": 9003}`) while the query-string path always
-    yields `str`. `PromopClient.fetch_patient` coerces both to int before
-    constructing the URL.
+    integer while the query-string path always yields `str`.
     """
     query_params = getattr(request, 'query_params', None)
     if query_params:
-        pid = query_params.get('person_id') or query_params.get('personId')
-        if pid:
-            return pid
+        for key in ('person_id', 'personId'):
+            if key in query_params:
+                return query_params[key]
 
-    body_pid = _get_body_field(request, 'person_id') or _get_body_field(request, 'personId')
-    return body_pid or None
+    data = getattr(request, 'data', None)
+    if isinstance(data, dict):
+        for key in ('person_id', 'personId'):
+            if key in data:
+                return data[key]
+
+    return _MISSING
 
 
 class PatientContextUnavailable(APIException):
@@ -155,13 +175,30 @@ def _reject_malformed_person_id(person_id: Any) -> None:
     an upstream that was never called turns a permanently-unsatisfiable client
     mistake into a 5xx: alert noise, and a retry loop in any client that retries
     5xx. The shape check belongs to whoever can still tell the caller.
+
+    Checked by type, not by `int()`. A JSON body carries real types, and `int()`
+    *truncates* rather than refusing: `int(1.5)` is 1 and `int(True)` is 1, so
+    `{"person_id": 1.5}` would have quietly fetched and matched patient 1 — a
+    different, real patient's record. Anything that is not an integer, or an
+    all-digit string of at most bigint's 19 digits, is rejected rather than
+    rounded into somebody — or handed to an `int()` that refuses to convert it.
     """
-    try:
+    bad = ValidationError({'person_id': (
+        'Must be a positive integer no larger than 9223372036854775807.'
+    )})
+    if isinstance(person_id, bool):
+        # bool is a subclass of int; `True` would otherwise pass as patient 1.
+        raise bad
+    if isinstance(person_id, int):
+        value = person_id
+    elif isinstance(person_id, str) and _DIGITS_ONLY.fullmatch(person_id):
+        # Not str.isdigit(): that accepts non-ASCII digit characters, which
+        # int() then happily converts.
         value = int(person_id)
-    except (TypeError, ValueError, OverflowError):
-        raise ValidationError({'person_id': 'Must be a positive integer.'})
-    if value <= 0:
-        raise ValidationError({'person_id': 'Must be a positive integer.'})
+    else:
+        raise bad
+    if not 0 < value <= _MAX_PERSON_ID:
+        raise bad
 
 
 def _resolve_from_promop(person_id: Any) -> 'PatientInfo':

@@ -85,8 +85,8 @@ class TestPatientResolveErrors:
         assert 'patient' in str(resp.data).lower()
 
     @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
-    @pytest.mark.parametrize('bad_id', ['abc', '0', '-1', '1.5'])
-    def test_malformed_person_id_is_400_and_never_reaches_promop(
+    @pytest.mark.parametrize('bad_id', ['abc', '0', '-1', '1.5', '', '٣', ' 9001'])
+    def test_malformed_person_id_in_the_query_is_400_and_never_reaches_promop(
             self, authed_client, bad_id):
         """A person_id the *client* got wrong must not be reported as an
         upstream failure: 502 would blame a PROMOP that was never called, and
@@ -100,6 +100,93 @@ class TestPatientResolveErrors:
         assert resp.status_code == 400
         assert 'person_id' in str(resp.data).lower()
         mock_get.assert_not_called()
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    @pytest.mark.parametrize('bad_id', [0, -1, 1.5, True, False, '1.5', 'abc', '', None])
+    def test_a_json_body_person_id_is_checked_by_type_not_coerced(
+            self, authed_client, bad_id):
+        """A JSON body carries real types, and `int()` truncates rather than
+        refusing: `int(1.5)` and `int(True)` are both 1, so these would have
+        fetched and matched patient 1 — a different, real patient. And `0` is
+        falsy, so reading the field with `or` made it look like no patient was
+        named at all: a whole-corpus 200, past a gate that only fires when a
+        person_id is present."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.requests.get',
+        ) as mock_get:
+            resp = authed_client.post(
+                '/trials/match/', {'person_id': bad_id}, format='json')
+        assert resp.status_code == 400
+        mock_get.assert_not_called()
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    @pytest.mark.parametrize('bad_id', [
+        '9' * 5000,                      # CPython refuses int() past 4300 digits
+        '9' * 20,                        # past bigint
+        str(9223372036854775807 + 1),    # one past bigint
+    ])
+    def test_an_oversized_person_id_is_400_not_500(self, authed_client, bad_id):
+        """The length bound is applied before `int()`, which raises rather than
+        converting a string of more than 4300 digits — that ValueError would
+        escape the 400 and surface as a server error for what is client input."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.requests.get',
+        ) as mock_get:
+            resp = authed_client.get(f'/trials/?person_id={bad_id}')
+        assert resp.status_code == 400
+        mock_get.assert_not_called()
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    @pytest.mark.parametrize('bad_id', [0, '', 1.5])
+    def test_a_falsy_person_id_still_meets_the_gate(self, authed_client, bad_id):
+        """The 403 gate fires on a person_id being *supplied*, so a falsy one
+        must not slip past it into a patientless search."""
+        TrialFactory(disease='Multiple Myeloma')
+        resp = authed_client.post(
+            '/trials/match/', {'person_id': bad_id}, format='json')
+        assert resp.status_code == 403
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    def test_a_repeated_person_id_takes_the_last_one(self, authed_client):
+        """QueryDict is last-wins, so `?person_id=1&person_id=2` reads patient 2.
+        Unchanged behaviour, pinned because it decides *whose record* is
+        returned: switching to `getlist` or `.get()` semantics would silently
+        change that, and nothing else in the suite would notice."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.PromopClient.fetch_patient',
+            return_value={'person_id': 2, 'disease': 'multiple myeloma'},
+        ) as mock_fetch:
+            resp = authed_client.get('/trials/?person_id=1&person_id=2')
+        assert resp.status_code == 200
+        assert mock_fetch.call_args.args[0] == '2'
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=False)
+    @pytest.mark.parametrize('query', ['person_id=', 'person_id'])
+    def test_an_empty_query_person_id_still_meets_the_gate(self, authed_client, query):
+        """The falsy-id gate test covers the JSON body; this is the query-string
+        half. An empty value is the key being present, so it is a named patient
+        and the disabled path must refuse it rather than browse."""
+        TrialFactory(disease='Multiple Myeloma')
+        resp = authed_client.get(f'/trials/?{query}')
+        assert resp.status_code == 403
+
+    @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
+    @pytest.mark.parametrize('good_id', [9001, '9001'])
+    def test_a_well_formed_person_id_still_resolves(self, authed_client, good_id):
+        """The strictness must not cost the shapes real callers send: the
+        federation host sends a string, the dev harness a JSON integer."""
+        TrialFactory(disease='Multiple Myeloma')
+        with patch(
+            'trials.services.patient_info.promop_client.PromopClient.fetch_patient',
+            return_value={'person_id': 9001, 'disease': 'multiple myeloma'},
+        ) as mock_fetch:
+            resp = authed_client.post(
+                '/trials/match/', {'person_id': good_id}, format='json')
+        assert resp.status_code == 200
+        assert mock_fetch.call_args.args[0] == good_id
 
     @override_settings(EXACT_ALLOW_PERSON_ID_LOOKUP=True)
     def test_unfetchable_person_id_costs_one_upstream_round_trip(self, authed_client):

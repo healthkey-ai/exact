@@ -292,4 +292,3 @@ class TestVocabCredential:
             else:
                 list(client.stream_snapshot(2, 'concept'))
         assert called == []
-

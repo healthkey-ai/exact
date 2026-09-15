@@ -1,8 +1,8 @@
 """HTTP client for promop's vocabulary-release snapshot API (promop#334, #250).
 
-Distinct from the patient client (``trials.services.patient_info.promop_client``):
-the vocab-releases / snapshot endpoints are vocabulary-scoped, so this has its
-own credential settings (``PROMOP_VOCAB_*``). It reuses that module's generic
+Distinct from the patient client (``trials.services.patient_info.promop_client``)
+only in having its own settings (``PROMOP_VOCAB_*``) and its own endpoints; it
+should carry the SAME credential. It reuses that module's generic
 ``client_credentials`` token minter (DRY) but nothing else.
 
 Two credentials, same choice as the patient client (#448): a static bearer
