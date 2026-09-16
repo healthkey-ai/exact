@@ -1,10 +1,10 @@
-"""Guards the deploy-render `workflow_run` trigger against a silent no-op.
+"""Guards the deploy-render workflow: manual-only, test-gated, commit-pinned.
 
-`on.workflow_run.workflows` matches the triggering workflow's `name:`, not its
-filename. The test suite lives in django.yml but is *named* `backend`, so
-`workflows: [django]` matched nothing: the workflow never fired, every `if:`
-below it was unreachable, and neither GitHub nor CI reported anything. The only
-symptom was a deploy that quietly stopped happening.
+It used to trigger on `workflow_run`, which GitHub reads from the default
+branch's copy of the file — dormant while `main` was the default, and an
+automatic deploy of every green `main` push once `dev` became the default.
+Staging deploys are manual (#329), so this one is too, and the green-suite gate
+that `workflow_run` provided is now an explicit first step.
 
 Source-level, in the spirit of tests/test_settings_security.py — the failure is
 a configuration mismatch, so reading the files is the check. Parsed with
@@ -141,82 +141,110 @@ def _run_embedded(program, stdin, commit_id):
     )
 
 
-def _triggering_workflows():
-    """The entries of `on.workflow_run.workflows` in deploy-render.yml.
+def _triggers():
+    """The keys directly under `on:` in deploy-render.yml, in order.
 
-    Accepts both YAML list forms — flow (`workflows: [backend]`) and block
-    (`workflows:` then `  - backend`) — so reformatting the file does not turn
-    into a spurious failure here.
+    Line-based rather than a regex over the block: the block ends at the next
+    unindented line, and its keys are the lines indented by exactly two spaces.
     """
-    source = DEPLOY_RENDER.read_text()
-    flow = re.search(r'^\s*workflows:\s*\[([^\]]*)\]\s*$', source, re.MULTILINE)
-    if flow:
-        entries = flow.group(1).split(',')
-    else:
-        block = re.search(
-            r'^(\s*)workflows:\s*\n((?:\1\s+-\s*\S.*\n)+)', source, re.MULTILINE
+    lines = DEPLOY_RENDER.read_text().split('\n')
+    assert 'on:' in lines, 'no block-form `on:` found in deploy-render.yml'
+    keys = []
+    for line in lines[lines.index('on:') + 1:]:
+        if line and not line[0].isspace():
+            break
+        key = re.match(r'  (\w+):', line)
+        if key:
+            keys.append(key.group(1))
+    return keys
+
+
+class TestManualDispatchOnly:
+    def test_the_only_trigger_is_workflow_dispatch(self):
+        """Not `workflow_run`, not `push`: either would deploy on its own. A
+        `workflow_run` trigger also switches on silently when the default
+        branch changes, since GitHub reads it from the default branch's copy."""
+        assert _triggers() == ['workflow_dispatch']
+
+    def test_manual_dispatch_is_branch_guarded(self):
+        """The deploy is pinned to the dispatched commit, so an unguarded
+        dispatch would ship any branch's untested tip. Checked by the first
+        step, which fails loudly, rather than a job `if:` that shows "skipped"."""
+        name, script = next(iter(_run_scripts().items()))
+        assert re.search(
+            r'\[\s*"\$REF"\s*!=\s*"refs/heads/main"\s*\]', _without_comments(script)
+        ), f'the first step ({name!r}) must refuse any ref but main'
+        assert 'exit 1' in _without_comments(script)
+        assert re.search(
+            r"REF:\s*\$\{\{\s*github\.ref\s*\}\}", DEPLOY_RENDER.read_text()
+        ), 'the branch check must read github.ref'
+
+
+class TestDeployIsGatedOnTheTestSuite:
+    """The gate `workflow_run` used to provide: no green backend run for the
+    dispatched commit, no deploy."""
+
+    def _gate(self):
+        scripts = {n: _without_comments(s) for n, s in _run_scripts().items()}
+        names = list(scripts)
+        gate = next(
+            (i for i, n in enumerate(names) if 'gh run list' in scripts[n]), None
         )
-        assert block is not None, \
-            'no `workflows:` list (flow or block form) found in deploy-render.yml'
-        entries = re.findall(r'-\s*(\S.*?)\s*$', block.group(2), re.MULTILINE)
-    return [e.strip().strip('\'"') for e in entries if e.strip()]
-
-
-class TestWorkflowRunTrigger:
-    def test_every_triggering_workflow_name_exists(self):
-        declared = set(_declared_workflow_names().values())
-        for referenced in _triggering_workflows():
-            assert referenced in declared, (
-                f'deploy-render.yml triggers on workflow {referenced!r}, but no '
-                f'workflow declares that `name:`. Known names: {sorted(declared)}. '
-                'workflow_run matches `name:`, not the filename — a mismatch '
-                'means the deploy silently never runs.'
-            )
-
-    def test_it_triggers_on_the_test_suite(self):
-        """Specifically the backend suite, so the deploy stays gated on tests."""
-        backend_name = _declared_workflow_names().get('django.yml')
-        assert backend_name is not None, 'django.yml has no `name:`'
-        assert backend_name in _triggering_workflows(), (
-            f'deploy-render.yml must trigger on django.yml (named {backend_name!r}) '
-            'or the deploy is no longer gated on the test suite.'
+        assert gate is not None, 'no step runs the backend gate'
+        deploy = next(
+            (i for i, n in enumerate(names) if '-X POST' in scripts[n]), None
         )
+        assert deploy is not None, 'no step POSTs the deploy'
+        assert gate < deploy, (
+            f'the backend gate ({names[gate]!r}) must run before the deploy '
+            'request, so nothing is deployed before it passes'
+        )
+        return scripts[names[gate]]
 
-    @pytest.mark.parametrize('guard', [
-        r"github\.event\.workflow_run\.conclusion\s*==\s*'success'",
-        r"github\.event\.workflow_run\.head_branch\s*==\s*'main'",
-        r"github\.event\.workflow_run\.event\s*==\s*'push'",
+    def test_the_gate_checks_the_backend_suite(self):
+        backend_file = 'django.yml'
+        assert backend_file in _declared_workflow_names(), \
+            'django.yml (the backend suite) no longer exists'
+        assert re.search(r'--workflow\s+' + re.escape(backend_file), self._gate())
+
+    @pytest.mark.parametrize('flag', [
+        r'--commit\s+"\$COMMIT_ID"',
+        r'--status\s+success',
+        # A pull_request run — a fork's included — must never satisfy it.
+        r'--event\s+push',
     ])
-    def test_conclusion_branch_and_event_are_all_guarded(self, guard):
-        """workflow_run fires for every branch, every conclusion and every
-        upstream event — so dropping the conclusion check makes this a
-        deploy-on-red, and dropping the event check makes it deploy fork PRs.
+    def test_the_gate_requires_a_successful_push_run_of_this_commit(self, flag):
+        assert re.search(flag, self._gate()), f'the gate is missing {flag!r}'
 
-        The `event == 'push'` clause is the one that is easy to think redundant.
-        This repo is public and django.yml runs on bare `pull_request:`, so a
-        fork PR produces a `backend` run whose `head_branch` is the branch name
-        in the *fork* — `main`, for anyone who pushed to their fork's default
-        branch first. Branch and conclusion alone would let that deploy, in the
-        base-repo context, with the Render API key.
-        """
-        assert re.search(guard, DEPLOY_RENDER.read_text()), \
-            f'deploy-render.yml is missing the {guard!r} guard'
+    def test_the_gate_fails_when_nothing_matches(self):
+        assert re.search(r'-lt\s+1\s*\]', self._gate())
+        assert 'exit 1' in self._gate()
+
+    def test_the_token_can_read_actions(self):
+        lines = DEPLOY_RENDER.read_text().split('\n')
+        assert 'permissions:' in lines, 'deploy-render.yml sets no permissions'
+        block = []
+        for line in lines[lines.index('permissions:') + 1:]:
+            if line and not line[0].isspace():
+                break
+            block.append(line.strip())
+        assert 'actions: read' in block, \
+            '`gh run list` needs `actions: read` on the job token'
 
 
 class TestDeployIsPinnedToTheTestedCommit:
     """Gating on a green suite is worthless if the deploy is not the revision
     that turned it green. Render builds the tracked branch's current tip unless
-    the request names a commit, so a push landing while the suite ran would
-    ship untested — the exact race the `workflow_run` gate is meant to close.
+    the request names a commit, so a push landing after the dispatch would
+    ship untested — past the gate that checked the dispatched commit.
     """
 
-    def test_commit_id_comes_from_the_triggering_run(self):
+    def test_every_step_uses_the_dispatched_commit(self):
+        """The gate and the deploy must name the same revision."""
         source = DEPLOY_RENDER.read_text()
-        assert re.search(
-            r"COMMIT_ID:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha",
-            source,
-        ), ('deploy-render.yml must resolve COMMIT_ID from '
-            'github.event.workflow_run.head_sha — the revision the suite ran.')
+        values = re.findall(r'COMMIT_ID:\s*(\$\{\{.*?\}\})', source)
+        assert len(values) == 3, f'expected COMMIT_ID in 3 steps, got {values}'
+        assert set(values) == {'${{ github.sha }}'}, values
 
     def test_the_deploy_request_pins_the_commit(self):
         """Asserted on the request line, not on the file.
@@ -246,17 +274,6 @@ class TestDeployIsPinnedToTheTestedCommit:
                 f'the {name!r} step interpolates a GitHub expression directly '
                 'into its run: script; pass it via env: instead.'
             )
-
-    def test_manual_dispatch_is_branch_guarded(self):
-        """Unguarded dispatch used to be harmless — the request carried no
-        commit, so Render built the tracked branch regardless of the ref. With
-        the commit pinned it would ship the dispatched branch's untested tip."""
-        source = DEPLOY_RENDER.read_text()
-        assert re.search(
-            r"github\.event_name\s*==\s*'workflow_dispatch'\s*&&\s*\n?\s*"
-            r"github\.ref\s*==\s*'refs/heads/main'",
-            source,
-        ), 'the workflow_dispatch arm of the `if:` must also require main'
 
     def test_the_accepted_deploy_is_checked_against_the_commit(self):
         """Both response paths verify, not just the adopted one: an API that
@@ -439,5 +456,5 @@ class TestTheDeployIsConfirmedNotJustRequested:
         source = DEPLOY_RENDER.read_text()
         step = source.split(f'- name: {name}', 1)[1].split('run:', 1)[0]
         assert re.search(
-            r"COMMIT_ID:\s*\$\{\{\s*github\.event\.workflow_run\.head_sha", step
+            r"COMMIT_ID:\s*\$\{\{\s*github\.sha\s*\}\}", step
         ), f'the {name!r} step must receive COMMIT_ID via env:'

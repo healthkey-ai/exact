@@ -1,34 +1,31 @@
 name: Deploy to Render
 
-# Ships `main` to the Render staging service. Runs alongside deploy-staging,
-# which ships the same commit to Cloud Run: exact is deployed to both, and
+# Ships `main` to the Render staging service. Manual dispatch only, like
+# deploy-staging, which ships to Cloud Run: exact is deployed to both, and
 # neither platform is authoritative.
 #
-# Gated on the backend suite rather than calling a reusable workflow — none of
-# this repo's CI workflows are workflow_call-able, and rewiring them to be so
-# is a bigger change than this deploy warrants. workflow_run fires once that
-# suite finishes, and the conclusion check below is what keeps a red build
-# from shipping.
+# Manual, not `workflow_run`: a `workflow_run` trigger is read from the
+# *default* branch's copy of this file, so it was dormant while `main` was the
+# default and would have started auto-deploying every green push to `main` the
+# moment `dev` became the default. Staging deploys are a deliberate act here
+# (#329), on both platforms.
 #
-# Render's own auto-deploy is off for this service (Terraform sets
-# auto_deploy = false), and every deploy this workflow requests is pinned to
-# the commit that passed the suite — so neither the platform nor a push
-# landing mid-run can ship a revision the tests never saw.
+# Still gated on the backend suite: a step before the deploy refuses a commit
+# that has no successful `backend` push run. Render's own auto-deploy is off
+# for this service (Terraform sets auto_deploy = false), and every deploy this
+# workflow requests is pinned to the dispatched commit — so neither the
+# platform nor a push landing mid-run can ship a revision the tests never saw.
 #
 # Needs:
 #   secrets.RENDER_API_KEY          — Render API key
 #   vars.RENDER_EXACT_SERVICE_ID    — the exact web service id (srv-…)
 
 on:
-  workflow_run:
-    # This matches the triggering workflow's `name:`, NOT its filename — the
-    # test suite lives in django.yml but is named `backend`. Naming the file
-    # here silently never matches: workflow_run simply does not fire, every
-    # `if:` below becomes unreachable, and nothing reports an error.
-    # tests/test_deploy_render_workflow.py guards the pairing.
-    workflows: [backend]
-    types: [completed]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
 
 concurrency:
   group: deploy-render
@@ -38,39 +35,49 @@ jobs:
   deploy:
     name: Deploy to Render (staging)
     runs-on: ubuntu-latest
-    # workflow_run fires for every branch and for failed runs too, so the
-    # branch and conclusion both have to be checked here. workflow_dispatch
-    # carries neither, hence the event fallback.
-    # Three things have to hold, and `head_branch == 'main'` is not one of them
-    # on its own. This repo is public and django.yml runs on bare
-    # `pull_request:`, so a fork PR gets a `backend` run whose `head_branch` is
-    # the branch name *in the fork* — `main`, for anyone who pushes to their
-    # fork's default branch before opening the PR. That run's completion would
-    # satisfy a branch-and-conclusion check, and this job would then execute in
-    # the base-repo context, with RENDER_API_KEY, pinning `commitId` to an
-    # unreviewed fork commit. Requiring the upstream event to be a `push`
-    # excludes every PR run, fork or not.
-    #
-    # A manual dispatch is branch-checked too. It used to be harmless without
-    # one: the request carried no commit, so Render built the tracked branch
-    # whatever ref the dispatch came from. Now that the commit is pinned, an
-    # unguarded dispatch would ship the dispatched branch's untested tip.
-    if: >-
-      (github.event_name == 'workflow_dispatch' &&
-       github.ref == 'refs/heads/main') ||
-      (github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
     steps:
+      # A dispatch is branch-checked: the deploy is pinned to the dispatched
+      # commit, so an unguarded dispatch would ship any branch's tip. A failing
+      # step rather than a job-level `if:`, which would show a dispatch from the
+      # wrong branch as "skipped" — easy to read as done, and the Run workflow
+      # picker preselects the default branch, which is not `main`.
+      - name: Refuse any branch but main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "Deploys ship main only; this was dispatched from $REF."
+            echo "Re-run it with 'Use workflow from: main'."
+            exit 1
+          fi
+
+      - name: Require a green backend run for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT_ID: ${{ github.sha }}
+        run: |
+          # The gate `workflow_run` used to provide. Only `push` runs count, so a
+          # pull_request run — including a fork's — can never satisfy it.
+          set -euo pipefail
+          GREEN=$(gh run list -R "$REPO" --workflow django.yml \
+            --commit "$COMMIT_ID" --event push --status success \
+            --json databaseId --jq 'length')
+          if [ "$GREEN" -lt 1 ]; then
+            echo "No successful backend push run for $COMMIT_ID — refusing to deploy."
+            echo "Wait for the backend suite to finish green on main, then re-dispatch."
+            exit 1
+          fi
+          echo "backend is green for $COMMIT_ID"
+
       - name: Trigger Render deploy
         id: trigger
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
-          # The revision the suite actually ran against. Via env, never
-          # interpolated into the script below. workflow_dispatch carries no
-          # workflow_run payload, so it falls back to the dispatched ref's tip.
-          COMMIT_ID: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # The dispatched commit, which the gate above checked. Via env, never
+          # interpolated into the script below.
+          COMMIT_ID: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -82,9 +89,8 @@ jobs:
           fi
 
           # `commitId`, not `{}`: without it Render builds whatever the tracked
-          # branch points at when it receives the call, so a push landing while
-          # the suite was still running would ship a revision that never ran
-          # the tests — defeating the gate this workflow exists to be.
+          # branch points at when it receives the call, so a push landing after
+          # the dispatch would ship a revision the gate above never checked.
           # On its own line, not inline in the curl arguments: `set -e` ignores a
           # non-zero exit from a command substitution used as an argument, so a
           # broken generator would post `-d ""` — the branch-tip deploy this is
@@ -164,7 +170,7 @@ jobs:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           SERVICE_ID: ${{ vars.RENDER_EXACT_SERVICE_ID }}
           DEPLOY_ID: ${{ steps.trigger.outputs.deploy_id }}
-          COMMIT_ID: ${{ github.event.workflow_run.head_sha || github.sha }}
+          COMMIT_ID: ${{ github.sha }}
         run: |
           # This is also where the commit is *confirmed*, not just requested.
           # The POST response is only checked when it happens to echo a commit,
