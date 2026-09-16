@@ -165,6 +165,22 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     _normalize_structured_json_fields(filtered)
 
     pi = PatientInfo(**filtered)
+    # Which fields the CALLER named, as opposed to which happen to hold a value.
+    # Every field below has `default=False`, so "key absent" and "key present,
+    # value null" both arrive as a falsy field and the derivations cannot tell
+    # them apart — an explicit "we do not know" became a confirmed "no". This is
+    # the shared form of the marker #488 added for `tp53_disruption` alone.
+    #
+    # Captured from `filtered`, which keeps None values.
+    #
+    # This helper is NOT inline-payload-only — the CTOMOP/PROMOP adapter and
+    # four management commands reach it too, and there a null is EXACT's own
+    # stored derivation rather than anyone's assertion. What keeps those apart
+    # today is `ctomop_adapter`, which strips None from the row before calling
+    # in; nothing here enforces it. If that strip is ever widened the way
+    # `tp53_disruption` is already exempted from it, upstream nulls would start
+    # reading as caller assertions.
+    pi._provided_fields = frozenset(filtered)
     if 'tp53_disruption' in filtered:
         value = filtered['tp53_disruption']
         if value is not None and type(value) is not bool and strict:
