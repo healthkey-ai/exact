@@ -10,7 +10,7 @@ name: Deploy to Render
 # moment `dev` became the default. Staging deploys are a deliberate act here
 # (#329), on both platforms.
 #
-# Still gated on the backend suite: the first step refuses to deploy a commit
+# Still gated on the backend suite: a step before the deploy refuses a commit
 # that has no successful `backend` push run. Render's own auto-deploy is off
 # for this service (Terraform sets auto_deploy = false), and every deploy this
 # workflow requests is pinned to the dispatched commit — so neither the
@@ -35,12 +35,22 @@ jobs:
   deploy:
     name: Deploy to Render (staging)
     runs-on: ubuntu-latest
-    # A dispatch is branch-checked: the deploy is pinned to the dispatched
-    # commit, so an unguarded dispatch would ship any branch's tip.
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      github.ref == 'refs/heads/main'
     steps:
+      # A dispatch is branch-checked: the deploy is pinned to the dispatched
+      # commit, so an unguarded dispatch would ship any branch's tip. A failing
+      # step rather than a job-level `if:`, which would show a dispatch from the
+      # wrong branch as "skipped" — easy to read as done, and the Run workflow
+      # picker preselects the default branch, which is not `main`.
+      - name: Refuse any branch but main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "Deploys ship main only; this was dispatched from $REF."
+            echo "Re-run it with 'Use workflow from: main'."
+            exit 1
+          fi
+
       - name: Require a green backend run for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,9 +89,8 @@ jobs:
           fi
 
           # `commitId`, not `{}`: without it Render builds whatever the tracked
-          # branch points at when it receives the call, so a push landing while
-          # the suite was still running would ship a revision that never ran
-          # the tests — defeating the gate this workflow exists to be.
+          # branch points at when it receives the call, so a push landing after
+          # the dispatch would ship a revision the gate above never checked.
           # On its own line, not inline in the curl arguments: `set -e` ignores a
           # non-zero exit from a command substitution used as an argument, so a
           # broken generator would post `-d ""` — the branch-tip deploy this is

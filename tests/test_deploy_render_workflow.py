@@ -168,13 +168,16 @@ class TestManualDispatchOnly:
 
     def test_manual_dispatch_is_branch_guarded(self):
         """The deploy is pinned to the dispatched commit, so an unguarded
-        dispatch would ship any branch's untested tip."""
-        source = DEPLOY_RENDER.read_text()
+        dispatch would ship any branch's untested tip. Checked by the first
+        step, which fails loudly, rather than a job `if:` that shows "skipped"."""
+        name, script = next(iter(_run_scripts().items()))
         assert re.search(
-            r"github\.event_name\s*==\s*'workflow_dispatch'\s*&&\s*\n?\s*"
-            r"github\.ref\s*==\s*'refs/heads/main'",
-            source,
-        ), 'the `if:` must require a dispatch from main'
+            r'\[\s*"\$REF"\s*!=\s*"refs/heads/main"\s*\]', _without_comments(script)
+        ), f'the first step ({name!r}) must refuse any ref but main'
+        assert 'exit 1' in _without_comments(script)
+        assert re.search(
+            r"REF:\s*\$\{\{\s*github\.ref\s*\}\}", DEPLOY_RENDER.read_text()
+        ), 'the branch check must read github.ref'
 
 
 class TestDeployIsGatedOnTheTestSuite:
@@ -182,13 +185,21 @@ class TestDeployIsGatedOnTheTestSuite:
     dispatched commit, no deploy."""
 
     def _gate(self):
-        scripts = _run_scripts()
-        first_name, first = next(iter(scripts.items()))
-        assert 'gh run list' in _without_comments(first), (
-            f'the first step ({first_name!r}) must be the backend gate, so '
-            'nothing is deployed before it passes'
+        scripts = {n: _without_comments(s) for n, s in _run_scripts().items()}
+        names = list(scripts)
+        gate = next(
+            (i for i, n in enumerate(names) if 'gh run list' in scripts[n]), None
         )
-        return _without_comments(first)
+        assert gate is not None, 'no step runs the backend gate'
+        deploy = next(
+            (i for i, n in enumerate(names) if '-X POST' in scripts[n]), None
+        )
+        assert deploy is not None, 'no step POSTs the deploy'
+        assert gate < deploy, (
+            f'the backend gate ({names[gate]!r}) must run before the deploy '
+            'request, so nothing is deployed before it passes'
+        )
+        return scripts[names[gate]]
 
     def test_the_gate_checks_the_backend_suite(self):
         backend_file = 'django.yml'
