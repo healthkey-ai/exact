@@ -11,12 +11,22 @@
 //   as the picker uses)
 //     ↓
 //   TrialMatches mounted with the EXACT axios instance + inline
-//   `patientInfo` payload (NOT `personId` — see "Why inline" below)
+//   `patientInfo` payload (NOT `personId` — see "Why inline" below), plus
+//   a `state` adapter on its own CTOMOP instance for the per-user writes
 //
 // The two backends use mutually-exclusive auth schemes (DRF Token for
 // EXACT, Django session cookie for CTOMOP), so the harness keeps two
-// separate axios instances — never share, never mix. The TrialMatches
-// component only ever sees the token instance.
+// separate axios instances — never share, never mix. TrialMatches receives
+// BOTH, one per purpose: the token instance for trials, and the session
+// instance behind `state` for the per-user writes. What it must never
+// receive is one instance doing both jobs.
+//
+// "Per-user writes" is wider than it sounds: `createPromopState` also
+// exposes `getWritableFields`/`setPatientFields` against
+// `/api/v1/patient-records`, so the inline field editing writes through
+// this instance too — and the Local/Staging toggle can point that at the
+// deployed CTOMOP. Editing a field here to see the control render edits a
+// real record on whichever backend is selected.
 //
 // Why inline patientInfo (not `personId`):
 // EXACT's server-side `?person_id=` resolver (added in #102) fetches
@@ -33,12 +43,13 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { AxiosInstance } from "axios";
+import axios, { type AxiosInstance } from "axios";
 
 import { normalizeCtomopRow } from "../federation/api";
+import { createPromopState } from "../federation/state";
 import { TrialMatches } from "../federation/TrialMatches";
 import type { PatientInfo } from "../federation/types";
-import { CtomopClient } from "./ctomopClient";
+import { CtomopClient, DEFAULT_TIMEOUT_MS } from "./ctomopClient";
 import { CtomopPicker } from "./CtomopPicker";
 import { ExactLoginForm } from "./ExactLoginForm";
 import { makeExactClient, readStoredToken, writeStoredToken } from "./exactAuth";
@@ -57,6 +68,44 @@ function currentCtomopBase(): string {
 
 const queryClient = new QueryClient();
 
+/** The per-user state seam, pointed at the same PROMOP the picker reads.
+ *
+ *  Without this the harness mounts `TrialMatches` with no `state`, which is
+ *  the documented no-adapter path: favorites and the registered tab vanish
+ *  and saved filters fall back to `localStorage`. That fallback has no
+ *  `preferenceVersioning`, so the conditional-write half of the feature
+ *  (#494) could not be exercised locally at all — it was reachable only
+ *  through a real host.
+ *
+ *  Its own axios instance, never the EXACT one: the EXACT client carries an
+ *  `Authorization: Token …` and a `/api` baseURL, so sharing it would send
+ *  that token to PROMOP and drag PROMOP's cookie onto EXACT. This file's own
+ *  header says the same thing at the top.
+ *
+ *  `withCredentials` because PROMOP authenticates the harness by session
+ *  cookie, which rides whichever `/ctomop-*` proxy the source toggle
+ *  selects — same-origin either way. */
+function promopStateFor(personId: number) {
+  return createPromopState({
+    client: axios.create({
+      baseURL: currentCtomopBase(),
+      withCredentials: true,
+      // The same bound `CtomopClient` uses, from the same constant rather
+      // than a third copy of the number. Without it a paused PROMOP leaves
+      // the star spinning and "Saving…" unresolved forever while the picker
+      // times out and says so — two stories from one stalled backend.
+      timeout: DEFAULT_TIMEOUT_MS,
+      // No `xsrfCookieName`/`xsrfHeaderName`, deliberately. PROMOP's DRF
+      // stack authenticates with `CsrfExemptSessionAuthentication`, whose
+      // `enforce_csrf` is a no-op, so a session PATCH carries no CSRF token
+      // and is accepted — verified against a running promop, not inferred.
+      // Written down because three separate reviews read the session cookie
+      // and concluded these writes must 403.
+    }),
+    personId,
+  });
+}
+
 function Harness() {
   const [token, setToken] = useState<string | null>(() => readStoredToken());
   const [apiClient, setApiClient] = useState<AxiosInstance | null>(() => {
@@ -64,6 +113,33 @@ function Harness() {
     return t ? makeExactClient(t) : null;
   });
   const [personId, setPersonId] = useState<number | null>(null);
+  // Per-user state is cached by PATIENT, not by backend: `TrialMatches`
+  // derives its query keys from the patient, and the picker's Local/Staging
+  // toggle changes which promop those keys point at without changing the
+  // keys. Before this file passed a `state` adapter there was no per-user
+  // state to cache and the question did not arise; now the same person_id on
+  // the other source would read — and write against — the previous source's
+  // favorites, registrations and saved filters.
+  //
+  // Dropping the cache on a source change is the blunt fix and the right one
+  // here — nothing is lost, because the toggle also clears the selection.
+  //
+  // Note the ordering: `ctomopBase` is read during render, and if no patient
+  // is selected the picker's `onSelect(null)` sets `personId` to the `null`
+  // it already holds, so React bails out and this effect does not run until
+  // the NEXT render — the one that selects a patient. The wipe still lands
+  // before that render mounts `TrialMatches`, because the mount is gated on
+  // `patientInfo` by the ternary below and nothing was mounted to begin
+  // with. So the cost of the late wipe is a refetch, not stale cross-source
+  // data — and the guard that makes that true is the render-level gate, not
+  // the effect that nulls `patientInfo`.
+  const ctomopBase = currentCtomopBase();
+  const lastCtomopBase = useRef(ctomopBase);
+  useEffect(() => {
+    if (lastCtomopBase.current === ctomopBase) return;
+    lastCtomopBase.current = ctomopBase;
+    queryClient.clear();
+  }, [ctomopBase]);
   const [patientInfo, setPatientInfo] = useState<PatientInfo | null>(null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -85,6 +161,13 @@ function Harness() {
     // into the wrong account on the staging host after switching dev
     // identities. `logout()` tolerates 401/403 internally.
     void new CtomopClient(currentCtomopBase()).logout();
+    // And drop the cache, for the same reason the source toggle does. The
+    // per-user state this file now wires up is keyed by PATIENT, not by the
+    // signed-in identity: sign out, sign in as someone else, pick the same
+    // person, and react-query would answer from the previous identity's
+    // favorites and saved filters until they went stale. Sign-out is exactly
+    // where that has to stop.
+    queryClient.clear();
   }, []);
 
   // When a patient is picked, fetch the full patient profile from
@@ -242,11 +325,38 @@ function Harness() {
               Failed to fetch CTOMOP patient profile: {resolveError}
             </div>
           ) : patientInfo != null ? (
-            <TrialMatches
-              apiClient={apiClient}
-              queryClient={queryClient}
-              patientInfo={patientInfo}
-            />
+            <>
+              {/* On the screen, not only in a comment. Passing `state` turned
+                  the harness into a WRITE client: the star is a PATCH to
+                  trial-enrollments and a field pencil is a PATCH to
+                  patient-records. Against `/ctomop-staging` those land on a
+                  deployed, shared record — and once a patient is loaded the
+                  two backends look identical. The person who trips this is
+                  reading the page, not this file. */}
+              {currentCtomopBase() === "/ctomop-staging" ? (
+                <div
+                  style={{
+                    marginBottom: "0.75rem",
+                    padding: "0.5rem 0.75rem",
+                    border: "1px solid #fbbf24",
+                    background: "#fffbeb",
+                    color: "#92400e",
+                    borderRadius: "0.25rem",
+                    fontSize: "0.875rem",
+                  }}
+                >
+                  <strong>Staging CTOMOP.</strong> Bookmarks, registrations,
+                  saved filters and inline field edits write to the deployed
+                  backend, against this patient's real record.
+                </div>
+              ) : null}
+              <TrialMatches
+                apiClient={apiClient}
+                queryClient={queryClient}
+                patientInfo={patientInfo}
+                state={promopStateFor(personId)}
+              />
+            </>
           ) : (
             <p style={{ color: "#6b7280" }}>
               CTOMOP returned an empty patient profile.
