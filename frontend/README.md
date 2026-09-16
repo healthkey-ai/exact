@@ -123,6 +123,15 @@ Either way the bridge must be able to tell sessions apart: a mount reused
 across a logout/login with no changing signal keeps showing the previous
 user's matches.
 
+Per-user state (the Registered and Favorites tabs, the bookmark star, saved
+filters): with `ctomopBaseUrl` set, the bridge builds `./state`'s
+`createPromopState` itself. It is keyed by `personId` when the host passes one,
+otherwise by the `person_id` on the `/patient-info/me/` row. It calls PRomop's
+`v1` routes under `ctomopApiBasePath` (`/api` → `/api/v1/…`; a path that
+already ends in `v1` is used as is), with the same token, and is rebuilt when
+the session signal changes. Without `ctomopBaseUrl`, or with no person id,
+those tabs are hidden. A `state` the host passes is used instead.
+
 ### Cascade-layer contract (both exports)
 
 The remote appends its stylesheet to the **host's** `<head>`, so the host

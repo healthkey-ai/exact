@@ -29,10 +29,13 @@ import { createBridgeComponent } from "@module-federation/bridge-react/v19";
 
 import TrialMatches from "./TrialMatches";
 import { normalizeCtomopRow } from "./api";
+import { createPromopState } from "./state";
 import {
   hasUsableSessionKey,
   joinBaseUrl,
   nextSessionState,
+  personIdOfRow,
+  promopStateBasePath,
   selectBridgeView,
   resolveSessionSignal,
   selectPatientInfo,
@@ -65,6 +68,9 @@ export const RESOLVE_TIMEOUT_MS = 10_000;
 export const SEARCH_TIMEOUT_MS = undefined;
 
 type TokenReader = () => Promise<string | null | undefined>;
+
+/** Never equal to a session signal: what `sessionRef` holds once unmounted. */
+const SESSION_ENDED: unique symbol = Symbol("exact-remote session ended");
 
 /* Both of the misconfigurations below are silent: the screen looks like a
  * legitimate state, so nothing tells the host developer they wired it wrong.
@@ -176,6 +182,25 @@ function TrialMatchesBridgeRoot({
     ctomopApiBasePath,
   ].join("|");
   const sessionSignal: unknown = resolveSessionSignal(sessionKey, getToken);
+  // The session the committed props describe, for the state adapter's token
+  // reader below. Written from an effect for the same reason as `getTokenRef`.
+  //
+  // The cleanup ends the session, so an unmount — a host logging out by
+  // destroying the bridge rather than re-rendering it — also retires every
+  // adapter: TrialMatches flushes its pending writes as it unmounts, their
+  // token is read a microtask later, and a host `getToken` backed by a global
+  // auth store may by then answer for somebody else. On a re-render the
+  // cleanup and the effect run back to back in one synchronous flush, so no
+  // token read can observe the ended value in between. A host that hides the
+  // bridge in `<Activity mode="hidden">` also runs these cleanups: writes
+  // flushed then are dropped for the still-signed-in user, never misdirected.
+  const sessionRef = useRef<unknown>(sessionSignal);
+  useEffect(() => {
+    sessionRef.current = sessionSignal;
+    return () => {
+      sessionRef.current = SESSION_ENDED;
+    };
+  });
   const keyed = hasUsableSessionKey(sessionKey);
   const [session, setSession] = useState({ key: routeKey, signal: sessionSignal });
 
@@ -297,7 +322,13 @@ function TrialMatchesBridgeRoot({
         // The inline path does no normalisation of its own — receptor statuses
         // to codes, TNM strings to short codes — so run EXACT's normaliser.
         const normalized = await normalizeCtomopRow(exact, row);
-        if (!cancelled) setLoad({ status: "ready", patientInfo: normalized });
+        if (!cancelled) {
+          setLoad({
+            status: "ready",
+            patientInfo: normalized,
+            personId: personIdOfRow(row),
+          });
+        }
       } catch (error) {
         // A resolution that moved on is not a failure to report to whoever is
         // looking at the screen now.
@@ -345,6 +376,53 @@ function TrialMatchesBridgeRoot({
   ]);
 
   const patientInfo = selectPatientInfo(rest.patientInfo, current);
+
+  // Per-user state — bookmarks, registrations, saved filters — so ONE gets the
+  // Registered and Favorites tabs without writing an adapter of its own. It
+  // needs somewhere to write (`ctomopBaseUrl`) and someone to write for: the
+  // host's `personId`, else the one on the row this bridge resolved. A host
+  // that passes its own `state` keeps it.
+  //
+  // Rebuilt on a session change, so an adapter never outlives the user it was
+  // made for; the token is read through the ref, like the resolution's, so a
+  // refresh within the session is picked up without a rebuild.
+  //
+  // Rebuilding is not enough on its own, because the old adapter is still
+  // called after the switch: TrialMatches unmounts into the loading screen and
+  // flushes its pending writes (saved filters, queued field edits) through it,
+  // and react-query may retry its reads. Those run their interceptor after
+  // this component's effects have moved `getTokenRef` to the NEXT user, so an
+  // unguarded reader would send the previous patient's write under the new
+  // user's token. The reader therefore belongs to the session it was built in
+  // and refuses once that session is over — the write is dropped, never
+  // misattributed. Same rule as the resolution's reader above.
+  //
+  // A host `personId` goes through the same check as the row's. PRomop's is an
+  // OMOP integer, and the adapter puts it in a URL path, so anything else would
+  // only ever 404 — or, from an untyped host, build a path nobody meant.
+  const statePersonId =
+    personIdOfRow({ person_id: rest.personId }) ??
+    (current.status === "ready" ? (current.personId ?? null) : null);
+  const bridgeState = useMemo(() => {
+    if (!ctomopBaseUrl || statePersonId == null) return undefined;
+    const builtFor = sessionSignal;
+    const readTokenForThisSession: TokenReader = async () => {
+      if (!Object.is(sessionRef.current, builtFor)) {
+        throw new Error("[exact-remote] session changed");
+      }
+      return getTokenRef.current?.();
+    };
+    return createPromopState({
+      client: buildClient(
+        ctomopBaseUrl,
+        ctomopApiBasePath,
+        readTokenForThisSession,
+        RESOLVE_TIMEOUT_MS,
+      ),
+      personId: statePersonId,
+      basePath: promopStateBasePath(ctomopApiBasePath),
+    });
+  }, [ctomopBaseUrl, ctomopApiBasePath, statePersonId, sessionSignal]);
   const view = selectBridgeView({
     shouldLoad,
     load: current,
@@ -413,12 +491,17 @@ function TrialMatchesBridgeRoot({
       {...rest}
       apiClient={apiClient}
       patientInfo={patientInfo}
+      state={rest.state ?? bridgeState}
       // `null` is the bridge's spelling of "not given"; TrialMatches' own
       // contract only knows `undefined`.
       personId={rest.personId ?? undefined}
     />
   );
 }
+
+/** The component behind the provider, for the component suite only: the
+ *  provider mounts through bridge-react, which a test has no reason to drive. */
+export { TrialMatchesBridgeRoot as TrialMatchesBridgeRootForTests };
 
 const createProvider = createBridgeComponent({
   rootComponent: TrialMatchesBridgeRoot,

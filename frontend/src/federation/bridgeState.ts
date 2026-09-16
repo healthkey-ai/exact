@@ -14,7 +14,12 @@ export type PatientLoad =
   /** Nothing to resolve — the host supplied the patient, or no `ctomopBaseUrl`. */
   | { status: "idle" }
   | { status: "loading" }
-  | { status: "ready"; patientInfo: PatientInfo | null }
+  | {
+      status: "ready";
+      patientInfo: PatientInfo | null;
+      /** The resolved row's `person_id`, which keys the per-user state. */
+      personId?: string | number | null;
+    }
   | { status: "error"; httpStatus?: number };
 
 /** Join a service origin with an API base path.
@@ -168,4 +173,29 @@ export function resolveSessionSignal(sessionKey: unknown, getToken: unknown): un
  *  session key or the `getToken` fallback. */
 export function hasUsableSessionKey(sessionKey: unknown): boolean {
   return resolveSessionSignal(sessionKey, undefined) !== undefined;
+}
+
+/** The `person_id` on a PRomop `/patient-info/me/` row, or `null`.
+ *
+ *  Read from the raw row, before normalisation: EXACT's normalised payload is
+ *  a matcher input and does not carry it. A numeric string is accepted too,
+ *  since nothing on this side of the wire enforces the serializer's integer. */
+export function personIdOfRow(row: unknown): string | number | null {
+  if (row == null || typeof row !== "object") return null;
+  const value = (row as { person_id?: unknown }).person_id;
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && /^\d+$/.test(value)) return value;
+  return null;
+}
+
+/** The `basePath` to give `createPromopState`, relative to the PRomop client.
+ *
+ *  The bridge's PRomop client is rooted at `ctomopBaseUrl + ctomopApiBasePath`,
+ *  which is PRomop's API root (`/api` by default). The per-user routes the
+ *  adapter calls live one level down, under `v1`. A host that already mounted
+ *  the client at `/api/v1` — which the prop's own docs suggest — must not get
+ *  `/api/v1/v1`. */
+export function promopStateBasePath(ctomopApiBasePath: string): string {
+  const trimmed = ctomopApiBasePath.trim().replace(/\/+$/, "");
+  return /(^|\/)v1$/.test(trimmed) ? "" : "/v1";
 }

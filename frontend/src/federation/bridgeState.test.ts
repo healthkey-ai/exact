@@ -4,6 +4,8 @@ import {
   hasUsableSessionKey,
   joinBaseUrl,
   nextSessionState,
+  personIdOfRow,
+  promopStateBasePath,
   selectBridgeView,
   resolveSessionSignal,
   selectPatientInfo,
@@ -266,5 +268,50 @@ describe("nextSessionState under a NaN signal", () => {
     expect(
       nextSessionState(prev, { routeKey: "k", sessionSignal: Number.NaN, shouldLoad: true }),
     ).toBeNull();
+  });
+});
+
+describe("personIdOfRow", () => {
+  it("reads an integer person_id", () => {
+    expect(personIdOfRow({ person_id: 9001, disease: "MM" })).toBe(9001);
+  });
+
+  it("accepts a numeric string", () => {
+    expect(personIdOfRow({ person_id: "9001" })).toBe("9001");
+  });
+
+  it("returns null when there is nothing usable to key state by", () => {
+    for (const row of [
+      null,
+      undefined,
+      "9001",
+      {},
+      { person_id: null },
+      { person_id: "" },
+      { person_id: "abc" },
+      { person_id: 1.5 },
+      { person_id: Number.NaN },
+      { person_id: true },
+    ]) {
+      expect(personIdOfRow(row)).toBeNull();
+    }
+  });
+});
+
+describe("promopStateBasePath", () => {
+  it("adds v1 under PRomop's API root", () => {
+    for (const path of ["/api", "api", "/api/", ""]) {
+      expect(promopStateBasePath(path)).toBe("/v1");
+    }
+  });
+
+  it("does not double v1 when the client is already mounted there", () => {
+    for (const path of ["/api/v1", "api/v1/", "/v1", "v1"]) {
+      expect(promopStateBasePath(path)).toBe("");
+    }
+  });
+
+  it("does not mistake a segment that merely ends in v1", () => {
+    expect(promopStateBasePath("/apiv1")).toBe("/v1");
   });
 });
