@@ -891,6 +891,260 @@ describe("adapterPreferences, conditionally", () => {
     expect(a.current().row).toEqual({ phase: "PHASE3", distance: 50 });
   });
 
+  it("re-applies only what CHANGED, not the whole panel it was handed", async () => {
+    // Regression: found by /qa on 2026-09-15 driving two real browser tabs
+    // against a real promop. Report:
+    // .gstack/qa-reports/qa-report-saved-filters-2026-09-15.md
+    //
+    // Every other test here calls `save` with just the key that moved. The
+    // real caller does not: `TrialMatches.handleFiltersChange` persists
+    // `userOwnedFilters` — the
+    // WHOLE panel, every field the reader owns. So "re-apply the reader's
+    // edit over the fresh row" re-asserted a panel that still displayed the
+    // filter the other tab had just cleared, and put it back. The
+    // precondition fired, the retry carried the right tag, and the update
+    // was lost anyway.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    // Another tab clears `sponsor`.
+    a.elsewhere({}, '"v-other"');
+
+    // This tab's panel still SHOWS the sponsor, so it saves it alongside the
+    // one field the reader actually typed into.
+    await t.save({ sponsor: "Acme", searchTitle: "myeloma" });
+
+    expect(a.writes[1].filters).toEqual({ searchTitle: "myeloma" });
+    expect(a.current().row).toEqual({ searchTitle: "myeloma" });
+  });
+
+  it("keeps the other tab's clear across MORE THAN ONE save", async () => {
+    // The first cut of this fix held for exactly one save. After the retry
+    // the transport adopts the other tab's row, but the panel is never told —
+    // nothing reconciles a fresh row back into React state — so the next
+    // keystroke measured the panel's unchanged `sponsor` against a row that
+    // no longer had it, scored it as an edit, and put it back with a VALID
+    // `If-Match`: 200, no 412, nothing on `onError`. A 400ms debounce means
+    // "type, pause, keep typing" is enough to hit it.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    a.elsewhere({}, '"v-other"');
+    await t.save({ sponsor: "Acme", searchTitle: "myeloma" });
+    expect(a.current().row).toEqual({ searchTitle: "myeloma" });
+
+    // The panel still shows the sponsor it always showed.
+    await t.save({ sponsor: "Acme", searchTitle: "myelomas" });
+
+    expect(a.current().row).toEqual({ searchTitle: "myelomas" });
+  });
+
+  it("records the panel after a write that needed a retry", async () => {
+    // Same rule on the recovery path. Without it the save after a refusal
+    // measures against the belief from before the refusal, and re-asserts a
+    // field the reader has not touched since.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    a.elsewhere({ phase: "PHASE3" }, '"v-other"');
+    await t.save({ sponsor: "Acme", searchTitle: "x" });   // 412, then retry
+    expect(a.current().row).toEqual({ phase: "PHASE3", searchTitle: "x" });
+
+    // Another tab now edits the field THIS save introduced.
+    a.elsewhere({ phase: "PHASE3", searchTitle: "fromB" }, '"v-b"');
+    // The reader types somewhere else entirely.
+    await t.save({ sponsor: "Acme", searchTitle: "x", distance: 50 });
+
+    expect(a.current().row).toEqual({
+      phase: "PHASE3",
+      searchTitle: "fromB",
+      distance: 50,
+    });
+  });
+
+  it("still recognises a clear when the FIRST read failed", async () => {
+    // `get()` throwing on mount (a network blip) leaves the panel belief
+    // empty. The blind-retry read inside `save` has to seed it too, or a
+    // clear reads as "nothing to clear": the payload keeps the value and the
+    // reader's clear silently never lands — no 412, nothing on `onError`.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+
+    const versioning = a.methods.preferenceVersioning;
+    const realRead = versioning.read;
+    let failed = false;
+    versioning.read = async (...args) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("network blip");
+      }
+      return realRead(...args);
+    };
+    await expect(t.get()).rejects.toThrow(/network blip/);
+
+    await t.save({ sponsor: undefined });
+
+    expect(a.current().row).toEqual({});
+  });
+
+  it("recognises a value retyped after a Reset", async () => {
+    // Reset empties the panel as well as the row. Leaving the pre-reset
+    // belief in place makes the retyped value score as "no change", so it is
+    // never sent: the reader watches their filter fail to save, with nothing
+    // anywhere saying why.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    await t.reset();
+    await t.save({ sponsor: "Acme" });
+
+    expect(a.current().row).toEqual({ sponsor: "Acme" });
+  });
+
+  it("does not forget a field a later save left out", async () => {
+    // A payload carries only the fields the panel owns, so replacing the
+    // remembered panel instead of merging into it loses everything omitted
+    // this time — and then a clear of one of those fields reads as "nothing
+    // to clear" and silently never fires.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    await t.save({ distance: 50 });        // says nothing about `sponsor`
+    await t.save({ sponsor: undefined });  // now clears it
+
+    expect(a.current().row).toEqual({ distance: 50 });
+  });
+
+  it("records the panel after a write that needed no retry", async () => {
+    // The 412 path is not the only one that has to remember what the panel
+    // showed. A save that lands first time must too, or the NEXT save
+    // measures against a stale belief and re-asserts a field the reader has
+    // not touched — over whatever the other tab put there since.
+    const a = versionedAdapter({}, null);
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    await t.save({ sponsor: "Acme" });          // lands, no refusal
+    a.elsewhere({ sponsor: "FromB" }, '"v-b"'); // another tab edits it
+
+    await t.save({ sponsor: "Acme", searchTitle: "x" });
+
+    expect(a.current().row).toEqual({ sponsor: "FromB", searchTitle: "x" });
+  });
+
+  it("does not turn a sticky tombstone into a delete of the other tab's value", async () => {
+    // `userOwnedFilters` keeps emitting a cleared owned field as
+    // present-and-undefined, so the tombstone outlives the save that applied
+    // it. Without the `k in before` guard the next save re-issues it as a
+    // delete — of whatever the other tab has since put there.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    await t.save({ sponsor: undefined, searchTitle: "x" });
+    expect(a.current().row).toEqual({ searchTitle: "x" });
+
+    a.elsewhere({ searchTitle: "x", sponsor: "FromB" }, '"v-b"');
+    // The tombstone is still in the payload; it must not fire again.
+    await t.save({ sponsor: undefined, searchTitle: "xy" });
+
+    expect(a.current().row).toEqual({ searchTitle: "xy", sponsor: "FromB" });
+  });
+
+  it("does not call an untouched multi-select an edit", async () => {
+    // `trialPurpose` is an array, and the panel builds a NEW one every
+    // render, so reference equality reads it as changed on every save. The
+    // retry would then re-apply the reader's stale copy over the other tab's
+    // change — the same lost update, through the field most likely to be
+    // sitting in the panel untouched. `filters.ts` warns about exactly this
+    // comparison in its own docstring.
+    const a = versionedAdapter({ trialPurpose: ["treatment"] }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    a.elsewhere({ trialPurpose: ["prevention"] }, '"v-other"');
+    // Same contents, different array instance — untouched by the reader.
+    await t.save({ trialPurpose: ["treatment"], searchTitle: "myeloma" });
+
+    // The payload is the whole new state — the endpoint replaces — so what
+    // matters is that the other tab's selection is IN it and the reader's
+    // stale copy is not.
+    expect(a.writes[1].filters).toEqual({
+      trialPurpose: ["prevention"],
+      searchTitle: "myeloma",
+    });
+    expect(a.current().row).toEqual({
+      trialPurpose: ["prevention"],
+      searchTitle: "myeloma",
+    });
+  });
+
+  it("measures the edit against what was believed WHEN it was made", async () => {
+    // The unknown-version path refreshes `stored` before the write. Measuring
+    // the delta after that refresh reads another tab's change as this
+    // reader's edit, and the retry re-applies it.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    // Leave the version unknown, which sends the next save through the
+    // refresh path.
+    const versioning = a.methods.preferenceVersioning;
+    const realWrite = versioning.write;
+    versioning.write = async (filters, precondition) => {
+      await realWrite(filters, precondition);
+      return null;
+    };
+    await t.save({ sponsor: "Acme" });
+    versioning.write = realWrite;
+
+    // Another tab changes the sponsor the reader is merely displaying.
+    a.elsewhere({ sponsor: "Other" }, '"v-other"');
+    await t.save({ sponsor: "Acme", searchTitle: "myeloma" });
+
+    expect(a.current().row).toEqual({ sponsor: "Other", searchTitle: "myeloma" });
+  });
+
+  it("still re-applies a value the reader genuinely changed", async () => {
+    // The other side of the same rule: a field the reader DID edit must
+    // survive the retry even when the other tab touched the same key — and
+    // it has to be asserted with a FULL-panel payload, because a single-key
+    // one is the shape that hid the original bug.
+    const a = versionedAdapter({ sponsor: "Acme", phase: "PHASE3" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    a.elsewhere({ sponsor: "Other", phase: "PHASE3" }, '"v-other"');
+    // `phase` is merely on screen; `sponsor` is the one the reader retyped.
+    await t.save({ sponsor: "Mine", phase: "PHASE3" });
+
+    expect(a.current().row).toEqual({ sponsor: "Mine", phase: "PHASE3" });
+  });
+
+  it("re-applies a clear the reader made, over the other tab's row", async () => {
+    const a = versionedAdapter({ sponsor: "Acme", phase: "PHASE3" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+
+    // The other tab CHANGED the field this reader is clearing, which is what
+    // makes the clear a real instruction rather than a no-op: pre-fix the
+    // whole panel went back, taking `country` with it.
+    a.elsewhere({ sponsor: "Other", country: "US" }, '"v-other"');
+    // The panel hands over everything it owns; `sponsor` is the cleared one.
+    await t.save({ sponsor: undefined, phase: "PHASE3" });
+
+    // `sponsor` cleared because the reader cleared it. `country` kept because
+    // the other tab added it. `phase` NOT restored: the other tab removed it
+    // and this reader never touched it, so its removal stands — the same rule
+    // read from the other side.
+    expect(a.current().row).toEqual({ country: "US" });
+  });
+
   it("gives up after one retry rather than looping", async () => {
     // Twice in a row is live contention, not a stale cache. A third attempt
     // would be a loop; `PreferenceWriter` reports this through `onError`.
