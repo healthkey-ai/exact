@@ -147,7 +147,10 @@ function Harness() {
   const handleTokenObtained = useCallback((next: string) => {
     setToken(next);
     writeStoredToken(next);
-    setApiClient(makeExactClient(next));
+    // axios instances are callable, so a bare `setApiClient(instance)` would be
+    // read by React as a state *updater* and stored as its return value (a
+    // pending request promise) — `apiClient.post is not a function`. Wrap it.
+    setApiClient(() => makeExactClient(next));
   }, []);
 
   const handleSignOut = useCallback(() => {
