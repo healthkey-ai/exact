@@ -104,6 +104,59 @@ BULKY_DISEASE_CRITERIA_SOURCES = {
 _NOT_SUPPLIED = object()
 
 
+# The derivations that end in a terminal `return False` meaning "I could not
+# work it out". Named explicitly rather than derived from "the value is None",
+# because the two are very different sets.
+#
+# `_provided_fields` holds EVERY key the caller named, and EXACT's own
+# serializer emits `vars(instance)` — for a myeloma patient with no CRAB or IMWG
+# inputs that is dozens of mapped attributes serialised as explicit `null`. A
+# client that reads a record and posts it back therefore "names" all of them.
+# Without this list the matcher seam fires for all 36 `bool_restriction`
+# attributes, and a measured round-trip moved 11 of them from `matched` to
+# `unknown` — including `meets_crab`, where a trial the base branch excluded
+# becomes a candidate. Widening to those is the open half of #502 and wants a
+# corpus measurement of its own.
+EXPLICIT_UNKNOWN_FIELDS = frozenset({
+    'renal_adequacy_status',
+    'hepatic_adequacy_status',
+    'haematological_adequacy_status',
+    'tnbc_status',
+    'metastatic_status',
+})
+
+
+def explicitly_unknown(patient_info, name):
+    """True when the caller NAMED one of `EXPLICIT_UNKNOWN_FIELDS` as null.
+
+    Those derivations end in a terminal `return False` for "I could not work it
+    out". For a matcher that is the worst answer available: `False` is an
+    assertion, it reaches `not_matched`, `match_score_and_status()`
+    short-circuits the trial to `not_eligible` and the SQL prefilter removes it
+    — so a caller saying "we do not know" silently DELETED trials from the
+    patient's results.
+
+    Consulted by those five derivations AND by the two `bool_restriction`
+    handlers in the matcher, which see every attribute of that type; the name
+    list above is what keeps the seam to the five.
+
+    Keyed on provenance rather than on the value. Twelve other
+    `bool_restriction` attributes already sit at None for any patient who simply
+    never supplied them, so a bare None cannot mean "unknown" here.
+
+    One known gap, inert today: `_coerce_numerics`/`_coerce_dates` write None
+    for unparseable input before provenance is captured, so `platelet_count:
+    "abc"` would read as caller-asserted null. None of the five is a numeric or
+    date column, so nothing reaches it.
+    """
+    if name not in EXPLICIT_UNKNOWN_FIELDS:
+        return False
+
+    return (name in getattr(patient_info, '_provided_fields', ())
+            and getattr(patient_info, name, None) is None)
+
+
+
 
 def _as_reading(value):
     """A number we can compare against a threshold, or None.
@@ -604,6 +657,14 @@ class PatientInfoAttributes:
             return supplied
         return min(supplied, derived)
 
+    def _unknown_or_false(self, name):
+        """The answer for "I could not work it out" on a field the caller named.
+
+        `None` when they said null (unknown), the legacy `False` otherwise, so
+        a patient who simply never supplied the inputs is unaffected.
+        """
+        return None if explicitly_unknown(self.patient_info, name) else False
+
     @cached_property
     def renal_adequacy_status(self):
         # `is not None`, not truthiness: ZERO is falsy, so `if egfr and ... < 60`
@@ -622,7 +683,7 @@ class PatientInfoAttributes:
             return False
 
         if egfr is None or clearance is None:
-            return False
+            return self._unknown_or_false('renal_adequacy_status')
 
         return True
 
@@ -633,7 +694,7 @@ class PatientInfoAttributes:
         alt_uln = self.get_uln_value('liver_enzyme_levels_alt')
 
         if bilirubin_total_uln is None or ast_uln is None or alt_uln is None:
-            return False
+            return self._unknown_or_false('hepatic_adequacy_status')
 
         return (
             bilirubin_total_uln <= HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX
@@ -648,7 +709,7 @@ class PatientInfoAttributes:
         hemoglobin = self.get_value('hemoglobin_level')
 
         if anc is None or platelet_count is None or hemoglobin is None:
-            return False
+            return self._unknown_or_false('haematological_adequacy_status')
 
         return (
             float(anc) >= HAEMATOLOGICAL_ADEQUACY_ANC_MIN

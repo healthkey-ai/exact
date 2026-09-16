@@ -143,13 +143,43 @@ def _normalize_flipi_score(pi) -> None:
         pi.flipi_score = score
 
 
+def _unknown_or_false(pi, name):
+    """None when the caller explicitly said null, else the legacy False.
+
+    Imported lazily for the same reason `PatientInfoAttributes` is: this module
+    is reached from the attribute service's own import graph.
+    """
+    from trials.services.patient_info.patient_info_attributes import explicitly_unknown
+
+    return None if explicitly_unknown(pi, name) else False
+
+
+# Triple negative means all three receptors negative. "Unknown" is spelled both
+# as None and as '' in this vocabulary (value_options renders '' as "Unknown"),
+# and neither is a negative receptor.
+_TNBC_NEGATIVE = (
+    ('estrogen_receptor_status', 'er_minus'),
+    ('progesterone_receptor_status', 'pr_minus'),
+    ('her2_status', 'her2_minus'),
+)
+
+
 def _normalize_tnbc_status(pi) -> None:
-    if (pi.estrogen_receptor_status == 'er_minus'
-            and pi.progesterone_receptor_status == 'pr_minus'
-            and pi.her2_status == 'her2_minus'):
+    stated = [(getattr(pi, field), negative) for field, negative in _TNBC_NEGATIVE]
+
+    if all(value == negative for value, negative in stated):
         pi.tnbc_status = True
-    else:
+    elif any(value not in (None, '') and value != negative for value, negative in stated):
+        # ONE stated positive settles it: the tumour is not triple negative,
+        # whatever the other two turn out to be. Answering "unknown" here would
+        # keep a TNBC-only trial as a candidate for a patient whose own ER+
+        # rules it out.
         pi.tnbc_status = False
+    else:
+        # Nothing contradicts and something is missing. The single `else` this
+        # replaces answered False for that too, so a caller saying
+        # `tnbc_status: null` got a confirmed NO back.
+        pi.tnbc_status = _unknown_or_false(pi, 'tnbc_status')
 
 
 def _normalize_hr_status(pi) -> None:
@@ -172,7 +202,15 @@ def _normalize_hr_status(pi) -> None:
 
 def _normalize_metastatic_status(pi) -> None:
     if str(pi.disease).lower() != 'breast cancer':
+        # Determined, not missing: the attribute is breast-cancer scoped, so
+        # False is an answer here and an explicit null does not change it.
         pi.metastatic_status = False
+        return
+    if pi.stage in (None, ''):
+        # '' is how "Unknown" is spelled in this vocabulary, same as for the
+        # receptors above. A blank stage is no evidence that the disease is not
+        # metastatic.
+        pi.metastatic_status = _unknown_or_false(pi, 'metastatic_status')
         return
     pi.metastatic_status = pi.stage == 'IV'
 

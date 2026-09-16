@@ -26,7 +26,10 @@ from trials.services.patient_info.configs import (
     sct_value_is_none,
 )
 from trials.services.patient_info.genetic_mutations import GeneticMutations
-from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+from trials.services.patient_info.patient_info_attributes import (
+    PatientInfoAttributes,
+    explicitly_unknown,
+)
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.utils import disease_attr_applies, get_overlap
 
@@ -922,6 +925,19 @@ class UserToTrialAttrMatcher:
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None:
             trial_attr_value = False
+        # An explicit "we do not know" is not a "no". Collapsing it below turns
+        # it into one, and `False` here is an ASSERTION: it reaches
+        # `not_matched`, `match_score_and_status()` short-circuits the trial to
+        # `not_eligible` and the prefilter deletes it. `unknown` demotes the
+        # trial to a candidate and costs a point instead.
+        #
+        # Gated on provenance, not on the value: twelve other bool_restriction
+        # attributes sit at None for any patient who never supplied them, and
+        # treating a bare None as unknown would move matching for all of them.
+        if (trial_attr_value is True
+                and ctx.value is None
+                and explicitly_unknown(self.patient_info, ctx.name)):
+            return 'unknown'
         value = False if ctx.value is None else ctx.value
         if value is True:
             return 'matched'
@@ -933,6 +949,10 @@ class UserToTrialAttrMatcher:
             return 'not_matched'
 
     def _match_type_inversed_bool_restriction(self, ctx):
+        # No explicit-unknown seam here, deliberately: no attribute in
+        # `USER_TO_TRIAL_ATTRS_MAPPING` is of this type, so a copy of the guard
+        # from `_match_type_bool_restriction` would be unreachable and untested.
+        # None of the five fields it serves is inversed.
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None:
             trial_attr_value = False
