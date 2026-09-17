@@ -80,12 +80,11 @@ export function Tabs({
             ) : null}
           </button>
         );
-        return tip ? (
+        // Always wrapped, so a tab whose tooltip comes and goes keeps focus.
+        return (
           <ActionTooltip key={tab.value} text={tip} align="start">
             {button}
           </ActionTooltip>
-        ) : (
-          button()
         );
       })}
     </nav>

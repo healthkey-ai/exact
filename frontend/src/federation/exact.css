@@ -842,11 +842,6 @@
   white-space: pre-line;
   pointer-events: none;
 }
-/* Show on hover or focus-within */
-.exact-root .exact-tooltip__wrap:hover .exact-tooltip__box,
-.exact-root .exact-tooltip__wrap:focus-within .exact-tooltip__box {
-  display: block;
-}
 
 @media (min-width: 679px) {
   /* Show table column headers, hide per-cell labels */
@@ -1450,6 +1445,13 @@
 .exact-root .exact-action-tip > button:disabled {
   pointer-events: none;
 }
+/* …which hands the cursor to the wrap, so the wrap carries it. */
+.exact-root .exact-action-tip:has(> button:disabled) {
+  cursor: not-allowed;
+}
+.exact-root .exact-action-tip:has(> .exact-list__export.is-working:disabled) {
+  cursor: progress;
+}
 .exact-root.exact-tooltip-layer {
   position: static;
 }
@@ -1463,6 +1465,8 @@
   text-align: left;
   font-weight: 400;
   z-index: 2147483000;
+  /* Hoverable, unlike the base box. */
+  pointer-events: auto;
 }
 .exact-root .exact-action-tip__box.is-open {
   display: block;

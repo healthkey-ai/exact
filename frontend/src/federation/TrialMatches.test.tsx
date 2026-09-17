@@ -3468,8 +3468,14 @@ describe("action tooltips", () => {
 
     await userEvent.hover(button);
     expect(box()).toHaveClass("is-open");
+    // The pointer can cross onto the box and stay there (WCAG 1.4.13)…
     await userEvent.unhover(button);
-    expect(box()).not.toHaveClass("is-open");
+    await userEvent.hover(box());
+    await new Promise((r) => setTimeout(r, 200));
+    expect(box()).toHaveClass("is-open");
+    // …and it closes once the pointer has left both.
+    await userEvent.unhover(box());
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
 
     act(() => button.focus());
     expect(box()).toHaveClass("is-open");
@@ -3508,6 +3514,12 @@ describe("action tooltips", () => {
         expect.stringMatching(/structured list of the criteria/),
       ]),
     );
+    // Placed like the action boxes, so a "?" near an edge cannot push its box
+    // off a phone's screen.
+    for (const b of help) {
+      const box = document.getElementById(b.getAttribute("aria-describedby")!)!;
+      expect(box.closest(".exact-tooltip-layer")).not.toBeNull();
+    }
     // The "?" sits beside the heading, not in it.
     expect(screen.getByRole("heading", { name: "Summary" })).toBeInTheDocument();
   });

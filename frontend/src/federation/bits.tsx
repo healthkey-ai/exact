@@ -2,7 +2,7 @@
 // page, mirroring CancerBot UI v2's `ScorePill` / `Field`. Structure lives in
 // `exact.css` (`.exact-pill*`, `.exact-field`); tier colors are applied inline
 // from the `--exact-color-*` token set so a host can re-theme.
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { ACTION_TOOLTIPS } from "./tooltips";
@@ -160,24 +160,23 @@ export function renderMd(text: string): React.ReactNode {
 /** "?" help icon that shows a tooltip on hover/focus. CSS-only positioning,
  *  no external library. Mirrors CB's Label + Tooltip pattern. */
 export function FieldTooltip({ text }: { text: string }) {
-  const id = useId();
+  // The same box as the actions' (placed, clamped, hoverable), because a "?"
+  // near a panel's left edge centred a box that ran off a phone's screen.
   return (
-    <span className="exact-tooltip__wrap">
-      <button
-        type="button"
-        className="exact-tooltip__trigger"
-        tabIndex={0}
-        aria-label="More information"
-        aria-describedby={id}
-        // Inside a card, which opens the trial on click.
-        onClick={(e) => e.stopPropagation()}
-      >
-        ?
-      </button>
-      <span id={id} className="exact-tooltip__box" role="tooltip">
-        {text}
-      </span>
-    </span>
+    <ActionTooltip text={text} align="start" className="exact-tooltip__wrap">
+      {(tipId) => (
+        <button
+          type="button"
+          className="exact-tooltip__trigger"
+          aria-label="More information"
+          aria-describedby={tipId}
+          // Inside a card, which opens the trial on click.
+          onClick={(e) => e.stopPropagation()}
+        >
+          ?
+        </button>
+      )}
+    </ActionTooltip>
   );
 }
 
@@ -262,6 +261,18 @@ export function ActionTooltip({
   const wrapRef = useRef<HTMLSpanElement>(null);
   const boxRef = useRef<HTMLSpanElement>(null);
   const [open, setOpen] = useState(false);
+  // Closing waits a moment, so the pointer can cross the gap onto the box and
+  // stay there to read it (WCAG 1.4.13: hoverable).
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const show = () => {
+    clearTimeout(closeTimer.current);
+    setOpen(true);
+  };
+  const hideSoon = () => {
+    clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setOpen(false), 120);
+  };
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
 
   useLayoutEffect(() => {
     if (!open || !text) return;
@@ -269,11 +280,15 @@ export function ActionTooltip({
       const wrap = wrapRef.current;
       const box = boxRef.current;
       if (!wrap || !box) return;
+      // The layer inherits from <body>, not from the host container.
+      box.style.fontFamily = getComputedStyle(wrap).fontFamily;
       const r = wrap.getBoundingClientRect();
       const b = box.getBoundingClientRect();
       // clientWidth, not innerWidth: the latter includes a classic scrollbar.
       const vw = document.documentElement.clientWidth;
       const vh = document.documentElement.clientHeight;
+      // A control scrolled out of view takes its box with it.
+      box.style.visibility = r.bottom < 0 || r.top > vh ? "hidden" : "";
       let left = align === "start" ? r.left : r.right - b.width;
       left = Math.min(Math.max(MARGIN, left), Math.max(MARGIN, vw - b.width - MARGIN));
       let top = r.bottom + GAP;
@@ -285,7 +300,10 @@ export function ActionTooltip({
     };
     place();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        clearTimeout(closeTimer.current);
+        setOpen(false);
+      }
     };
     document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", place, true);
@@ -302,10 +320,13 @@ export function ActionTooltip({
     <span
       ref={wrapRef}
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-      onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
+      onMouseEnter={show}
+      onMouseLeave={hideSoon}
+      onFocus={show}
+      onBlur={() => {
+        clearTimeout(closeTimer.current);
+        setOpen(false);
+      }}
     >
       {children(tipId)}
       {text
@@ -315,6 +336,8 @@ export function ActionTooltip({
               id={id}
               className={`exact-tooltip__box exact-action-tip__box${open ? " is-open" : ""}`}
               role="tooltip"
+              onMouseEnter={show}
+              onMouseLeave={hideSoon}
             >
               {text}
             </span>,
