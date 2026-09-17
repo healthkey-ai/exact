@@ -1151,27 +1151,65 @@ describe("the controls on the detail page", () => {
     expect(screen.getAllByText("Couldn't save that. Please try again.")).toHaveLength(2);
   });
 
+  const headerWarning = () =>
+    document.querySelector<HTMLElement>(".exact-detail__eligibility-warning");
+
   it("warns by the header button when the matcher says not eligible", async () => {
     // The card's warning is at the foot of the page; without this the green
     // header button was the only thing a not-eligible reader saw up top.
+    const api = fakeApi();
+    api.setDetail({
+      matchingType: "not_eligible",
+      details: {
+        trialEligibilityAttributes: [
+          { name: "age", label: "Age", type: "number", value: 18, uvalue: 12, matchingType: "not_matched" },
+        ],
+      },
+    });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await headerButton("I'm Interested");
+    await waitFor(() => expect(headerWarning()).not.toBeNull());
+    const warning = headerWarning()!;
+    expect(warning).toHaveTextContent(
+      "You may not meet this trial's eligibility criteria — the requirements that do not match are marked in the table below.",
+    );
+    expect(warning.previousElementSibling).toHaveClass("exact-detail__head");
+    expect(warning).not.toHaveAttribute("role");
+  });
+
+  it("does not point the header warning at a table that shows no mismatch", async () => {
+    // The verdict is over every mapped attribute; the table is a filtered
+    // view and can be empty — the same trap the card avoids.
     const api = fakeApi();
     api.setDetail({ matchingType: "not_eligible" });
     renderTrialMatches(api, { state: fakeState().adapter });
     await openDetail(api);
 
     await headerButton("I'm Interested");
-    const warning = await screen.findByText(/eligibility table below/);
-    expect(warning.previousElementSibling).toHaveClass("exact-detail__head");
-    expect(warning).not.toHaveAttribute("role");
+    await waitFor(() => expect(headerWarning()).not.toBeNull());
+    expect(headerWarning()).toHaveTextContent(/^You may not meet this trial's eligibility criteria\.$/);
   });
 
-  it("does not warn by the header button for an eligible trial", async () => {
+  it("does not warn by the header for an eligible trial", async () => {
     const api = fakeApi();
     renderTrialMatches(api, { state: fakeState().adapter });
     await openDetail(api);
-
     await headerButton("I'm Interested");
-    expect(screen.queryByText(/eligibility table below/)).toBeNull();
+    expect(headerWarning()).toBeNull();
+  });
+
+  it("does not warn by the header for a trial the study team has advanced", async () => {
+    // No header button there, so nothing for the warning to qualify; the
+    // card says the participation is recorded.
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    renderTrialMatches(api, { state: fakeState({ advanced: { "1": "entered" } }).adapter });
+    await openDetail(api);
+
+    await screen.findByText(/You are recorded as taking part in this trial/);
+    expect(headerWarning()).toBeNull();
   });
 
   it("describes the header's interest button with the card's explanation", async () => {

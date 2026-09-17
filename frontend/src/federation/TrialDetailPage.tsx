@@ -641,6 +641,8 @@ export function TrialDetailPage({
       }
     : null;
   const showHeaderRegister = registerButton != null && !trialState!.advancedStatus;
+  // Whether the table actually lists a mismatch; see `RegisterInterest`.
+  const mismatchesShown = eligibility.some((f) => f.matchingType === "not_matched");
   const registerTextId = useId();
 
   return (
@@ -686,8 +688,10 @@ export function TrialDetailPage({
               page. A statement, not an alert — it is there on load. */}
           {showHeaderRegister && notEligible ? (
             <p className="exact-detail__eligibility-warning">
-              You may not meet this trial's eligibility criteria — see the
-              eligibility table below.
+              You may not meet this trial's eligibility criteria
+              {mismatchesShown
+                ? " — the requirements that do not match are marked in the table below."
+                : "."}
             </p>
           ) : null}
           {/* Not gated on the button: an advanced status that arrives after a
@@ -820,9 +824,7 @@ export function TrialDetailPage({
               {...registerButton}
               advancedStatus={trialState!.advancedStatus}
               notEligible={notEligible}
-              mismatchesShown={eligibility.some(
-                (f) => f.matchingType === "not_matched",
-              )}
+              mismatchesShown={mismatchesShown}
               failed={trialState?.registerFailed ?? false}
               textId={registerTextId}
             />
