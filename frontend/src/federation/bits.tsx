@@ -231,6 +231,21 @@ function getTooltipLayer(): HTMLElement {
 const GAP = 6;
 const MARGIN = 8;
 
+/** How the last focus most likely arrived, tracked page-wide the way the
+ *  `:focus-visible` heuristic does: a key press means keyboard, a pointer
+ *  press means pointer. Kept on the document rather than per control, so a
+ *  press that brings no focus (a second click on a focused toggle, Safari's
+ *  unfocusable buttons, a cancelled touch) cannot leave a stale mark that
+ *  swallows the next keyboard focus. */
+let lastInput: "keyboard" | "pointer" = "keyboard";
+let inputTracking = false;
+function trackInputModality() {
+  if (inputTracking) return;
+  inputTracking = true;
+  document.addEventListener("keydown", () => (lastInput = "keyboard"), true);
+  document.addEventListener("pointerdown", () => (lastInput = "pointer"), true);
+}
+
 /** Hover/focus help for an action (a button, a tab, the sort control), as CB
  *  wraps its trial actions in a tooltip.
  *
@@ -282,8 +297,8 @@ export function ActionTooltip({
   useEffect(() => () => clearTimeout(leaveTimer.current), []);
   // Focus that a click gave the control does not hold the box open: after a
   // click the button keeps focus, and the box would hang over the page once
-  // the pointer left. Only keyboard (or scripted) focus does.
-  const pointerDown = useRef(false);
+  // the pointer left. Only keyboard focus does.
+  useEffect(trackInputModality, []);
   // A box whose text goes away takes its hover with it, rather than coming
   // back already open when the text returns.
   useEffect(() => {
@@ -311,6 +326,9 @@ export function ActionTooltip({
       if (top + b.height > vh - MARGIN && r.top - GAP - b.height >= MARGIN) {
         top = r.top - GAP - b.height;
       }
+      // Fits neither way (a long eligibility note on a phone): keep it on
+      // screen; its own max-height and scrolling show the rest.
+      top = Math.min(Math.max(MARGIN, top), Math.max(MARGIN, vh - b.height - MARGIN));
       box.style.left = `${Math.round(left)}px`;
       box.style.top = `${Math.round(top)}px`;
     };
@@ -335,13 +353,8 @@ export function ActionTooltip({
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
       onMouseEnter={enter}
       onMouseLeave={leaveSoon}
-      onPointerDown={() => {
-        pointerDown.current = true;
-      }}
       onFocus={() => {
-        const fromPointer = pointerDown.current;
-        pointerDown.current = false;
-        if (fromPointer) return;
+        if (lastInput === "pointer") return;
         setFocused(true);
         setDismissed(false);
       }}

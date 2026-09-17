@@ -3477,6 +3477,7 @@ describe("action tooltips", () => {
     await userEvent.unhover(box());
     await waitFor(() => expect(box()).not.toHaveClass("is-open"));
 
+    await userEvent.keyboard("{Shift}");
     act(() => button.focus());
     expect(box()).toHaveClass("is-open");
     await userEvent.keyboard("{Escape}");
@@ -3488,6 +3489,7 @@ describe("action tooltips", () => {
     renderTrialMatches(api);
     const button = await screen.findByRole("button", { name: "Export CSV" });
     const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.keyboard("{Shift}");
     act(() => button.focus());
     await userEvent.hover(button);
     await userEvent.unhover(button);
@@ -3519,6 +3521,39 @@ describe("action tooltips", () => {
     await userEvent.tab({ shift: true });
     expect(button).toHaveFocus();
     expect(box()).toHaveClass("is-open");
+  });
+
+  it("opens on keyboard focus after a second click on the same control", async () => {
+    // A click on a focused button brings no focus event; nothing may linger
+    // from it and swallow the next keyboard focus.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Map" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.click(button);
+    await userEvent.click(await screen.findByRole("button", { name: "List" }));
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+    await userEvent.tab();
+    await userEvent.tab({ shift: true });
+    expect(button).toHaveFocus();
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("keeps a box taller than the room above and below on screen", async () => {
+    vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(400);
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(300);
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const tip = document.getElementById(button.getAttribute("aria-describedby")!)!;
+    const r = { x: 16, y: 150, left: 16, top: 150, width: 100, height: 40, right: 116, bottom: 190, toJSON: () => ({}) };
+    vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(r as DOMRect);
+    vi.spyOn(tip, "getBoundingClientRect").mockReturnValue({ ...r, height: 250, width: 320 } as DOMRect);
+    await userEvent.hover(button);
+    // Below would end at 446 and above would start at -106: pinned at 300-250-8.
+    expect(tip.style.top).toBe("42px");
+    vi.restoreAllMocks();
   });
 
   it("stays open when the pointer moves from the box straight back to the control", async () => {
