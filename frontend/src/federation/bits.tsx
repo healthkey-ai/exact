@@ -200,6 +200,7 @@ export function FavoriteToggle({
   isFavorite,
   onToggle,
   busy,
+  boxed,
 }: {
   /** The trial's title, for the accessible name — "Add <title> to
    *  favorites" reads usefully in a list of several. */
@@ -217,12 +218,14 @@ export function FavoriteToggle({
    *  `aria-disabled` rather than `disabled` so the control is not blurred
    *  out from under a keyboard user mid-action. */
   busy?: boolean;
+  /** Drawn as a bordered button, like CB's bookmark in the detail header. */
+  boxed?: boolean;
 }) {
   if (!onToggle || isFavorite === undefined) return null;
   return (
     <button
       type="button"
-      className={`exact-fav${isFavorite ? " is-on" : ""}`}
+      className={`exact-fav${boxed ? " exact-fav--boxed" : ""}${isFavorite ? " is-on" : ""}`}
       aria-pressed={isFavorite}
       aria-disabled={busy || undefined}
       aria-busy={busy || undefined}

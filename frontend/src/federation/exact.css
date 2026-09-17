@@ -49,6 +49,10 @@
   --exact-color-brand-green: hsl(146 70% 45%);
   --exact-color-brand-green-hover: hsl(152 91% 29%);
   --exact-color-on-brand: #ffffff;
+  /* The label color on a `primary` fill (the bookmark when it is on). Its own
+   * token: a host that darkens `on-brand` for a light CTA must not darken the
+   * star on blue with it. */
+  --exact-color-on-primary: #ffffff;
 
   /* Default to `inherit` so the remote picks up the host's typography
    * (CB sets Manrope on <body>) and reads as native. A host can still
@@ -263,13 +267,36 @@
 .exact-root .exact-detail__back:hover {
   text-decoration: underline;
 }
-/* Title and bookmark on one line, as CB puts its title and actions. The
-   star keeps its own baseline — `align-items: start` rather than center, so
-   a title that wraps to three lines does not drag the star to the middle. */
+/* Title and actions (bookmark, interest button) on one line, as CB lays out
+   its detail header. `align-items: start` rather than center, so a title that
+   wraps to three lines does not drag the actions to the middle; on a narrow
+   screen the actions wrap below the title, as CB moves them under the meta
+   row. The head owns the spacing below it, so a wrapped row is spaced by
+   `gap` alone rather than by `gap` plus the title's margin. */
 .exact-root .exact-detail__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: start;
   justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.exact-root .exact-detail__head .exact-detail__title {
+  flex: 1 1 20rem;
+  min-width: 0;
+  margin-bottom: 0;
+}
+/* Centres the title's first line (1.75rem) on the 2.75rem action buttons.
+   Only when there are actions: without them the title keeps its place. */
+.exact-root
+  .exact-detail__head:has(.exact-detail__actions:not(:empty))
+  .exact-detail__title {
+  padding-top: 0.5rem;
+}
+.exact-root .exact-detail__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
   gap: 0.75rem;
 }
 .exact-root .exact-detail__title {
@@ -1388,10 +1415,44 @@
   color: var(--exact-color-primary);
 }
 
+/* CB's bookmark button in the detail header. */
+.exact-root .exact-fav--boxed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.5rem;
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+}
+.exact-root .exact-fav--boxed:hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-fav--boxed.is-on {
+  border-color: var(--exact-color-primary);
+  background: var(--exact-color-primary);
+  color: var(--exact-color-on-primary);
+}
+
 .exact-root .exact-fav:focus-visible {
   outline: 2px solid var(--exact-color-primary);
   outline-offset: 1px;
   border-radius: 0.25rem;
+}
+
+/* After the rule above, which it has to beat: the boxed button keeps its own
+   corners, and its outline stands clear of a primary-filled box. */
+.exact-root .exact-fav--boxed:focus-visible {
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* A bookmark write on the wire, dimmed like the interest button beside it. */
+.exact-root .exact-fav[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1476,6 +1537,10 @@
   margin: 0.5rem 0 0;
   color: var(--exact-color-not-eligible);
   font-size: 0.875rem;
+}
+.exact-root .exact-detail__register-error {
+  margin: 0 0 0.75rem;
+  text-align: right;
 }
 
 /* Inline editing of "Your Value" (#421).

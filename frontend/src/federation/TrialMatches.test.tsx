@@ -14,13 +14,25 @@
 // out, and when, is the thing that was wrong.
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { StrictMode } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TrialMatches } from "./TrialMatches";
 import type { TrialStateAdapter } from "./state";
 import { fakeApi, fakeState, renderTrialMatches, trial } from "../test/renderTrialMatches";
+
+/** The header copy of the interest button. The detail page draws it twice, as
+ *  CB does, and a test that took "the first match" would quietly fall through
+ *  to the card's copy if the header one stopped rendering. */
+async function headerButton(name: string): Promise<HTMLElement> {
+  const actions = await waitFor(() => {
+    const el = document.querySelector<HTMLElement>(".exact-detail__actions");
+    if (!el) throw new Error("detail header actions not rendered");
+    return el;
+  });
+  return within(actions).findByRole("button", { name });
+}
 
 const listed = (api: ReturnType<typeof fakeApi>) => api.listRequests();
 
@@ -1039,14 +1051,31 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(state.registered).toEqual(["1"]));
 
     // The label changes to the act, not to the state: a button that still
     // said "I'm Interested" would be a second registration to the reader,
     // and one that said "Registered" would withdraw without saying so.
-    await userEvent.click(await screen.findByRole("button", { name: "Withdraw" }));
+    await userEvent.click(await headerButton("Withdraw"));
     await waitFor(() => expect(state.registered).toEqual([]));
+  });
+
+  it("draws the interest button in the header too, and both show the same state", async () => {
+    // CB puts it beside the bookmark at the top and in a card at the foot.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const buttons = await screen.findAllByRole("button", { name: "I'm Interested" });
+    expect(buttons).toHaveLength(2);
+    // The header one: inside the title row, not the card.
+    expect(buttons[0].closest(".exact-detail__actions")).not.toBeNull();
+    await userEvent.click(buttons[0]);
+    await waitFor(() => expect(state.registered).toEqual(["1"]));
+    expect(await screen.findAllByRole("button", { name: "Withdraw" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
   });
 
   it("re-reads the registered ids after a write, not the favorites", async () => {
@@ -1060,7 +1089,7 @@ describe("the controls on the detail page", () => {
     await openDetail(api);
     const before = state.reads.registered;
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(state.reads.registered).toBeGreaterThan(before));
   });
 
@@ -1082,9 +1111,9 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    const button = await screen.findByRole("button", { name: "I'm Interested" });
+    const button = await headerButton("I'm Interested");
     await userEvent.click(button);
-    const saving = await screen.findByRole("button", { name: "Saving…" });
+    const saving = await headerButton("Saving…");
     // `aria-disabled`, not `disabled`: the browser blurs a control that
     // disables itself under the pointer, which drops a keyboard user to the
     // document body in the middle of the action they just took.
@@ -1108,12 +1137,29 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     // The text, not just `role="alert"`: both failure lines on this page are
     // alerts, so the role alone would pass while a failed registration
     // reported a favorites problem.
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't save that");
+    // Up by the header, where the click most likely happened — not only in
+    // the card at the foot of the page, out of view. Announced once: the
+    // card repeats the words without a second alert.
+    expect(alert.closest(".exact-detail__head, .exact-register")).toBeNull();
+    expect(alert.previousElementSibling).toHaveClass("exact-detail__head");
+    expect(screen.getAllByText("Couldn't save that. Please try again.")).toHaveLength(2);
+  });
+
+  it("describes the header's interest button with the card's explanation", async () => {
+    // Two buttons with one name read as duplicates in a screen reader's list
+    // of buttons; the header copy carries the card's text as its description.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    const header = await headerButton("I'm Interested");
+    expect(header).toHaveAccessibleDescription(/Registering marks this trial in your record/);
   });
 
   it("draws no interest control when it cannot tell whether interest was registered", async () => {
@@ -1276,7 +1322,7 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await screen.findByRole("alert");
 
     await userEvent.click(screen.getByText("Back to all trials"));
@@ -1310,15 +1356,15 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(reads).toBe(2));
     // Answered from the patched list, without waiting for the server.
-    await screen.findByRole("button", { name: "Withdraw" });
+    await headerButton("Withdraw");
     expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
 
     release(["1"]);
-    await screen.findByRole("button", { name: "Withdraw" });
+    await headerButton("Withdraw");
   });
 
   it("does not hold the button open for the round trip either", async () => {
@@ -1343,8 +1389,8 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    const button = await screen.findByRole("button", { name: "Withdraw" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    const button = await headerButton("Withdraw");
     expect(button).not.toHaveAttribute("aria-disabled");
   });
 
@@ -1398,10 +1444,10 @@ describe("the controls on the detail page", () => {
     await openDetail(api);
 
     // The write patches the cache and invalidates it; the re-read rejects.
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(reads).toBeGreaterThan(1));
 
-    await screen.findByRole("button", { name: "Withdraw" });
+    await headerButton("Withdraw");
     expect(screen.queryByText(/that control is unavailable/)).toBeNull();
   });
 
@@ -1427,8 +1473,8 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    expect(await screen.findByRole("button", { name: "Saving…" })).toHaveFocus();
+    await userEvent.click(await headerButton("I'm Interested"));
+    expect(await headerButton("Saving…")).toHaveFocus();
   });
 
   it("does not disable a different trial's button while a write is in flight", async () => {
@@ -1439,13 +1485,13 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    await headerButton("Saving…");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await openDetail(api, 1);
     await screen.findByText("Trial 7");
-    await screen.findByRole("button", { name: "I'm Interested" });
+    await headerButton("I'm Interested");
   });
 
   it("does not carry one patient's failed write into the next patient", async () => {
@@ -1541,19 +1587,19 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
 
     await openDetail(api, 0);
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    await headerButton("Saving…");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await openDetail(api, 1);
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    await headerButton("Saving…");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await openDetail(api, 0);
     await screen.findByText("Trial 1");
     // Still A's write, still unfinished.
-    const button = await screen.findByRole("button", { name: "Saving…" });
+    const button = await headerButton("Saving…");
     await userEvent.click(button);
     expect(state.adapter.setRegistered).toHaveBeenCalledTimes(2);
   });
@@ -1624,8 +1670,8 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByText(/Couldn't save that/);
+    await userEvent.click(await headerButton("I'm Interested"));
+    await screen.findByRole("alert");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await screen.findByText(/Couldn't save your interest in a trial/);
@@ -1674,7 +1720,106 @@ describe("the controls on the detail page", () => {
 
     await screen.findByText(/You may not meet this trial's eligibility criteria/);
     // Still offered: CB lets someone register against a mismatch too.
-    await screen.findByRole("button", { name: "I'm Interested" });
+    await headerButton("I'm Interested");
+  });
+
+  it("draws the detail-page bookmark boxed, and the card's plain", async () => {
+    // CB's header bookmark is a bordered button; the list star is not. The
+    // class is the only thing `boxed` changes, so it is what is pinned.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const cardStar = await screen.findByRole("button", {
+      name: "Remove Trial 1 from favorites",
+    });
+    expect(cardStar).not.toHaveClass("exact-fav--boxed");
+    expect(cardStar).toHaveClass("exact-fav", "is-on");
+
+    await openDetail(api);
+    const headerStar = await screen.findByRole("button", {
+      name: "Remove Trial 1 from favorites",
+    });
+    // Boxed and on together: the modifier must not replace the state class.
+    expect(headerStar).toHaveClass("exact-fav", "exact-fav--boxed", "is-on");
+  });
+
+  it("draws the boxed bookmark off for a trial that is not bookmarked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    const star = await screen.findByRole("button", { name: "Add Trial 1 to favorites" });
+    expect(star).toHaveClass("exact-fav", "exact-fav--boxed");
+    expect(star).not.toHaveClass("is-on");
+    expect(star.closest(".exact-detail__actions")).not.toBeNull();
+  });
+
+  it("opens on Withdraw in both places for a trial already registered", async () => {
+    const api = fakeApi();
+    const state = fakeState({ registered: ["1"] });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const buttons = await screen.findAllByRole("button", { name: "Withdraw" });
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].closest(".exact-detail__actions")).not.toBeNull();
+    expect(buttons[1].closest(".exact-detail__actions")).toBeNull();
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+
+    // Withdrawn from the header, both flip back.
+    await userEvent.click(buttons[0]);
+    await waitFor(() => expect(state.registered).toEqual([]));
+    expect(await screen.findAllByRole("button", { name: "I'm Interested" })).toHaveLength(2);
+    expect(state.adapter.setRegistered).toHaveBeenCalledWith("1", false);
+  });
+
+  it("still registers from the card at the foot of the page", async () => {
+    // Every other test clicks the header copy; the card's copy is the one
+    // that existed before, and must still write.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const buttons = await screen.findAllByRole("button", { name: "I'm Interested" });
+    expect(buttons[1].closest(".exact-detail__actions")).toBeNull();
+    await userEvent.click(buttons[1]);
+    await waitFor(() => expect(state.registered).toEqual(["1"]));
+    expect(state.adapter.setRegistered).toHaveBeenCalledTimes(1);
+    expect(await screen.findAllByRole("button", { name: "Withdraw" })).toHaveLength(2);
+  });
+
+  it("shows both buttons saving, and drops a click on either while it is", async () => {
+    // One pending write, two copies of the control: the card copy must not
+    // offer a second PATCH while the header's is on the wire.
+    const api = fakeApi();
+    let release: () => void = () => {};
+    const state = fakeState({
+      overrides: {
+        setRegistered: vi.fn(
+          () => new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+        ),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const header = await headerButton("I'm Interested");
+    await userEvent.click(header);
+    const saving = await screen.findAllByRole("button", { name: "Saving…" });
+    expect(saving).toHaveLength(2);
+    for (const b of saving) {
+      expect(b).toHaveAttribute("aria-busy", "true");
+      expect(b).toHaveAttribute("aria-disabled", "true");
+      expect(b).not.toBeDisabled();
+    }
+    await userEvent.click(saving[1]);
+    expect(state.adapter.setRegistered).toHaveBeenCalledTimes(1);
+
+    release();
   });
 
   it("promises nothing it does not do", async () => {
