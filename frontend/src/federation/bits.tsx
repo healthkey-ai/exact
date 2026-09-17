@@ -260,34 +260,46 @@ export function ActionTooltip({
   const id = useId();
   const wrapRef = useRef<HTMLSpanElement>(null);
   const boxRef = useRef<HTMLSpanElement>(null);
-  const [open, setOpen] = useState(false);
-  // Closing waits a moment, so the pointer can cross the gap onto the box and
+  // Hover and focus are tracked apart: the box shows while either holds, so
+  // a focused control keeps its help when the pointer wanders off, and Esc
+  // dismisses it until the next hover or focus.
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const open = !!text && !dismissed && (hovered || focused);
+  // Leaving waits a moment, so the pointer can cross the gap onto the box and
   // stay there to read it (WCAG 1.4.13: hoverable).
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const show = () => {
-    clearTimeout(closeTimer.current);
-    setOpen(true);
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const enter = () => {
+    clearTimeout(leaveTimer.current);
+    setHovered(true);
+    setDismissed(false);
   };
-  const hideSoon = () => {
-    clearTimeout(closeTimer.current);
-    closeTimer.current = setTimeout(() => setOpen(false), 120);
+  const leaveSoon = () => {
+    clearTimeout(leaveTimer.current);
+    leaveTimer.current = setTimeout(() => setHovered(false), 120);
   };
-  useEffect(() => () => clearTimeout(closeTimer.current), []);
+  useEffect(() => () => clearTimeout(leaveTimer.current), []);
+  // A box whose text goes away takes its hover with it, rather than coming
+  // back already open when the text returns.
+  useEffect(() => {
+    if (!text) setHovered(false);
+  }, [text]);
 
   useLayoutEffect(() => {
-    if (!open || !text) return;
+    if (!open) return;
+    const wrap = wrapRef.current;
+    const box = boxRef.current;
+    if (!wrap || !box) return;
+    // The layer inherits from <body>, not from the host container.
+    box.style.fontFamily = getComputedStyle(wrap).fontFamily;
     const place = () => {
-      const wrap = wrapRef.current;
-      const box = boxRef.current;
-      if (!wrap || !box) return;
-      // The layer inherits from <body>, not from the host container.
-      box.style.fontFamily = getComputedStyle(wrap).fontFamily;
       const r = wrap.getBoundingClientRect();
       const b = box.getBoundingClientRect();
       // clientWidth, not innerWidth: the latter includes a classic scrollbar.
       const vw = document.documentElement.clientWidth;
       const vh = document.documentElement.clientHeight;
-      // A control scrolled out of view takes its box with it.
+      // A control scrolled out of the window takes its box with it.
       box.style.visibility = r.bottom < 0 || r.top > vh ? "hidden" : "";
       let left = align === "start" ? r.left : r.right - b.width;
       left = Math.min(Math.max(MARGIN, left), Math.max(MARGIN, vw - b.width - MARGIN));
@@ -300,10 +312,7 @@ export function ActionTooltip({
     };
     place();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        clearTimeout(closeTimer.current);
-        setOpen(false);
-      }
+      if (e.key === "Escape") setDismissed(true);
     };
     document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", place, true);
@@ -320,13 +329,13 @@ export function ActionTooltip({
     <span
       ref={wrapRef}
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
-      onMouseEnter={show}
-      onMouseLeave={hideSoon}
-      onFocus={show}
-      onBlur={() => {
-        clearTimeout(closeTimer.current);
-        setOpen(false);
+      onMouseEnter={enter}
+      onMouseLeave={leaveSoon}
+      onFocus={() => {
+        setFocused(true);
+        setDismissed(false);
       }}
+      onBlur={() => setFocused(false)}
     >
       {children(tipId)}
       {text
@@ -336,8 +345,18 @@ export function ActionTooltip({
               id={id}
               className={`exact-tooltip__box exact-action-tip__box${open ? " is-open" : ""}`}
               role="tooltip"
-              onMouseEnter={show}
-              onMouseLeave={hideSoon}
+              onMouseEnter={enter}
+              onMouseLeave={(e) => {
+                // React counts the box as inside the wrap, so moving straight
+                // back onto the control fires no enter on the wrap; stay open.
+                const to = e.relatedTarget;
+                if (to instanceof Node && wrapRef.current?.contains(to)) return;
+                leaveSoon();
+              }}
+              // A click here must not reach a card (portal events bubble
+              // through the React tree), nor take focus from the control.
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.preventDefault()}
             >
               {text}
             </span>,

@@ -3483,6 +3483,46 @@ describe("action tooltips", () => {
     expect(box()).not.toHaveClass("is-open");
   });
 
+  it("keeps a focused control's box open when the pointer leaves", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    act(() => button.focus());
+    await userEvent.hover(button);
+    await userEvent.unhover(button);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("stays open when the pointer moves from the box straight back to the control", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.hover(button);
+    await userEvent.hover(box());
+    // The exact pair a browser sends when the pointer jumps from the box onto
+    // the control; React sees it as child → parent and fires no enter.
+    act(() => {
+      box().dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: button }));
+      button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: box() }));
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("does not open the trial when a card's tooltip box is clicked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    const [view] = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.hover(view);
+    const box = document.getElementById(view.getAttribute("aria-describedby")!)!;
+    await userEvent.click(box);
+    expect(screen.queryByText("Back to all trials")).toBeNull();
+  });
+
   it("says why an action is unavailable in its tooltip", async () => {
     const api = fakeApi();
     renderTrialMatches(api, { patientInfo: null });
