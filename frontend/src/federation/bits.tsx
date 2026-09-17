@@ -240,11 +240,22 @@ const MARGIN = 8;
 let lastInput: "keyboard" | "pointer" = "keyboard";
 let inputTracking = false;
 function trackInputModality() {
-  if (inputTracking) return;
+  if (inputTracking || typeof document === "undefined") return;
   inputTracking = true;
   document.addEventListener("keydown", () => (lastInput = "keyboard"), true);
   document.addEventListener("pointerdown", () => (lastInput = "pointer"), true);
 }
+// From module load, so the click that brought the remote in is seen too.
+trackInputModality();
+
+/** Keys that scroll a box too tall for the screen while its control keeps
+ *  focus — the box cannot take focus itself without closing on blur. */
+const BOX_SCROLL_KEYS: Record<string, (box: HTMLElement) => number> = {
+  ArrowDown: () => 40,
+  ArrowUp: () => -40,
+  PageDown: (box) => box.clientHeight - 40,
+  PageUp: (box) => -(box.clientHeight - 40),
+};
 
 /** Hover/focus help for an action (a button, a tab, the sort control), as CB
  *  wraps its trial actions in a tooltip.
@@ -298,7 +309,6 @@ export function ActionTooltip({
   // Focus that a click gave the control does not hold the box open: after a
   // click the button keeps focus, and the box would hang over the page once
   // the pointer left. Only keyboard focus does.
-  useEffect(trackInputModality, []);
   // A box whose text goes away takes its hover with it, rather than coming
   // back already open when the text returns.
   useEffect(() => {
@@ -313,11 +323,14 @@ export function ActionTooltip({
     // The layer inherits from <body>, not from the host container.
     box.style.fontFamily = getComputedStyle(wrap).fontFamily;
     const place = () => {
-      const r = wrap.getBoundingClientRect();
-      const b = box.getBoundingClientRect();
-      // clientWidth, not innerWidth: the latter includes a classic scrollbar.
+      // clientWidth/Height, not innerWidth/100vh: those include a classic
+      // scrollbar, and on a phone 100vh is the height with the address bar
+      // hidden, taller than what is on screen.
       const vw = document.documentElement.clientWidth;
       const vh = document.documentElement.clientHeight;
+      box.style.maxHeight = `${Math.max(0, vh - 2 * MARGIN)}px`;
+      const r = wrap.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
       // A control scrolled out of the window takes its box with it.
       box.style.visibility = r.bottom < 0 || r.top > vh ? "hidden" : "";
       let left = align === "start" ? r.left : r.right - b.width;
@@ -334,7 +347,23 @@ export function ActionTooltip({
     };
     place();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDismissed(true);
+      if (e.key === "Escape") {
+        setDismissed(true);
+        return;
+      }
+      // Scroll an overflowing box from its focused button. Not from a
+      // select, whose arrow keys change its value.
+      const step = BOX_SCROLL_KEYS[e.key];
+      const active = document.activeElement;
+      if (
+        step &&
+        box.scrollHeight > box.clientHeight &&
+        active instanceof HTMLButtonElement &&
+        wrap.contains(active)
+      ) {
+        e.preventDefault();
+        box.scrollTop += step(box);
+      }
     };
     document.addEventListener("keydown", onKey);
     window.addEventListener("scroll", place, true);

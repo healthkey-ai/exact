@@ -1462,8 +1462,9 @@
   left: 0;
   transform: none;
   max-width: min(20rem, calc(100vw - 1rem));
-  max-height: calc(100vh - 1rem);
+  /* max-height is set by script from the visible viewport. */
   overflow-y: auto;
+  overscroll-behavior: contain;
   text-align: left;
   font-weight: 400;
   z-index: 2147483000;

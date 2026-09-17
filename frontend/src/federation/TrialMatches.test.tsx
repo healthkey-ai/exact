@@ -3448,6 +3448,25 @@ describe("action tooltips", () => {
       expect(tip.style.top).toBe(`${740 - 6 - 80}px`);
     });
 
+    it("keeps a box taller than the room above and below on screen", async () => {
+      const { tip } = await place(rect(16, 150, 100, 40), rect(0, 0, 320, 250), 400, 300);
+      // Below would end at 446 and above would start at -106: pinned at 300-250-8,
+      // and never taller than what is on screen.
+      expect(tip.style.top).toBe("42px");
+      expect(tip.style.maxHeight).toBe("284px");
+    });
+
+    it("scrolls a box too tall for the screen from its focused button", async () => {
+      const { tip, button } = await place(rect(16, 150, 100, 40), rect(0, 0, 320, 250), 400, 300);
+      vi.spyOn(tip, "scrollHeight", "get").mockReturnValue(600);
+      vi.spyOn(tip, "clientHeight", "get").mockReturnValue(284);
+      await userEvent.keyboard("{Shift}");
+      act(() => button.focus());
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+      expect(tip.scrollTop).toBe(80);
+      expect(tip).toHaveClass("is-open");
+    });
+
     it("stays open, and follows the control, when the page scrolls", async () => {
       const { tip, button } = await place(rect(16, 100, 100, 40));
       vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(rect(16, 60, 100, 40));
@@ -3538,22 +3557,6 @@ describe("action tooltips", () => {
     await userEvent.tab({ shift: true });
     expect(button).toHaveFocus();
     expect(box()).toHaveClass("is-open");
-  });
-
-  it("keeps a box taller than the room above and below on screen", async () => {
-    vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(400);
-    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(300);
-    const api = fakeApi();
-    renderTrialMatches(api);
-    const button = await screen.findByRole("button", { name: "Export CSV" });
-    const tip = document.getElementById(button.getAttribute("aria-describedby")!)!;
-    const r = { x: 16, y: 150, left: 16, top: 150, width: 100, height: 40, right: 116, bottom: 190, toJSON: () => ({}) };
-    vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(r as DOMRect);
-    vi.spyOn(tip, "getBoundingClientRect").mockReturnValue({ ...r, height: 250, width: 320 } as DOMRect);
-    await userEvent.hover(button);
-    // Below would end at 446 and above would start at -106: pinned at 300-250-8.
-    expect(tip.style.top).toBe("42px");
-    vi.restoreAllMocks();
   });
 
   it("stays open when the pointer moves from the box straight back to the control", async () => {
