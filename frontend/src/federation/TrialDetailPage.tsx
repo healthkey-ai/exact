@@ -680,6 +680,16 @@ export function TrialDetailPage({
               ) : null}
             </div>
           </div>
+          {/* CB's rule (#4669) followed up here as well: the header's green
+              button must not read as "you may be eligible" when the matcher
+              says otherwise, and the card saying so is at the foot of the
+              page. A statement, not an alert — it is there on load. */}
+          {showHeaderRegister && notEligible ? (
+            <p className="exact-detail__eligibility-warning">
+              You may not meet this trial's eligibility criteria — see the
+              eligibility table below.
+            </p>
+          ) : null}
           {/* Not gated on the button: an advanced status that arrives after a
               refused write swaps the card for a statement that shows no
               failure, and this line is then the only place it is said. */}

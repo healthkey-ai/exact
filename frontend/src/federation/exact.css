@@ -1540,6 +1540,15 @@
 .exact-root .exact-detail__register-error {
   margin: 0 0 0.75rem;
 }
+.exact-root .exact-detail__eligibility-warning {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--exact-color-warning-200);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-warning-50);
+  color: var(--exact-color-warning-700);
+  font-size: 0.875rem;
+}
 
 /* Inline editing of "Your Value" (#421).
 

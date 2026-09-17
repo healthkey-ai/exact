@@ -1151,6 +1151,29 @@ describe("the controls on the detail page", () => {
     expect(screen.getAllByText("Couldn't save that. Please try again.")).toHaveLength(2);
   });
 
+  it("warns by the header button when the matcher says not eligible", async () => {
+    // The card's warning is at the foot of the page; without this the green
+    // header button was the only thing a not-eligible reader saw up top.
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await headerButton("I'm Interested");
+    const warning = await screen.findByText(/eligibility table below/);
+    expect(warning.previousElementSibling).toHaveClass("exact-detail__head");
+    expect(warning).not.toHaveAttribute("role");
+  });
+
+  it("does not warn by the header button for an eligible trial", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await headerButton("I'm Interested");
+    expect(screen.queryByText(/eligibility table below/)).toBeNull();
+  });
+
   it("describes the header's interest button with the card's explanation", async () => {
     // Two buttons with one name read as duplicates in a screen reader's list
     // of buttons; the header copy carries the card's text as its description.
@@ -1458,7 +1481,9 @@ describe("the controls on the detail page", () => {
     const { container } = renderTrialMatches(api, { state: fakeState().adapter });
     await openDetail(api);
 
-    await screen.findByText(/You may not meet this trial's eligibility criteria/);
+    await screen.findByRole("heading", {
+      name: /You may not meet this trial's eligibility criteria/,
+    });
     expect(container.querySelector(".exact-register")).toHaveClass("is-warning");
   });
 
@@ -1718,7 +1743,9 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: fakeState().adapter });
     await openDetail(api);
 
-    await screen.findByText(/You may not meet this trial's eligibility criteria/);
+    await screen.findByRole("heading", {
+      name: /You may not meet this trial's eligibility criteria/,
+    });
     // Still offered: CB lets someone register against a mismatch too.
     await headerButton("I'm Interested");
   });
