@@ -3495,6 +3495,32 @@ describe("action tooltips", () => {
     expect(box()).toHaveClass("is-open");
   });
 
+  it("does not hold the box open on the focus a click leaves behind", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Filter Results" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.click(button);
+    expect(button).toHaveFocus();
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+  });
+
+  it("opens on keyboard focus", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Filter Results" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.click(button);
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+    // Tab away and back: keyboard focus opens it again.
+    await userEvent.tab();
+    await userEvent.tab({ shift: true });
+    expect(button).toHaveFocus();
+    expect(box()).toHaveClass("is-open");
+  });
+
   it("stays open when the pointer moves from the box straight back to the control", async () => {
     const api = fakeApi();
     renderTrialMatches(api);

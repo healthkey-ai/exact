@@ -280,6 +280,10 @@ export function ActionTooltip({
     leaveTimer.current = setTimeout(() => setHovered(false), 120);
   };
   useEffect(() => () => clearTimeout(leaveTimer.current), []);
+  // Focus that a click gave the control does not hold the box open: after a
+  // click the button keeps focus, and the box would hang over the page once
+  // the pointer left. Only keyboard (or scripted) focus does.
+  const pointerDown = useRef(false);
   // A box whose text goes away takes its hover with it, rather than coming
   // back already open when the text returns.
   useEffect(() => {
@@ -331,7 +335,13 @@ export function ActionTooltip({
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
       onMouseEnter={enter}
       onMouseLeave={leaveSoon}
+      onPointerDown={() => {
+        pointerDown.current = true;
+      }}
       onFocus={() => {
+        const fromPointer = pointerDown.current;
+        pointerDown.current = false;
+        if (fromPointer) return;
         setFocused(true);
         setDismissed(false);
       }}
@@ -356,6 +366,7 @@ export function ActionTooltip({
               // A click here must not reach a card (portal events bubble
               // through the React tree), nor take focus from the control.
               onClick={(e) => e.stopPropagation()}
+              // Costs selecting the text in the box; keeps the control focused.
               onMouseDown={(e) => e.preventDefault()}
             >
               {text}
