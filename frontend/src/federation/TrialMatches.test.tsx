@@ -1418,7 +1418,7 @@ describe("the controls on the detail page", () => {
     await openDetail(api);
 
     const marker = await screen.findByLabelText("does not match");
-    await screen.findByText(/the ones listed above are marked/);
+    await screen.findByText(/the ones in the eligibility table are marked/);
     // After the units, where the matched cell puts its tick. Before them it
     // split the value from its unit: "12 ✕ years", read out as
     // "12, does not match, years".
@@ -1692,7 +1692,7 @@ describe("the controls on the detail page", () => {
     await screen.findByText(
       /One or more of this trial's requirements does not match your profile\./,
     );
-    expect(screen.queryByText(/marked above/)).toBeNull();
+    expect(screen.queryByText(/are marked/)).toBeNull();
   });
 
   it("goes on saying the profile does not match after registering", async () => {

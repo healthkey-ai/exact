@@ -527,7 +527,7 @@ function RegisterInterest({
   const mismatch = !notEligible
     ? ""
     : mismatchesShown
-      ? " One or more of this trial's requirements does not match your profile — the ones listed above are marked."
+      ? " One or more of this trial's requirements does not match your profile — the ones in the eligibility table are marked."
       : " One or more of this trial's requirements does not match your profile.";
 
   return (
@@ -680,7 +680,10 @@ export function TrialDetailPage({
               ) : null}
             </div>
           </div>
-          {showHeaderRegister && trialState?.registerFailed ? (
+          {/* Not gated on the button: an advanced status that arrives after a
+              refused write swaps the card for a statement that shows no
+              failure, and this line is then the only place it is said. */}
+          {registerButton && trialState?.registerFailed ? (
             <p className="exact-register__error exact-detail__register-error" role="alert">
               Couldn't save that. Please try again.
             </p>
