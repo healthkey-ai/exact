@@ -241,7 +241,7 @@ describe("the Export button with no patient at all", () => {
     // No patient means no search either, so there is no request to wait for.
     const button = await screen.findByRole("button", { name: "Export CSV" });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("title", expect.stringContaining("needs a patient"));
+    expect(button).toHaveAccessibleDescription(expect.stringContaining("needs a patient"));
   });
 });
 

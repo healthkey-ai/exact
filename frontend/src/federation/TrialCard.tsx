@@ -7,6 +7,7 @@
 import type { KeyboardEvent } from "react";
 
 import {
+  ActionTooltip,
   EyeIcon,
   FavoriteToggle,
   Field,
@@ -14,6 +15,7 @@ import {
   SUITABILITY_HREF,
   asText,
 } from "./bits";
+import { ACTION_TOOLTIPS } from "./tooltips";
 import type { TrialMatch } from "./types";
 
 interface Props {
@@ -96,11 +98,16 @@ export function TrialCard({
           </div>
 
           <div className="exact-card__scores">
-            <ScorePill score={trial.matchScore} label="Matching Score" />
+            <ScorePill
+              score={trial.matchScore}
+              label="Matching Score"
+              tooltip={ACTION_TOOLTIPS.matchingScore}
+            />
             <ScorePill
               score={trial.goodnessScore}
               label="Suitability Score"
               href={SUITABILITY_HREF}
+              tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
         </div>
@@ -113,17 +120,22 @@ export function TrialCard({
             busy={busy}
           />
           {onSelect ? (
-            <button
-              type="button"
-              className="exact-btn-view"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleSelect();
-              }}
-            >
-              <EyeIcon />
-              <span>View Trial</span>
-            </button>
+            <ActionTooltip text={ACTION_TOOLTIPS.viewTrial} className="exact-card__view-tip">
+              {(tipId) => (
+                <button
+                  type="button"
+                  className="exact-btn-view"
+                  aria-describedby={tipId}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelect();
+                  }}
+                >
+                  <EyeIcon />
+                  <span>View Trial</span>
+                </button>
+              )}
+            </ActionTooltip>
           ) : null}
         </div>
       </div>

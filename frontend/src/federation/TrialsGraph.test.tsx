@@ -145,7 +145,7 @@ describe("Explore Trials when the saved ids are unavailable", () => {
 
     const explore = screen.getByRole("button", { name: "Explore Trials" });
     await waitFor(() => expect(explore).toBeDisabled());
-    expect(explore).toHaveAttribute("title", expect.stringContaining("aren't available"));
+    expect(explore).toHaveAccessibleDescription(expect.stringContaining("aren't available"));
     expect(screen.queryByText(/Which requirements you meet/)).toBeNull();
   });
 });

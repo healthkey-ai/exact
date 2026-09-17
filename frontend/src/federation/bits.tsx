@@ -2,7 +2,9 @@
 // page, mirroring CancerBot UI v2's `ScorePill` / `Field`. Structure lives in
 // `exact.css` (`.exact-pill*`, `.exact-field`); tier colors are applied inline
 // from the `--exact-color-*` token set so a host can re-theme.
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+
+import { ACTION_TOOLTIPS } from "./tooltips";
 
 /** CB's Suitability-score explainer article (linked from the pill). */
 export const SUITABILITY_HREF =
@@ -46,10 +48,14 @@ export function ScorePill({
   score,
   label,
   href,
+  tooltip,
 }: {
   score: number | null | undefined;
   label: string;
   href?: string;
+  /** CB's "?" beside the label. Outside the link, since a button inside an
+   *  anchor is not a thing a browser will let you click on its own. */
+  tooltip?: string;
 }) {
   // A missing score (`matchScore` is null on the `/trials/` list when there's
   // no patient context) renders neutral/gray rather than green, so an absent
@@ -75,20 +81,26 @@ export function ScorePill({
     </span>
   );
 
-  if (href) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{ textDecoration: "none" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {pill}
-      </a>
-    );
-  }
-  return pill;
+  const body = href ? (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{ textDecoration: "none" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {pill}
+    </a>
+  ) : (
+    pill
+  );
+  if (!tooltip) return body;
+  return (
+    <span className="exact-pill__wrap">
+      {body}
+      <FieldTooltip text={tooltip} />
+    </span>
+  );
 }
 
 export function Field({
@@ -156,6 +168,8 @@ export function FieldTooltip({ text }: { text: string }) {
         tabIndex={0}
         aria-label="More information"
         aria-describedby={id}
+        // Inside a card, which opens the trial on click.
+        onClick={(e) => e.stopPropagation()}
       >
         ?
       </button>
@@ -182,6 +196,98 @@ export const EyeIcon = () => (
     <circle cx="12" cy="12" r="3" />
   </svg>
 );
+
+/** Lucide's `bookmark`, the icon CB draws for favorites; filled when on. */
+export const BookmarkIcon = ({ filled, size = 20 }: { filled: boolean; size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill={filled ? "currentColor" : "none"}
+    stroke="currentColor"
+    strokeWidth="1.67"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z" />
+  </svg>
+);
+
+/** Hover/focus help for an action (a button, a tab, the sort control), as CB
+ *  wraps its trial actions in a tooltip.
+ *
+ *  The wrapped control names the box with `aria-describedby` — `tipId` is
+ *  handed to it for that — so the text is read out whether or not the box is
+ *  showing. The box is `position: fixed`, placed from the control's rect: the
+ *  tabs sit in an `overflow-x: auto` strip, which clips an absolutely
+ *  positioned box, and a fixed one is not clipped by it. Esc dismisses it and
+ *  scrolling closes it (a fixed box would otherwise hang where the control
+ *  used to be). `align` picks which edge of the control it lines up with:
+ *  "end" for controls at the right of a row, "start" for the tabs. */
+export function ActionTooltip({
+  text,
+  align = "end",
+  className,
+  children,
+}: {
+  text: string;
+  align?: "start" | "end";
+  /** Extra class on the wrap, for a control whose layout the wrap must keep. */
+  className?: string;
+  children: (tipId: string) => React.ReactNode;
+}) {
+  const id = useId();
+  const wrapRef = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState<React.CSSProperties | null>(null);
+
+  const open = () => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos(
+      align === "start"
+        ? { top: r.bottom + 6, left: Math.max(8, r.left) }
+        : { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) },
+    );
+  };
+  const close = () => setPos(null);
+
+  useEffect(() => {
+    if (!pos) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPos(null);
+    };
+    const onScroll = () => setPos(null);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [pos]);
+
+  return (
+    <span
+      ref={wrapRef}
+      className={`exact-action-tip${className ? ` ${className}` : ""}`}
+      onMouseEnter={open}
+      onMouseLeave={close}
+      onFocus={open}
+      onBlur={close}
+    >
+      {children(id)}
+      <span
+        id={id}
+        className={`exact-tooltip__box exact-action-tip__box${pos ? " is-open" : ""}`}
+        role="tooltip"
+        style={pos ?? undefined}
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
 
 /** The bookmark toggle, drawn identically on a card and on the detail page.
  *
@@ -223,24 +329,29 @@ export function FavoriteToggle({
 }) {
   if (!onToggle || isFavorite === undefined) return null;
   return (
-    <button
-      type="button"
-      className={`exact-fav${boxed ? " exact-fav--boxed" : ""}${isFavorite ? " is-on" : ""}`}
-      aria-pressed={isFavorite}
-      aria-disabled={busy || undefined}
-      aria-busy={busy || undefined}
-      aria-label={
-        isFavorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`
-      }
-      onClick={(e) => {
-        // The card is itself a click target; without this, bookmarking would
-        // also open the trial. Harmless where nothing is listening.
-        e.stopPropagation();
-        onToggle(!isFavorite);
-      }}
-    >
-      {isFavorite ? "★" : "☆"}
-    </button>
+    <ActionTooltip text={ACTION_TOOLTIPS.favorite}>
+      {(tipId) => (
+        <button
+          type="button"
+          className={`exact-fav${boxed ? " exact-fav--boxed" : ""}${isFavorite ? " is-on" : ""}`}
+          aria-describedby={tipId}
+          aria-pressed={isFavorite}
+          aria-disabled={busy || undefined}
+          aria-busy={busy || undefined}
+          aria-label={
+            isFavorite ? `Remove ${title} from favorites` : `Add ${title} to favorites`
+          }
+          onClick={(e) => {
+            // The card is itself a click target; without this, bookmarking would
+            // also open the trial. Harmless where nothing is listening.
+            e.stopPropagation();
+            onToggle(!isFavorite);
+          }}
+        >
+          <BookmarkIcon filled={isFavorite} size={boxed ? 20 : 18} />
+        </button>
+      )}
+    </ActionTooltip>
   );
 }
 

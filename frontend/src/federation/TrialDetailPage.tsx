@@ -17,6 +17,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 
 import {
+  ActionTooltip,
   CheckIcon,
   FavoriteToggle,
   Field,
@@ -29,7 +30,7 @@ import {
 import { HighRiskMclPanel } from "./HighRiskMclPanel";
 import { useFormSettings, useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
-import { FIELD_TOOLTIPS } from "./tooltips";
+import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit } from "./FieldEdit";
@@ -431,23 +432,32 @@ function RegisterButton({
   describedBy?: string;
 }) {
   return (
-    <button
-      type="button"
-      className={`exact-register__btn${isRegistered ? " is-on" : ""}`}
-      // `aria-disabled`, not `disabled`: a control that disables itself
-      // under the pointer is blurred by the browser, dropping a keyboard
-      // user to the document body in the middle of the action they just
-      // took. Announced here, enforced in one place — `TrialMatches`'s
-      // `write` drops a click for a trial whose write is still on the
-      // wire, and two PATCHes in flight are applied in whatever order
-      // they arrive.
-      aria-disabled={pending || undefined}
-      aria-busy={pending || undefined}
-      aria-describedby={describedBy}
-      onClick={() => onToggle(!isRegistered)}
-    >
-      {pending ? "Saving…" : isRegistered ? "Withdraw" : "I'm Interested"}
-    </button>
+    // CB's button carries a "?" and a hover tooltip; the tooltip is read out
+    // through `aria-describedby`, and the glyph is decoration.
+    <ActionTooltip text={isRegistered ? ACTION_TOOLTIPS.registered : ACTION_TOOLTIPS.registerInterest}>
+      {(tipId) => (
+        <button
+          type="button"
+          className={`exact-register__btn${isRegistered ? " is-on" : ""}`}
+          // `aria-disabled`, not `disabled`: a control that disables itself
+          // under the pointer is blurred by the browser, dropping a keyboard
+          // user to the document body in the middle of the action they just
+          // took. Announced here, enforced in one place — `TrialMatches`'s
+          // `write` drops a click for a trial whose write is still on the
+          // wire, and two PATCHes in flight are applied in whatever order
+          // they arrive.
+          aria-disabled={pending || undefined}
+          aria-busy={pending || undefined}
+          aria-describedby={[tipId, describedBy].filter(Boolean).join(" ")}
+          onClick={() => onToggle(!isRegistered)}
+        >
+          {pending ? "Saving…" : isRegistered ? "Withdraw" : "I'm Interested"}
+          <span className="exact-register__help" aria-hidden="true">
+            ?
+          </span>
+        </button>
+      )}
+    </ActionTooltip>
   );
 }
 
@@ -719,11 +729,16 @@ export function TrialDetailPage({
           ) : null}
 
           <div className="exact-detail__scores">
-            <ScorePill score={data.matchScore} label="Matching Score" />
+            <ScorePill
+              score={data.matchScore}
+              label="Matching Score"
+              tooltip={ACTION_TOOLTIPS.matchingScore}
+            />
             <ScorePill
               score={data.goodnessScore}
               label="Suitability Score"
               href={SUITABILITY_HREF}
+              tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
 
@@ -781,13 +796,19 @@ export function TrialDetailPage({
           <div className="exact-detail__grid">
             {summary ? (
               <section className="exact-panel exact-detail__summary">
-                <h2 className="exact-panel__title">Summary</h2>
+                <div className="exact-panel__head">
+                  <h2 className="exact-panel__title">Summary</h2>
+                  <FieldTooltip text={ACTION_TOOLTIPS.summary} />
+                </div>
                 <p className="exact-detail__summary-text">{summary}</p>
               </section>
             ) : null}
 
             <section className="exact-panel exact-detail__elig">
-              <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
+              <div className="exact-panel__head">
+                <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
+                <FieldTooltip text={ACTION_TOOLTIPS.eligibilityAttributes} />
+              </div>
               {eligibility.length ? (
                 <div className="exact-elig">
                   <div className="exact-elig__thead" aria-hidden="true">

@@ -1755,7 +1755,7 @@ describe("the controls on the detail page", () => {
     await screen.findByText(
       /One or more of this trial's requirements does not match your profile\./,
     );
-    expect(screen.queryByText(/are marked/)).toBeNull();
+    expect(screen.queryByText(/the ones in the eligibility table are marked/)).toBeNull();
   });
 
   it("goes on saying the profile does not match after registering", async () => {
@@ -3343,5 +3343,135 @@ describe("the pager across a patient switch", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument(),
     );
+  });
+});
+
+describe("action tooltips", () => {
+  // CB puts a tooltip on every trial action. Each one here is read out through
+  // `aria-describedby`, and the box shows on hover or focus and goes on Esc.
+  const openFirstDetail = async (api: ReturnType<typeof fakeApi>) => {
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    await userEvent.click((await screen.findAllByRole("button", { name: "View Trial" }))[0]);
+    await screen.findByText("Back to all trials");
+  };
+
+  it("describes every list action", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+
+    const tab = (name: RegExp) => screen.findByRole("button", { name });
+    expect(await tab(/^Eligible/)).toHaveAccessibleDescription(/appears to meet the key eligibility/);
+    expect(await tab(/^Fully matched/)).toHaveAccessibleDescription(/meets every eligibility criterion/);
+    expect(await tab(/^Potential/)).toHaveAccessibleDescription(/some of the information/);
+    expect(await tab(/^Registered/)).toHaveAccessibleDescription(/registered interest in/);
+    expect(await tab(/^Favorites/)).toHaveAccessibleDescription(/saved to review later/);
+
+    expect(screen.getByRole("combobox", { name: /Sort/ })).toHaveAccessibleDescription(
+      /overall suitability/,
+    );
+    expect(screen.getByRole("button", { name: "Map" })).toHaveAccessibleDescription(/on a map/);
+    expect(screen.getByRole("button", { name: "Explore Trials" })).toHaveAccessibleDescription(
+      /single view/,
+    );
+    expect(screen.getByRole("button", { name: "Export CSV" })).toHaveAccessibleDescription(
+      /spreadsheet/,
+    );
+    expect(screen.getByRole("button", { name: "Filter Results" })).toHaveAccessibleDescription(
+      /narrow down trials/,
+    );
+    const [view] = await screen.findAllByRole("button", { name: "View Trial" });
+    expect(view).toHaveAccessibleDescription(/full details of this trial/);
+    const [star] = await screen.findAllByRole("button", { name: /to favorites$/ });
+    expect(star).toHaveAccessibleDescription(/Save this trial to your Favorites/);
+  });
+
+  it("follows the sort that is applied", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const sort = await screen.findByRole("combobox", { name: /Sort/ });
+    await userEvent.selectOptions(sort, "distance");
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: /Sort/ })).toHaveAccessibleDescription(
+        /how close the trial locations are/,
+      ),
+    );
+  });
+
+  it("draws the bookmark as CB's bookmark icon, not a star glyph", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
+    const [star] = await screen.findAllByRole("button", { name: /from favorites$/ });
+    expect(star.querySelector("svg path")).not.toBeNull();
+    expect(star.querySelector("svg")).toHaveAttribute("fill", "currentColor");
+    expect(star).not.toHaveTextContent(/[★☆]/);
+  });
+
+  it("shows the box on hover and focus, and closes it on Escape", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    expect(box()).not.toHaveClass("is-open");
+
+    await userEvent.hover(button);
+    expect(box()).toHaveClass("is-open");
+    await userEvent.unhover(button);
+    expect(box()).not.toHaveClass("is-open");
+
+    act(() => button.focus());
+    expect(box()).toHaveClass("is-open");
+    await userEvent.keyboard("{Escape}");
+    expect(box()).not.toHaveClass("is-open");
+  });
+
+  it("says why an action is unavailable in its tooltip", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { patientInfo: null });
+    const exp = await screen.findByRole("button", { name: "Export CSV" });
+    expect(exp).toBeDisabled();
+    expect(exp).toHaveAccessibleDescription(/needs a patient/);
+    expect(exp).not.toHaveAttribute("title");
+  });
+
+  it("describes the detail actions and puts a ? on the scores and panels", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openFirstDetail(api);
+
+    const register = await headerButton("I'm Interested");
+    expect(register).toHaveAccessibleDescription(/register your interest to keep track of it/);
+    // CB's promise is not carried over: nobody is contacted.
+    expect(register).not.toHaveAccessibleDescription(/reach out|contact the trial team/);
+    const bookmark = document.querySelector<HTMLElement>(".exact-detail__actions .exact-fav")!;
+    expect(bookmark).toHaveAccessibleDescription(/Save this trial to your Favorites/);
+
+    const help = screen.getAllByRole("button", { name: "More information" });
+    const texts = help.map((b) => document.getElementById(b.getAttribute("aria-describedby")!)!.textContent);
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/percentage of eligibility criteria/),
+        expect.stringMatching(/four factors/),
+        expect.stringMatching(/simple overview of the trial/),
+        expect.stringMatching(/structured list of the criteria/),
+      ]),
+    );
+    // The "?" sits beside the heading, not in it.
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeInTheDocument();
+  });
+
+  it("switches the interest tooltip once registered", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ registered: ["1"] }).adapter });
+    await openFirstDetail(api);
+    expect(await headerButton("Withdraw")).toHaveAccessibleDescription(/Click again to withdraw it/);
+  });
+
+  it("does not open the trial when the ? on a card's score is clicked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    const [help] = await screen.findAllByRole("button", { name: "More information" });
+    await userEvent.click(help);
+    expect(screen.queryByText("Back to all trials")).toBeNull();
   });
 });
