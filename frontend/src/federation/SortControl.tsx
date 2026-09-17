@@ -27,17 +27,14 @@ export function SortControl({ value, onChange }: Props) {
       ))}
     </select>
   );
-  const tip = SORT_TOOLTIPS[value];
+  // Always wrapped, even for an order without a tooltip, so picking one
+  // does not re-mount the select out from under the keyboard.
   return (
     <label className="exact-sort">
       <span className="exact-sort__label">Sort</span>
-      {tip ? (
-        <ActionTooltip text={tip} align="start">
-          {select}
-        </ActionTooltip>
-      ) : (
-        select()
-      )}
+      <ActionTooltip text={SORT_TOOLTIPS[value]} align="start">
+        {select}
+      </ActionTooltip>
     </label>
   );
 }

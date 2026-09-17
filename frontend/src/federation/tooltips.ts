@@ -677,9 +677,9 @@ export const ACTION_TOOLTIPS = {
   // trials.tabs.registered.tooltip — "or shared with your doctor or navigator" dropped.
   tabRegistered:
     "Trials you have registered interest in.\nThe number updates automatically each time you register interest after viewing a trial.",
-  // trials.tabs.favorites.tooltip
+  // trials.tabs.favorites.tooltip — "after viewing it" dropped: cards bookmark too.
   tabFavorites:
-    "Trials you saved to review later or discuss with your healthcare team.\nThe number updates automatically each time you mark a trial as a favorite after viewing it.",
+    "Trials you saved to review later or discuss with your healthcare team.\nThe number updates automatically each time you mark a trial as a favorite.",
   // trials.sort.goodnessScore.tooltip — the Suitability Preferences sentence dropped.
   sortGoodnessScore:
     "Sort trials by their overall suitability based on distance, potential risks, potential benefits, and patient burden. These factors are weighted equally.",
@@ -692,7 +692,7 @@ export const ACTION_TOOLTIPS = {
   // Not in CB.
   map: "Show where the trials on this page are, on a map and as a list of places.",
   // Not in CB.
-  list: "Close the map and go back to the list of trials.",
+  list: "Close the map.",
   // trials.exploreTrials.tooltip — "AI" and the graph/list switch dropped.
   exploreTrials:
     "Visualize the trials you may be eligible for in a single view.\nSee which eligibility requirements you meet, which are missing, and which trials share them.",
@@ -716,13 +716,15 @@ export const ACTION_TOOLTIPS = {
     "A simple overview of the trial, including its purpose, who it is designed for, and a brief explanation of the treatments and how they work.",
   // trialDetails.eligibilityAttributes.tooltip — last sentence says how this remote marks an unchecked requirement.
   eligibilityAttributes:
-    "A structured list of the criteria used to determine eligibility.\nCompare the trial requirements with your information to see where you match, do not match, or where information may be missing.\nMatched values are marked with a ✓, and unmatched values are highlighted in red. A requirement that could not be checked is labelled as not a requirement of this trial.",
+    "A structured list of the criteria used to determine eligibility.\nCompare the trial requirements with your information to see where you match, do not match, or where information may be missing.\nMatched values are marked with a ✓, and unmatched values are highlighted in red. An attribute this trial places no constraint on is labelled as not a requirement of this trial.",
+  // Not in CB, which has one text for both states.
+  favoriteOn: "This trial is in your Favorites.\nClick again to remove it.",
   // trialDetails.favorite.tooltip
   favorite:
     "Save this trial to your Favorites so you can easily find it later or discuss it with your healthcare team.",
-  // trialDetails.registerInterest.tooltip — the contact promise dropped.
+  // trialDetails.registerInterest.tooltip — the contact and sharing promises dropped.
   registerInterest:
-    "Learn more about this trial to better understand its risk and patient burden.\nYou can then register your interest to keep track of it and share it with your care team.",
+    "Learn more about this trial to better understand its risk and patient burden.\nYou can then register your interest to keep track of it.",
   // trialDetails.registered.tooltip — the coordinator promise dropped.
   registered:
     "Your interest in this trial is marked in your record.\nClick again to withdraw it.",

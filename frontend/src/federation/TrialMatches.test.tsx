@@ -16,7 +16,7 @@ import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TrialMatches } from "./TrialMatches";
 import type { TrialStateAdapter } from "./state";
@@ -3400,10 +3400,63 @@ describe("action tooltips", () => {
   it("draws the bookmark as CB's bookmark icon, not a star glyph", async () => {
     const api = fakeApi();
     renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
-    const [star] = await screen.findAllByRole("button", { name: /from favorites$/ });
-    expect(star.querySelector("svg path")).not.toBeNull();
-    expect(star.querySelector("svg")).toHaveAttribute("fill", "currentColor");
-    expect(star).not.toHaveTextContent(/[★☆]/);
+    const [on] = await screen.findAllByRole("button", { name: /from favorites$/ });
+    expect(on.querySelector("svg path")).not.toBeNull();
+    expect(on.querySelector("svg")).toHaveAttribute("fill", "currentColor");
+    expect(on).not.toHaveTextContent(/[★☆]/);
+    // The tooltip follows the state, as the button's name does.
+    expect(on).toHaveAccessibleDescription(/in your Favorites.*remove it/s);
+
+    await userEvent.click(on);
+    const [off] = await screen.findAllByRole("button", { name: /to favorites$/ });
+    expect(off.querySelector("svg")).toHaveAttribute("fill", "none");
+    expect(off).toHaveAccessibleDescription(/Save this trial to your Favorites/);
+  });
+
+  describe("placement", () => {
+    const rect = (x: number, y: number, w: number, h: number) =>
+      ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON: () => ({}) }) as DOMRect;
+    const place = async (control: DOMRect, box = rect(0, 0, 320, 80), vw = 400, vh = 800) => {
+      vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(vw);
+      vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(vh);
+      const api = fakeApi();
+      renderTrialMatches(api);
+      const button = await screen.findByRole("button", { name: "Export CSV" });
+      const tip = document.getElementById(button.getAttribute("aria-describedby")!)!;
+      vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(control);
+      vi.spyOn(tip, "getBoundingClientRect").mockReturnValue(box);
+      await userEvent.hover(button);
+      return { tip, button };
+    };
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps an end-aligned box inside the left edge on a phone", async () => {
+      // A 100px control at the left: right-aligning a 320px box would start it
+      // at -220px, off screen.
+      const { tip } = await place(rect(16, 100, 100, 40));
+      expect(tip.style.left).toBe("8px");
+      expect(tip.style.top).toBe("146px");
+    });
+
+    it("keeps a box inside the right edge", async () => {
+      const { tip } = await place(rect(350, 100, 90, 40));
+      expect(tip.style.left).toBe(`${400 - 320 - 8}px`);
+    });
+
+    it("opens above the control when there is no room below", async () => {
+      const { tip } = await place(rect(16, 740, 100, 40));
+      expect(tip.style.top).toBe(`${740 - 6 - 80}px`);
+    });
+
+    it("stays open, and follows the control, when the page scrolls", async () => {
+      const { tip, button } = await place(rect(16, 100, 100, 40));
+      vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(rect(16, 60, 100, 40));
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      expect(tip).toHaveClass("is-open");
+      expect(tip.style.top).toBe("106px");
+    });
   });
 
   it("shows the box on hover and focus, and closes it on Escape", async () => {
@@ -3466,12 +3519,15 @@ describe("action tooltips", () => {
     expect(await headerButton("Withdraw")).toHaveAccessibleDescription(/Click again to withdraw it/);
   });
 
-  it("does not open the trial when the ? on a card's score is clicked", async () => {
+  it("does not open the trial when the ? on a card's score is clicked or pressed", async () => {
     const api = fakeApi();
     renderTrialMatches(api);
     await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
     const [help] = await screen.findAllByRole("button", { name: "More information" });
     await userEvent.click(help);
+    act(() => help.focus());
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
     expect(screen.queryByText("Back to all trials")).toBeNull();
   });
 });

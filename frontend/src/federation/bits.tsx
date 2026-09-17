@@ -2,7 +2,8 @@
 // page, mirroring CancerBot UI v2's `ScorePill` / `Field`. Structure lives in
 // `exact.css` (`.exact-pill*`, `.exact-field`); tier colors are applied inline
 // from the `--exact-color-*` token set so a host can re-theme.
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { ACTION_TOOLTIPS } from "./tooltips";
 
@@ -214,77 +215,112 @@ export const BookmarkIcon = ({ filled, size = 20 }: { filled: boolean; size?: nu
   </svg>
 );
 
+/** The body-level host for action tooltips. Carries `exact-root` so the
+ *  scoped stylesheet applies, and sits outside the remote's tree so that a
+ *  host ancestor with a `transform` (which re-anchors `position: fixed`) or an
+ *  `overflow` (the tab strip) cannot misplace or clip a box. */
+let tooltipLayer: HTMLElement | null = null;
+function getTooltipLayer(): HTMLElement {
+  if (!tooltipLayer || !tooltipLayer.isConnected) {
+    tooltipLayer = document.createElement("div");
+    tooltipLayer.className = "exact-root exact-tooltip-layer";
+    document.body.appendChild(tooltipLayer);
+  }
+  return tooltipLayer;
+}
+
+const GAP = 6;
+const MARGIN = 8;
+
 /** Hover/focus help for an action (a button, a tab, the sort control), as CB
  *  wraps its trial actions in a tooltip.
  *
  *  The wrapped control names the box with `aria-describedby` — `tipId` is
  *  handed to it for that — so the text is read out whether or not the box is
- *  showing. The box is `position: fixed`, placed from the control's rect: the
- *  tabs sit in an `overflow-x: auto` strip, which clips an absolutely
- *  positioned box, and a fixed one is not clipped by it. Esc dismisses it and
- *  scrolling closes it (a fixed box would otherwise hang where the control
- *  used to be). `align` picks which edge of the control it lines up with:
- *  "end" for controls at the right of a row, "start" for the tabs. */
+ *  showing. The box lives in a body-level layer (see `getTooltipLayer`) and is
+ *  placed from the control's rect after it is measured: below the control,
+ *  above it when there is no room below, lined up with the control's `align`
+ *  edge and then clamped inside the viewport on both sides. It follows the
+ *  control while open (scrolling — including the scroll a browser makes to
+ *  bring a focused control into view — and resizing), and Esc dismisses it.
+ *
+ *  `text` may be absent; the wrap is still rendered, so a control whose
+ *  tooltip comes and goes (the sort) is not re-mounted and keeps focus. */
 export function ActionTooltip({
   text,
   align = "end",
   className,
   children,
 }: {
-  text: string;
+  text?: string;
   align?: "start" | "end";
   /** Extra class on the wrap, for a control whose layout the wrap must keep. */
   className?: string;
-  children: (tipId: string) => React.ReactNode;
+  children: (tipId: string | undefined) => React.ReactNode;
 }) {
   const id = useId();
   const wrapRef = useRef<HTMLSpanElement>(null);
-  const [pos, setPos] = useState<React.CSSProperties | null>(null);
+  const boxRef = useRef<HTMLSpanElement>(null);
+  const [open, setOpen] = useState(false);
 
-  const open = () => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setPos(
-      align === "start"
-        ? { top: r.bottom + 6, left: Math.max(8, r.left) }
-        : { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) },
-    );
-  };
-  const close = () => setPos(null);
-
-  useEffect(() => {
-    if (!pos) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPos(null);
+  useLayoutEffect(() => {
+    if (!open || !text) return;
+    const place = () => {
+      const wrap = wrapRef.current;
+      const box = boxRef.current;
+      if (!wrap || !box) return;
+      const r = wrap.getBoundingClientRect();
+      const b = box.getBoundingClientRect();
+      // clientWidth, not innerWidth: the latter includes a classic scrollbar.
+      const vw = document.documentElement.clientWidth;
+      const vh = document.documentElement.clientHeight;
+      let left = align === "start" ? r.left : r.right - b.width;
+      left = Math.min(Math.max(MARGIN, left), Math.max(MARGIN, vw - b.width - MARGIN));
+      let top = r.bottom + GAP;
+      if (top + b.height > vh - MARGIN && r.top - GAP - b.height >= MARGIN) {
+        top = r.top - GAP - b.height;
+      }
+      box.style.left = `${Math.round(left)}px`;
+      box.style.top = `${Math.round(top)}px`;
     };
-    const onScroll = () => setPos(null);
+    place();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
     document.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
     return () => {
       document.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
     };
-  }, [pos]);
+  }, [open, text, align]);
 
+  const tipId = text ? id : undefined;
   return (
     <span
       ref={wrapRef}
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
-      onMouseEnter={open}
-      onMouseLeave={close}
-      onFocus={open}
-      onBlur={close}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
     >
-      {children(id)}
-      <span
-        id={id}
-        className={`exact-tooltip__box exact-action-tip__box${pos ? " is-open" : ""}`}
-        role="tooltip"
-        style={pos ?? undefined}
-      >
-        {text}
-      </span>
+      {children(tipId)}
+      {text
+        ? createPortal(
+            <span
+              ref={boxRef}
+              id={id}
+              className={`exact-tooltip__box exact-action-tip__box${open ? " is-open" : ""}`}
+              role="tooltip"
+            >
+              {text}
+            </span>,
+            getTooltipLayer(),
+          )
+        : null}
     </span>
   );
 }
@@ -329,7 +365,7 @@ export function FavoriteToggle({
 }) {
   if (!onToggle || isFavorite === undefined) return null;
   return (
-    <ActionTooltip text={ACTION_TOOLTIPS.favorite}>
+    <ActionTooltip text={isFavorite ? ACTION_TOOLTIPS.favoriteOn : ACTION_TOOLTIPS.favorite}>
       {(tipId) => (
         <button
           type="button"

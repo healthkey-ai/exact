@@ -174,7 +174,7 @@
 }
 /* The View Trial button spans the card on a phone; its tooltip wrap has to
    as well, or the button shrinks to its label. */
-.exact-root .exact-card__view-tip {
+.exact-root .exact-action-tip.exact-card__view-tip {
   display: flex;
 }
 .exact-root .exact-btn-view {
@@ -1419,9 +1419,9 @@
   outline-offset: 1px;
 }
 
-/* Bookmark toggle on a trial card. A star rather than CB's bookmark glyph
-   because the remote ships no icon set and must not pull one into its host;
-   the accessible name carries the meaning either way. */
+/* Bookmark toggle, on a trial card and in the detail header. CB's lucide
+   bookmark, drawn as inline SVG (`BookmarkIcon`) because the remote ships no
+   icon set and must not pull one into its host. */
 .exact-root .exact-fav {
   display: inline-flex;
   align-items: center;
@@ -1438,21 +1438,31 @@
   color: var(--exact-color-primary);
 }
 
-/* Action tooltips (see `ActionTooltip`): placed by script with
-   `position: fixed` below the control, shown only while open. The wrap is a
+/* Action tooltips (see `ActionTooltip`). The box lives in a body-level
+   `.exact-root.exact-tooltip-layer` and is placed by script (`left`/`top`)
+   with `position: fixed`; shown only while open. The wrap is a
    layout-neutral inline box, so the controls line up as before. */
 .exact-root .exact-action-tip {
   display: inline-flex;
 }
+/* A disabled button swallows mouse events in some browsers; letting them
+   through to the wrap is what shows the "why it's unavailable" tooltip. */
+.exact-root .exact-action-tip > button:disabled {
+  pointer-events: none;
+}
+.exact-root.exact-tooltip-layer {
+  position: static;
+}
 .exact-root .exact-action-tip__box {
   position: fixed;
+  top: 0;
   bottom: auto;
-  left: auto;
+  left: 0;
   transform: none;
   max-width: min(20rem, calc(100vw - 1rem));
   text-align: left;
   font-weight: 400;
-  z-index: 1000;
+  z-index: 2147483000;
 }
 .exact-root .exact-action-tip__box.is-open {
   display: block;
