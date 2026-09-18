@@ -3380,8 +3380,10 @@ describe("action tooltips", () => {
     // whole point of this tooltip is naming the union, so a regex that only
     // matched "split in two" let the defining clause be replaced by anything.
     expect(await tab(/^Eligible/)).toHaveAccessibleDescription(
-      /meet every criterion.*still missing.*split in two/s,
+      /meet every criterion.*still missing/s,
     );
+    // Not named to a reader who cannot see them (#517 removed both tabs).
+    expect(await tab(/^Eligible/)).not.toHaveAccessibleDescription(/Fully matched|split in two/);
     expect(await tab(/^Registered/)).toHaveAccessibleDescription(/registered interest in/);
     expect(await tab(/^Favorites/)).toHaveAccessibleDescription(/saved to review later/);
 

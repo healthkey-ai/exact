@@ -7,9 +7,7 @@ import type { TabCounts } from "./types";
 /** Rows per page. CB shows 10; the server's own default is 20. */
 export const PAGE_SIZE = 10;
 
-/** CB's tab bar, as far as this remote can honestly reproduce it — plus two
- *  tabs CB does not have, which is why the first one is not labelled as CB
- *  labels it (see MATCH_TABS).
+/** CB's tab bar, as far as this remote can honestly reproduce it.
  *
  *  CB's is Eligible / All Trials (admin) / Registered / Favorites. The last
  *  two are per-user relations EXACT does not hold — the server rejects
@@ -43,9 +41,10 @@ export interface TabDef {
 }
 
 const MATCH_TABS: TabDef[] = [
-  // CB labels this one "Eligible". The label names the union here because the
-  // count beside it is `eligible + potential` (see `tabCount`), and because
-  // the bar carried an eligible-only tab beside it until #517 removed them.
+  // CB labels this one "Eligible". The label names the union instead, because
+  // the count beside it is `eligible + potential` (see `tabCount`) and the
+  // list holds both: the trials meeting every criterion that could be checked,
+  // and the trials with information still missing.
   { value: "eligible_and_potential", label: "Eligible & Potential" },
 ];
 
@@ -67,6 +66,10 @@ const STATE_TABS: TabDef[] = [
 
 /** The bar to render: CB's tabs, minus the two state tabs when no adapter can
  *  answer them, plus the active deep-linked tab when a host asked for one. */
+/** A deep-linked tab is a ONE-WAY door: it is in the bar only while it is
+ *  active, so leaving it removes it and the reader cannot return without a
+ *  remount. Deliberate — the bar is CB's, and the subset is something a host
+ *  asked for rather than a view this UI offers. */
 export function tabsFor(hasState: boolean, active?: TabValue): TabDef[] {
   return [
     ...MATCH_TABS,
