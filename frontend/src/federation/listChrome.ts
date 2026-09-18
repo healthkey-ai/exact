@@ -43,14 +43,19 @@ export interface TabDef {
 }
 
 const MATCH_TABS: TabDef[] = [
-  // CB labels this one "Eligible", and that is safe there because CB's bar has
-  // no other match tab to contrast it with. Here it sits next to a tab that
-  // really is eligible-only, so the CB wording reads as a contradiction: the
-  // count beside "Eligible" is `eligible + potential` (see `tabCount`), so a
-  // reader sees "Eligible 369" and "Fully matched 10" and cannot tell which
-  // number means what. Naming the union is the smaller lie than reusing
-  // CB's label for a set CB never had to distinguish.
+  // CB labels this one "Eligible". The label names the union here because the
+  // count beside it is `eligible + potential` (see `tabCount`), and because
+  // the bar carried an eligible-only tab beside it until #517 removed them.
   { value: "eligible_and_potential", label: "Eligible & Potential" },
+];
+
+/** CB's bar has no eligible-only or potential-only tab, and #517 settled that
+ *  this one follows CB. They remain server values, so a host may still ask for
+ *  one through `initialFilters.type` — and such a tab IS rendered while it is
+ *  the active one. Without that, `TrialMatches` would find the reader on a tab
+ *  the bar cannot name and reset them to the default, dropping the narrowing
+ *  the host asked for. */
+const DEEP_LINK_TABS: TabDef[] = [
   { value: "eligible", label: "Fully matched", param: "eligible" },
   { value: "potential", label: "Potential", param: "potential" },
 ];
@@ -60,10 +65,14 @@ const STATE_TABS: TabDef[] = [
   { value: "favorites", label: "Favorites", needsState: "favorites" },
 ];
 
-/** The bar to render. Without a state adapter it is CB's bar minus the two
- *  tabs that would have nothing behind them. */
-export function tabsFor(hasState: boolean): TabDef[] {
-  return hasState ? [...MATCH_TABS, ...STATE_TABS] : MATCH_TABS;
+/** The bar to render: CB's tabs, minus the two state tabs when no adapter can
+ *  answer them, plus the active deep-linked tab when a host asked for one. */
+export function tabsFor(hasState: boolean, active?: TabValue): TabDef[] {
+  return [
+    ...MATCH_TABS,
+    ...DEEP_LINK_TABS.filter((tab) => tab.value === active),
+    ...(hasState ? STATE_TABS : []),
+  ];
 }
 
 /** @deprecated Prefer `tabsFor`; kept as the no-adapter bar. */
@@ -73,7 +82,7 @@ export const TABS: TabDef[] = MATCH_TABS;
  *  Falls back to the default tab for `undefined` and for values that are not
  *  tabs (`all` is a supported server value but is not offered as a tab). */
 export function tabValueForType(type: string | undefined): TabValue {
-  const match = MATCH_TABS.find((tab) => tab.param === type);
+  const match = DEEP_LINK_TABS.find((tab) => tab.param === type);
   return match ? match.value : "eligible_and_potential";
 }
 

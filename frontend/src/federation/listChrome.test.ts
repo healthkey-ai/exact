@@ -157,19 +157,35 @@ describe("sortOptionsFor", () => {
 });
 
 describe("tabsFor", () => {
-  it("offers CB's match tabs without a state adapter", () => {
-    expect(tabsFor(false).map((t) => t.value)).toEqual([
+  it("offers CB's one match tab without a state adapter", () => {
+    // #517: CB has no eligible-only or potential-only tab.
+    expect(tabsFor(false).map((t) => t.value)).toEqual(["eligible_and_potential"]);
+  });
+
+  it("renders a deep-linked subset tab while it is the active one", () => {
+    // A host can still ask for the subset through `initialFilters.type`; the
+    // tab exists so the bar can name what the request narrowed to.
+    expect(tabsFor(false, "potential").map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "potential",
+    ]);
+    expect(tabsFor(true, "eligible").map((t) => t.value)).toEqual([
       "eligible_and_potential",
       "eligible",
-      "potential",
+      "registered",
+      "favorites",
+    ]);
+    // and nowhere else
+    expect(tabsFor(true, "favorites").map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "registered",
+      "favorites",
     ]);
   });
 
   it("adds Registered and Favorites once there is somewhere to keep them", () => {
     expect(tabsFor(true).map((t) => t.value)).toEqual([
       "eligible_and_potential",
-      "eligible",
-      "potential",
       "registered",
       "favorites",
     ]);

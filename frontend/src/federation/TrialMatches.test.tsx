@@ -99,17 +99,14 @@ describe("paging", () => {
 
   it("returns to the first page when the tab changes", async () => {
     const api = fakeApi({ count: 3, itemsTotalCount: 25 });
-    renderTrialMatches(api);
+    renderTrialMatches(api, { state: fakeState().adapter });
     await waitFor(() => expect(listed(api).length).toBe(1));
     await userEvent.click(await screen.findByRole("button", { name: "2" }));
     await waitFor(() => expect(listed(api).length).toBe(2));
 
-    // Anchored: the default tab is now "Eligible & Potential", so an
-    // unanchored /Potential/ matches two buttons and throws.
-    await userEvent.click(screen.getByRole("button", { name: /^Potential/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Registered/ }));
     await waitFor(() => expect(listed(api).length).toBe(3));
     const last = listed(api)[2];
-    expect(last.params.type).toBe("potential");
     expect(last.params.page).toBeUndefined();
   });
 });
@@ -226,16 +223,23 @@ describe("tab counts", () => {
     });
     renderTrialMatches(api);
     await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
-    await screen.findByRole("button", { name: "Fully matched, 7 trials" });
-    await screen.findByRole("button", { name: "Potential, 12 trials" });
     // The accessible name is an `aria-label`, so it is computed rather than
     // read off the DOM — asserting only on it leaves what is actually
     // painted unobserved.
-    expect(screen.getAllByTestId("tab-count").map((el) => el.textContent)).toEqual([
-      "19",
-      "7",
-      "12",
-    ]);
+    expect(screen.getAllByTestId("tab-count").map((el) => el.textContent)).toEqual(["19"]);
+  });
+
+  it("labels a deep-linked subset tab from the server's count for it", async () => {
+    const api = fakeApi({
+      itemsTotalCount: 3,
+      results: [trial(1), trial(2), trial(3)],
+      tabCounts: { eligible: 7, potential: 12 },
+    });
+    renderTrialMatches(api, { initialFilters: { type: "eligible" } });
+    await screen.findByRole("button", { name: "Fully matched, 7 trials" });
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    // Not offered: the subset the host did not ask for.
+    expect(screen.queryByRole("button", { name: /^Potential/ })).toBeNull();
   });
 
   it("shows no badge at all when the server sent no counts", async () => {
@@ -244,12 +248,11 @@ describe("tab counts", () => {
     const api = fakeApi({ itemsTotalCount: 3, tabCounts: undefined });
     renderTrialMatches(api);
     // Named without a count at all, rather than "…, 0 trials".
-    await screen.findByRole("button", { name: "Fully matched" });
-    await screen.findByRole("button", { name: "Potential" });
+    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
     expect(screen.queryByRole("button", { name: /0 trials/ })).toBeNull();
     // Exactly one badge is painted — the active tab's, labelled from its
     // own `itemsTotalCount`, which is a number the response really carries.
-    // The other two show nothing. Asserting on the DOM and not only on the
+    // Asserting on the DOM and not only on the
     // accessible name, which is an `aria-label` and so would have accepted
     // a badge rendering `0`.
     // Awaited: the first search now waits for the saved filters (briefly),
@@ -258,6 +261,17 @@ describe("tab counts", () => {
     await waitFor(() => expect(screen.getAllByTestId("tab-count")).toHaveLength(1));
     const painted = screen.getAllByTestId("tab-count");
     expect(painted.map((el) => el.textContent)).toEqual(["3"]);
+  });
+
+  it("leaves a deep-linked subset tab unbadged when the server sent no counts", async () => {
+    // The active tab's own total counts only for the union tab; a subset the
+    // server did not count gets no badge rather than a number that would
+    // describe a different set.
+    const api = fakeApi({ itemsTotalCount: 3, tabCounts: undefined });
+    renderTrialMatches(api, { initialFilters: { type: "eligible" } });
+    await screen.findByRole("button", { name: "Fully matched" });
+    await screen.findByRole("button", { name: "Eligible & Potential" });
+    expect(screen.queryByTestId("tab-count")).toBeNull();
   });
 });
 
@@ -780,16 +794,16 @@ describe("counts while a state tab is active", () => {
 
   it("does not label the match tabs with counts from a narrowed response", async () => {
     // Those counts came back from a request filtered to the saved ids, so
-    // they describe the bookmarks. On the Eligible / Fully matched /
-    // Potential badges they would read as the corpus — "Fully matched, 1"
-    // for a reader with one bookmarked eligible trial and many matching.
+    // they describe the bookmarks. On the Eligible & Potential badge they
+    // would read as the corpus — "Eligible & Potential, 1" for a reader with
+    // one bookmarked eligible trial and many matching.
     const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Fully matched, 1 trial" });
+    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
     await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /Fully matched, / })).toBeNull(),
+      expect(screen.queryByRole("button", { name: /Eligible & Potential, / })).toBeNull(),
     );
     // The state tab's own count still comes from the adapter.
     await screen.findByRole("button", { name: "Favorites, 1 trial" });
@@ -3368,8 +3382,6 @@ describe("action tooltips", () => {
     expect(await tab(/^Eligible/)).toHaveAccessibleDescription(
       /meet every criterion.*still missing.*split in two/s,
     );
-    expect(await tab(/^Fully matched/)).toHaveAccessibleDescription(/meets every eligibility criterion/);
-    expect(await tab(/^Potential/)).toHaveAccessibleDescription(/some of the information/);
     expect(await tab(/^Registered/)).toHaveAccessibleDescription(/registered interest in/);
     expect(await tab(/^Favorites/)).toHaveAccessibleDescription(/saved to review later/);
 
