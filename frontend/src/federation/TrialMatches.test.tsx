@@ -3559,6 +3559,19 @@ describe("action tooltips", () => {
     expect(box()).toHaveClass("is-open");
   });
 
+  it("closes after a click on a control the keyboard had focused", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Filter Results" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.tab();
+    while (document.activeElement !== button) await userEvent.tab();
+    expect(box()).toHaveClass("is-open");
+    await userEvent.click(button);
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+  });
+
   it("stays open when the pointer moves from the box straight back to the control", async () => {
     const api = fakeApi();
     renderTrialMatches(api);

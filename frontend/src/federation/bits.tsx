@@ -384,6 +384,10 @@ export function ActionTooltip({
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
       onMouseEnter={enter}
       onMouseLeave={leaveSoon}
+      // Clicking a control the keyboard had focused leaves focus where it is
+      // and fires no focus event, so the keyboard latch has to be dropped
+      // here or the box hangs over the page once the pointer leaves.
+      onPointerDown={() => setFocused(false)}
       onFocus={() => {
         if (lastInput === "pointer") return;
         setFocused(true);
