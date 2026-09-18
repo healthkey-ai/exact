@@ -290,9 +290,13 @@
   text-decoration: underline;
 }
 /* Title and actions (bookmark, interest button) on one line, as CB lays out
-   its detail header. `baseline` rather than center: the buttons line up with
+   its detail header. `baseline` rather than center: the actions sit against
    the title's FIRST line, so a title that wraps to three lines does not drag
-   them to the middle, and nothing needs a size-dependent offset. On a narrow
+   them to the middle, and nothing needs a size-dependent offset. Measured,
+   the group's centre lands 3px above that line's centre; closing those 3px
+   costs a negative margin plus a compensating row-gap, which leaves the
+   group overhanging the row above. The two controls are centred against each
+   other — see `.exact-detail__actions`. On a narrow
    screen the actions wrap below the title, as CB moves them under the meta
    row. The head owns the spacing below it, so a wrapped row is spaced by
    `gap` alone rather than by `gap` plus the title's margin. */
@@ -312,7 +316,17 @@
 .exact-root .exact-detail__actions {
   display: flex;
   flex-shrink: 0;
-  align-items: baseline;
+  /* Centred, NOT baseline: the bookmark holds an SVG and has no text
+     baseline, so a baseline row put it 5px above the interest button beside
+     it. Both are 2.75rem tall at a 16px root — the button as 2.5rem plus its
+     two 2px borders, which do not scale with the root — so centring is exact
+     there, and out by a quarter pixel for every 2px of root size above it.
+     Because no item in this row takes part in baseline alignment any more,
+     the row's own baseline comes from its FIRST child (through to the
+     bookmark's SVG, synthesized from its bottom edge). So the group's DOM
+     order sets where the row sits in the head: with the bookmark absent — a
+     failed favorites read — the button moves down 5px. */
+  align-items: center;
   gap: 0.75rem;
 }
 /* No bookmark and no button (no adapter, or both reads failed): no box, so
