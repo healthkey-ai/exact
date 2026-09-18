@@ -667,11 +667,11 @@ T4d : means inflammatory carcinoma.`,
 export const ACTION_TOOLTIPS = {
   // trials.tabs.eligible.tooltip — Suitability Preferences sentence dropped,
   // and the opening sentence rewritten. CB's text ("meet the key eligibility
-  // criteria") describes an eligible-only set, which is what this tab shows in
-  // CB, where it is the only match tab. Here it is the union of the two tabs
-  // beside it, and CB's wording would describe neither of them.
+  // criteria") describes an eligible-only set. This tab is the union: it also
+  // holds the trials with information still missing, so CB's wording would
+  // describe only half of what is listed.
   tabEligible:
-    "Every trial you may be eligible for: the ones that meet every criterion that could be checked, and the ones where some of the information the trial asks for is still missing. The Fully matched and Potential tabs are this same list, split in two.\nBy default, these trials are ranked by their Suitability Score, which considers distance, risk, benefit, and patient burden.\nFinal eligibility must always be confirmed by the trial team.",
+    "Every trial you may be eligible for: the ones that meet every criterion that could be checked, and the ones where some of the information the trial asks for is still missing.\nBy default, these trials are ranked by their Suitability Score, which considers distance, risk, benefit, and patient burden.\nFinal eligibility must always be confirmed by the trial team.",
   // Not in CB.
   tabFullyMatched:
     "Trials where your information meets every eligibility criterion that could be checked.\nFinal eligibility must always be confirmed by the trial team.",

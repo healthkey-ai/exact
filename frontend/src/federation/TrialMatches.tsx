@@ -142,7 +142,7 @@ function TrialMatchesInner({
   const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
 
   // The bar depends on whether a host gave us somewhere to keep bookmarks.
-  const tabs = useMemo(() => tabsFor(state != null), [state]);
+  const tabs = useMemo(() => tabsFor(state != null, activeTab), [state, activeTab]);
   // A host can take the adapter away — on logout, or when reconfiguring it.
   // The tab the reader was on then stops existing, and falling back only in
   // `activeTabDef` would list the default tab's trials while no tab in the

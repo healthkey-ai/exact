@@ -107,7 +107,9 @@ describe("TABS", () => {
   it("offers no tab the server would reject", () => {
     // `favorites` and `my_trials` are 400s until PROMOP-backed state lands
     // in phase 2 (EXACT #417). A tab that cannot work must not be rendered.
-    const params = TABS.map((tab) => tab.param);
+    // The full bar, not `TABS`: with one match tab left, mapping `TABS`
+    // yields a single `undefined` and the assertions cannot fail.
+    const params = tabsFor(true, "eligible").map((tab) => tab.param);
     expect(params).not.toContain("favorites");
     expect(params).not.toContain("my_trials");
     expect(params).not.toContain("not_eligible");
@@ -157,19 +159,44 @@ describe("sortOptionsFor", () => {
 });
 
 describe("tabsFor", () => {
-  it("offers CB's match tabs without a state adapter", () => {
-    expect(tabsFor(false).map((t) => t.value)).toEqual([
+  it("offers CB's one match tab without a state adapter", () => {
+    // #517: CB has no eligible-only or potential-only tab.
+    expect(tabsFor(false).map((t) => t.value)).toEqual(["eligible_and_potential"]);
+  });
+
+  it("drops a deep-linked tab once the reader leaves it (one-way door)", () => {
+    // Recorded rather than discovered: leaving the subset removes its tab,
+    // and nothing brings it back without a remount.
+    expect(tabsFor(true, "eligible").map((t) => t.value)).toContain("eligible");
+    expect(tabsFor(true, "eligible_and_potential").map((t) => t.value)).not.toContain(
+      "eligible",
+    );
+  });
+
+  it("renders a deep-linked subset tab while it is the active one", () => {
+    // A host can still ask for the subset through `initialFilters.type`; the
+    // tab exists so the bar can name what the request narrowed to.
+    expect(tabsFor(false, "potential").map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "potential",
+    ]);
+    expect(tabsFor(true, "eligible").map((t) => t.value)).toEqual([
       "eligible_and_potential",
       "eligible",
-      "potential",
+      "registered",
+      "favorites",
+    ]);
+    // and nowhere else
+    expect(tabsFor(true, "favorites").map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "registered",
+      "favorites",
     ]);
   });
 
   it("adds Registered and Favorites once there is somewhere to keep them", () => {
     expect(tabsFor(true).map((t) => t.value)).toEqual([
       "eligible_and_potential",
-      "eligible",
-      "potential",
       "registered",
       "favorites",
     ]);
