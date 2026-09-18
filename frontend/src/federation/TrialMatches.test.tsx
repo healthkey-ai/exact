@@ -3587,6 +3587,33 @@ describe("action tooltips", () => {
     expect(screen.queryByText("Back to all trials")).toBeNull();
   });
 
+  it("hides a closed box without needing the stylesheet", async () => {
+    // The box lives in the host's <body>; a host that sweeps our <style> out
+    // of its <head> must not be left with our tooltip text on its page.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = document.getElementById(button.getAttribute("aria-describedby")!)!;
+    expect(box.style.display).toBe("none");
+    expect(box.closest(".exact-tooltip-layer")?.parentElement).toBe(document.body);
+    await userEvent.hover(button);
+    expect(box.style.display).toBe("block");
+  });
+
+  it("re-injects the stylesheet if the host sweeps it out of <head>", async () => {
+    const api = fakeApi();
+    const { unmount } = renderTrialMatches(api);
+    await screen.findByRole("button", { name: "Export CSV" });
+    const marker = 'style[data-mf="exact-remote"]';
+    expect(document.querySelector(marker)).not.toBeNull();
+    document.querySelector(marker)!.remove();
+    unmount();
+
+    renderTrialMatches(fakeApi());
+    await screen.findByRole("button", { name: "Export CSV" });
+    expect(document.querySelector(marker)).not.toBeNull();
+  });
+
   it("says why an action is unavailable in its tooltip", async () => {
     const api = fakeApi();
     renderTrialMatches(api, { patientInfo: null });

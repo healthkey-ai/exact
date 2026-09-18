@@ -219,7 +219,8 @@ export const BookmarkIcon = ({ filled, size = 20 }: { filled: boolean; size?: nu
  *  host ancestor with a `transform` (which re-anchors `position: fixed`) or an
  *  `overflow` (the tab strip) cannot misplace or clip a box. */
 let tooltipLayer: HTMLElement | null = null;
-function getTooltipLayer(): HTMLElement {
+function getTooltipLayer(): HTMLElement | null {
+  if (typeof document === "undefined") return null;
   if (!tooltipLayer || !tooltipLayer.isConnected) {
     tooltipLayer = document.createElement("div");
     tooltipLayer.className = "exact-root exact-tooltip-layer";
@@ -376,6 +377,7 @@ export function ActionTooltip({
   }, [open, text, align]);
 
   const tipId = text ? id : undefined;
+  const layer = getTooltipLayer();
   return (
     <span
       ref={wrapRef}
@@ -390,13 +392,19 @@ export function ActionTooltip({
       onBlur={() => setFocused(false)}
     >
       {children(tipId)}
-      {text
+      {text && layer
         ? createPortal(
             <span
               ref={boxRef}
               id={id}
               className={`exact-tooltip__box exact-action-tip__box${open ? " is-open" : ""}`}
               role="tooltip"
+              // Inline, not from the stylesheet: the box sits in the host's
+              // <body>, and a host that sweeps our <style> out of its <head>
+              // would otherwise leave every closed tooltip on its page as
+              // stray prose. It stays mounted so `aria-describedby` always
+              // resolves.
+              style={{ display: open ? "block" : "none" }}
               onMouseEnter={enter}
               onMouseLeave={(e) => {
                 // React counts the box as inside the wrap, so moving straight
@@ -413,7 +421,7 @@ export function ActionTooltip({
             >
               {text}
             </span>,
-            getTooltipLayer(),
+            layer,
           )
         : null}
     </span>

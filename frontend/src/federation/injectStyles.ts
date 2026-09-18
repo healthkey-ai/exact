@@ -5,11 +5,13 @@
 import css from "./exact.css?inline";
 import { layerRemoteCss } from "./cssLayer";
 
-let injected = false;
+const STYLE_MARKER = 'style[data-mf="exact-remote"]';
 
 export function injectStyles(): void {
-  if (injected || typeof document === "undefined") return;
-  injected = true;
+  // Keyed on the tag, not on a boolean: a host that sweeps its <head> (a
+  // route-level reset, a framework managing <head>) would otherwise leave the
+  // remote unstyled for the life of the page, and nothing would put it back.
+  if (typeof document === "undefined" || document.querySelector(STYLE_MARKER)) return;
   const style = document.createElement("style");
   style.setAttribute("data-mf", "exact-remote");
   style.textContent = layerRemoteCss(css);
