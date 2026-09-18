@@ -1,6 +1,8 @@
 // Tab bar over the trial list, mirroring CB's `TabButton` row on Your
 // Trials. Structure lives in `exact.css` (`.exact-tabs*`).
+import { ActionTooltip } from "./bits";
 import { tabCount, type TabDef, type TabValue } from "./listChrome";
+import { TAB_TOOLTIPS } from "./tooltips";
 import type { TabCounts } from "./types";
 
 interface Props {
@@ -48,10 +50,12 @@ export function Tabs({
           isActive ? activeTabTotal : null,
           stateCounts,
         );
-        return (
+        const tip = TAB_TOOLTIPS[tab.value];
+        const button = (tipId?: string) => (
           <button
             key={tab.value}
             type="button"
+            aria-describedby={tipId}
             aria-current={isActive || undefined}
             // The label and the count are separate elements with no
             // whitespace between them, so the accessible name computes to
@@ -75,6 +79,12 @@ export function Tabs({
               </span>
             ) : null}
           </button>
+        );
+        // Always wrapped, so a tab whose tooltip comes and goes keeps focus.
+        return (
+          <ActionTooltip key={tab.value} text={tip} align="start">
+            {button}
+          </ActionTooltip>
         );
       })}
     </nav>

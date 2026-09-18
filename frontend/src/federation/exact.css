@@ -49,6 +49,10 @@
   --exact-color-brand-green: hsl(146 70% 45%);
   --exact-color-brand-green-hover: hsl(152 91% 29%);
   --exact-color-on-brand: #ffffff;
+  /* The label color on a `primary` fill (the bookmark when it is on). Its own
+   * token: a host that darkens `on-brand` for a light CTA must not darken the
+   * star on blue with it. */
+  --exact-color-on-primary: #ffffff;
 
   /* Default to `inherit` so the remote picks up the host's typography
    * (CB sets Manrope on <body>) and reads as native. A host can still
@@ -168,6 +172,11 @@
 .exact-root .exact-card__action {
   padding: 0 1.25rem 1.25rem;
 }
+/* The View Trial button spans the card on a phone; its tooltip wrap has to
+   as well, or the button shrinks to its label. */
+.exact-root .exact-action-tip.exact-card__view-tip {
+  display: flex;
+}
 .exact-root .exact-btn-view {
   display: flex;
   align-items: center;
@@ -190,6 +199,23 @@
 }
 .exact-root .exact-btn-view:hover {
   background: var(--exact-color-brand-green-hover);
+}
+
+/* A panel title and its "?", outside the heading so the heading's name stays
+   "Summary" rather than "Summary More information". */
+.exact-root .exact-panel__head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.625rem;
+}
+.exact-root .exact-panel__head .exact-panel__title {
+  margin-bottom: 0;
+}
+
+/* A pill and its "?" (CB's HelpTooltip), kept on one line. */
+.exact-root .exact-pill__wrap {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Score pill — CB `ScorePill`. Tier colors are applied inline from the
@@ -263,14 +289,36 @@
 .exact-root .exact-detail__back:hover {
   text-decoration: underline;
 }
-/* Title and bookmark on one line, as CB puts its title and actions. The
-   star keeps its own baseline — `align-items: start` rather than center, so
-   a title that wraps to three lines does not drag the star to the middle. */
+/* Title and actions (bookmark, interest button) on one line, as CB lays out
+   its detail header. `baseline` rather than center: the buttons line up with
+   the title's FIRST line, so a title that wraps to three lines does not drag
+   them to the middle, and nothing needs a size-dependent offset. On a narrow
+   screen the actions wrap below the title, as CB moves them under the meta
+   row. The head owns the spacing below it, so a wrapped row is spaced by
+   `gap` alone rather than by `gap` plus the title's margin. */
 .exact-root .exact-detail__head {
   display: flex;
-  align-items: start;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
   gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.exact-root .exact-detail__head .exact-detail__title {
+  flex: 1 1 20rem;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.exact-root .exact-detail__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+/* No bookmark and no button (no adapter, or both reads failed): no box, so
+   it takes no `gap` and cannot wrap onto a blank row of its own. */
+.exact-root .exact-detail__actions:empty {
+  display: none;
 }
 .exact-root .exact-detail__title {
   margin: 0 0 0.75rem;
@@ -776,15 +824,11 @@
   cursor: default;
   padding: 0;
 }
+/* Every box is an `ActionTooltip` box, placed by script; `.exact-action-tip__box`
+   below owns position, size and stacking. This carries the look. */
 .exact-root .exact-tooltip__box {
   display: none;
-  position: absolute;
-  bottom: calc(100% + 0.375rem);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
   width: max-content;
-  max-width: min(28rem, 80vw);
   padding: 0.5rem 0.75rem;
   background: #1e3a5f;
   color: #fff;
@@ -793,11 +837,6 @@
   border-radius: 0.375rem;
   white-space: pre-line;
   pointer-events: none;
-}
-/* Show on hover or focus-within */
-.exact-root .exact-tooltip__wrap:hover .exact-tooltip__box,
-.exact-root .exact-tooltip__wrap:focus-within .exact-tooltip__box {
-  display: block;
 }
 
 @media (min-width: 679px) {
@@ -1371,14 +1410,16 @@
   outline-offset: 1px;
 }
 
-/* Bookmark toggle on a trial card. A star rather than CB's bookmark glyph
-   because the remote ships no icon set and must not pull one into its host;
-   the accessible name carries the meaning either way. */
+/* Bookmark toggle, on a trial card and in the detail header. CB's lucide
+   bookmark, drawn as inline SVG (`BookmarkIcon`) because the remote ships no
+   icon set and must not pull one into its host. */
 .exact-root .exact-fav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: none;
   padding: 0.25rem;
-  font-size: 1.25rem;
   line-height: 1;
   color: var(--exact-color-text-tertiary);
   cursor: pointer;
@@ -1388,10 +1429,81 @@
   color: var(--exact-color-primary);
 }
 
+/* Action tooltips (see `ActionTooltip`). The box lives in a body-level
+   `.exact-root.exact-tooltip-layer` and is placed by script (`left`/`top`)
+   with `position: fixed`; shown only while open. The wrap is a
+   layout-neutral inline box, so the controls line up as before. */
+.exact-root .exact-action-tip {
+  display: inline-flex;
+}
+/* A disabled button swallows mouse events in some browsers; letting them
+   through to the wrap is what shows the "why it's unavailable" tooltip. */
+.exact-root .exact-action-tip > button:disabled {
+  pointer-events: none;
+}
+/* …which hands the cursor to the wrap, so the wrap carries it. */
+.exact-root .exact-action-tip:has(> button:disabled) {
+  cursor: not-allowed;
+}
+.exact-root .exact-action-tip:has(> .exact-list__export.is-working:disabled) {
+  cursor: progress;
+}
+.exact-root .exact-action-tip__box {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483000;
+  max-width: min(20rem, calc(100vw - 1rem));
+  /* max-height is set by script from the visible viewport. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+  font-weight: 400;
+  /* Hoverable, unlike the base box (WCAG 1.4.13). */
+  pointer-events: auto;
+}
+.exact-root .exact-action-tip__box.is-open {
+  display: block;
+}
+
+/* CB's bookmark button in the detail header. */
+.exact-root .exact-fav--boxed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.5rem;
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+}
+.exact-root .exact-fav--boxed:not(.is-on):hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-fav--boxed.is-on {
+  border-color: var(--exact-color-primary);
+  background: var(--exact-color-primary);
+  color: var(--exact-color-on-primary);
+}
+
 .exact-root .exact-fav:focus-visible {
   outline: 2px solid var(--exact-color-primary);
   outline-offset: 1px;
   border-radius: 0.25rem;
+}
+
+/* After the rule above, which it has to beat: the boxed button keeps its own
+   corners, and its outline stands clear of a primary-filled box. */
+.exact-root .exact-fav--boxed:focus-visible {
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* A bookmark write on the wire, dimmed like the interest button beside it. */
+.exact-root .exact-fav[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1412,6 +1524,8 @@
 }
 
 .exact-root .exact-register__btn {
+  display: inline-flex;
+  align-items: center;
   padding: 0.625rem 0.875rem;
   border: 2px solid rgba(255, 255, 255, 0.12);
   border-radius: 0.5rem;
@@ -1424,6 +1538,22 @@
   line-height: 1.25rem;
   cursor: pointer;
   transition: background-color 0.15s ease;
+}
+
+/* The "?" CB draws inside its interest button; decoration, the tooltip is
+   on the button itself. */
+.exact-root .exact-register__help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-left: 0.375rem;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.625rem;
+  line-height: 1;
+  opacity: 0.7;
 }
 
 .exact-root .exact-register__btn:hover:not([aria-disabled="true"]) {
@@ -1475,6 +1605,18 @@
 .exact-root .exact-register__error {
   margin: 0.5rem 0 0;
   color: var(--exact-color-not-eligible);
+  font-size: 0.875rem;
+}
+.exact-root .exact-detail__register-error {
+  margin: 0 0 0.75rem;
+}
+.exact-root .exact-detail__eligibility-warning {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--exact-color-warning-200);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-warning-50);
+  color: var(--exact-color-warning-700);
   font-size: 0.875rem;
 }
 

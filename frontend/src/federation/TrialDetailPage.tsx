@@ -14,9 +14,10 @@
 //
 // Still out of scope: editing a patient value (CB's pencil controls, phase 4)
 // and CB's share / Standard-of-Care buttons.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 
 import {
+  ActionTooltip,
   CheckIcon,
   FavoriteToggle,
   Field,
@@ -29,7 +30,7 @@ import {
 import { HighRiskMclPanel } from "./HighRiskMclPanel";
 import { useFormSettings, useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
-import { FIELD_TOOLTIPS } from "./tooltips";
+import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit } from "./FieldEdit";
@@ -414,6 +415,52 @@ function EligibilityRow({
   );
 }
 
+/** The interest button, drawn twice as CB draws it: in the header beside the
+ *  bookmark (CB's `TrialActions`) and in the card at the foot of the page.
+ *  One component, so the two cannot disagree about what a click does. */
+function RegisterButton({
+  isRegistered,
+  pending,
+  onToggle,
+  describedBy,
+}: {
+  isRegistered: boolean;
+  pending: boolean;
+  onToggle: (next: boolean) => void;
+  /** The header copy points at the card's explanation, so a screen reader's
+   *  list of buttons does not show two bare "I'm Interested" entries. */
+  describedBy?: string;
+}) {
+  return (
+    // CB's button carries a "?" and a hover tooltip; the tooltip is read out
+    // through `aria-describedby`, and the glyph is decoration.
+    <ActionTooltip text={isRegistered ? ACTION_TOOLTIPS.registered : ACTION_TOOLTIPS.registerInterest}>
+      {(tipId) => (
+        <button
+          type="button"
+          className={`exact-register__btn${isRegistered ? " is-on" : ""}`}
+          // `aria-disabled`, not `disabled`: a control that disables itself
+          // under the pointer is blurred by the browser, dropping a keyboard
+          // user to the document body in the middle of the action they just
+          // took. Announced here, enforced in one place — `TrialMatches`'s
+          // `write` drops a click for a trial whose write is still on the
+          // wire, and two PATCHes in flight are applied in whatever order
+          // they arrive.
+          aria-disabled={pending || undefined}
+          aria-busy={pending || undefined}
+          aria-describedby={[tipId, describedBy].filter(Boolean).join(" ")}
+          onClick={() => onToggle(!isRegistered)}
+        >
+          {pending ? "Saving…" : isRegistered ? "Withdraw" : "I'm Interested"}
+          <span className="exact-register__help" aria-hidden="true">
+            ?
+          </span>
+        </button>
+      )}
+    </ActionTooltip>
+  );
+}
+
 /** CB's RegisterInterestCard, with CB's promise removed.
  *
  *  CB tells the reader "a study coordinator will reach out to discuss next
@@ -435,6 +482,7 @@ function RegisterInterest({
   pending,
   failed,
   onToggle,
+  textId,
 }: {
   advancedStatus?: AdvancedStatus;
   notEligible: boolean;
@@ -451,6 +499,8 @@ function RegisterInterest({
   pending: boolean;
   failed: boolean;
   onToggle: (next: boolean) => void;
+  /** Id for the explanation, which the header's copy of the button cites. */
+  textId?: string;
 }) {
   if (advancedStatus) {
     return (
@@ -487,7 +537,7 @@ function RegisterInterest({
   const mismatch = !notEligible
     ? ""
     : mismatchesShown
-      ? " One or more of this trial's requirements does not match your profile — the ones listed above are marked."
+      ? " One or more of this trial's requirements does not match your profile — the ones in the eligibility table are marked."
       : " One or more of this trial's requirements does not match your profile.";
 
   return (
@@ -497,30 +547,15 @@ function RegisterInterest({
       }`}
     >
       <h2 className="exact-panel__title">{heading}</h2>
-      <p className="exact-register__text">
+      <p className="exact-register__text" id={textId}>
         {state}
         {mismatch} Nothing is sent to the trial's coordinators from here.
       </p>
-      <button
-        type="button"
-        className={`exact-register__btn${isRegistered ? " is-on" : ""}`}
-        // `aria-disabled`, not `disabled`: a control that disables itself
-        // under the pointer is blurred by the browser, dropping a keyboard
-        // user to the document body in the middle of the action they just
-        // took. Announced here, enforced in one place — `TrialMatches`'s
-        // `write` drops a click for a trial whose write is still on the
-        // wire, and two PATCHes in flight are applied in whatever order
-        // they arrive.
-        aria-disabled={pending || undefined}
-        aria-busy={pending || undefined}
-        onClick={() => onToggle(!isRegistered)}
-      >
-        {pending ? "Saving…" : isRegistered ? "Withdraw" : "I'm Interested"}
-      </button>
+      <RegisterButton isRegistered={isRegistered} pending={pending} onToggle={onToggle} />
+      {/* Not an alert: the header says it too, where the reader most likely
+          clicked, and one failure should be announced once. */}
       {failed ? (
-        <p className="exact-register__error" role="alert">
-          Couldn't save that. Please try again.
-        </p>
+        <p className="exact-register__error">Couldn't save that. Please try again.</p>
       ) : null}
     </section>
   );
@@ -606,6 +641,19 @@ export function TrialDetailPage({
   const notEligible = data?.matchingType === "not_eligible";
   const canRegister =
     trialState?.onToggleRegistered != null && trialState.isRegistered !== undefined;
+  // Worked out once for both copies of the interest button, so the header and
+  // the card cannot be handed different answers.
+  const registerButton = canRegister
+    ? {
+        isRegistered: trialState!.isRegistered!,
+        pending: trialState?.registerPending ?? false,
+        onToggle: trialState!.onToggleRegistered!,
+      }
+    : null;
+  const showHeaderRegister = registerButton != null && !trialState!.advancedStatus;
+  // Whether the table actually lists a mismatch; see `RegisterInterest`.
+  const mismatchesShown = eligibility.some((f) => f.matchingType === "not_matched");
+  const registerTextId = useId();
 
   return (
     <div className="exact-root exact-detail">
@@ -628,13 +676,42 @@ export function TrialDetailPage({
         <>
           <div className="exact-detail__head">
             <h1 className="exact-detail__title">{data.briefTitle}</h1>
-            <FavoriteToggle
-              title={data.briefTitle}
-              isFavorite={trialState?.isFavorite}
-              onToggle={trialState?.onToggleFavorite}
-              busy={trialState?.favoriteBusy}
-            />
+            {/* CB's `TrialActions`: bookmark, then the interest button. A
+                trial the study team has advanced gets no button here; the
+                card below says why. */}
+            <div className="exact-detail__actions">
+              <FavoriteToggle
+                title={data.briefTitle}
+                isFavorite={trialState?.isFavorite}
+                onToggle={trialState?.onToggleFavorite}
+                busy={trialState?.favoriteBusy}
+                boxed
+              />
+              {showHeaderRegister ? (
+                <RegisterButton {...registerButton!} describedBy={registerTextId} />
+              ) : null}
+            </div>
           </div>
+          {/* CB's rule (#4669) followed up here as well: the header's green
+              button must not read as "you may be eligible" when the matcher
+              says otherwise, and the card saying so is at the foot of the
+              page. A statement, not an alert — it is there on load. */}
+          {showHeaderRegister && notEligible ? (
+            <p className="exact-detail__eligibility-warning">
+              You may not meet this trial's eligibility criteria
+              {mismatchesShown
+                ? " — the requirements that do not match are marked in the table below."
+                : "."}
+            </p>
+          ) : null}
+          {/* Not gated on the button: an advanced status that arrives after a
+              refused write swaps the card for a statement that shows no
+              failure, and this line is then the only place it is said. */}
+          {registerButton && trialState?.registerFailed ? (
+            <p className="exact-register__error exact-detail__register-error" role="alert">
+              Couldn't save that. Please try again.
+            </p>
+          ) : null}
 
           {/* Same three failures the list reports, and for the same reason:
               painted from a server list, a rejected write and a rejected read
@@ -652,11 +729,16 @@ export function TrialDetailPage({
           ) : null}
 
           <div className="exact-detail__scores">
-            <ScorePill score={data.matchScore} label="Matching Score" />
+            <ScorePill
+              score={data.matchScore}
+              label="Matching Score"
+              tooltip={ACTION_TOOLTIPS.matchingScore}
+            />
             <ScorePill
               score={data.goodnessScore}
               label="Suitability Score"
               href={SUITABILITY_HREF}
+              tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
 
@@ -714,13 +796,19 @@ export function TrialDetailPage({
           <div className="exact-detail__grid">
             {summary ? (
               <section className="exact-panel exact-detail__summary">
-                <h2 className="exact-panel__title">Summary</h2>
+                <div className="exact-panel__head">
+                  <h2 className="exact-panel__title">Summary</h2>
+                  <FieldTooltip text={ACTION_TOOLTIPS.summary} />
+                </div>
                 <p className="exact-detail__summary-text">{summary}</p>
               </section>
             ) : null}
 
             <section className="exact-panel exact-detail__elig">
-              <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
+              <div className="exact-panel__head">
+                <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
+                <FieldTooltip text={ACTION_TOOLTIPS.eligibilityAttributes} />
+              </div>
               {eligibility.length ? (
                 <div className="exact-elig">
                   <div className="exact-elig__thead" aria-hidden="true">
@@ -752,17 +840,14 @@ export function TrialDetailPage({
             <HighRiskMclPanel breakdown={mcl} titleOf={mclTitle} />
           ) : null}
 
-          {canRegister ? (
+          {registerButton ? (
             <RegisterInterest
+              {...registerButton}
               advancedStatus={trialState!.advancedStatus}
               notEligible={notEligible}
-              mismatchesShown={eligibility.some(
-                (f) => f.matchingType === "not_matched",
-              )}
-              isRegistered={trialState!.isRegistered!}
-              pending={trialState?.registerPending ?? false}
+              mismatchesShown={mismatchesShown}
               failed={trialState?.registerFailed ?? false}
-              onToggle={trialState!.onToggleRegistered!}
+              textId={registerTextId}
             />
           ) : null}
 

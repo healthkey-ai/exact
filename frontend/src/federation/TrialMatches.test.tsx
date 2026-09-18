@@ -14,13 +14,25 @@
 // out, and when, is the thing that was wrong.
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { StrictMode } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TrialMatches } from "./TrialMatches";
 import type { TrialStateAdapter } from "./state";
 import { fakeApi, fakeState, renderTrialMatches, trial } from "../test/renderTrialMatches";
+
+/** The header copy of the interest button. The detail page draws it twice, as
+ *  CB does, and a test that took "the first match" would quietly fall through
+ *  to the card's copy if the header one stopped rendering. */
+async function headerButton(name: string): Promise<HTMLElement> {
+  const actions = await waitFor(() => {
+    const el = document.querySelector<HTMLElement>(".exact-detail__actions");
+    if (!el) throw new Error("detail header actions not rendered");
+    return el;
+  });
+  return within(actions).findByRole("button", { name });
+}
 
 const listed = (api: ReturnType<typeof fakeApi>) => api.listRequests();
 
@@ -1039,14 +1051,31 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(state.registered).toEqual(["1"]));
 
     // The label changes to the act, not to the state: a button that still
     // said "I'm Interested" would be a second registration to the reader,
     // and one that said "Registered" would withdraw without saying so.
-    await userEvent.click(await screen.findByRole("button", { name: "Withdraw" }));
+    await userEvent.click(await headerButton("Withdraw"));
     await waitFor(() => expect(state.registered).toEqual([]));
+  });
+
+  it("draws the interest button in the header too, and both show the same state", async () => {
+    // CB puts it beside the bookmark at the top and in a card at the foot.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const buttons = await screen.findAllByRole("button", { name: "I'm Interested" });
+    expect(buttons).toHaveLength(2);
+    // The header one: inside the title row, not the card.
+    expect(buttons[0].closest(".exact-detail__actions")).not.toBeNull();
+    await userEvent.click(buttons[0]);
+    await waitFor(() => expect(state.registered).toEqual(["1"]));
+    expect(await screen.findAllByRole("button", { name: "Withdraw" })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
   });
 
   it("re-reads the registered ids after a write, not the favorites", async () => {
@@ -1060,7 +1089,7 @@ describe("the controls on the detail page", () => {
     await openDetail(api);
     const before = state.reads.registered;
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(state.reads.registered).toBeGreaterThan(before));
   });
 
@@ -1082,9 +1111,9 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    const button = await screen.findByRole("button", { name: "I'm Interested" });
+    const button = await headerButton("I'm Interested");
     await userEvent.click(button);
-    const saving = await screen.findByRole("button", { name: "Saving…" });
+    const saving = await headerButton("Saving…");
     // `aria-disabled`, not `disabled`: the browser blurs a control that
     // disables itself under the pointer, which drops a keyboard user to the
     // document body in the middle of the action they just took.
@@ -1108,12 +1137,90 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     // The text, not just `role="alert"`: both failure lines on this page are
     // alerts, so the role alone would pass while a failed registration
     // reported a favorites problem.
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Couldn't save that");
+    // Up by the header, where the click most likely happened — not only in
+    // the card at the foot of the page, out of view. Announced once: the
+    // card repeats the words without a second alert.
+    expect(alert.closest(".exact-detail__head, .exact-register")).toBeNull();
+    expect(alert.previousElementSibling).toHaveClass("exact-detail__head");
+    expect(screen.getAllByText("Couldn't save that. Please try again.")).toHaveLength(2);
+  });
+
+  const headerWarning = () =>
+    document.querySelector<HTMLElement>(".exact-detail__eligibility-warning");
+
+  it("warns by the header button when the matcher says not eligible", async () => {
+    // The card's warning is at the foot of the page; without this the green
+    // header button was the only thing a not-eligible reader saw up top.
+    const api = fakeApi();
+    api.setDetail({
+      matchingType: "not_eligible",
+      details: {
+        trialEligibilityAttributes: [
+          { name: "age", label: "Age", type: "number", value: 18, uvalue: 12, matchingType: "not_matched" },
+        ],
+      },
+    });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await headerButton("I'm Interested");
+    await waitFor(() => expect(headerWarning()).not.toBeNull());
+    const warning = headerWarning()!;
+    expect(warning).toHaveTextContent(
+      "You may not meet this trial's eligibility criteria — the requirements that do not match are marked in the table below.",
+    );
+    expect(warning.previousElementSibling).toHaveClass("exact-detail__head");
+    expect(warning).not.toHaveAttribute("role");
+  });
+
+  it("does not point the header warning at a table that shows no mismatch", async () => {
+    // The verdict is over every mapped attribute; the table is a filtered
+    // view and can be empty — the same trap the card avoids.
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    await headerButton("I'm Interested");
+    await waitFor(() => expect(headerWarning()).not.toBeNull());
+    expect(headerWarning()).toHaveTextContent(/^You may not meet this trial's eligibility criteria\.$/);
+  });
+
+  it("does not warn by the header for an eligible trial", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+    await headerButton("I'm Interested");
+    expect(headerWarning()).toBeNull();
+  });
+
+  it("does not warn by the header for a trial the study team has advanced", async () => {
+    // No header button there, so nothing for the warning to qualify; the
+    // card says the participation is recorded.
+    const api = fakeApi();
+    api.setDetail({ matchingType: "not_eligible" });
+    renderTrialMatches(api, { state: fakeState({ advanced: { "1": "entered" } }).adapter });
+    await openDetail(api);
+
+    await screen.findByText(/You are recorded as taking part in this trial/);
+    expect(headerWarning()).toBeNull();
+  });
+
+  it("describes the header's interest button with the card's explanation", async () => {
+    // Two buttons with one name read as duplicates in a screen reader's list
+    // of buttons; the header copy carries the card's text as its description.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    const header = await headerButton("I'm Interested");
+    expect(header).toHaveAccessibleDescription(/Registering marks this trial in your record/);
   });
 
   it("draws no interest control when it cannot tell whether interest was registered", async () => {
@@ -1276,7 +1383,7 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await screen.findByRole("alert");
 
     await userEvent.click(screen.getByText("Back to all trials"));
@@ -1310,15 +1417,15 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(reads).toBe(2));
     // Answered from the patched list, without waiting for the server.
-    await screen.findByRole("button", { name: "Withdraw" });
+    await headerButton("Withdraw");
     expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
 
     release(["1"]);
-    await screen.findByRole("button", { name: "Withdraw" });
+    await headerButton("Withdraw");
   });
 
   it("does not hold the button open for the round trip either", async () => {
@@ -1343,8 +1450,8 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    const button = await screen.findByRole("button", { name: "Withdraw" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    const button = await headerButton("Withdraw");
     expect(button).not.toHaveAttribute("aria-disabled");
   });
 
@@ -1372,7 +1479,7 @@ describe("the controls on the detail page", () => {
     await openDetail(api);
 
     const marker = await screen.findByLabelText("does not match");
-    await screen.findByText(/the ones listed above are marked/);
+    await screen.findByText(/the ones in the eligibility table are marked/);
     // After the units, where the matched cell puts its tick. Before them it
     // split the value from its unit: "12 ✕ years", read out as
     // "12, does not match, years".
@@ -1398,10 +1505,10 @@ describe("the controls on the detail page", () => {
     await openDetail(api);
 
     // The write patches the cache and invalidates it; the re-read rejects.
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
+    await userEvent.click(await headerButton("I'm Interested"));
     await waitFor(() => expect(reads).toBeGreaterThan(1));
 
-    await screen.findByRole("button", { name: "Withdraw" });
+    await headerButton("Withdraw");
     expect(screen.queryByText(/that control is unavailable/)).toBeNull();
   });
 
@@ -1412,7 +1519,9 @@ describe("the controls on the detail page", () => {
     const { container } = renderTrialMatches(api, { state: fakeState().adapter });
     await openDetail(api);
 
-    await screen.findByText(/You may not meet this trial's eligibility criteria/);
+    await screen.findByRole("heading", {
+      name: /You may not meet this trial's eligibility criteria/,
+    });
     expect(container.querySelector(".exact-register")).toHaveClass("is-warning");
   });
 
@@ -1427,8 +1536,8 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    expect(await screen.findByRole("button", { name: "Saving…" })).toHaveFocus();
+    await userEvent.click(await headerButton("I'm Interested"));
+    expect(await headerButton("Saving…")).toHaveFocus();
   });
 
   it("does not disable a different trial's button while a write is in flight", async () => {
@@ -1439,13 +1548,13 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    await headerButton("Saving…");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await openDetail(api, 1);
     await screen.findByText("Trial 7");
-    await screen.findByRole("button", { name: "I'm Interested" });
+    await headerButton("I'm Interested");
   });
 
   it("does not carry one patient's failed write into the next patient", async () => {
@@ -1541,19 +1650,19 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
 
     await openDetail(api, 0);
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    await headerButton("Saving…");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await openDetail(api, 1);
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.click(await headerButton("I'm Interested"));
+    await headerButton("Saving…");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await openDetail(api, 0);
     await screen.findByText("Trial 1");
     // Still A's write, still unfinished.
-    const button = await screen.findByRole("button", { name: "Saving…" });
+    const button = await headerButton("Saving…");
     await userEvent.click(button);
     expect(state.adapter.setRegistered).toHaveBeenCalledTimes(2);
   });
@@ -1624,8 +1733,8 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: state.adapter });
     await openDetail(api);
 
-    await userEvent.click(await screen.findByRole("button", { name: "I'm Interested" }));
-    await screen.findByText(/Couldn't save that/);
+    await userEvent.click(await headerButton("I'm Interested"));
+    await screen.findByRole("alert");
 
     await userEvent.click(screen.getByText("Back to all trials"));
     await screen.findByText(/Couldn't save your interest in a trial/);
@@ -1646,7 +1755,7 @@ describe("the controls on the detail page", () => {
     await screen.findByText(
       /One or more of this trial's requirements does not match your profile\./,
     );
-    expect(screen.queryByText(/marked above/)).toBeNull();
+    expect(screen.queryByText(/the ones in the eligibility table are marked/)).toBeNull();
   });
 
   it("goes on saying the profile does not match after registering", async () => {
@@ -1672,9 +1781,110 @@ describe("the controls on the detail page", () => {
     renderTrialMatches(api, { state: fakeState().adapter });
     await openDetail(api);
 
-    await screen.findByText(/You may not meet this trial's eligibility criteria/);
+    await screen.findByRole("heading", {
+      name: /You may not meet this trial's eligibility criteria/,
+    });
     // Still offered: CB lets someone register against a mismatch too.
-    await screen.findByRole("button", { name: "I'm Interested" });
+    await headerButton("I'm Interested");
+  });
+
+  it("draws the detail-page bookmark boxed, and the card's plain", async () => {
+    // CB's header bookmark is a bordered button; the list star is not. The
+    // class is the only thing `boxed` changes, so it is what is pinned.
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const cardStar = await screen.findByRole("button", {
+      name: "Remove Trial 1 from favorites",
+    });
+    expect(cardStar).not.toHaveClass("exact-fav--boxed");
+    expect(cardStar).toHaveClass("exact-fav", "is-on");
+
+    await openDetail(api);
+    const headerStar = await screen.findByRole("button", {
+      name: "Remove Trial 1 from favorites",
+    });
+    // Boxed and on together: the modifier must not replace the state class.
+    expect(headerStar).toHaveClass("exact-fav", "exact-fav--boxed", "is-on");
+  });
+
+  it("draws the boxed bookmark off for a trial that is not bookmarked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openDetail(api);
+
+    const star = await screen.findByRole("button", { name: "Add Trial 1 to favorites" });
+    expect(star).toHaveClass("exact-fav", "exact-fav--boxed");
+    expect(star).not.toHaveClass("is-on");
+    expect(star.closest(".exact-detail__actions")).not.toBeNull();
+  });
+
+  it("opens on Withdraw in both places for a trial already registered", async () => {
+    const api = fakeApi();
+    const state = fakeState({ registered: ["1"] });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const buttons = await screen.findAllByRole("button", { name: "Withdraw" });
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].closest(".exact-detail__actions")).not.toBeNull();
+    expect(buttons[1].closest(".exact-detail__actions")).toBeNull();
+    expect(screen.queryByRole("button", { name: "I'm Interested" })).toBeNull();
+
+    // Withdrawn from the header, both flip back.
+    await userEvent.click(buttons[0]);
+    await waitFor(() => expect(state.registered).toEqual([]));
+    expect(await screen.findAllByRole("button", { name: "I'm Interested" })).toHaveLength(2);
+    expect(state.adapter.setRegistered).toHaveBeenCalledWith("1", false);
+  });
+
+  it("still registers from the card at the foot of the page", async () => {
+    // Every other test clicks the header copy; the card's copy is the one
+    // that existed before, and must still write.
+    const api = fakeApi();
+    const state = fakeState();
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const buttons = await screen.findAllByRole("button", { name: "I'm Interested" });
+    expect(buttons[1].closest(".exact-detail__actions")).toBeNull();
+    await userEvent.click(buttons[1]);
+    await waitFor(() => expect(state.registered).toEqual(["1"]));
+    expect(state.adapter.setRegistered).toHaveBeenCalledTimes(1);
+    expect(await screen.findAllByRole("button", { name: "Withdraw" })).toHaveLength(2);
+  });
+
+  it("shows both buttons saving, and drops a click on either while it is", async () => {
+    // One pending write, two copies of the control: the card copy must not
+    // offer a second PATCH while the header's is on the wire.
+    const api = fakeApi();
+    let release: () => void = () => {};
+    const state = fakeState({
+      overrides: {
+        setRegistered: vi.fn(
+          () => new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+        ),
+      },
+    });
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail(api);
+
+    const header = await headerButton("I'm Interested");
+    await userEvent.click(header);
+    const saving = await screen.findAllByRole("button", { name: "Saving…" });
+    expect(saving).toHaveLength(2);
+    for (const b of saving) {
+      expect(b).toHaveAttribute("aria-busy", "true");
+      expect(b).toHaveAttribute("aria-disabled", "true");
+      expect(b).not.toBeDisabled();
+    }
+    await userEvent.click(saving[1]);
+    expect(state.adapter.setRegistered).toHaveBeenCalledTimes(1);
+
+    release();
   });
 
   it("promises nothing it does not do", async () => {
@@ -3133,5 +3343,347 @@ describe("the pager across a patient switch", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument(),
     );
+  });
+});
+
+describe("action tooltips", () => {
+  // CB puts a tooltip on every trial action. Each one here is read out through
+  // `aria-describedby`, and the box shows on hover or focus and goes on Esc.
+  const openFirstDetail = async (api: ReturnType<typeof fakeApi>) => {
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    await userEvent.click((await screen.findAllByRole("button", { name: "View Trial" }))[0]);
+    await screen.findByText("Back to all trials");
+  };
+
+  it("describes every list action", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+
+    const tab = (name: RegExp) => screen.findByRole("button", { name });
+    expect(await tab(/^Eligible/)).toHaveAccessibleDescription(/appears to meet the key eligibility/);
+    expect(await tab(/^Fully matched/)).toHaveAccessibleDescription(/meets every eligibility criterion/);
+    expect(await tab(/^Potential/)).toHaveAccessibleDescription(/some of the information/);
+    expect(await tab(/^Registered/)).toHaveAccessibleDescription(/registered interest in/);
+    expect(await tab(/^Favorites/)).toHaveAccessibleDescription(/saved to review later/);
+
+    expect(screen.getByRole("combobox", { name: /Sort/ })).toHaveAccessibleDescription(
+      /overall suitability/,
+    );
+    expect(screen.getByRole("button", { name: "Map" })).toHaveAccessibleDescription(/on a map/);
+    expect(screen.getByRole("button", { name: "Explore Trials" })).toHaveAccessibleDescription(
+      /single view/,
+    );
+    expect(screen.getByRole("button", { name: "Export CSV" })).toHaveAccessibleDescription(
+      /spreadsheet/,
+    );
+    expect(screen.getByRole("button", { name: "Filter Results" })).toHaveAccessibleDescription(
+      /narrow down trials/,
+    );
+    const [view] = await screen.findAllByRole("button", { name: "View Trial" });
+    expect(view).toHaveAccessibleDescription(/full details of this trial/);
+    const [star] = await screen.findAllByRole("button", { name: /to favorites$/ });
+    expect(star).toHaveAccessibleDescription(/Save this trial to your Favorites/);
+  });
+
+  it("follows the sort that is applied", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const sort = await screen.findByRole("combobox", { name: /Sort/ });
+    await userEvent.selectOptions(sort, "distance");
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: /Sort/ })).toHaveAccessibleDescription(
+        /how close the trial locations are/,
+      ),
+    );
+  });
+
+  it("draws the bookmark as CB's bookmark icon, not a star glyph", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
+    const [on] = await screen.findAllByRole("button", { name: /from favorites$/ });
+    expect(on.querySelector("svg path")).not.toBeNull();
+    expect(on.querySelector("svg")).toHaveAttribute("fill", "currentColor");
+    expect(on).not.toHaveTextContent(/[★☆]/);
+    // The tooltip follows the state, as the button's name does.
+    expect(on).toHaveAccessibleDescription(/in your Favorites.*remove it/s);
+
+    await userEvent.click(on);
+    const [off] = await screen.findAllByRole("button", { name: /to favorites$/ });
+    expect(off.querySelector("svg")).toHaveAttribute("fill", "none");
+    expect(off).toHaveAccessibleDescription(/Save this trial to your Favorites/);
+  });
+
+  describe("placement", () => {
+    const rect = (x: number, y: number, w: number, h: number) =>
+      ({ x, y, left: x, top: y, width: w, height: h, right: x + w, bottom: y + h, toJSON: () => ({}) }) as DOMRect;
+    const place = async (control: DOMRect, box = rect(0, 0, 320, 80), vw = 400, vh = 800) => {
+      vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(vw);
+      vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(vh);
+      const api = fakeApi();
+      renderTrialMatches(api);
+      const button = await screen.findByRole("button", { name: "Export CSV" });
+      const tip = document.getElementById(button.getAttribute("aria-describedby")!)!;
+      vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(control);
+      vi.spyOn(tip, "getBoundingClientRect").mockReturnValue(box);
+      await userEvent.hover(button);
+      return { tip, button };
+    };
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps an end-aligned box inside the left edge on a phone", async () => {
+      // A 100px control at the left: right-aligning a 320px box would start it
+      // at -220px, off screen.
+      const { tip } = await place(rect(16, 100, 100, 40));
+      expect(tip.style.left).toBe("8px");
+      expect(tip.style.top).toBe("146px");
+    });
+
+    it("keeps a box inside the right edge", async () => {
+      const { tip } = await place(rect(350, 100, 90, 40));
+      expect(tip.style.left).toBe(`${400 - 320 - 8}px`);
+    });
+
+    it("opens above the control when there is no room below", async () => {
+      const { tip } = await place(rect(16, 740, 100, 40));
+      expect(tip.style.top).toBe(`${740 - 6 - 80}px`);
+    });
+
+    it("keeps a box taller than the room above and below on screen", async () => {
+      const { tip } = await place(rect(16, 150, 100, 40), rect(0, 0, 320, 250), 400, 300);
+      // Below would end at 446 and above would start at -106: pinned at 300-250-8,
+      // and never taller than what is on screen.
+      expect(tip.style.top).toBe("42px");
+      expect(tip.style.maxHeight).toBe("284px");
+    });
+
+    it("scrolls a box too tall for the screen from its focused button", async () => {
+      const { tip, button } = await place(rect(16, 150, 100, 40), rect(0, 0, 320, 250), 400, 300);
+      vi.spyOn(tip, "scrollHeight", "get").mockReturnValue(600);
+      vi.spyOn(tip, "clientHeight", "get").mockReturnValue(284);
+      await userEvent.keyboard("{Shift}");
+      act(() => button.focus());
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+      expect(tip.scrollTop).toBe(80);
+      expect(tip).toHaveClass("is-open");
+    });
+
+    it("stays open, and follows the control, when the page scrolls", async () => {
+      const { tip, button } = await place(rect(16, 100, 100, 40));
+      vi.spyOn(button.parentElement!, "getBoundingClientRect").mockReturnValue(rect(16, 60, 100, 40));
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      expect(tip).toHaveClass("is-open");
+      expect(tip.style.top).toBe("106px");
+    });
+  });
+
+  it("shows the box on hover and focus, and closes it on Escape", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    expect(box()).not.toHaveClass("is-open");
+
+    await userEvent.hover(button);
+    expect(box()).toHaveClass("is-open");
+    // The pointer can cross onto the box and stay there (WCAG 1.4.13)…
+    await userEvent.unhover(button);
+    await userEvent.hover(box());
+    await new Promise((r) => setTimeout(r, 200));
+    expect(box()).toHaveClass("is-open");
+    // …and it closes once the pointer has left both.
+    await userEvent.unhover(box());
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+
+    await userEvent.keyboard("{Shift}");
+    act(() => button.focus());
+    expect(box()).toHaveClass("is-open");
+    await userEvent.keyboard("{Escape}");
+    expect(box()).not.toHaveClass("is-open");
+  });
+
+  it("keeps a focused control's box open when the pointer leaves", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.keyboard("{Shift}");
+    act(() => button.focus());
+    await userEvent.hover(button);
+    await userEvent.unhover(button);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("does not hold the box open on the focus a click leaves behind", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Filter Results" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.click(button);
+    expect(button).toHaveFocus();
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+  });
+
+  it("opens on keyboard focus", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Filter Results" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.click(button);
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+    // Tab away and back: keyboard focus opens it again.
+    await userEvent.tab();
+    await userEvent.tab({ shift: true });
+    expect(button).toHaveFocus();
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("opens on keyboard focus after a second click on the same control", async () => {
+    // A click on a focused button brings no focus event; nothing may linger
+    // from it and swallow the next keyboard focus.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Map" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.click(button);
+    await userEvent.click(await screen.findByRole("button", { name: "List" }));
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+    await userEvent.tab();
+    await userEvent.tab({ shift: true });
+    expect(button).toHaveFocus();
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("closes after a click on a control the keyboard had focused", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Filter Results" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.tab();
+    while (document.activeElement !== button) await userEvent.tab();
+    expect(box()).toHaveClass("is-open");
+    await userEvent.click(button);
+    await userEvent.unhover(button);
+    await waitFor(() => expect(box()).not.toHaveClass("is-open"));
+  });
+
+  it("stays open when the pointer moves from the box straight back to the control", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
+    await userEvent.hover(button);
+    await userEvent.hover(box());
+    // The exact pair a browser sends when the pointer jumps from the box onto
+    // the control; React sees it as child → parent and fires no enter.
+    act(() => {
+      box().dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: button }));
+      button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: box() }));
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(box()).toHaveClass("is-open");
+  });
+
+  it("does not open the trial when a card's tooltip box is clicked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    const [view] = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.hover(view);
+    const box = document.getElementById(view.getAttribute("aria-describedby")!)!;
+    await userEvent.click(box);
+    expect(screen.queryByText("Back to all trials")).toBeNull();
+  });
+
+  it("hides a closed box without needing the stylesheet", async () => {
+    // The box lives in the host's <body>; a host that sweeps our <style> out
+    // of its <head> must not be left with our tooltip text on its page.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const button = await screen.findByRole("button", { name: "Export CSV" });
+    const box = document.getElementById(button.getAttribute("aria-describedby")!)!;
+    expect(box.style.display).toBe("none");
+    expect(box.closest(".exact-tooltip-layer")?.parentElement).toBe(document.body);
+    await userEvent.hover(button);
+    expect(box.style.display).toBe("block");
+  });
+
+  it("re-injects the stylesheet if the host sweeps it out of <head>", async () => {
+    const api = fakeApi();
+    const { unmount } = renderTrialMatches(api);
+    await screen.findByRole("button", { name: "Export CSV" });
+    const marker = 'style[data-mf="exact-remote"]';
+    expect(document.querySelector(marker)).not.toBeNull();
+    document.querySelector(marker)!.remove();
+    unmount();
+
+    renderTrialMatches(fakeApi());
+    await screen.findByRole("button", { name: "Export CSV" });
+    expect(document.querySelector(marker)).not.toBeNull();
+  });
+
+  it("says why an action is unavailable in its tooltip", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { patientInfo: null });
+    const exp = await screen.findByRole("button", { name: "Export CSV" });
+    expect(exp).toBeDisabled();
+    expect(exp).toHaveAccessibleDescription(/needs a patient/);
+    expect(exp).not.toHaveAttribute("title");
+  });
+
+  it("describes the detail actions and puts a ? on the scores and panels", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState().adapter });
+    await openFirstDetail(api);
+
+    const register = await headerButton("I'm Interested");
+    expect(register).toHaveAccessibleDescription(/register your interest to keep track of it/);
+    // CB's promise is not carried over: nobody is contacted.
+    expect(register).not.toHaveAccessibleDescription(/reach out|contact the trial team/);
+    const bookmark = document.querySelector<HTMLElement>(".exact-detail__actions .exact-fav")!;
+    expect(bookmark).toHaveAccessibleDescription(/Save this trial to your Favorites/);
+
+    const help = screen.getAllByRole("button", { name: "More information" });
+    const texts = help.map((b) => document.getElementById(b.getAttribute("aria-describedby")!)!.textContent);
+    expect(texts).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/percentage of eligibility criteria/),
+        expect.stringMatching(/four factors/),
+        expect.stringMatching(/simple overview of the trial/),
+        expect.stringMatching(/structured list of the criteria/),
+      ]),
+    );
+    // Placed like the action boxes, so a "?" near an edge cannot push its box
+    // off a phone's screen.
+    for (const b of help) {
+      const box = document.getElementById(b.getAttribute("aria-describedby")!)!;
+      expect(box.closest(".exact-tooltip-layer")).not.toBeNull();
+    }
+    // The "?" sits beside the heading, not in it.
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeInTheDocument();
+  });
+
+  it("switches the interest tooltip once registered", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { state: fakeState({ registered: ["1"] }).adapter });
+    await openFirstDetail(api);
+    expect(await headerButton("Withdraw")).toHaveAccessibleDescription(/Click again to withdraw it/);
+  });
+
+  it("does not open the trial when the ? on a card's score is clicked or pressed", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(0));
+    const [help] = await screen.findAllByRole("button", { name: "More information" });
+    await userEvent.click(help);
+    act(() => help.focus());
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
+    expect(screen.queryByText("Back to all trials")).toBeNull();
   });
 });

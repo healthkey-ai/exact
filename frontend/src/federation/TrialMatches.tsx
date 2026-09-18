@@ -35,6 +35,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
 }
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
+import { ActionTooltip } from "./bits";
 import { FilterPanel } from "./FilterPanel";
 import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
@@ -72,6 +73,7 @@ import {
   useTrialsGraph,
 } from "./hooks";
 import { injectStyles } from "./injectStyles";
+import { ACTION_TOOLTIPS } from "./tooltips";
 import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
 
 type StateKind = "favorites" | "registered";
@@ -949,56 +951,81 @@ function TrialMatchesInner({
         <SortControl value={sort} onChange={handleSortChange} />
 
         <div className="exact-list__triggers">
-        <button
-          type="button"
-          className={`exact-filters__trigger${mapOpen ? " is-on" : ""}`}
-          // No `aria-pressed`: the label is the ACTION, not the state, and the
-          // two together announce "List, pressed" while the map is open —
-          // which says list mode is on, the opposite of what is on screen.
-          onClick={() => setMapOpen((open) => !open)}
-        >
-          {mapOpen ? "List" : "Map"}
-        </button>
+        {/* CB's toolbar tooltips. A control that cannot act says why in its
+            tooltip instead, in place of the `title` it used to carry, so
+            there is one box, not a styled one and a native one. */}
+        <ActionTooltip text={mapOpen ? ACTION_TOOLTIPS.list : ACTION_TOOLTIPS.map}>
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-filters__trigger${mapOpen ? " is-on" : ""}`}
+              aria-describedby={tipId}
+              // No `aria-pressed`: the label is the ACTION, not the state, and the
+              // two together announce "List, pressed" while the map is open —
+              // which says list mode is on, the opposite of what is on screen.
+              onClick={() => setMapOpen((open) => !open)}
+            >
+              {mapOpen ? "List" : "Map"}
+            </button>
+          )}
+        </ActionTooltip>
 
-        <button
-          type="button"
-          className={`exact-filters__trigger${graphOpen ? " is-on" : ""}`}
-          aria-expanded={graphOpen}
-          disabled={graphUnavailable}
-          title={
+        <ActionTooltip
+          text={
             graphUnavailable
               ? "Your saved trials aren't available right now, so this tab can't be mapped."
-              : undefined
+              : ACTION_TOOLTIPS.exploreTrials
           }
-          onClick={() => setGraphOpen((open) => !open)}
         >
-          Explore Trials
-        </button>
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-filters__trigger${graphOpen ? " is-on" : ""}`}
+              aria-expanded={graphOpen}
+              aria-describedby={tipId}
+              disabled={graphUnavailable}
+              onClick={() => setGraphOpen((open) => !open)}
+            >
+              Explore Trials
+            </button>
+          )}
+        </ActionTooltip>
 
-        <button
-          type="button"
-          className={`exact-list__export${exportState === "working" ? " is-working" : ""}`}
-          onClick={() => void handleExport()}
-          disabled={exportState === "working" || exportUnavailable}
-          // Said out loud rather than left as a dead control: everything else
-          // in this file names why it cannot answer.
-          title={exportUnavailable ? exportUnavailableReason : undefined}
+        <ActionTooltip
+          text={exportUnavailable ? exportUnavailableReason : ACTION_TOOLTIPS.exportCsv}
         >
-          {exportState === "working" ? "Preparing…" : "Export CSV"}
-        </button>
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-list__export${exportState === "working" ? " is-working" : ""}`}
+              aria-describedby={tipId}
+              onClick={() => void handleExport()}
+              // Said out loud rather than left as a dead control: everything else
+              // in this file names why it cannot answer.
+              disabled={exportState === "working" || exportUnavailable}
+            >
+              {exportState === "working" ? "Preparing…" : "Export CSV"}
+            </button>
+          )}
+        </ActionTooltip>
 
-        <button
-          type="button"
-          className={`exact-filters__trigger${
-            filtersOpen || activeFilterCount > 0 ? " is-on" : ""
-          }`}
-          aria-expanded={filtersOpen}
-          onClick={() => setFiltersOpen((open) => !open)}
-        >
-          {activeFilterCount > 0
-            ? `Filters (${activeFilterCount})`
-            : "Filter Results"}
-        </button>
+        <ActionTooltip text={ACTION_TOOLTIPS.filters}>
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-filters__trigger${
+                filtersOpen || activeFilterCount > 0 ? " is-on" : ""
+              }`}
+              aria-expanded={filtersOpen}
+              aria-describedby={tipId}
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              {activeFilterCount > 0
+                ? `Filters (${activeFilterCount})`
+                : "Filter Results"}
+            </button>
+          )}
+        </ActionTooltip>
         </div>
       </div>
 
