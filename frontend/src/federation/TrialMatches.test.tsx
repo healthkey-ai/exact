@@ -104,7 +104,9 @@ describe("paging", () => {
     await userEvent.click(await screen.findByRole("button", { name: "2" }));
     await waitFor(() => expect(listed(api).length).toBe(2));
 
-    await userEvent.click(screen.getByRole("button", { name: /Potential/ }));
+    // Anchored: the default tab is now "Eligible & Potential", so an
+    // unanchored /Potential/ matches two buttons and throws.
+    await userEvent.click(screen.getByRole("button", { name: /^Potential/ }));
     await waitFor(() => expect(listed(api).length).toBe(3));
     const last = listed(api)[2];
     expect(last.params.type).toBe("potential");
@@ -223,7 +225,7 @@ describe("tab counts", () => {
       tabCounts: { eligible: 7, potential: 12 },
     });
     renderTrialMatches(api);
-    await screen.findByRole("button", { name: "Eligible, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
     await screen.findByRole("button", { name: "Fully matched, 7 trials" });
     await screen.findByRole("button", { name: "Potential, 12 trials" });
     // The accessible name is an `aria-label`, so it is computed rather than
@@ -3360,7 +3362,12 @@ describe("action tooltips", () => {
     renderTrialMatches(api, { state: fakeState().adapter });
 
     const tab = (name: RegExp) => screen.findByRole("button", { name });
-    expect(await tab(/^Eligible/)).toHaveAccessibleDescription(/appears to meet the key eligibility/);
+    // Pins the sentence that does the work, not just the trailing phrase: the
+    // whole point of this tooltip is naming the union, so a regex that only
+    // matched "split in two" let the defining clause be replaced by anything.
+    expect(await tab(/^Eligible/)).toHaveAccessibleDescription(
+      /meet every criterion.*still missing.*split in two/s,
+    );
     expect(await tab(/^Fully matched/)).toHaveAccessibleDescription(/meets every eligibility criterion/);
     expect(await tab(/^Potential/)).toHaveAccessibleDescription(/some of the information/);
     expect(await tab(/^Registered/)).toHaveAccessibleDescription(/registered interest in/);
