@@ -7,7 +7,9 @@ import type { TabCounts } from "./types";
 /** Rows per page. CB shows 10; the server's own default is 20. */
 export const PAGE_SIZE = 10;
 
-/** CB's tab bar, as far as this remote can honestly reproduce it.
+/** CB's tab bar, as far as this remote can honestly reproduce it — plus two
+ *  tabs CB does not have, which is why the first one is not labelled as CB
+ *  labels it (see MATCH_TABS).
  *
  *  CB's is Eligible / All Trials (admin) / Registered / Favorites. The last
  *  two are per-user relations EXACT does not hold — the server rejects
@@ -41,7 +43,14 @@ export interface TabDef {
 }
 
 const MATCH_TABS: TabDef[] = [
-  { value: "eligible_and_potential", label: "Eligible" },
+  // CB labels this one "Eligible", and that is safe there because CB's bar has
+  // no other match tab to contrast it with. Here it sits next to a tab that
+  // really is eligible-only, so the CB wording reads as a contradiction: the
+  // count beside "Eligible" is `eligible + potential` (see `tabCount`), so a
+  // reader sees "Eligible 369" and "Fully matched 10" and cannot tell which
+  // number means what. Naming the union is the smaller lie than reusing
+  // CB's label for a set CB never had to distinguish.
+  { value: "eligible_and_potential", label: "Eligible & Potential" },
   { value: "eligible", label: "Fully matched", param: "eligible" },
   { value: "potential", label: "Potential", param: "potential" },
 ];
