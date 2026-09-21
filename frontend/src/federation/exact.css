@@ -56,12 +56,22 @@
    * token: a host that darkens `on-brand` for a light CTA must not darken the
    * star on blue with it. */
   --exact-color-on-primary: #ffffff;
-  /* The tint behind a chosen segment — CB --brand-50, which it pairs with
-   * brand-700 text; `primary` stands in for that text here. A host that
-   * themes `primary` must theme this with it: the pair is the only thing
-   * that says which segment is chosen, so a dark host leaving this light
-   * gets light-on-light. In the required set `assertExactTokens` checks. */
+  /* The tint behind a chosen segment and a chosen tab count — CB --brand-50,
+   * which it pairs with brand-700 text; `primary` stands in for that text
+   * here. Measured on these defaults, that pair is 5.27:1 — AA for the 12px
+   * it is used at.
+   *
+   * The two travel WITH `--exact-color-primary`, and nothing enforces it: a
+   * host that themes `primary` dark and leaves these light gets
+   * light-on-light on the one mark that says which thing is chosen. No
+   * check can catch that either — `assertExactTokens` reads the value back
+   * off this same element, so it sees our default and calls it present.
+   * They are in its list for the only reason anything is: a name that reads
+   * empty means the sheet never arrived. */
   --exact-color-primary-50: hsl(199 100% 92%);
+  /* The edge of that chip — CB --brand-200, paired with the fill above.
+   * Only a border is drawn with it. */
+  --exact-color-primary-200: hsl(199 100% 64%);
 
   /* Default to `inherit` so the remote picks up the host's typography
    * (CB sets Manrope on <body>) and reads as native. A host can still
@@ -970,10 +980,13 @@
 
 .exact-root .exact-tab__count {
   display: inline-block;
-  min-width: 1.5rem;
-  padding: 0.0625rem 0.375rem;
+  padding: 0.125rem 0.5rem;
+  /* CB draws this pill with a border in BOTH states; the fill alone is a
+     few percent of grey and all but disappears on a white card. */
+  border: 1px solid var(--exact-color-border);
   border-radius: 624.9375rem;
   background: var(--exact-color-surface-2, rgba(10, 13, 18, 0.06));
+  color: var(--exact-color-text-muted);
   font-size: 0.75rem;
   font-weight: 500;
   line-height: 1.125rem;
@@ -981,9 +994,14 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Tinted, not filled: CB's chosen tab carries brand-50 behind brand-700 on a
+   brand-200 edge. A solid primary pill — what this was — is a heavier mark
+   than the 2px rule under the tab, and the two competed to say the same
+   thing. */
 .exact-root .exact-tab.is-active .exact-tab__count {
-  background: var(--exact-color-primary);
-  color: #fff;
+  border-color: var(--exact-color-primary-200);
+  background: var(--exact-color-primary-50);
+  color: var(--exact-color-primary);
 }
 
 .exact-root .exact-list__controls {
@@ -1031,13 +1049,17 @@
 
 /* Segmented control — CB's `TrialsViewMode` / `TrialsSortControl`: joined
    buttons in one bordered, shadowed box, the chosen one tinted. */
+/* `shadow-card`, not `shadow-sm`: CB gives every control in this row the
+   same edge — an inset hairline over the border, a hint of an inner bottom
+   rule, and a 1px drop. `shadow-sm` is the drop alone, which reads as a
+   flatter control beside CB's. */
 .exact-root .exact-seg {
   display: flex;
   align-items: stretch;
   border: 1px solid var(--exact-color-border);
   border-radius: var(--exact-border-radius);
   background: var(--exact-color-surface);
-  box-shadow: var(--exact-shadow-sm);
+  box-shadow: var(--exact-shadow-card);
   /* Squares off the corner fills of the first and last segments. */
   overflow: hidden;
 }
@@ -1314,7 +1336,7 @@
   border: 1px solid var(--exact-color-border);
   border-radius: var(--exact-border-radius);
   background: var(--exact-color-surface);
-  box-shadow: var(--exact-shadow-sm);
+  box-shadow: var(--exact-shadow-card);
   font: inherit;
   font-size: 0.875rem;
   font-weight: 600;
@@ -1357,7 +1379,7 @@
   border: 1px solid var(--exact-color-border);
   border-radius: var(--exact-border-radius);
   background: var(--exact-color-surface);
-  box-shadow: var(--exact-shadow-sm);
+  box-shadow: var(--exact-shadow-card);
   font: inherit;
   font-size: 0.875rem;
   font-weight: 600;
