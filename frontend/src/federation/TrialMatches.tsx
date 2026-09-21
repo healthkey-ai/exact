@@ -76,7 +76,7 @@ import {
   useTrials,
   useTrialsGraph,
 } from "./hooks";
-import { injectStyles } from "./injectStyles";
+import { injectStyles, warnMissingExactTokens } from "./injectStyles";
 import { ACTION_TOOLTIPS } from "./tooltips";
 import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
 
@@ -99,6 +99,40 @@ function TrialMatchesInner({
   useEffect(() => {
     injectStyles();
   }, []);
+
+  /** This mount's own root, for the canary below. */
+  const exactRootRef = useRef<HTMLDivElement>(null);
+  const canarySung = useRef(false);
+  // The canary: did `exact.css` reach the page this list is on?
+  //
+  // Run after `injectStyles`, never before — the sheet has to be in the
+  // document for the answer to mean anything — and against THIS mount's
+  // root rather than the first `.exact-root` in the document: a second
+  // EXACT instance that is fine would otherwise answer for one that is not,
+  // and a root inside a shadow tree is not in `document` at all, where a
+  // head-injected sheet cannot reach it either.
+  //
+  // No dependency list, because the root is not there on every first render
+  // (the list renders a plain notice while the profile is loading); the
+  // latch is what keeps it to one look.
+  //
+  // `DEV` is stripped when the REMOTE is built, not when a host is — the two
+  // are compiled separately, which is the point of a remote. So this ships
+  // disabled in the remote's production build, and a production host wired
+  // to a development remote does get the warning. That host is
+  // misconfigured, and a line in the console is the friendliest thing that
+  // can happen to it.
+  //
+  // Not under the unit tests, whose `MODE` is "test": jsdom parses
+  // stylesheets and resolves nothing from them, so every token reads empty
+  // there and the canary would cry on every rendering test while meaning
+  // nothing. What it checks is covered directly in `injectStyles.test.tsx`.
+  useEffect(() => {
+    if (canarySung.current || !exactRootRef.current) return;
+    if (!import.meta.env.DEV || import.meta.env.MODE === "test") return;
+    canarySung.current = true;
+    warnMissingExactTokens(exactRootRef.current);
+  });
 
   // Normalized on the way in: a host compiles separately, so a pre-#428
   // `trialPurpose` string in `initialFilters` is not caught by `tsc` here
@@ -1023,7 +1057,7 @@ function TrialMatchesInner({
   }
 
   return (
-    <div className="exact-root exact-list" style={{ padding: "1rem" }}>
+    <div className="exact-root exact-list" ref={exactRootRef} style={{ padding: "1rem" }}>
       <h1 className="exact-list__title">Your Trials</h1>
 
       <Tabs
