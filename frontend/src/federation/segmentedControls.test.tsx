@@ -50,6 +50,37 @@ describe("the view mode control", () => {
     expect(seg("List view")).toHaveFocus();
     expect(seg("List view")).toBeChecked();
   });
+
+  it("wraps backwards too, from the first segment to the last", async () => {
+    // The other direction is a separate line of arithmetic — `index - 1` is
+    // -1 at the first segment, and a modulo alone leaves it there. Without
+    // this the backward wrap can go dead silently: the key does nothing, no
+    // error, and every other keyboard test still passes.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "List view" });
+    seg("List view").focus();
+
+    await userEvent.keyboard("{ArrowLeft}");
+
+    expect(seg("Map view")).toHaveFocus();
+    expect(seg("Map view")).toBeChecked();
+  });
+
+  it("really is one tab stop: the next tab leaves the group", async () => {
+    // The test above reads `tabindex="-1"` off the segment not chosen, which
+    // is the mechanism, not the behaviour. This presses the key.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "List view" });
+    const group = screen.getByRole("radiogroup", { name: "View" });
+    seg("List view").focus();
+
+    await userEvent.tab();
+
+    expect(seg("Map view")).not.toHaveFocus();
+    expect(group.contains(document.activeElement)).toBe(false);
+  });
 });
 
 describe("the sort control", () => {
@@ -74,6 +105,26 @@ describe("the sort control", () => {
     renderTrialMatches(api, { initialFilters: { sort: "phase" } });
     expect(await screen.findByRole("radio", { name: "Sorted by phase" })).toBeChecked();
     expect(seg("Sort By Suitability Score")).not.toBeChecked();
+  });
+
+  it("jumps to the first and last order with Home and End", async () => {
+    // Both keys are part of the pattern and neither is reachable any other
+    // way: the arrows walk, these two leap. Untested, they are two lines
+    // that can be deleted without a single suite going red.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    seg("Sort By Suitability Score").focus();
+
+    await userEvent.keyboard("{End}");
+
+    expect(seg("Sort by Distance")).toHaveFocus();
+    expect(seg("Sort by Distance")).toBeChecked();
+
+    await userEvent.keyboard("{Home}");
+
+    expect(seg("Sort By Suitability Score")).toHaveFocus();
+    expect(seg("Sort By Suitability Score")).toBeChecked();
   });
 
   it("walks the orders without scrolling the tooltip that is open", async () => {
