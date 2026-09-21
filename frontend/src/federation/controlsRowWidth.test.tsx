@@ -34,12 +34,15 @@ class FakeResizeObserver {
   }
   /** What the browser would deliver when the column is this wide. */
   report(width: number) {
-    act(() => {
-      this.callback(
-        [{ contentRect: { width } } as ResizeObserverEntry],
-        this as unknown as ResizeObserver,
-      );
-    });
+    act(() => this.deliver(width));
+  }
+  /** The same delivery, NOT flushed: the observer is not a React event, so
+   *  what it schedules is committed later and the page is live in between. */
+  deliver(width: number) {
+    this.callback(
+      [{ contentRect: { width } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
   }
   static current() {
     const open = FakeResizeObserver.live.filter((o) => !o.disconnected);
@@ -115,6 +118,26 @@ describe("the controls row's width", () => {
     expect(filter).toHaveFocus();
   });
 
+  it("does not take back focus the reader has moved on from", async () => {
+    // The move is decided when the width arrives and applied on a later
+    // commit — an observer is not a React event. A host animating a sidebar
+    // delivers widths for a quarter of a second, and the reader is not
+    // frozen for it: whatever they Tab or click to in between keeps focus.
+    install();
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const sort = await screen.findByRole("radio", { name: "Sort By Suitability Score" });
+    sort.focus();
+    const filter = screen.getByRole("button", { name: "Filter Results" });
+
+    FakeResizeObserver.current().deliver(WIDE);
+    filter.focus();
+    await act(async () => {});
+
+    expect(isWide()).toBe(true);
+    expect(filter).toHaveFocus();
+  });
+
   it("asks for more room when the host asked for an order CB does not list", async () => {
     // `sortOptionsFor` adds a fourth segment for a server order CB does not
     // offer. A width measured on three then reads as "there is room", the
@@ -163,8 +186,11 @@ describe("the controls row's width", () => {
     expect(document.contains(watching)).toBe(true);
     expect(watching).toBe(document.querySelector(".exact-list__controls"));
 
-    // And it still answers: the reader's column did not change, so the wide
-    // layout the row arrived in is the one they get back.
+    // And it still answers — asked for a width it is not already showing,
+    // since a report that changes nothing cannot tell a live observer from
+    // a dead one.
+    now.report(WIDE - 1);
+    await waitFor(() => expect(isWide()).toBe(false));
     now.report(WIDE);
     await waitFor(() => expect(isWide()).toBe(true));
   });

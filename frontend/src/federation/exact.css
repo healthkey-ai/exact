@@ -1016,8 +1016,8 @@
 }
 
 /* The sort's own row, when the row is too narrow to hold everything. Only
-   rendered in that case (`WIDE_CONTROLS_ROW` in `listChrome.ts` is the
-   measurement, `TrialMatches` does the measuring), so there is no `order`
+   rendered in that case (`wideControlsRow` in `listChrome.ts` is how much
+   room it takes, `TrialMatches` does the measuring), so there is no `order`
    here: what is painted second is written second, and the keyboard follows
    the same path as the eye. `flex-basis: 100%` breaks the row; the control
    inside keeps its own width rather than stretching across the page. */
@@ -1088,6 +1088,24 @@
   .exact-root .exact-seg__btn {
     white-space: nowrap;
   }
+
+  /* Held to one line, a label can still be wider than its share of the row:
+     an order the host asked for is rendered as `Sorted by <key>`, and those
+     keys are long (`patientBurdenScore`). Cut by the group's own
+     `overflow: hidden` that reads as a rendering fault; cut here it reads as
+     a name too long for its box, which is what it is. The whole name stays
+     in the accessible name and in the segment's tooltip. */
+  .exact-root .exact-seg__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Its own element so the label can be ellipsised: the button is a flex
+   container, and its bare text would be an anonymous item that
+   `text-overflow` cannot reach. */
+.exact-root .exact-seg__label {
+  min-width: 0;
 }
 
 .exact-root .exact-seg__btn:hover {

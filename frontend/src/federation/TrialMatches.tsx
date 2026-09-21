@@ -842,26 +842,35 @@ function TrialMatchesInner({
   // fits either way.
   const observerRef = useRef<ResizeObserver | null>(null);
   const rowRef = useRef<HTMLDivElement | null>(null);
-  const [wideRow, setWideRow] = useState(false);
-  const wideRef = useRef(false);
+  // The measurement is the state; whether it is wide enough is derived from
+  // it. Held the other way round — a boolean set by the observer — a change
+  // in how much room is NEEDED (an order the host asked for is a fourth
+  // segment) has no measurement to re-read and needs a second pass to
+  // re-measure, which paints the wrong layout for a frame first.
+  const [rowWidth, setRowWidth] = useState(0);
+  const wideThreshold = wideControlsRow(sortOptionsFor(sort).length);
+  const wideRow = rowWidth >= wideThreshold;
+  const wideRef = useRef(wideRow);
+  const thresholdRef = useRef(wideThreshold);
   /** Set when the sort is about to move out from under the keyboard. */
   const sortHadFocus = useRef(false);
-  const thresholdRef = useRef(Number.POSITIVE_INFINITY);
+  useLayoutEffect(() => {
+    wideRef.current = wideRow;
+    thresholdRef.current = wideThreshold;
+  });
 
   const applyWidth = useCallback((width: number) => {
-    const next = width >= thresholdRef.current;
-    // Only when the answer CHANGES. A drag on a window edge delivers a stream
-    // of widths, and re-rendering the list per pixel is not what any of them
-    // asked for.
-    if (next === wideRef.current) return;
-    wideRef.current = next;
     // The sort is about to be rendered in the other slot, which is a
     // different DOM node: React unmounts this one, and focus on it goes to
     // <body>. A reader whose host collapsed a sidebar would find their next
     // Tab starting from the top of the page.
-    const sortGroup = rowRef.current?.querySelector(".exact-seg--grow");
-    sortHadFocus.current = !!sortGroup && sortGroup.contains(document.activeElement);
-    setWideRow(next);
+    if (width >= thresholdRef.current !== wideRef.current) {
+      const sortGroup = rowRef.current?.querySelector(".exact-seg--grow");
+      sortHadFocus.current = !!sortGroup && sortGroup.contains(document.activeElement);
+    }
+    // A drag on a window edge delivers a stream of widths; React drops the
+    // ones that do not change this.
+    setRowWidth(width);
   }, []);
 
   // A ref callback, not an effect on mount: opening a trial returns the detail
@@ -885,22 +894,18 @@ function TrialMatchesInner({
     [applyWidth],
   );
 
-  // How much room the row needs depends on how many orders are offered: a
-  // host can ask for one CB does not list, and that is a fourth segment. The
-  // observer reads the current answer, and a change in it is re-measured
-  // here — nothing resized, so nothing else would ask again.
-  const wideThreshold = wideControlsRow(sortOptionsFor(sort).length);
-  useEffect(() => {
-    thresholdRef.current = wideThreshold;
-    const row = rowRef.current;
-    if (row) applyWidth(row.getBoundingClientRect().width);
-  }, [wideThreshold, applyWidth]);
-
   // The chosen segment is the group's one tab stop, so it is the one that
   // takes the focus back after the move.
   useLayoutEffect(() => {
     if (!sortHadFocus.current) return;
     sortHadFocus.current = false;
+    // The move was decided when the width arrived, and this runs on a later
+    // commit: the observer is not a React event, so a reader can Tab or
+    // click in between — a host animating a sidebar delivers widths for a
+    // quarter of a second. Only focus that the unmount dropped is taken
+    // back, and an unmount leaves it on <body>.
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
     rowRef.current
       ?.querySelector<HTMLElement>('.exact-seg--grow [role="radio"][aria-checked="true"]')
       ?.focus();
