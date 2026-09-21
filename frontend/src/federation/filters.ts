@@ -3,6 +3,7 @@
 // suite can test it (see vitest.config.ts, and #426 for the component-level
 // gap).
 
+import { WEIGHT_FIELDS } from "./weights";
 import type { FilterState } from "./types";
 
 export interface DistanceUnitOption {
@@ -394,6 +395,18 @@ export function sanitizeStoredFilters(raw: unknown): FilterState {
   // while the control shows "Any".
   if (isUsableLastUpdate(input.lastUpdate)) {
     out.lastUpdate = input.lastUpdate as string;
+  }
+
+  // The four suitability weights. Numbers only, and only inside the range the
+  // control offers: a value from somewhere else — another client, an older
+  // build, a hand-edited `localStorage` — is a claim like any other here, and
+  // one outside 0-100 is not a claim this UI can show. Dropped, the field
+  // falls back to the server's own 25, which is the score everyone else sees.
+  for (const { key } of WEIGHT_FIELDS) {
+    const value = input[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    if (value < 0 || value > 100) continue;
+    (out as Record<string, unknown>)[key] = value;
   }
 
   if (typeof input.validatedOnly === "boolean") {
