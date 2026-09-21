@@ -623,13 +623,12 @@ function TrialMatchesInner({
   // a country and a trial type leaves everything else identical — and the
   // pager, which asks this question to decide whether the count in hand is
   // this view's, would have painted the previous patient's page count.
-  const queryKey = JSON.stringify([
-    stateKey,
-    queryFilters,
-    activeTab,
-    trialIds ?? null,
-  ]);
-
+  // One spelling, two readers. Written twice, the export's copy stops
+  // tracking the day a fifth dimension joins the list's — which is the bug
+  // the comment above is about, reopened from the other end.
+  const viewKeyFor = (forFilters: FilterState) =>
+    JSON.stringify([stateKey, forFilters, activeTab, trialIds ?? null]);
+  const queryKey = viewKeyFor(queryFilters);
 
   // The export is a file, not a view: no cache, no retry, and a status the
   // reader can see. React Query would serve the same bytes back on a second
@@ -672,9 +671,12 @@ function TrialMatchesInner({
         apiClient,
         patientInfo,
         personId,
-        // The filters the LIST is showing, tab included — the file has to be
+        // What the reader is looking at, tab included — the file has to be
         // the answer to the question on screen, not to an unnarrowed one.
-        filters: queryFilters,
+        // The narrowing comes from the list, the order from the control:
+        // inside the 250ms hold those disagree, and the segment is the half
+        // the reader can see. See `exportFilters`.
+        filters: exportFilters,
         trialIds,
       });
       // The view moved while this was in flight. Dropping it costs the reader
@@ -715,19 +717,45 @@ function TrialMatchesInner({
     }
   };
 
-  // The export's idea of "the same view", which the list's does not need: WHO
-  // the rows are about. A host switching patients with the filters untouched
-  // leaves `queryKey` identical, so without this the previous patient's file
-  // passes both staleness checks and is handed over under the new patient's
-  // name — the wrong rows, about the wrong person.
-  // The same key, under the name the export code reads it by. `queryKey`
-  // already carries `stateKey`, so composing a second one would name the
-  // patient twice and tie the two spellings together for no gain.
-  const exportViewKey = queryKey;
+  // WHO the rows are about is carried by `stateKey`, inside the key both of
+  // these are built from: a host switching patients with the filters
+  // untouched would otherwise leave the key identical, and the previous
+  // patient's file would pass both staleness checks and be handed over under
+  // the new patient's name — the wrong rows, about the wrong person.
+  //
+  // The export asks for the order the CONTROL shows, not the one the list has
+  // caught up to: an arrow-key change is held back 250ms for the list and not
+  // at all for the segment, so for that quarter second they disagree, and a
+  // file the reader asks for then should answer the order they can see.
+  const exportFilters = { ...queryFilters, sort: sort as FilterState["sort"] };
+  // The order is the one dimension deliberately LEFT OUT of the export's key.
+  //
+  // Keyed on it, an export dies at both edges of that 250ms: held back, the
+  // key moves when the hold lands, and taken from the control, it moves on
+  // the keypress while a file is already on the wire. Either way the arriving
+  // file is read as belonging to a view the reader has left, so it is dropped
+  // and the button returns to idle — a click, a wait, and nothing said. The
+  // keypress version is worse: idle again means enabled again, so a second
+  // full-corpus export can go out beside the first.
+  //
+  // Leaving it out is sound because the sort cannot change WHICH trials are
+  // in the file: an export is the whole matched set, never the page, so the
+  // order moves rows around inside the CSV and takes none out. Everything
+  // that does change the membership — tab, patient, filters, the saved-id
+  // set — is still in the key and still drops a file that has stopped
+  // describing the screen.
+  const { sort: _orderNotInKey, ...exportKeyFilters } = queryFilters;
+  const exportViewKey = viewKeyFor(exportKeyFilters);
   viewKeyRef.current = exportViewKey;
   // The failure belonged to the view it happened in. Left standing, it sits
   // under a list the reader has since changed and reads as a fresh failure of
   // what they are looking at now.
+  //
+  // The order is the exception, and deliberately: it is not in this key, so
+  // re-sorting leaves the message up. It still describes the same rows — the
+  // sort reorders the file, it does not change what is in it — and clearing
+  // it here would mean keying on the order again, which is what drops the
+  // reader's file mid-flight.
   useEffect(() => {
     setExportState("idle");
   }, [exportViewKey]);

@@ -5,7 +5,7 @@
  *  a dropped filter, the bookmarks ignored.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -156,6 +156,82 @@ describe("the Export CSV button on a state tab", () => {
     await waitFor(() => expect(button).toBeDisabled());
     await userEvent.click(button);
     expect(api.requests.filter((r) => r.url.startsWith("/trials/export/"))).toHaveLength(0);
+  });
+});
+
+describe("what the export counts as the same view", () => {
+  // The export builds its own filters and its own key now, so nothing but a
+  // test keeps them in step with the list's. Each of these fails against a
+  // plausible slip: taking the filters from the reader's own state instead of
+  // the list's drops the tab, and leaving either the tab or the saved ids out
+  // of the key hands over a file for a view the reader has left.
+  const exportRequests = (api: ReturnType<typeof fakeApi>) =>
+    api.requests.filter((r) => r.url.startsWith("/trials/export/"));
+
+  it("asks for the tab the LIST is on, not the one the host deep-linked to", async () => {
+    // The tab and the reader's own filters are separate state, and after a
+    // switch they disagree: `filters.type` still says what the host asked for
+    // while the list has moved on. Built from the reader's filters instead of
+    // the list's, the export keeps sending the deep-linked subset — a file
+    // holding the potential trials, labelled as the whole tab.
+    const api = fakeApi();
+    renderTrialMatches(api, { initialFilters: { type: "potential" } });
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    expect(api.listRequests()[0].params.type).toBe("potential");
+
+    await userEvent.click(screen.getByRole("button", { name: /^Eligible/ }));
+    await waitFor(() => expect(api.listRequests().length).toBe(2));
+    expect(api.listRequests()[1].params.type).toBeUndefined();
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    await waitFor(() => expect(exportRequests(api).length).toBe(1));
+    expect(exportRequests(api)[0].params.type).toBeUndefined();
+  });
+
+  it("drops a file whose tab the reader has left, on the tab alone", async () => {
+    // Favorites and Registered hold the same trial here, so the ids in the
+    // key are identical and so are the filters — both state tabs send no
+    // `type`. The tab is the only thing that moves, which is what makes this
+    // a test of the tab rather than of the ids.
+    const api = fakeApi();
+    const state = fakeState({ favorites: ["1"], registered: ["1"] });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderTrialMatches(api, { state: state.adapter });
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(api.listRequests().length).toBeGreaterThan(0));
+    const release = api.holdNextExport();
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(exportRequests(api).length).toBe(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Registered/ }));
+    release();
+
+    await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
+    expect(click).not.toHaveBeenCalled();
+    click.mockRestore();
+  });
+
+  it("drops a file whose saved-id set has moved under it", async () => {
+    // Bookmarking while a Favorites export is in flight changes which trials
+    // the file was supposed to be about.
+    const api = fakeApi();
+    const state = fakeState({ favorites: ["1"] });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderTrialMatches(api, { state: state.adapter });
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(api.listRequests().length).toBeGreaterThan(0));
+    const release = api.holdNextExport();
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(exportRequests(api).length).toBe(1));
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: /to favorites$|from favorites$/ }))[0],
+    );
+    release();
+
+    await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
+    expect(click).not.toHaveBeenCalled();
+    click.mockRestore();
   });
 });
 
@@ -318,5 +394,108 @@ describe("an export in flight when the patient changes", () => {
     await waitFor(() => expect(screen.queryByText("Preparing…")).toBeNull());
     expect(click).not.toHaveBeenCalled();
     click.mockRestore();
+  });
+});
+
+describe("an export issued while the sort is still being walked", () => {
+  // The list holds an arrow-key sort change back 250ms so that walking the
+  // orders is one request, not three. The control does not hold anything
+  // back: the segment the reader arrowed to is checked immediately. For that
+  // quarter second the screen says one order and the rows are still the
+  // other, and an export belongs to what the reader can see.
+  let click: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    (URL as unknown as Record<string, unknown>).createObjectURL = vi.fn(() => "blob:x");
+    (URL as unknown as Record<string, unknown>).revokeObjectURL = vi.fn();
+    click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    click.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it("asks for the order the reader can see, not the one the list still has", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    screen.getByRole("radio", { name: "Sort By Suitability Score" }).focus();
+
+    await userEvent.keyboard("{ArrowRight}");
+    // Inside the hold: the segment has moved, the list has not.
+    expect(screen.getByRole("radio", { name: "Sort by Matching Score" })).toBeChecked();
+    expect(api.listRequests().length).toBe(1);
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    await waitFor(() => expect(exportRequests(api).length).toBe(1));
+    expect(exportRequests(api)[0].params.sort).toBe("matchScore");
+    // Still inside the hold when the export went out — otherwise this passes
+    // against the code it was written to fail against.
+    expect(api.listRequests().length).toBe(1);
+  });
+
+  it("survives the reader walking on to another order while it is in flight", async () => {
+    // The mirror of the case above, and the one a key built on the order gets
+    // wrong from the other end: the file was asked for under the order that
+    // was showing, and the next arrow key must not read as "the reader left
+    // the view" and throw it away. Worse than losing the file, idle again
+    // means enabled again — a second full-corpus export beside the first.
+    const api = fakeApi();
+    const release = api.holdNextExport();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    await waitFor(() => expect(exportRequests(api).length).toBe(1));
+
+    screen.getByRole("radio", { name: "Sort By Suitability Score" }).focus();
+    await userEvent.keyboard("{ArrowRight}");
+
+    // The button is still busy, so a second corpus-wide export cannot start.
+    expect(screen.getByRole("button", { name: /Preparing/ })).toBeDisabled();
+    release();
+
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(exportRequests(api).length).toBe(1);
+  });
+
+  it("takes a pointer-picked order immediately, because the list does too", async () => {
+    // The hold is for the arrows only. A click is one deliberate choice, and
+    // the premise of everything above is that it moves the list at once.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+
+    await userEvent.click(screen.getByRole("radio", { name: "Sort by Distance" }));
+
+    await waitFor(() => expect(api.listRequests().length).toBe(2));
+    expect(api.listRequests()[1].params.sort).toBe("distance");
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    await waitFor(() => expect(exportRequests(api).length).toBe(1));
+    expect(exportRequests(api)[0].params.sort).toBe("distance");
+  });
+
+  it("is still handed over once the list catches up", async () => {
+    // The hold landing moves the LIST's key. Read as a change of view, it
+    // discards the file on arrival and puts the button back to idle — the
+    // reader clicks Export and gets nothing, with nothing said.
+    const api = fakeApi();
+    const release = api.holdNextExport();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    screen.getByRole("radio", { name: "Sort By Suitability Score" }).focus();
+
+    await userEvent.keyboard("{ArrowRight}");
+    await userEvent.click(screen.getByRole("button", { name: "Export CSV" }));
+    // The hold expires while the export is in flight, and the list re-reads.
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    await waitFor(() => expect(api.listRequests().length).toBe(2));
+    release();
+
+    await waitFor(() => expect(click).toHaveBeenCalled());
   });
 });
