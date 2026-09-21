@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // From Testing Library, not from `react`: it is the same `act`, plus the
 // `IS_REACT_ACT_ENVIRONMENT` flag React wants set, which this suite's setup
 // leaves to it.
-import { act } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
 
 import { injectStyles } from "./injectStyles";
 import { mount, unmount } from "./widget";
@@ -95,6 +95,29 @@ describe("the widget's stylesheet", () => {
 
     expect(document.querySelector('style[data-mf="exact-remote-unlayered"]')).not.toBeNull();
     expect(document.querySelector('style[data-mf="exact-remote"]')).not.toBeNull();
+  });
+});
+
+describe("the settings seam", () => {
+  it("reaches the component, which is the only thing this option does", async () => {
+    // The seam it crosses fails silently when it is wrong: the host keeps
+    // answering its own calls, the page keeps rendering, and nothing is
+    // remembered. The option is one line in `mount`, and one line is what
+    // gets dropped.
+    const el = givenAHost();
+    const getPreferences = vi.fn(async () => ({ searchTitle: "from-the-host" }));
+
+    act(() => {
+      mount(el, {
+        preferences: {
+          getPreferences,
+          savePreferences: async () => {},
+          resetPreferences: async () => {},
+        },
+      });
+    });
+
+    await waitFor(() => expect(getPreferences).toHaveBeenCalled());
   });
 });
 

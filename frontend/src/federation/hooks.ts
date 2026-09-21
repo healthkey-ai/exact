@@ -28,7 +28,12 @@ import {
 } from "./api";
 import { canEditFields } from "./state";
 import { PatientFieldWriter } from "./patientWriter";
-import type { AdvancedStatus, TrialId, TrialStateAdapter } from "./state";
+import type {
+  AdvancedStatus,
+  TrialId,
+  TrialPreferenceStore,
+  TrialStateAdapter,
+} from "./state";
 import type { WritableFields } from "./writable";
 import type {
   FilterState,
@@ -413,8 +418,8 @@ interface UseTrialsArgs {
  *  the caller for why the two ways `state` can change need opposite answers.
  */
 export function preferenceMethodsThrough(
-  captured: TrialStateAdapter,
-  live: () => TrialStateAdapter,
+  captured: TrialPreferenceStore,
+  live: () => TrialPreferenceStore,
 ): PreferenceMethods {
   return {
     getPreferences: () => live().getPreferences(),
@@ -434,7 +439,10 @@ export function preferenceMethodsThrough(
     // The reverse pairing is the one to watch: a captured adapter WITHOUT
     // versioning and a live one with it keeps the unconditional path for the
     // life of this memo, because the property is decided once from
-    // `captured`. Nothing produces that today — `createPromopState` either
+    // `captured`. A host swapping a `preferences` store for a `state`
+    // adapter is exactly that pairing, and what stops it is the memo's
+    // `source` key, which rebuilds this when the store CHANGES KIND — see
+    // `useSavedFilters`. Within one kind, `createPromopState` either
     // supplies versioning or the host supplies none — and re-deciding per
     // call would mean the transport's belief about its own capabilities
     // could change underneath it mid-write.
@@ -624,11 +632,20 @@ export function useTrialsGraph({
 export const SAVED_FILTERS_GRACE_MS = 300;
 
 export function useSavedFilters(
-  state: TrialStateAdapter | undefined,
+  state: TrialPreferenceStore | undefined,
   key: string,
   /** `applied` is false when the reader edited while the load was in flight:
    *  take the keys, leave the values. */
   onLoad: (saved: FilterState, applied: boolean) => void,
+  /** WHICH store this is, when the caller has more than one kind to choose
+   *  from. The transport below is deliberately blind to a new adapter OBJECT
+   *  for the same patient — a host writing `state={createPromopState(...)}`
+   *  inline hands over a new one on every render — and that blindness is
+   *  wrong when the object is a different STORE: the two disagree about
+   *  conditional writes, and the writer's queue belongs to the one it was
+   *  built for. `TrialMatches` passes `"state"` or `"preferences"`; a caller
+   *  with one source can leave it out. */
+  sourceId?: string,
 ): {
   persist: (filters: FilterState) => void;
   reset: () => void;
@@ -642,7 +659,8 @@ export function useSavedFilters(
    *  preferences service. */
   pending: boolean;
 } {
-  const hasAdapter = state != null;
+  // Not just "is there one": which one. See `sourceId`.
+  const source = state == null ? "none" : (sourceId ?? "adapter");
   // Read through a ref so the memo below does not rebuild on every render —
   // a host writing `state={createPromopState(...)}` inline hands over a new
   // object each time, and rebuilding would drop whatever the writer had queued.
@@ -672,9 +690,9 @@ export function useSavedFilters(
     return captured
       ? adapterPreferences(preferenceMethodsThrough(captured, live))
       : localStoragePreferences(key);
-    // `hasAdapter` rather than `state`: see above.
+    // `source` rather than `state`: see above, and `sourceId`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAdapter, key]);
+  }, [source, key]);
 
   // A failed write is not a reason to fail the search, but it is a reason to
   // say something: the transport REFUSES to write when it cannot read what it

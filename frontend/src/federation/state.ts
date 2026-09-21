@@ -117,7 +117,41 @@ export interface PreferenceVersioning {
   clear(precondition: Precondition): Promise<string | null>;
 }
 
-export interface TrialStateAdapter {
+/** Where the patient's saved search state lives — the half of the adapter
+ *  that is about SETTINGS rather than about trials.
+ *
+ *  Its own interface because a host can be able to answer this and nothing
+ *  else. The standalone widget build is exactly that host: CancerBot mounts
+ *  it with plain values, and CB keeps these settings on its own user row
+ *  while the favorites and registrations below live in PROMOP, which that
+ *  page does not talk to. Asking such a host for a whole `TrialStateAdapter`
+ *  would mean asking it to implement six methods it has no store for — and
+ *  the tabs gated on `state` would then appear and be unable to answer.
+ *
+ *  A host may persist a SUBSET: what comes back from `getPreferences` is
+ *  what the reader gets, and anything the host dropped is simply not
+ *  remembered. Nothing here promises a round trip. */
+export interface TrialPreferenceStore {
+  /** The patient's saved search filters, or `{}` when they have none. */
+  getPreferences(): Promise<FilterState>;
+  /** Store the filters. */
+  savePreferences(filters: FilterState): Promise<void>;
+  /** Clear them. Its own call rather than `savePreferences({})` because the
+   *  two are different requests on the PROMOP side — `reset` empties the row,
+   *  while `upsert` with `{}` is a partial update that leaves `preferences`
+   *  untouched. */
+  resetPreferences(): Promise<void>;
+  /** Conditional preference access, when this transport supports it.
+   *
+   *  Optional: absent means the caller writes unconditionally, exactly as
+   *  every client did before promop#1312. Present means it can send a
+   *  precondition and be told 412 rather than silently overwriting a
+   *  concurrent writer — which is the whole point, since one client
+   *  implementation is not one writer: two tabs instantiate it twice. */
+  preferenceVersioning?: PreferenceVersioning;
+}
+
+export interface TrialStateAdapter extends TrialPreferenceStore {
   /** The patient's bookmarked trial ids. */
   listFavoriteIds(): Promise<TrialId[]>;
   /** Bookmark or un-bookmark one trial. */
@@ -136,24 +170,6 @@ export interface TrialStateAdapter {
    *  over the advanced status when clicked. An adapter that cannot answer
    *  this cannot safely be given the register control. */
   listAdvancedEnrollments(): Promise<Record<TrialId, AdvancedStatus>>;
-  /** The patient's saved search filters, or `{}` when they have none. */
-  getPreferences(): Promise<FilterState>;
-  /** Store the filters. */
-  savePreferences(filters: FilterState): Promise<void>;
-  /** Clear them. Its own call rather than `savePreferences({})` because the
-   *  two are different requests on the PROMOP side — `reset` empties the row,
-   *  while `upsert` with `{}` is a partial update that leaves `preferences`
-   *  untouched. */
-  resetPreferences(): Promise<void>;
-  /** Conditional preference access, when this transport supports it.
-   *
-   *  Optional: absent means the caller writes unconditionally, exactly as
-   *  every client did before promop#1312. Present means it can send a
-   *  precondition and be told 412 rather than silently overwriting a
-   *  concurrent writer — which is the whole point, since one client
-   *  implementation is not one writer: two tabs instantiate it twice. */
-  preferenceVersioning?: PreferenceVersioning;
-
   /** Which patient attributes this caller may edit for this patient, and how.
    *
    *  Asked rather than derived: EXACT names the attribute a row is about but

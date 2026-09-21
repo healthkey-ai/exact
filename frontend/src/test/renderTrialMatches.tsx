@@ -15,6 +15,7 @@ import { TrialMatches } from "../federation/TrialMatches";
 import type { MapRenderer } from "../federation/TrialsMap";
 import type {
   AdvancedStatus,
+  TrialPreferenceStore,
   TrialStateAdapter,
   WriteOutcome,
 } from "../federation/state";
@@ -529,6 +530,9 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   renderMap?: MapRenderer;
   state?: TrialStateAdapter;
+  /** The settings half on its own, for the host kind that can answer for
+   *  that and nothing else — see `TrialPreferenceStore`. */
+  preferences?: TrialPreferenceStore;
 }
 
 export function renderTrialMatches(
@@ -577,6 +581,7 @@ export function renderTrialMatches(
         initialFilters={next.initialFilters}
         renderMap={next.renderMap}
         state={next.state}
+        preferences={next.preferences}
       />
     </QueryClientProvider>
   );

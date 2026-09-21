@@ -95,6 +95,7 @@ function TrialMatchesInner({
   onTrialSelect,
   renderMap,
   state,
+  preferences,
 }: Omit<TrialMatchesProps, "queryClient">) {
   useEffect(() => {
     injectStyles();
@@ -215,18 +216,35 @@ function TrialMatchesInner({
   // it a saved field that happens to equal the current baseline would look
   // like host scope on the next edit and be dropped. See `userOwnedFilters`.
   const ownedFields = useRef<Set<string>>(new Set());
-  const savedFilters = useSavedFilters(state, stateKey, (saved) => {
-    for (const field of Object.keys(saved)) ownedFields.current.add(field);
-    // A saved trial type came from THIS patient's storage, so it is this
-    // patient's choice. Without claiming it the staleness rule — which exists
-    // to expire a type picked for someone else — would mask the very type
-    // just loaded, and a later edit would overwrite it.
-    if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
-    // Normalized for the same reason as the initial state, and the more
-    // likely source: this is what the PREVIOUS build of this remote saved,
-    // when `trialPurpose` was a single string.
-    setFilters((current) => normalizeFilterState({ ...current, ...saved }));
-  });
+  // `state` carries the settings too, and wins; `preferences` is for a host
+  // that can answer for the settings and nothing else — see the prop's own
+  // doc. With neither, they go to this browser's `localStorage` — which
+  // outlives the session, and is per browser rather than per patient's
+  // record.
+  const preferenceStore = state ?? preferences;
+  // Named, because a host that switches from one to the other keeps the same
+  // patient and the same "there is a store" — and the transport is otherwise
+  // blind to a new object for the same patient, on purpose. The two stores
+  // do not agree about conditional writes, and the writer's queue belongs to
+  // whichever it was built for.
+  const preferenceSource = state != null ? "state" : "preferences";
+  const savedFilters = useSavedFilters(
+    preferenceStore,
+    stateKey,
+    (saved) => {
+      for (const field of Object.keys(saved)) ownedFields.current.add(field);
+      // A saved trial type came from THIS patient's storage, so it is this
+      // patient's choice. Without claiming it the staleness rule — which
+      // exists to expire a type picked for someone else — would mask the very
+      // type just loaded, and a later edit would overwrite it.
+      if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
+      // Normalized for the same reason as the initial state, and the more
+      // likely source: this is what the PREVIOUS build of this remote saved,
+      // when `trialPurpose` was a single string.
+      setFilters((current) => normalizeFilterState({ ...current, ...saved }));
+    },
+    preferenceSource,
+  );
 
   // Whether the panel has been touched since the last time a saved set
   // could have arrived — keyed on the same attempt the gate is, and
