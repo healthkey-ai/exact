@@ -11,6 +11,13 @@ import type { FilterState } from "./types";
 /** What the server uses for a weight it was not sent. */
 export const DEFAULT_WEIGHT = 25;
 
+/** The top of the range the form offers, and the same one storage is read
+ *  through. It is a UI convention rather than a matcher constraint — the
+ *  score divides the four by their sum, so only their ratio is ever read —
+ *  but it is the range the reader is told about, and a number the form would
+ *  refuse should not be reachable through another door (#538). */
+export const MAX_WEIGHT = 100;
+
 export interface WeightField {
   key: WeightKey;
   /** CB's label, verbatim. */
@@ -50,14 +57,22 @@ export const WEIGHT_FIELDS: readonly WeightField[] = [
   },
 ];
 
-/** A weight the wire will accept: a finite number, zero or above.
+/** A weight this UI will use: a finite number inside the range it offers.
  *
  *  The server guards itself — negatives clamp to zero, non-finite values are
  *  dropped, an all-zero set falls back to 25s — but a value that cannot mean
  *  anything should not leave here in the first place, and a host's
- *  `initialFilters` reaches the wire without passing the form. */
+ *  `initialFilters` reaches the wire without passing the form. The upper
+ *  bound is the same one `sanitizeStoredFilters` reads storage through: the
+ *  two used to disagree, so a host could put 500 on the wire and then watch
+ *  the dialog refuse to save it, on a field the reader never touched. */
 export function isUsableWeight(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= MAX_WEIGHT
+  );
 }
 
 /** The weight to show for a field: what is set, or the server's default. */

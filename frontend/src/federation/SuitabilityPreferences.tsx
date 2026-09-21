@@ -26,8 +26,10 @@ import { Dialog } from "./Dialog";
 import { ACTION_TOOLTIPS } from "./tooltips";
 import {
   DEFAULT_WEIGHT,
+  MAX_WEIGHT,
   WEIGHT_FIELDS,
   type WeightKey,
+  isUsableWeight,
   weightValue,
   weightsAreCustom,
 } from "./weights";
@@ -62,11 +64,11 @@ const draftFrom = (filters: FilterState): Draft =>
 /** CB's rule, and CB's words for it. The server is looser — it clamps a
  *  negative to zero and reads an all-zero set as no opinion at all — but a
  *  number outside this range is not something the reader meant. */
-const RANGE_ERROR = "Must be between 0 and 100";
+const RANGE_ERROR = `Must be between 0 and ${MAX_WEIGHT}`;
 /** `<input type="number">` hands back "" for anything it cannot parse, so an
  *  empty box and "abc" arrive here identically — and neither is out of range,
  *  which is what CB's one message says. */
-const MISSING_ERROR = "Enter a number between 0 and 100";
+const MISSING_ERROR = `Enter a number between 0 and ${MAX_WEIGHT}`;
 
 function readDraft(draft: Draft): {
   weights?: Record<WeightKey, number>;
@@ -80,8 +82,10 @@ function readDraft(draft: Draft): {
       errors[key] = MISSING_ERROR;
       continue;
     }
+    // The predicate, not a third copy of its comparison: the constant being
+    // shared is only half the drift this closed.
     const value = Number(raw);
-    if (!Number.isFinite(value) || value < 0 || value > 100) {
+    if (!isUsableWeight(value)) {
       errors[key] = RANGE_ERROR;
       continue;
     }
@@ -191,7 +195,7 @@ export function SuitabilityPreferences({
                     className={`exact-prefs__input${error ? " is-invalid" : ""}`}
                     type="number"
                     min="0"
-                    max="100"
+                    max={MAX_WEIGHT}
                     // `any`, not `1`: the arrows still walk in whole numbers,
                     // and a fraction already stored does not read as invalid.
                     step="any"

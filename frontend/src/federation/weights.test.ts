@@ -19,6 +19,11 @@ describe("what counts as a weight", () => {
     // Zero is a real answer — "ignore this term" — which is why the guard is
     // `>= 0` and not truthiness.
     expect(isUsableWeight(-1)).toBe(false);
+    // The top of the range the form offers, and the same one storage is read
+    // through: a host that sends 500 used to reach the wire and then watch
+    // the dialog refuse to save it (#538).
+    expect(isUsableWeight(100)).toBe(true);
+    expect(isUsableWeight(101)).toBe(false);
     expect(isUsableWeight(Number.POSITIVE_INFINITY)).toBe(false);
     expect(isUsableWeight(NaN)).toBe(false);
     expect(isUsableWeight("25")).toBe(false);
@@ -46,6 +51,7 @@ describe("a weight on its way to the wire", () => {
     // `initialFilters` is public API and never passes through the form.
     expect(filterStateToParams({ riskWeight: -5 })).toEqual({});
     expect(filterStateToParams({ riskWeight: Number.NaN })).toEqual({});
+    expect(filterStateToParams({ riskWeight: 500 })).toEqual({});
   });
 
   it("says nothing the server already assumes", () => {
