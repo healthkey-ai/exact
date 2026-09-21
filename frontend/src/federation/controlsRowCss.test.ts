@@ -49,7 +49,14 @@ describe("the controls row", () => {
     // full width in CB. A viewport query would put three orders on one line
     // in a column too narrow to hold them, and the control would hang out of
     // the host's column.
-    const sized = atRules().filter(([, body]) => /\.exact-(seg|list__sort)/.test(body));
+    // Width queries only: `@media (forced-colors: active)` also styles these
+    // classes and is right to ask the window, since the mode is the user's,
+    // not the column's. Asking after a width is what has to go through the
+    // container.
+    const sized = atRules().filter(
+      ([prelude, body]) =>
+        /\.exact-(seg|list__sort)/.test(body) && /\bm(in|ax)-width\b|\bwidth\s*[<>:]/.test(prelude),
+    );
     expect(sized.length).toBeGreaterThan(0);
     for (const [prelude] of sized) expect(prelude).toMatch(/^@container exact-list /);
   });

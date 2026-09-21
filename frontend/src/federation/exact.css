@@ -1101,6 +1101,30 @@
   color: var(--exact-color-primary);
 }
 
+/* Forced colors (Windows high contrast) replaces every author colour with one
+   from the user's palette, so the tint above — the only thing that says which
+   segment is chosen — comes back identical to the other two: measured in the
+   browser, `is-on` and its neighbours both render white on black. The selected
+   state has to be said in colours the mode keeps, and `Highlight` is the pair
+   it reserves for exactly that. `aria-checked` already carries this to a
+   screen reader; this is for the sighted keyboard user it left behind. */
+@media (forced-colors: active) {
+  .exact-root .exact-seg__btn.is-on {
+    background: Highlight;
+    color: HighlightText;
+    /* Without this the label keeps the backplate the mode paints behind text
+       over a filled background, and `HighlightText` lands on it white on
+       white. Turning the adjustment off leaves the two system colours above
+       in charge, which are the user's own, not ours. */
+    forced-color-adjust: none;
+  }
+
+  /* The icons are stroked with `currentColor`, so they follow the label. */
+  .exact-root .exact-seg__btn.is-on svg {
+    stroke: HighlightText;
+  }
+}
+
 /* Inset, because the button fills its segment edge to edge: an outset ring
    would be clipped by the group's `overflow: hidden`. */
 .exact-root .exact-seg__btn:focus-visible {
