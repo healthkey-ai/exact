@@ -133,10 +133,17 @@ export const SORT_OPTIONS: SortOption[] = [
 export const DEFAULT_SORT = "goodnessScore";
 
 /** How wide the controls row has to be, in CSS pixels, before the sort fits
- *  beside the view mode and the three actions. Measured in the browser at
- *  99 + 519 + 364px plus two 12px gaps; rounded up to 66rem's worth so the
- *  segments are not pressed against the buttons. */
-export const WIDE_CONTROLS_ROW = 1056;
+ *  beside the view mode and the three actions.
+ *
+ *  A function of how many orders are offered, not a constant: `sortOptionsFor`
+ *  adds a fourth segment for a host-supplied order the server takes and CB
+ *  does not offer, and a threshold measured on three sends four into a row
+ *  that cannot hold them. Measured in the browser: 99 (view mode) + 364
+ *  (actions) + two 12px gaps, and 173 per segment; plus 50 so the segments
+ *  are not pressed against the buttons. Three gives 1056. */
+export function wideControlsRow(sortOptionCount: number): number {
+  return 537 + 173 * sortOptionCount;
+}
 
 /** The options to render, given the value the control is actually set to.
  *

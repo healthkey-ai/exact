@@ -3,7 +3,7 @@
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
 // CB contract) or `personId` (CTOMOP federation path added in #102).
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 
 /** Debounced, unless `immediate` — then the value passes straight through
  *  AND the held value is kept in step behind it.
@@ -59,9 +59,10 @@ import { MAX_TRIAL_IDS, canEditFields } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
-  WIDE_CONTROLS_ROW,
+  sortOptionsFor,
   tabValueForType,
   tabsFor,
+  wideControlsRow,
   type TabValue,
 } from "./listChrome";
 import {
@@ -833,32 +834,77 @@ function TrialMatchesInner({
   // would be a second matcher run to learn what is in hand.
   const [mapOpen, setMapOpen] = useState(false);
 
-  // Does the controls row have room for the view mode, all three orders and
-  // the three actions side by side? Measured, because this is a remote: the
+  // Does the controls row have room for the view mode, every order and the
+  // three actions side by side? Measured, because this is a remote: the
   // window is the host's, and the same 1280px window gives this list a 900px
   // column in ht-phr and the full width in CB. Without a ResizeObserver
   // (jsdom, an old browser) the answer stays "no", which is the layout that
   // fits either way.
   const observerRef = useRef<ResizeObserver | null>(null);
-  const [wideControlsRow, setWideControlsRow] = useState(false);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [wideRow, setWideRow] = useState(false);
+  const wideRef = useRef(false);
+  /** Set when the sort is about to move out from under the keyboard. */
+  const sortHadFocus = useRef(false);
+  const thresholdRef = useRef(Number.POSITIVE_INFINITY);
+
+  const applyWidth = useCallback((width: number) => {
+    const next = width >= thresholdRef.current;
+    // Only when the answer CHANGES. A drag on a window edge delivers a stream
+    // of widths, and re-rendering the list per pixel is not what any of them
+    // asked for.
+    if (next === wideRef.current) return;
+    wideRef.current = next;
+    // The sort is about to be rendered in the other slot, which is a
+    // different DOM node: React unmounts this one, and focus on it goes to
+    // <body>. A reader whose host collapsed a sidebar would find their next
+    // Tab starting from the top of the page.
+    const sortGroup = rowRef.current?.querySelector(".exact-seg--grow");
+    sortHadFocus.current = !!sortGroup && sortGroup.contains(document.activeElement);
+    setWideRow(next);
+  }, []);
+
   // A ref callback, not an effect on mount: opening a trial returns the detail
   // page from this same component, so the row unmounts while the component
   // does not. An effect with `[]` would keep watching the detached node — it
   // reports 0x0, the row goes narrow, and coming back mounts a row nothing
   // observes, leaving the wide layout dead for the rest of the session however
   // wide the host's column is. React calls this with null on the way out.
-  const controlsRef = useCallback((row: HTMLDivElement | null) => {
-    observerRef.current?.disconnect();
-    observerRef.current = null;
-    if (!row || typeof ResizeObserver === "undefined") return;
-    // Observing the row is safe from feedback: its width comes from the list
-    // around it, and moving the sort between its rows does not change it.
-    const observer = new ResizeObserver(([entry]) => {
-      setWideControlsRow(entry.contentRect.width >= WIDE_CONTROLS_ROW);
-    });
-    observer.observe(row);
-    observerRef.current = observer;
-  }, []);
+  const controlsRef = useCallback(
+    (row: HTMLDivElement | null) => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      rowRef.current = row;
+      if (!row || typeof ResizeObserver === "undefined") return;
+      // Observing the row is safe from feedback: its width comes from the list
+      // around it, and moving the sort between its rows does not change it.
+      const observer = new ResizeObserver(([entry]) => applyWidth(entry.contentRect.width));
+      observer.observe(row);
+      observerRef.current = observer;
+    },
+    [applyWidth],
+  );
+
+  // How much room the row needs depends on how many orders are offered: a
+  // host can ask for one CB does not list, and that is a fourth segment. The
+  // observer reads the current answer, and a change in it is re-measured
+  // here — nothing resized, so nothing else would ask again.
+  const wideThreshold = wideControlsRow(sortOptionsFor(sort).length);
+  useEffect(() => {
+    thresholdRef.current = wideThreshold;
+    const row = rowRef.current;
+    if (row) applyWidth(row.getBoundingClientRect().width);
+  }, [wideThreshold, applyWidth]);
+
+  // The chosen segment is the group's one tab stop, so it is the one that
+  // takes the focus back after the move.
+  useLayoutEffect(() => {
+    if (!sortHadFocus.current) return;
+    sortHadFocus.current = false;
+    rowRef.current
+      ?.querySelector<HTMLElement>('.exact-seg--grow [role="radio"][aria-checked="true"]')
+      ?.focus();
+  }, [wideRow]);
   const handleSelectFromMap = (trial: TrialMatch) => {
     setMapOpen(false);
     handleSelect(trial);
@@ -1007,7 +1053,7 @@ function TrialMatchesInner({
           onChange={(mode) => setMapOpen(mode === "map")}
         />
 
-        {wideControlsRow ? <SortControl value={sort} onChange={handleSortChange} /> : null}
+        {wideRow ? <SortControl value={sort} onChange={handleSortChange} /> : null}
 
         <div className="exact-list__triggers">
         {/* CB's toolbar tooltips. A control that cannot act says why in its
@@ -1071,7 +1117,7 @@ function TrialMatchesInner({
         </ActionTooltip>
         </div>
 
-        {wideControlsRow ? null : (
+        {wideRow ? null : (
           <div className="exact-list__sort">
             <SortControl value={sort} onChange={handleSortChange} />
           </div>

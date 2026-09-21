@@ -11,7 +11,10 @@ import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { fakeApi, renderTrialMatches } from "../test/renderTrialMatches";
-import { WIDE_CONTROLS_ROW } from "./listChrome";
+import { wideControlsRow } from "./listChrome";
+
+/** CB's three orders — what every test here renders unless it says otherwise. */
+const WIDE = wideControlsRow(3);
 
 /** Records what it was pointed at, so a test can ask whether the thing being
  *  watched is the thing on screen. */
@@ -65,15 +68,70 @@ describe("the controls row's width", () => {
     await screen.findByRole("radio", { name: "List view" });
     expect(isWide()).toBe(false);
 
-    FakeResizeObserver.current().report(WIDE_CONTROLS_ROW);
+    FakeResizeObserver.current().report(WIDE);
 
     expect(isWide()).toBe(true);
 
     // And back, so the measurement is read on every delivery rather than
     // latched the first time it is true.
-    FakeResizeObserver.current().report(WIDE_CONTROLS_ROW - 1);
+    FakeResizeObserver.current().report(WIDE - 1);
 
     expect(isWide()).toBe(false);
+  });
+
+  it("keeps the keyboard on the sort when the row moves it", async () => {
+    // The two slots are two DOM nodes, so the move is an unmount: focus on
+    // the old one goes to <body>, and the reader's next Tab starts at the top
+    // of the page. Hosts resize on their own — a sidebar collapsing is
+    // enough — so this is not a case only a person dragging a window hits.
+    install();
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "List view" });
+    const before = screen.getByRole("radio", { name: "Sort By Suitability Score" });
+    before.focus();
+
+    FakeResizeObserver.current().report(WIDE);
+
+    expect(isWide()).toBe(true);
+    const after = screen.getByRole("radio", { name: "Sort By Suitability Score" });
+    // A different node — this is a move, not a re-render of the same one.
+    expect(after).not.toBe(before);
+    expect(after).toHaveFocus();
+  });
+
+  it("leaves the keyboard alone when the move is not under it", async () => {
+    // Focus is only restored to the control that lost it. Stealing it for a
+    // reader who was reading a card would be its own bug.
+    install();
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const filter = await screen.findByRole("button", { name: "Filter Results" });
+    filter.focus();
+
+    FakeResizeObserver.current().report(WIDE);
+
+    expect(isWide()).toBe(true);
+    expect(filter).toHaveFocus();
+  });
+
+  it("asks for more room when the host asked for an order CB does not list", async () => {
+    // `sortOptionsFor` adds a fourth segment for a server order CB does not
+    // offer. A width measured on three then reads as "there is room", the
+    // four segments share it, and their labels — held to one line by the
+    // wide layout — are clipped by the group's own overflow.
+    install();
+    const api = fakeApi();
+    renderTrialMatches(api, { initialFilters: { sort: "phase" } });
+    await screen.findByRole("radio", { name: "Sorted by phase" });
+
+    FakeResizeObserver.current().report(WIDE);
+
+    expect(isWide()).toBe(false);
+
+    FakeResizeObserver.current().report(wideControlsRow(4));
+
+    expect(isWide()).toBe(true);
   });
 
   it("keeps watching the row that is on screen after a trial is opened", async () => {
@@ -88,7 +146,7 @@ describe("the controls row's width", () => {
     renderTrialMatches(api);
     await screen.findByRole("radio", { name: "List view" });
     const first = FakeResizeObserver.current();
-    first.report(WIDE_CONTROLS_ROW);
+    first.report(WIDE);
     expect(isWide()).toBe(true);
 
     await userEvent.click((await screen.findAllByRole("button", { name: "View Trial" }))[0]);
@@ -107,7 +165,7 @@ describe("the controls row's width", () => {
 
     // And it still answers: the reader's column did not change, so the wide
     // layout the row arrived in is the one they get back.
-    now.report(WIDE_CONTROLS_ROW);
+    now.report(WIDE);
     await waitFor(() => expect(isWide()).toBe(true));
   });
 });
