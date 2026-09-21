@@ -18,6 +18,7 @@ import axios from "axios";
 
 import { injectStyles } from "./injectStyles";
 import { TrialMatches } from "./TrialMatches";
+import type { TrialPreferenceStore } from "./state";
 import type { PatientInfo } from "./types";
 
 export interface MountOptions {
@@ -38,6 +39,22 @@ export interface MountOptions {
   personId?: string | number;
   /** Inline patient payload — the alternative to `personId` (existing CB contract). */
   patientInfo?: PatientInfo;
+  /** Where the patient's saved search settings are kept.
+   *
+   *  Plain async functions, which is all that crosses this boundary — no
+   *  React, no class instances. A host that keeps these on its own user row
+   *  (CB keeps the suitability weights there) implements them against its
+   *  own API; without them the settings go to this browser's `localStorage`,
+   *  which survives a reload. A store that persists only PART of the set —
+   *  CB round-trips the four suitability weights and nothing else — replaces
+   *  that fallback rather than joining it, so the rest stops being
+   *  remembered.
+   *
+   *  Deliberately NOT the whole `TrialStateAdapter`: bookmarks and
+   *  registrations live somewhere this host does not talk to, and a stub
+   *  adapter would light up tabs and a bookmark control with nowhere to
+   *  write. */
+  preferences?: TrialPreferenceStore;
 }
 
 // One React root per host element, so a re-mount on the same node replaces cleanly.
@@ -78,6 +95,7 @@ export function mount(el: HTMLElement, opts: MountOptions = {}): () => void {
           queryClient={queryClient}
           personId={opts.personId}
           patientInfo={opts.patientInfo}
+          preferences={opts.preferences}
         />
       </QueryClientProvider>
     </StrictMode>,

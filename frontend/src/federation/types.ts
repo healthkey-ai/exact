@@ -12,7 +12,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import type { MapRenderer } from "./TrialsMap";
 
-import type { TrialStateAdapter } from "./state";
+import type { TrialPreferenceStore, TrialStateAdapter } from "./state";
 
 /** Sparse, schema-tolerant patient payload — mirrors EXACT's stateless
  *  `PatientInfo` Python class. Keys are camelCase as sent over the wire.
@@ -431,6 +431,26 @@ export interface TrialMatchesProps {
    *  authenticated PROMOP client; a host that reaches the same data another
    *  way implements the interface instead. */
   state?: TrialStateAdapter;
+  /** Where the patient's saved search settings live, for a host that can
+   *  answer that and nothing else.
+   *
+   *  `state` already carries these, and wins when both are given. This is
+   *  for the other kind of host: the standalone widget build, mounted by an
+   *  app that keeps these settings on its own user row and has no store for
+   *  bookmarks or registrations. Passing a stub `state` to reach them would
+   *  light up the Favorites and Registered tabs and the bookmark control,
+   *  which would then have nowhere to write.
+   *
+   *  A host with a full adapter passes it as `state`, not here: passed here
+   *  it type-checks — every adapter IS a preference store — and the tabs and
+   *  the bookmark it could have answered for simply do not render.
+   *
+   *  Without either, the settings go to this browser's `localStorage`
+   *  (`preferences.ts`), which survives a reload. Note what that means for a
+   *  host that supplies a store persisting only PART of the set: the rest
+   *  stops surviving a reload, because a store present at all replaces the
+   *  browser-local one rather than joining it. */
+  preferences?: TrialPreferenceStore;
 }
 
 /** Public props for the federated `./TrialMatchesBridge` export — the

@@ -63,6 +63,24 @@ The host must provide:
 - A TanStack `QueryClient` (optional — the component spins up its own otherwise).
 - Either a CTOMOP `personId` or an inline `patientInfo` payload (mutually exclusive; `patientInfo` wins to match the server-side `resolve_patient_info` precedence).
 
+Optionally:
+
+- `state` — a `TrialStateAdapter`: bookmarks, registrations, advanced
+  enrollments, editable fields and the saved search settings. Without it the
+  Favorites and Registered tabs and the bookmark are not rendered, since they
+  would be controls with nowhere to write.
+- `preferences` — a `TrialPreferenceStore`: the saved-settings half on its
+  own, for a host that can answer for that and nothing else. `state` carries
+  these too and wins when both are passed. A host holding a full adapter
+  passes it as `state`: passed as `preferences` it type-checks — every
+  adapter is a preference store — and the tabs and bookmark it could have
+  answered for silently do not render.
+
+With neither, the settings go to this browser's `localStorage` and survive a
+reload. A store supplied here REPLACES that fallback rather than joining it,
+so one that persists part of the set (CB round-trips the four suitability
+weights and nothing else) means the rest stops being remembered.
+
 ### `./TrialMatchesBridge` — hosts that are not React
 
 HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.
@@ -157,7 +175,7 @@ imperative, framework-free API. Nothing but plain values crosses into it.
 
 ```js
 const { mount, unmount } = await import("/widgets/exact-trials.js");
-const dispose = mount(el, { apiBase: "/exact-api", token, patientInfo });
+const dispose = mount(el, { apiBase: "/exact-api", token, patientInfo, preferences });
 // later: dispose();   // or unmount(el)
 ```
 
@@ -184,12 +202,19 @@ Two things to know before re-vendoring it into a host:
   at 14px/400 and the segmented controls lose their padding. Safe to drop
   because this sheet is entirely scoped under `.exact-root` and ships no
   Tailwind utilities.
-- **There is no `state` seam in `MountOptions` yet**, so a host on this build
-  gets the list without Favorites/Registered and without the bookmark. The
-  Module Federation hosts pass a `TrialStateAdapter` for that; giving this
-  entry the same is tracked with the Suitability Preferences work. `renderMap`
-  is missing for the same reason: the Map view still opens and still lists the
-  places, it just draws no map.
+- **`MountOptions.preferences` is the settings seam** — `getPreferences`,
+  `savePreferences`, `resetPreferences`, and optionally `preferenceVersioning`,
+  as plain async functions. A host that keeps these on its own user row (CB
+  keeps the suitability weights there) implements them against its own API.
+  Without them the settings go to this browser's `localStorage` and survive a
+  reload; a store that persists only part of the set replaces that fallback
+  rather than joining it.
+- **There is no `state` seam**, so a host on this build gets the list without
+  Favorites/Registered and without the bookmark. That is deliberate: those
+  live in a store this kind of host does not talk to, and a stub adapter
+  would render the tabs and the bookmark over nothing. `renderMap` is missing
+  for the same reason — the Map view still opens and still lists the places,
+  it just draws no map.
 - **The QueryClient it bundles is handed to `TrialMatches`**, so its defaults
   are the ones that apply. They are react-query's own — three retries with
   backoff on a whole-corpus matcher call — and `MountOptions` has no seam to

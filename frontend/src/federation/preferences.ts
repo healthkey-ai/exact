@@ -22,19 +22,17 @@
 
 import { sameValue } from "./filters";
 import { PreconditionFailed } from "./state";
-import type { Precondition, TrialStateAdapter } from "./state";
+import type { Precondition, TrialPreferenceStore } from "./state";
 import type { FilterState } from "./types";
 
-/** Just the preference half of `TrialStateAdapter`.
+/** The preference half, which is now its own interface: `TrialPreferenceStore`
+ *  (a `TrialStateAdapter` is one, and so is a host that has nothing else).
  *
  *  Narrowed on purpose: the caller holds the adapter behind a ref (it can be
  *  rebuilt every render), so it passes three bound functions rather than the
  *  object — and asking for the whole interface would force a cast that claims
  *  more than is true. */
-export type PreferenceMethods = Pick<
-  TrialStateAdapter,
-  "getPreferences" | "savePreferences" | "resetPreferences" | "preferenceVersioning"
->;
+export type PreferenceMethods = TrialPreferenceStore;
 
 /** How long to coalesce rapid edits. Long enough to swallow a slider drag,
  *  short enough that a deliberate change feels saved. */
