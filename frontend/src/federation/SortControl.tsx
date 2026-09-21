@@ -20,7 +20,7 @@ export function SortControl({ value, onChange }: Props) {
   return (
     <SegmentedControl
       label="Sort trials by"
-      className="exact-seg--grow exact-sort"
+      className="exact-seg--grow"
       options={options}
       value={value}
       onChange={onChange}

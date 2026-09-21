@@ -940,7 +940,6 @@
 /* The stylesheet defined no focus style at all, so every control the chrome
  * added relied on whatever the host's reset left behind — often nothing. */
 .exact-root .exact-tab:focus-visible,
-.exact-root .exact-sort__select:focus-visible,
 .exact-root .exact-pagination__step:focus-visible,
 .exact-root .exact-pagination__page:focus-visible {
   outline: 2px solid var(--exact-color-primary);

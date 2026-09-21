@@ -411,13 +411,13 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
-  /** Draws the map behind the List/Map toggle.
+  /** Draws the map behind the list/map view mode.
    *
    *  A function rather than an API key, because rendering tiles means loading
    *  a third-party script into the HOST's page — billed to its key, subject to
    *  its CSP, watching its document. That is the host's decision to take
-   *  explicitly. Without it the toggle still works and the places are listed;
-   *  see `TrialsMap`.
+   *  explicitly. Without it the map view still works and the places are
+   *  listed; see `TrialsMap`.
    */
   renderMap?: MapRenderer;
   /** Where the patient's bookmarks, registrations and saved filters live.
