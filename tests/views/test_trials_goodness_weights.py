@@ -10,6 +10,10 @@ import pytest
 from unittest.mock import patch, MagicMock, call
 
 from trials.api.trials_views import TrialsViewSet
+from trials.services.utils import (
+    normalize_goodness_weights,
+    parse_goodness_weights,
+)
 
 
 def _make_view(query_params: dict, action: str = 'list') -> TrialsViewSet:
@@ -93,17 +97,56 @@ class TestGoodnessWeightParams:
         assert call_args.kwargs['risk_weight'] == 20.0
         assert call_args.kwargs['distance_penalty_weight'] == 10.0
 
-    def test_invalid_weight_falls_back_to_defaults(self):
-        """Non-numeric weight value → all weights fall back to 25.0."""
-        view = _make_view({'benefitWeight': 'bad-value'})
+    def test_invalid_weight_falls_back_alone(self):
+        """A weight that cannot be read defaults; the others are kept.
+
+        It used to take them with it — all four were parsed inside one
+        `try` — so a single unreadable value silently re-ranked the whole
+        search by equal weights, discarding three that had arrived fine.
+        """
+        view = _make_view({
+            'benefitWeight': 'bad-value',
+            'patientBurdenWeight': '30',
+            'riskWeight': '20',
+            'distancePenaltyWeight': '10',
+        })
         qs = _make_qs()
         call_args = _call_get_queryset(view, qs)
 
         assert call_args is not None
         assert call_args.kwargs['benefit_weight'] == 25.0
-        assert call_args.kwargs['patient_burden_weight'] == 25.0
-        assert call_args.kwargs['risk_weight'] == 25.0
-        assert call_args.kwargs['distance_penalty_weight'] == 25.0
+        assert call_args.kwargs['patient_burden_weight'] == 30.0
+        assert call_args.kwargs['risk_weight'] == 20.0
+        assert call_args.kwargs['distance_penalty_weight'] == 10.0
+
+    def test_the_neighbours_cost_the_same_whatever_kind_of_bad_it_is(self):
+        """What the fix makes equal, and what it leaves unequal.
+
+        Run through BOTH layers — the view's parse and the normalizer it
+        feeds — because that is where the answer is finally decided, and a
+        view-level assertion would compare two dicts neither layer had
+        finished with.
+
+        Equal now: the three readable weights, whichever kind of bad their
+        neighbour was. Still unequal, and pinned here rather than papered
+        over: the bad field itself, where unreadable means 25 and negative
+        means 0 — a 25-point difference from the same "this is nonsense".
+        """
+        rest = {
+            'patientBurdenWeight': '30',
+            'riskWeight': '20',
+            'distancePenaltyWeight': '10',
+        }
+        unreadable = normalize_goodness_weights(
+            **parse_goodness_weights({'benefitWeight': 'abc', **rest})
+        )
+        negative = normalize_goodness_weights(
+            **parse_goodness_weights({'benefitWeight': '-5', **rest})
+        )
+
+        assert unreadable[1:] == negative[1:] == (30.0, 20.0, 10.0)
+        assert unreadable[0] == 25.0
+        assert negative[0] == 0.0
 
     def test_partial_weights(self):
         """Only one weight param supplied → rest default to 25.0."""

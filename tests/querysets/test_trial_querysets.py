@@ -1540,6 +1540,35 @@ class TestTrialQuerySet:
         self._check_goodness_score(trials[8], True, 66, patient_info)
 
     @pytest.mark.django_db
+    def test_goodness_score_survives_weights_that_overflow_together(self):
+        """The score divides by the SUM of the weights, in SQL.
+
+        Two weights of 1e308 are each finite and sum to infinity, and a term
+        of that size is not a double precision number at all: Postgres
+        rejects the parameter — "is out of range for type double precision" —
+        and the search 500s. Measured against a live instance before the fix:
+        `?benefitWeight=1e308&patientBurdenWeight=1e308` -> 500.
+
+        Reaching the database is the point of this test: the guard lives in
+        Python, and what it protects is an expression that only SQL
+        evaluates.
+        """
+        TrialFactory(benefit_score=10, patient_burden_score=10, risk_score=10)
+
+        trials = list(
+            Trial.objects.with_goodness_score_optimized(
+                benefit_weight=1e308,
+                patient_burden_weight=1e308,
+                risk_weight=25.0,
+                distance_penalty_weight=25.0,
+            )
+        )
+
+        assert len(trials) == 1
+        # A number, not a NaN and not an exception on the way out of the cast.
+        assert 0 <= trials[0].goodness_score <= 100
+
+    @pytest.mark.django_db
     def test_goodness_score_uses_geo_point_without_prior_distance_annotation(self):
         """
         Regression test: with_goodness_score_optimized must compute distance
