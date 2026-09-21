@@ -9,6 +9,7 @@ Federated React 19 remote that ships the `TrialMatches` component. Toolchain mir
 | `npm run dev` | SPA harness for iterating on the component in isolation. Serves `index.html` at http://localhost:5178/. Proxies `/api/*` → Django on :8000. Use this to develop the component against an EXACT instance without CTOMOP. |
 | `npm run dev:remote` | Federation dev server with the full CTOMOP picker → TrialMatches flow. Serves `dev-harness.html` at http://localhost:5177/ and exposes the remote at `/remoteEntry.js`. Adds CTOMOP proxies (`/ctomop-local`, `/ctomop-staging`) with Set-Cookie rewriting. |
 | `npm run build` | Production federation build. Output: `dist/remote/remoteEntry.js` + exposed modules. |
+| `npm run build:widget` | Self-contained widget build for hosts that cannot share our React tree. Output: one ES module, `dist/widget/exact-trials.js`. See "The widget build" below. |
 | `npm run build:spa` | Production SPA build. Output: `dist/`. Use this if you want to deploy the harness as a static site. |
 | `npm run typecheck` | `tsc -b`. CI gates this. |
 
@@ -147,6 +148,56 @@ utilities (we cannot restyle the host's chrome). A host that declares no order
 still gets the layer — but note that unlayered host declarations then outrank
 every rule of ours regardless of specificity, which is the trade this contract
 makes on purpose. See `src/federation/cssLayer.ts`.
+
+## The widget build — hosts that cannot share our React tree
+
+`dist/widget/exact-trials.js` is the same `TrialMatches`, built to stand alone:
+it bundles its **own** React 19, QueryClient and axios, and exposes an
+imperative, framework-free API. Nothing but plain values crosses into it.
+
+```js
+const { mount, unmount } = await import("/widgets/exact-trials.js");
+const dispose = mount(el, { apiBase: "/exact-api", token, patientInfo });
+// later: dispose();   // or unmount(el)
+```
+
+`personId` is accepted in place of `patientInfo`, but only against an EXACT
+instance that sets `EXACT_ALLOW_PERSON_ID_LOOKUP`. It is off by default
+outside local/DEBUG — the resolve path fetches from CTOMOP with a service
+token not bound to the caller, so honouring an arbitrary id would leak other
+patients' data — and a deployment with it off answers 403 with "person_id
+lookup is disabled. Provide an inline patient_info payload instead."
+
+It exists for CancerBot's `ui/`, which is React 18 — the Module Federation
+path shares React as a singleton, so a React-18 host would hand its own React
+to this React-19 code. Nothing but plain values crosses the boundary here: a
+base URL, a token, a person id, or an inline `patientInfo`.
+
+Two things to know before re-vendoring it into a host:
+
+- **Its stylesheet is injected UNLAYERED**, unlike the remote's. The layer
+  exists so a remote sharing a host's page cannot outrank the host's chrome,
+  but an unlayered host rule beats every layered one regardless of
+  specificity — and a host that needs this build is not going to be declaring
+  our layer order. Measured against Tailwind v3's unlayered preflight (what
+  CB's `ui/` ships): layered, the CTA loses its background, the title renders
+  at 14px/400 and the segmented controls lose their padding. Safe to drop
+  because this sheet is entirely scoped under `.exact-root` and ships no
+  Tailwind utilities.
+- **There is no `state` seam in `MountOptions` yet**, so a host on this build
+  gets the list without Favorites/Registered and without the bookmark. The
+  Module Federation hosts pass a `TrialStateAdapter` for that; giving this
+  entry the same is tracked with the Suitability Preferences work. `renderMap`
+  is missing for the same reason: the Map view still opens and still lists the
+  places, it just draws no map.
+- **The QueryClient it bundles is handed to `TrialMatches`**, so its defaults
+  are the ones that apply. They are react-query's own — three retries with
+  backoff on a whole-corpus matcher call — and `MountOptions` has no seam to
+  change them; see the note in `TrialMatchesBridge` on who owns that policy.
+
+The consuming host vendors the built file and pins its sha-256 (CB does this
+in `ui/src/components/federated/widgetManifest.json`), so a rebuild is not
+live until that manifest is updated in the same change.
 
 ## CSS token contract
 

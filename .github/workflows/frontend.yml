@@ -44,3 +44,8 @@ jobs:
         run: npm test
       - name: Build remote
         run: npm run build
+      # The widget bundle is what CancerBot vendors and executes. Nothing
+      # gated it before, and the copy CB ran drifted 181 commits behind this
+      # branch without a single red build to say so.
+      - name: Build widget
+        run: npm run build:widget
