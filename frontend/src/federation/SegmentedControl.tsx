@@ -98,7 +98,7 @@ export function SegmentedControl({ label, options, value, onChange, className }:
                 onClick={() => onChange(option.value, "pointer")}
                 onKeyDown={(event) => onKeyDown(event, index)}
               >
-                {option.icon ?? option.label}
+                {option.icon ?? <span className="exact-seg__label">{option.label}</span>}
               </button>
             )}
           </ActionTooltip>
