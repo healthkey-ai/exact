@@ -3,7 +3,7 @@
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
 // CB contract) or `personId` (CTOMOP federation path added in #102).
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
 /** Debounced, unless `immediate` — then the value passes straight through
  *  AND the held value is kept in step behind it.
@@ -839,10 +839,17 @@ function TrialMatchesInner({
   // column in ht-phr and the full width in CB. Without a ResizeObserver
   // (jsdom, an old browser) the answer stays "no", which is the layout that
   // fits either way.
-  const controlsRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<ResizeObserver | null>(null);
   const [wideControlsRow, setWideControlsRow] = useState(false);
-  useEffect(() => {
-    const row = controlsRef.current;
+  // A ref callback, not an effect on mount: opening a trial returns the detail
+  // page from this same component, so the row unmounts while the component
+  // does not. An effect with `[]` would keep watching the detached node — it
+  // reports 0x0, the row goes narrow, and coming back mounts a row nothing
+  // observes, leaving the wide layout dead for the rest of the session however
+  // wide the host's column is. React calls this with null on the way out.
+  const controlsRef = useCallback((row: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
     if (!row || typeof ResizeObserver === "undefined") return;
     // Observing the row is safe from feedback: its width comes from the list
     // around it, and moving the sort between its rows does not change it.
@@ -850,7 +857,7 @@ function TrialMatchesInner({
       setWideControlsRow(entry.contentRect.width >= WIDE_CONTROLS_ROW);
     });
     observer.observe(row);
-    return () => observer.disconnect();
+    observerRef.current = observer;
   }, []);
   const handleSelectFromMap = (trial: TrialMatch) => {
     setMapOpen(false);
