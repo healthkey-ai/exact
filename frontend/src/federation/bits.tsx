@@ -214,6 +214,41 @@ export const BookmarkIcon = ({ filled, size = 20 }: { filled: boolean; size?: nu
   </svg>
 );
 
+/** Lucide's `list`, CB's icon for the list view. */
+export const ListIcon = ({ size = 20 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.67"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+  </svg>
+);
+
+/** Lucide's `map-pin`, CB's icon for the map view. */
+export const MapPinIcon = ({ size = 20 }: { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.67"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" />
+    <circle cx="12" cy="10" r="3" />
+  </svg>
+);
+
 /** The body-level host for action tooltips. Carries `exact-root` so the
  *  scoped stylesheet applies, and sits outside the remote's tree so that a
  *  host ancestor with a `transform` (which re-anchors `position: fixed`) or an

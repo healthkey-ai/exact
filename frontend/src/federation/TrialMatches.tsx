@@ -41,6 +41,7 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import { ViewModeControl } from "./ViewModeControl";
 import { TrialsGraph } from "./TrialsGraph";
 import { TrialsMap } from "./TrialsMap";
 import { EXPORT_URL_LIFETIME_MS, exportIsComplete, exportTrials } from "./api";
@@ -948,28 +949,23 @@ function TrialMatchesInner({
       />
 
       <div className="exact-list__controls">
-        <SortControl value={sort} onChange={handleSortChange} />
+        {/* CB's row 1 is the view mode on the left and the actions on the
+            right, with the sort joining them there only when the window is
+            wide enough (xl); below that it takes a row of its own. The
+            wrapper is what gives it that row — see `exact-list__sort`. */}
+        <ViewModeControl
+          value={mapOpen ? "map" : "list"}
+          onChange={(mode) => setMapOpen(mode === "map")}
+        />
+
+        <div className="exact-list__sort">
+          <SortControl value={sort} onChange={handleSortChange} />
+        </div>
 
         <div className="exact-list__triggers">
         {/* CB's toolbar tooltips. A control that cannot act says why in its
             tooltip instead, in place of the `title` it used to carry, so
             there is one box, not a styled one and a native one. */}
-        <ActionTooltip text={mapOpen ? ACTION_TOOLTIPS.list : ACTION_TOOLTIPS.map}>
-          {(tipId) => (
-            <button
-              type="button"
-              className={`exact-filters__trigger${mapOpen ? " is-on" : ""}`}
-              aria-describedby={tipId}
-              // No `aria-pressed`: the label is the ACTION, not the state, and the
-              // two together announce "List, pressed" while the map is open —
-              // which says list mode is on, the opposite of what is on screen.
-              onClick={() => setMapOpen((open) => !open)}
-            >
-              {mapOpen ? "List" : "Map"}
-            </button>
-          )}
-        </ActionTooltip>
-
         <ActionTooltip
           text={
             graphUnavailable

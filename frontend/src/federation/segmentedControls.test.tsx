@@ -1,0 +1,103 @@
+/** The two segmented controls at the head of the list — view mode and sort.
+ *
+ *  Both were something else before: a single toggle button that named the
+ *  action ("Map") rather than the view, and a native `<select>`. What is
+ *  worth pinning is what changed for the reader — the state is now said out
+ *  loud, every order names itself, and the keyboard did not get worse in the
+ *  trade.
+ */
+import { describe, expect, it } from "vitest";
+import { act, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+
+import { fakeApi, renderTrialMatches } from "../test/renderTrialMatches";
+
+const seg = (name: string) => screen.getByRole("radio", { name });
+
+describe("the view mode control", () => {
+  it("says which view is showing, which the old toggle never did", async () => {
+    // The button it replaces was labelled with what the NEXT press would do,
+    // so "Map" was on screen exactly when the map was not.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "List view" });
+    expect(seg("List view")).toBeChecked();
+    expect(seg("Map view")).not.toBeChecked();
+
+    await userEvent.click(seg("Map view"));
+
+    await screen.findByText("Where these trials are");
+    expect(seg("Map view")).toBeChecked();
+    expect(seg("List view")).not.toBeChecked();
+  });
+
+  it("is one tab stop, and its arrows both move and choose", async () => {
+    // What a `<select>` gave for free, and what a row of plain buttons would
+    // have taken away: three more stops on the way to anything after them.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "List view" });
+    seg("List view").focus();
+
+    await userEvent.keyboard("{ArrowRight}");
+
+    expect(seg("Map view")).toHaveFocus();
+    expect(seg("Map view")).toBeChecked();
+    expect(seg("List view")).toHaveAttribute("tabindex", "-1");
+
+    // Wrapping, as the radiogroup pattern asks: past the end is the start.
+    await userEvent.keyboard("{ArrowRight}");
+    expect(seg("List view")).toHaveFocus();
+    expect(seg("List view")).toBeChecked();
+  });
+});
+
+describe("the sort control", () => {
+  it("offers CB's three orders and sends the one that is picked", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    expect(seg("Sort By Suitability Score")).toBeChecked();
+
+    await userEvent.click(seg("Sort by Distance"));
+
+    await waitFor(() => expect(api.listRequests().length).toBe(2));
+    const last = api.listRequests()[1];
+    expect(last.params.sort).toBe("distance");
+    expect(seg("Sort by Distance")).toBeChecked();
+  });
+
+  it("shows an order the host asked for that CB does not offer", async () => {
+    // The server takes more sort keys than CB offers. A control that dropped
+    // one would read as "sorted by suitability" over a list that is not.
+    const api = fakeApi();
+    renderTrialMatches(api, { initialFilters: { sort: "phase" } });
+    expect(await screen.findByRole("radio", { name: "Sorted by phase" })).toBeChecked();
+    expect(seg("Sort By Suitability Score")).not.toBeChecked();
+  });
+
+  it("walks the orders without scrolling the tooltip that is open", async () => {
+    // A tooltip too tall for the screen scrolls from the arrow keys of the
+    // control it belongs to, and those are the same keys that move through
+    // this control. Moving takes focus to the next segment, which is a
+    // different tooltip, so the open box stays where it was rather than
+    // scrolling under a reader who was walking the orders.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const first = await screen.findByRole("radio", { name: "Sort By Suitability Score" });
+    // Keyboard focus, which is what opens the box (a click's does not).
+    await userEvent.keyboard("{Shift}");
+    act(() => first.focus());
+    const box = document.getElementById(first.getAttribute("aria-describedby")!)!;
+    expect(box).toHaveClass("is-open");
+    // jsdom lays nothing out, so the overflow the scroller looks for is stated.
+    Object.defineProperty(box, "scrollHeight", { value: 500, configurable: true });
+    Object.defineProperty(box, "clientHeight", { value: 100, configurable: true });
+
+    await userEvent.keyboard("{ArrowDown}");
+
+    expect(box.scrollTop).toBe(0);
+    expect(seg("Sort by Matching Score")).toHaveFocus();
+    expect(seg("Sort by Matching Score")).toBeChecked();
+  });
+});

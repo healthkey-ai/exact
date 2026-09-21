@@ -53,6 +53,9 @@
    * token: a host that darkens `on-brand` for a light CTA must not darken the
    * star on blue with it. */
   --exact-color-on-primary: #ffffff;
+  /* The tint behind a chosen segment — CB --brand-50, which it pairs with
+   * brand-700 text. `primary` stands in for that text here. */
+  --exact-color-primary-50: hsl(199 100% 92%);
 
   /* Default to `inherit` so the remote picks up the host's typography
    * (CB sets Manrope on <body>) and reads as native. A host can still
@@ -896,6 +899,20 @@
  * utility layer: everything stays scoped under `.exact-root` so nothing can
  * leak into the host.
  * ------------------------------------------------------------------------- */
+/* The list is a query container, so the controls row can answer to the width
+ * the HOST gave this remote rather than to the window's. A viewport media
+ * query is what CB uses, and it is wrong here: the same 1280px window shows
+ * this list in a 900px column inside ht-phr and full width inside CB.
+ *
+ * Where container queries are not supported the rules below simply never
+ * match, which leaves the narrow layout — the one that fits either way. */
+/* Compound, not descendant: the element carries BOTH classes
+   (`exact-root exact-list`), so `.exact-root .exact-list` matches nothing. */
+.exact-root.exact-list {
+  container-type: inline-size;
+  container-name: exact-list;
+}
+
 .exact-root .exact-list__title {
   margin: 0 0 1rem;
   font-size: 1.5rem;
@@ -982,39 +999,113 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
 }
 
-/* The triggers travel together at the right. `space-between` was written for
-   two children — the sort and the filter — and a third lands in the middle of
-   the row rather than beside the one it belongs with. */
+/* The triggers travel together at the right, whatever else shares the row:
+   `space-between` was written for two children and puts a third in the
+   middle of the row rather than beside the one it belongs with. */
 .exact-root .exact-list__triggers {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  margin-left: auto;
 }
 
-.exact-root .exact-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  color: var(--exact-color-text-muted);
+/* Three orders, each named in full, do not fit beside the actions unless the
+   list is wide. CB's answer, copied here: the sort takes a row of its own
+   when it is narrow and joins the view mode on row 1 when there is room.
+   `flex-basis: 100%` is what breaks the row; the control inside keeps its
+   own width, so it does not stretch across the page. */
+.exact-root .exact-list__sort {
+  display: flex;
+  order: 1;
+  flex-basis: 100%;
 }
 
-.exact-root .exact-sort__select {
-  padding: 0.5rem 0.75rem;
+/* Room for the view mode, all three orders and the three actions side by
+   side; measured in the browser at 99 + 519 + 364px plus the gaps. */
+@container exact-list (min-width: 66rem) {
+  .exact-root .exact-list__sort {
+    order: 0;
+    flex-basis: auto;
+  }
+}
+
+/* Segmented control — CB's `TrialsViewMode` / `TrialsSortControl`: joined
+   buttons in one bordered, shadowed box, the chosen one tinted. */
+.exact-root .exact-seg {
+  display: flex;
+  align-items: stretch;
   border: 1px solid var(--exact-color-border);
   border-radius: var(--exact-border-radius);
   background: var(--exact-color-surface);
   box-shadow: var(--exact-shadow-sm);
+  /* Squares off the corner fills of the first and last segments. */
+  overflow: hidden;
+}
+
+/* The tooltip wrap sits between the group and each button, so the segment
+   rules address it rather than the button directly. Its own `inline-flex`
+   is blockified by the flex group, so it needs no `display` here. */
+.exact-root .exact-seg__item {
+  min-width: 0;
+}
+
+/* The options share the width evenly: three sort labels of very different
+   lengths otherwise give the shortest order the smallest target. */
+.exact-root .exact-seg--grow .exact-seg__item {
+  flex: 1 1 0;
+}
+
+.exact-root .exact-seg__item:not(:last-child) > .exact-seg__btn {
+  border-right: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-seg__btn {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.875rem;
+  border: 0;
+  background: transparent;
   font: inherit;
   font-size: 0.875rem;
   font-weight: 600;
+  line-height: 1.25rem;
   color: var(--exact-color-text-muted);
   cursor: pointer;
+  /* Wrapping by default, one line once there is room: three orders named in
+     full share a phone's width otherwise. Asked of the CONTAINER, like the
+     row above — a desktop window can still hand this remote a column a few
+     hundred pixels wide, and a viewport query would keep the labels on one
+     line and push a 500px control out of it. */
+  white-space: normal;
+}
+
+@container exact-list (min-width: 40rem) {
+  .exact-root .exact-seg__btn {
+    white-space: nowrap;
+  }
+}
+
+.exact-root .exact-seg__btn:hover {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-seg__btn.is-on {
+  background: var(--exact-color-primary-50);
+  color: var(--exact-color-primary);
+}
+
+/* Inset, because the button fills its segment edge to edge: an outset ring
+   would be clipped by the group's `overflow: hidden`. */
+.exact-root .exact-seg__btn:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: -2px;
 }
 
 .exact-root .exact-list__rows {
