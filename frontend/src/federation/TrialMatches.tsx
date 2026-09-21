@@ -1252,12 +1252,23 @@ function TrialMatchesInner({
 
   return (
     <div className="exact-root exact-list" ref={exactRootRef} style={{ padding: "1rem" }}>
-      <h1 className="exact-list__title">Your Trials</h1>
+      {/* CB's header block: the title and the preferences button on one
+          line, the tab strip on its own below. CB puts the button on the
+          TAB row from lg up and beside the title below it, rendering it
+          twice and hiding one — two tab stops' worth of markup, and a
+          dialog that vanishes mid-edit when the breakpoint is crossed.
+          One copy, in the position CB uses at the width where the strip
+          needs its whole line, and the strip keeps its rule across the row
+          at every width. */}
+      <div className="exact-list__head">
+        <h1 className="exact-list__title">Your Trials</h1>
+        <SuitabilityPreferences
+          filters={filters}
+          patientKey={patientHandle}
+          onChange={handleWeightsChange}
+        />
+      </div>
 
-      {/* CB's lg layout: the tab strip, and this opposite it on the same
-          line. Below that width CB moves the button up beside the title;
-          here the row simply wraps, which keeps one copy of it. */}
-      <div className="exact-list__tabsrow">
       <Tabs
         tabs={tabs}
         active={activeTab}
@@ -1272,12 +1283,6 @@ function TrialMatchesInner({
         activeTabTotal={stateTab ? null : totalCount}
         stateCounts={stateCounts}
       />
-        <SuitabilityPreferences
-          filters={filters}
-          patientKey={patientHandle}
-          onChange={handleWeightsChange}
-        />
-      </div>
 
       <div className="exact-list__controls" ref={controlsRef}>
         {/* CB's row 1 is the view mode on the left and the actions on the

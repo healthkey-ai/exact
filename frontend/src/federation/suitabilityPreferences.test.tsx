@@ -488,6 +488,47 @@ describe("the suitability preferences control", () => {
     expect(first.every((id) => all.includes(id))).toBe(true);
   });
 
+  it("is reached from the keyboard where it is seen: after the title, before the tabs", async () => {
+    // It shares the title's line and the tab strip has the next one, so the
+    // keyboard must meet it in that order too. CB gets this by rendering the
+    // button twice and hiding one per breakpoint; one copy has to be written
+    // where it is painted instead (WCAG 2.4.3).
+    const api = fakeApi();
+    renderTrialMatches(api);
+    const trigger = await screen.findByRole("button", { name: /Suitability Preferences/ });
+    const firstTab = screen.getByRole("button", { name: /^Eligible/ });
+
+    // DOCUMENT_POSITION_FOLLOWING, twice: the title, then the trigger it
+    // shares a line with, then the strip on the line below.
+    const title = screen.getByRole("heading", { name: "Your Trials" });
+    expect(title.compareDocumentPosition(trigger) & 4).toBe(4);
+    expect(trigger.compareDocumentPosition(firstTab) & 4).toBe(4);
+
+    trigger.focus();
+    await userEvent.tab();
+
+    expect(firstTab).toHaveFocus();
+  });
+
+  it("leaves the tab strip a row of its own", async () => {
+    // The reason the trigger moved up here. Inside the head it was a flex
+    // item that could shrink — `overflow-x` resolves its minimum size to
+    // zero — and its bottom rule, the one the active tab's underline sits
+    // on, stopped at the last tab instead of ruling the row. Two ways back
+    // into that: the markup, and the strip's own `display`.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("button", { name: /^Eligible/ });
+    const head = document.querySelector(".exact-list__head")!;
+    const tabs = document.querySelector(".exact-tabs")!;
+
+    expect(head).toBeTruthy();
+    expect(head.contains(tabs)).toBe(false);
+
+    // The other way back in is the strip's own `display`, which jsdom cannot
+    // see — that half is read off the sheet in `controlsRowCss.test.ts`.
+  });
+
   it("says on the button that the score is not on its defaults", async () => {
     const api = fakeApi();
     renderTrialMatches(api, { initialFilters: { riskWeight: 40 } });

@@ -916,7 +916,9 @@
  * leak into the host.
  * ------------------------------------------------------------------------- */
 .exact-root .exact-list__title {
-  margin: 0 0 1rem;
+  /* The gap below belongs to the row now, so the two cannot disagree about
+     how far the tab strip sits from the head. */
+  margin: 0;
   font-size: 1.5rem;
   font-weight: 600;
   line-height: 2rem;
@@ -1976,27 +1978,30 @@
   color: var(--exact-color-not-eligible);
 }
 
-/* Suitability Preferences — CB's card-shaped trigger beside the tab strip,
+/* Suitability Preferences — CB's card-shaped trigger, on the title's line,
    and the form its dialog holds.
    --------------------------------------------------------------------- */
-/* The tab strip and the trigger share a line, as CB's do from lg up. One
-   control rather than CB's two breakpoint-switched copies: one tab stop.
-   The strip scrolls rather than wraps when it runs out of room — it carries
-   its own `overflow-x`, so it shrinks before this row wraps — which is why
-   the trigger below refuses to shrink with it. */
-.exact-root .exact-list__tabsrow {
+/* The title and the preferences trigger on one line, as CB has them below
+   lg. The tab strip stays a row of its own: shared with the trigger it was
+   a flex item that could shrink, and its bottom rule — the one the active
+   tab sits on — stopped at the last tab instead of ruling the row. */
+.exact-root .exact-list__head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  margin-bottom: 1rem;
 }
 
 .exact-root .exact-prefs__trigger {
   display: inline-flex;
   align-items: center;
-  /* The strip beside it can shrink to nothing; this must not follow it, or
-     the label wraps inside the button before anything else gives. */
+  /* Both belong to the tooltip WRAP that actually is the flex item here
+     (`exact-action-tip` is `inline-flex`), not to this button — but through
+     it they are what keeps the label on one line: the wrap's automatic
+     minimum size resolves to this button's min-content, and `nowrap` is what
+     makes that the whole label rather than its longest word. */
   flex-shrink: 0;
   white-space: nowrap;
   gap: 0.5rem;
