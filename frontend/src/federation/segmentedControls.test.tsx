@@ -137,6 +137,29 @@ describe("the sort control", () => {
     expect(seg("Sort by Distance")).toBeChecked();
   });
 
+  it("does not fetch the orders the arrows pass through", async () => {
+    // Arrows choose as they move, which is the pattern and what a `<select>`
+    // does — but each stop on the way is a list request and a full re-rank
+    // under the reader. Walking two segments must cost one of each.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "Sort By Suitability Score" });
+    await waitFor(() => expect(api.listRequests().length).toBe(1));
+    seg("Sort By Suitability Score").focus();
+
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}");
+
+    expect(seg("Sort by Distance")).toBeChecked();
+    await waitFor(() => expect(api.listRequests().length).toBe(2));
+    expect(api.listRequests()[1].params.sort).toBe("distance");
+    // And nothing arrives late for the order that was only passed through.
+    await new Promise((r) => setTimeout(r, 400));
+    expect(api.listRequests().map((r) => r.params.sort)).toEqual([
+      "goodnessScore",
+      "distance",
+    ]);
+  });
+
   it("shows an order the host asked for that CB does not offer", async () => {
     // The server takes more sort keys than CB offers. A control that dropped
     // one would read as "sorted by suitability" over a list that is not.

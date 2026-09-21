@@ -18,12 +18,18 @@ export interface Segment {
   tooltip?: string;
 }
 
+/** Which key or click chose the option. The arrows choose as they move —
+ *  that is the radiogroup pattern and what a `<select>` does — so a caller
+ *  whose change is expensive (a request, a re-rank) can hold the keyboard's
+ *  run of them back without giving up the pattern. */
+export type SegmentSource = "pointer" | "keyboard";
+
 interface Props {
   /** Names the group to a screen reader; CB shows no visible label. */
   label: string;
   options: Segment[];
   value: string;
-  onChange: (next: string) => void;
+  onChange: (next: string, source: SegmentSource) => void;
   /** `exact-seg--grow` makes the segments share the width evenly. */
   className?: string;
 }
@@ -36,7 +42,7 @@ export function SegmentedControl({ label, options, value, onChange, className }:
     const next = options[index];
     if (!next) return;
     buttons.current[index]?.focus();
-    onChange(next.value);
+    onChange(next.value, "keyboard");
   };
 
   // Arrows wrap, as the radiogroup pattern asks, and choose on arrival: this
@@ -89,7 +95,7 @@ export function SegmentedControl({ label, options, value, onChange, className }:
                 // segment takes the stop until something is chosen.
                 tabIndex={isOn || (selected < 0 && index === 0) ? 0 : -1}
                 className={`exact-seg__btn${isOn ? " is-on" : ""}`}
-                onClick={() => onChange(option.value)}
+                onClick={() => onChange(option.value, "pointer")}
                 onKeyDown={(event) => onKeyDown(event, index)}
               >
                 {option.icon ?? option.label}

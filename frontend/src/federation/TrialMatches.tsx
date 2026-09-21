@@ -41,6 +41,7 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import type { SegmentSource } from "./SegmentedControl";
 import { ViewModeControl } from "./ViewModeControl";
 import { TrialsGraph } from "./TrialsGraph";
 import { TrialsMap } from "./TrialsMap";
@@ -118,6 +119,9 @@ function TrialMatchesInner({
     tabValueForType(initialFilters?.type),
   );
   const [sort, setSort] = useState<string>(initialFilters?.sort ?? DEFAULT_SORT);
+  /** Whether the sort is being walked with the arrow keys; see
+   *  `handleSortChange`. */
+  const [sortTyping, setSortTyping] = useState(false);
   const [page, setPage] = useState(1);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -299,6 +303,9 @@ function TrialMatchesInner({
   const debouncedSponsor = useDebounced(filters.sponsor, 400, !typing);
   const debouncedDistance = useDebounced(filters.distance, 400, !typing);
   const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400, !typing);
+  // Shorter than the 400ms the text boxes take: this is one keypress per
+  // option, not a word being typed.
+  const debouncedSort = useDebounced(sort, 250, !sortTyping);
   // Ownership is per patient: what the previous one had saved is not evidence
   // about this one. Kept in step with `stateKey` — the same key the saved-set
   // load is keyed on, so the clear lands before that patient's answer does.
@@ -445,7 +452,7 @@ function TrialMatchesInner({
       distance: debouncedDistance,
       distanceUnits: debouncedDistanceUnits,
       type: activeTabDef.param,
-      sort: sort as FilterState["sort"],
+      sort: debouncedSort as FilterState["sort"],
     }),
     [
       effectiveFilters,
@@ -455,7 +462,7 @@ function TrialMatchesInner({
       debouncedDistance,
       debouncedDistanceUnits,
       activeTabDef.param,
-      sort,
+      debouncedSort,
     ],
   );
 
@@ -736,7 +743,14 @@ function TrialMatchesInner({
   }, [isPageNotFound, page]);
 
   const handleTabChange = (next: TabValue) => setActiveTab(next);
-  const handleSortChange = (next: string) => setSort(next);
+  // Arrows choose as they move, so walking from "Suitability" to "Distance"
+  // passes through "Matching" — and every stop on the way is a list request
+  // and a full re-rank under the reader. The keyboard's run is held back
+  // like a typed filter; a click, which chooses once, is not.
+  const handleSortChange = (next: string, source: SegmentSource = "pointer") => {
+    setSortTyping(source === "keyboard");
+    setSort(next);
+  };
   const handleFiltersChange = (next: FilterState) => {
     // The reader picking a type claims it for the patient on screen. The
     // panel is fed `effectiveFilters`, so an unrelated edit hands back the
