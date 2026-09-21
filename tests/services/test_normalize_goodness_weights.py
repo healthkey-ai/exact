@@ -5,6 +5,8 @@ is attacker-reachable and would divide the score by zero (500 / DoS on the
 core /trials/ search). The helper clamps negatives and falls back to equal
 weights when nothing positive remains.
 """
+import math
+
 from trials.services.utils import normalize_goodness_weights
 
 
@@ -44,3 +46,26 @@ def test_result_always_finite_and_sum_positive():
         result = normalize_goodness_weights(*weights)
         assert all(math.isfinite(w) for w in result)
         assert sum(result) > 0
+
+
+def test_weights_that_are_finite_apart_and_infinite_together():
+    # `1e308` twice sums to inf. The score is built from these numbers in
+    # SQL, where a term that large is not a float8 at all: Postgres rejects
+    # the parameter ("out of range for type double precision") and the
+    # search 500s. Measured against a live instance before this:
+    # `benefitWeight=1e308&patientBurdenWeight=1e308` -> 500.
+    weights = normalize_goodness_weights(1e308, 1e308, 25, 25)
+
+    assert math.isfinite(sum(weights))
+    # Scaled by the largest, so the RATIO — the only thing the score reads —
+    # is what it was: the two giants equal, the two 25s vanishingly small
+    # beside them, which is what asking for 1e308 means.
+    assert weights[0] == weights[1] == 1.0
+    assert weights[2] == weights[3] < 1e-300
+
+
+def test_scaling_leaves_ordinary_weights_alone():
+    # The scale-down only fires on a sum that is not finite. Everything else
+    # arrives exactly as the reader set it, which is what every other test
+    # here asserts — this one says so directly.
+    assert normalize_goodness_weights(40, 30, 20, 10) == (40.0, 30.0, 20.0, 10.0)

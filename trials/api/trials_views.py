@@ -21,6 +21,7 @@ from trials.models import Trial, Location, LocationTrial, PreferredCountry, Stat
 from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
 from trials.services.patient_info.resolve import resolve_patient_info
 from trials.services.study_preferences import StudyPreferences, study_preferences_from_query_params
+from trials.services.utils import parse_goodness_weights
 from trials.services.value_options import ValueOptions
 
 logger = logging.getLogger(__name__)
@@ -460,19 +461,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
         if self.action in ['list', 'search', 'retrieve']:
-            params = self.request.query_params
-            try:
-                benefit_weight = float(params.get('benefitWeight', 25.0))
-                patient_burden_weight = float(params.get('patientBurdenWeight', 25.0))
-                risk_weight = float(params.get('riskWeight', 25.0))
-                distance_penalty_weight = float(params.get('distancePenaltyWeight', 25.0))
-            except (TypeError, ValueError):
-                benefit_weight = patient_burden_weight = risk_weight = distance_penalty_weight = 25.0
+            # Parsed one weight at a time: an unreadable value falls back on
+            # its own rather than taking the other three with it. See
+            # `parse_goodness_weights`.
             queryset = queryset.with_goodness_score_optimized(
-                benefit_weight=benefit_weight,
-                patient_burden_weight=patient_burden_weight,
-                risk_weight=risk_weight,
-                distance_penalty_weight=distance_penalty_weight,
+                **parse_goodness_weights(self.request.query_params),
                 geo_point=patient_info.geo_point if patient_info else None,
                 recruitment_status=study_prefs.recruitment_status,
             )
