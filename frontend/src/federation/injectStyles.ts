@@ -5,16 +5,50 @@
 import css from "./exact.css?inline";
 import { layerRemoteCss } from "./cssLayer";
 
-const STYLE_MARKER = 'style[data-mf="exact-remote"]';
+/** One tag per LAYERING MODE, not one per remote.
+ *
+ *  A page can carry both builds — the federation remote in the host's own
+ *  React tree and this remote's standalone widget somewhere that cannot
+ *  share it. Keyed on one marker, whichever injected first would decide the
+ *  cascade for both: the widget left layered under a host preflight that
+ *  outranks it, or worse, the remote left UNLAYERED, where it can outrank
+ *  the host's own chrome — the failure `cssLayer.ts` exists to prevent.
+ *  Two tags, two answers, and each build finds its own. */
+const markerFor = (layered: boolean) =>
+  layered ? 'style[data-mf="exact-remote"]' : 'style[data-mf="exact-remote-unlayered"]';
 
-export function injectStyles(): void {
+/** What the first call in THIS module instance asked for. A bundle carries
+ *  its own copy of this module, so "this instance" is "this build" — the
+ *  widget's entry sets the mode once and every later call inside the same
+ *  bundle (TrialMatches, the detail page) inherits it instead of injecting a
+ *  second copy of the sheet in the other mode. */
+let chosenMode: boolean | null = null;
+
+export function injectStyles(options: { layered?: boolean } = {}): void {
+  const layered = options.layered ?? chosenMode ?? true;
+  chosenMode = layered;
   // Keyed on the tag, not on a boolean: a host that sweeps its <head> (a
   // route-level reset, a framework managing <head>) would otherwise leave the
   // remote unstyled for the life of the page, and nothing would put it back.
-  if (typeof document === "undefined" || document.querySelector(STYLE_MARKER)) return;
+  // `chosenMode` above is what survives that sweep — the re-injection has to
+  // come back in the same mode, not in the default one.
+  if (typeof document === "undefined" || document.querySelector(markerFor(layered))) return;
   const style = document.createElement("style");
-  style.setAttribute("data-mf", "exact-remote");
-  style.textContent = layerRemoteCss(css);
+  style.setAttribute("data-mf", layered ? "exact-remote" : "exact-remote-unlayered");
+  // `layered: false` is for the self-contained widget build, and only for it.
+  // The layer exists so a remote sharing a host's page cannot outrank the
+  // host's own chrome — but per the cascade-layers spec an UNLAYERED host
+  // rule beats every layered one regardless of specificity, and a host that
+  // cannot share a React tree with us (CB's React-18 `ui/`, which ships
+  // Tailwind v3's unlayered preflight) will not be declaring our layer order
+  // either. Measured there: the CTA loses its background, the title renders
+  // at 14px/400, the segmented controls lose their padding.
+  //
+  // Safe to drop for that build because this sheet is scoped: every selector
+  // is under `.exact-root`, and it ships no Tailwind utilities (see the head
+  // of `exact.css`), so unlayered it still cannot reach anything of the
+  // host's.
+  style.textContent = layered ? layerRemoteCss(css) : css;
   document.head.appendChild(style);
 }
 

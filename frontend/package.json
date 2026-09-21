@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:remote": "vite --config vite.remote.config.ts",
     "build": "tsc -b && vite build --config vite.remote.config.ts",
+    "build:widget": "vite build --config vite.widget.config.ts",
     "build:spa": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
