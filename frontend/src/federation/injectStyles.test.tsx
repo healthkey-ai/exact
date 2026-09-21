@@ -22,6 +22,7 @@ const TOKENS = [
   "--exact-color-text",
   "--exact-color-text-muted",
   "--exact-color-primary-50",
+  "--exact-color-primary-200",
 ];
 
 const mountRoot = (tokens: string[] = TOKENS) => {
@@ -62,7 +63,7 @@ describe("assertExactTokens", () => {
 
   it("says nothing when no remote is mounted", () => {
     // Called before the remote renders — there is nothing on the page to be
-    // wrong about, and a list of nine "missing" tokens would be noise.
+    // wrong about, and a list of ten "missing" tokens would be noise.
     expect(assertExactTokens()).toEqual([]);
   });
 });

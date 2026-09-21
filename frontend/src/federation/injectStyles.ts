@@ -54,9 +54,14 @@ export function assertExactTokens(root?: Element | null): string[] {
     "--exact-color-border",
     "--exact-color-text",
     "--exact-color-text-muted",
-    // The chosen segment's fill. Its own token because it must move with
-    // `--exact-color-primary`, which is painted ON it.
+    // The chosen segment's fill and the chosen tab count's edge. In this
+    // list for the only reason anything is in it — a name that reads empty
+    // means the sheet is gone. It does NOT check that a host which themed
+    // `--exact-color-primary` themed these with it: our own defaults are
+    // declared on the same element, so they read back whatever the host did
+    // upstream. Nothing here can see that pairing come apart.
     "--exact-color-primary-50",
+    "--exact-color-primary-200",
   ];
   const styles = getComputedStyle(host);
   return required.filter((name) => !styles.getPropertyValue(name).trim());
