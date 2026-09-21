@@ -652,7 +652,16 @@ export function useSavedFilters(
   /** The last write did not land. */
   failed: boolean;
   /** Which attempt this is. Changes whenever the reader behind the panel
-   *  changes, so a view keyed on it is rebuilt rather than reused. */
+   *  changes, so a view keyed on it is rebuilt rather than reused.
+   *
+   *  One epoch DELIVERS at most one answer, and callers rely on that: it is
+   *  what lets state keyed on the epoch — `TrialMatches`'s record of what
+   *  the reader overruled during a slow read (#537) — be cleared when a new
+   *  read starts and not once per answer. Not one read: StrictMode
+   *  double-invokes the mount effect and issues two for the same writer,
+   *  and the abandoned one is cancelled before it can call back. A read
+   *  that fails, is cancelled, or comes back empty calls `onLoad` not at
+   *  all, so per-answer clearing would not cover those; per-epoch does. */
   epoch: object;
   /** True while the stored set is still being read, and for at most
    *  `SAVED_FILTERS_GRACE_MS` after — the list must not be hostage to the

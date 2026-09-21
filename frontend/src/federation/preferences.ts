@@ -181,8 +181,13 @@ export function adapterPreferences(
         }
         if (era === generation) {
           stored = { ...out };
-          // The caller loads the panel from exactly this, so it is also what
-          // the panel is about to show.
+          // What the panel is about to show — ALMOST. The caller holds back
+          // the fields the reader overruled while this read was in flight
+          // (#537), so for those this is a claim about a box that says
+          // something else. It stays harmless only because the caller also
+          // claims their KEYS, so the next save carries an opinion about
+          // every one of them — a value, or a tombstone — and corrects the
+          // record. Narrow that claim and narrow this alongside it.
           believed = { ...out };
           seeded = true;
           version = fromServer.version;
