@@ -9,9 +9,12 @@
  * keeps the "no global CSS / host-agnostic" contract honest. Preflight was
  * already excluded for the same reason. */
 
-/* Scoped tokens. The host can override any `--exact-*` var on `:root`
- * or on a `.exact-root` ancestor without colliding with its own design
- * system. Per hk-labs `docs/module-federation.md` CSS token contract.
+/* Scoped tokens, per the hk-labs `docs/module-federation.md` CSS token
+ * contract. A host overrides one by declaring it ON `.exact-root` — from
+ * outside a layer, or from a later one. NOT on `:root`, and not on an
+ * ancestor: the defaults below are declarations on the element itself, and
+ * a declaration on the element beats an inherited value in every layer, so
+ * an override set upstream never reaches the remote.
  *
  * Defaults below mirror CancerBot UI v2's design tokens so the trials
  * list looks native inside CB out of the box (see CB `client/global.css`).
@@ -57,7 +60,7 @@
    * brand-700 text; `primary` stands in for that text here. A host that
    * themes `primary` must theme this with it: the pair is the only thing
    * that says which segment is chosen, so a dark host leaving this light
-   * gets light-on-light. Checked by `assertExactTokens`. */
+   * gets light-on-light. In the required set `assertExactTokens` checks. */
   --exact-color-primary-50: hsl(199 100% 92%);
 
   /* Default to `inherit` so the remote picks up the host's typography
