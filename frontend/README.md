@@ -150,9 +150,11 @@ makes on purpose. See `src/federation/cssLayer.ts`.
 
 ## CSS token contract
 
-Tokens live on `.exact-root` scoped to the remote. Hosts can override any `--exact-*` on `:root` to map them to the host design system (see `frontend/src/federation/exact.css`). Per the hk-labs `docs/module-federation.md` namespace convention.
+Tokens live on `.exact-root`, scoped to the remote, mapped to the host design system by overriding them (see `frontend/src/federation/exact.css`). Per the hk-labs `docs/module-federation.md` namespace convention.
 
-`assertExactTokens()` returns the list of unset required tokens for dev-time sanity checks.
+**Override them ON `.exact-root`** — not on `:root`, and not on an ancestor. This sheet declares each token on `.exact-root` itself, and a declaration on the element beats an inherited value in every cascade layer, so an override set upstream never reaches the remote. An unlayered host rule (or one in a later layer) targeting `.exact-root` does.
+
+`assertExactTokens()` returns the required tokens that cannot be read off a mounted `.exact-root`. That answers one question — whether this remote's stylesheet reached the page — and it is the question worth asking, since nothing else declares these names. It cannot tell you anything about a host's overrides, for the cascade reason above: the value read back is this sheet's own default whenever the sheet is present.
 
 ## Environment variables
 
