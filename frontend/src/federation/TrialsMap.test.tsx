@@ -17,13 +17,13 @@ const withPoint = (id: number, latitude: number, longitude: number, extra = {}) 
     ...extra,
   });
 
-describe("the Map toggle", () => {
+describe("the Map view", () => {
   it("costs no request, because the rows already carry their location", async () => {
     const api = fakeApi({ results: [withPoint(1, 51.5, -0.12)] });
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByText("Where these trials are");
     expect(api.requests).toHaveLength(1);
@@ -34,7 +34,7 @@ describe("the Map toggle", () => {
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByText("Where these trials are");
     expect(screen.getByRole("button", { name: "View Trial" })).toBeInTheDocument();
@@ -46,7 +46,7 @@ describe("the Map toggle", () => {
     });
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByText("One place on this page");
     await screen.findByText("2 trials");
@@ -60,7 +60,7 @@ describe("the Map toggle", () => {
     });
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByText(/2 trials have no location on file/);
   });
@@ -69,7 +69,7 @@ describe("the Map toggle", () => {
     const api = fakeApi({ results: [trial(1), trial(2)] });
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByText(/nothing to place/);
   });
@@ -78,7 +78,7 @@ describe("the Map toggle", () => {
     const api = fakeApi({ results: [withPoint(1, 51.5, -0.12)] });
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     // Scoped to the map: the card in the list carries the same words, and a
     // query that matches both proves nothing about which one was clicked.
@@ -102,7 +102,7 @@ describe("the Map toggle", () => {
     });
     renderTrialMatches(api, { renderMap });
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByTestId("host-map");
     const props = seen.at(-1)!;
@@ -117,7 +117,7 @@ describe("the Map toggle", () => {
     const api = fakeApi({ results: [withPoint(1, 51.5, -0.12)] });
     renderTrialMatches(api);
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     await screen.findByText(/needs a maps provider/);
   });
@@ -137,7 +137,7 @@ describe("a place left open while the rows change", () => {
     const api = fakeApi({ results: [withPoint(1, 51.5, -0.12)] });
     renderTrialMatches(api, { renderMap });
     await waitFor(() => expect(api.listRequests().length).toBe(1));
-    await userEvent.click(screen.getByRole("button", { name: "Map" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Map view" }));
 
     const map = within(screen.getByLabelText("Trial locations"));
     await userEvent.click(await map.findByRole("button", { name: /Hospital 1/ }));

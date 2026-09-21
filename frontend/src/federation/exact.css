@@ -53,6 +53,12 @@
    * token: a host that darkens `on-brand` for a light CTA must not darken the
    * star on blue with it. */
   --exact-color-on-primary: #ffffff;
+  /* The tint behind a chosen segment — CB --brand-50, which it pairs with
+   * brand-700 text; `primary` stands in for that text here. A host that
+   * themes `primary` must theme this with it: the pair is the only thing
+   * that says which segment is chosen, so a dark host leaving this light
+   * gets light-on-light. Checked by `assertExactTokens`. */
+  --exact-color-primary-50: hsl(199 100% 92%);
 
   /* Default to `inherit` so the remote picks up the host's typography
    * (CB sets Manrope on <body>) and reads as native. A host can still
@@ -923,7 +929,6 @@
 /* The stylesheet defined no focus style at all, so every control the chrome
  * added relied on whatever the host's reset left behind — often nothing. */
 .exact-root .exact-tab:focus-visible,
-.exact-root .exact-sort__select:focus-visible,
 .exact-root .exact-pagination__step:focus-visible,
 .exact-root .exact-pagination__page:focus-visible {
   outline: 2px solid var(--exact-color-primary);
@@ -982,39 +987,155 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
+  /* A query container, so the labels below answer to the width the HOST gave
+     this remote rather than to the window's: the same 1280px window shows
+     this list in a 900px column inside ht-phr and full width inside CB.
+     Where container queries are unsupported those rules never match, which
+     leaves the wrapping labels — the ones that fit either way.
+
+     Declared HERE and not on `.exact-list`, which is the element the host
+     mounts: `inline-size` containment computes an element's intrinsic width
+     as if it had no contents, so a host that sizes the remote by its content
+     (a flex row, an `inline-block`, an auto grid track) would have collapsed
+     the whole list to its padding. This row takes its width from the list
+     either way, and the cards still speak for the list's own width. */
+  container-type: inline-size;
+  container-name: exact-controls;
 }
 
-/* The triggers travel together at the right. `space-between` was written for
-   two children — the sort and the filter — and a third lands in the middle of
-   the row rather than beside the one it belongs with. */
+/* The triggers travel together at the right, whatever else shares the row:
+   `space-between` was written for two children and puts a third in the
+   middle of the row rather than beside the one it belongs with. */
 .exact-root .exact-list__triggers {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  margin-left: auto;
 }
 
-.exact-root .exact-sort {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.75rem;
-  color: var(--exact-color-text-muted);
+/* The sort's own row, when the row is too narrow to hold everything. Only
+   rendered in that case (`WIDE_CONTROLS_ROW` in `listChrome.ts` is the
+   measurement, `TrialMatches` does the measuring), so there is no `order`
+   here: what is painted second is written second, and the keyboard follows
+   the same path as the eye. `flex-basis: 100%` breaks the row; the control
+   inside keeps its own width rather than stretching across the page. */
+.exact-root .exact-list__sort {
+  display: flex;
+  flex-basis: 100%;
 }
 
-.exact-root .exact-sort__select {
-  padding: 0.5rem 0.75rem;
+/* Segmented control — CB's `TrialsViewMode` / `TrialsSortControl`: joined
+   buttons in one bordered, shadowed box, the chosen one tinted. */
+.exact-root .exact-seg {
+  display: flex;
+  align-items: stretch;
   border: 1px solid var(--exact-color-border);
   border-radius: var(--exact-border-radius);
   background: var(--exact-color-surface);
   box-shadow: var(--exact-shadow-sm);
+  /* Squares off the corner fills of the first and last segments. */
+  overflow: hidden;
+}
+
+/* The tooltip wrap sits between the group and each button, so the segment
+   rules address it rather than the button directly. Its own `inline-flex`
+   is blockified by the flex group, so it needs no `display` here. */
+.exact-root .exact-seg__item {
+  min-width: 0;
+}
+
+/* The options share the width evenly: three sort labels of very different
+   lengths otherwise give the shortest order the smallest target. */
+.exact-root .exact-seg--grow .exact-seg__item {
+  flex: 1 1 0;
+}
+
+.exact-root .exact-seg__item:not(:last-child) > .exact-seg__btn {
+  border-right: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-seg__btn {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.875rem;
+  border: 0;
+  background: transparent;
   font: inherit;
   font-size: 0.875rem;
   font-weight: 600;
+  line-height: 1.25rem;
   color: var(--exact-color-text-muted);
   cursor: pointer;
+  /* A segment is a third of the row and its labels are not short: on the
+     narrowest containers "Suitability" alone is wider than the share, and
+     without this the centred text spills sideways over its neighbours and
+     is clipped by the group's own `overflow: hidden`. */
+  overflow-wrap: break-word;
+  /* Wrapping by default, one line once there is room: three orders named in
+     full share a phone's width otherwise. Asked of the CONTAINER, like the
+     row above — a desktop window can still hand this remote a column a few
+     hundred pixels wide, and a viewport query would keep the labels on one
+     line and push a 500px control out of it. */
+  white-space: normal;
+}
+
+@container exact-controls (min-width: 40rem) {
+  .exact-root .exact-seg__btn {
+    white-space: nowrap;
+  }
+}
+
+.exact-root .exact-seg__btn:hover {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-seg__btn.is-on {
+  background: var(--exact-color-primary-50);
+  color: var(--exact-color-primary);
+}
+
+/* Forced colors (Windows high contrast) replaces every author colour with one
+   from the user's palette, so the tint above — the only thing that says which
+   segment is chosen — comes back identical to the other two: measured in the
+   browser, `is-on` and its neighbours both render white on black. The selected
+   state has to be said in colours the mode keeps, and `Highlight` is the pair
+   it reserves for exactly that. `aria-checked` already carries this to a
+   screen reader; this is for the sighted keyboard user it left behind. */
+@media (forced-colors: active) {
+  .exact-root .exact-seg__btn.is-on {
+    background: Highlight;
+    color: HighlightText;
+    /* Without this the label keeps the backplate the mode paints behind text
+       over a filled background, and `HighlightText` lands on it white on
+       white. Turning the adjustment off leaves the two system colours above
+       in charge, which are the user's own, not ours. */
+    forced-color-adjust: none;
+  }
+
+  /* The icons are stroked with `currentColor`, so they follow the label. */
+  .exact-root .exact-seg__btn.is-on svg {
+    stroke: HighlightText;
+  }
+
+  /* `forced-color-adjust: none` above also hands this ring back to our own
+     token, which then paints a fixed blue over the user's `Highlight` fill —
+     on some palettes the ring all but disappears. Inside this mode the ring
+     belongs to the system pair too. */
+  .exact-root .exact-seg__btn.is-on:focus-visible {
+    outline-color: HighlightText;
+  }
+}
+
+/* Inset, because the button fills its segment edge to edge: an outset ring
+   would be clipped by the group's `overflow: hidden`. */
+.exact-root .exact-seg__btn:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: -2px;
 }
 
 .exact-root .exact-list__rows {

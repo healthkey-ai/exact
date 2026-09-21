@@ -132,6 +132,12 @@ export const SORT_OPTIONS: SortOption[] = [
 
 export const DEFAULT_SORT = "goodnessScore";
 
+/** How wide the controls row has to be, in CSS pixels, before the sort fits
+ *  beside the view mode and the three actions. Measured in the browser at
+ *  99 + 519 + 364px plus two 12px gaps; rounded up to 66rem's worth so the
+ *  segments are not pressed against the buttons. */
+export const WIDE_CONTROLS_ROW = 1056;
+
 /** The options to render, given the value the control is actually set to.
  *
  *  The server accepts more sort keys than CB offers (`status`, `phase`,

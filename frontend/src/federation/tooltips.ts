@@ -693,10 +693,11 @@ export const ACTION_TOOLTIPS = {
   // trials.sort.distance.tooltip
   sortDistance:
     "Sort trials by how close the trial locations are to your selected location.",
-  // Not in CB.
+  // Not in CB, which gives its view-mode segments no tooltip at all. Kept
+  // because these two segments are icons, and an icon that is the only label
+  // is worth a sentence.
   map: "Show where the trials on this page are, on a map and as a list of places.",
-  // Not in CB.
-  list: "Close the map.",
+  list: "Show the trials as a list.",
   // trials.exploreTrials.tooltip — "AI" and the graph/list switch dropped.
   exploreTrials:
     "Visualize the trials you may be eligible for in a single view.\nSee which eligibility requirements you meet, which are missing, and which trials share them.",

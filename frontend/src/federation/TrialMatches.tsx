@@ -3,7 +3,7 @@
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
 // CB contract) or `personId` (CTOMOP federation path added in #102).
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
 /** Debounced, unless `immediate` — then the value passes straight through
  *  AND the held value is kept in step behind it.
@@ -41,6 +41,8 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import type { SegmentSource } from "./SegmentedControl";
+import { ViewModeControl } from "./ViewModeControl";
 import { TrialsGraph } from "./TrialsGraph";
 import { TrialsMap } from "./TrialsMap";
 import { EXPORT_URL_LIFETIME_MS, exportIsComplete, exportTrials } from "./api";
@@ -57,6 +59,7 @@ import { MAX_TRIAL_IDS, canEditFields } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
+  WIDE_CONTROLS_ROW,
   tabValueForType,
   tabsFor,
   type TabValue,
@@ -116,6 +119,9 @@ function TrialMatchesInner({
     tabValueForType(initialFilters?.type),
   );
   const [sort, setSort] = useState<string>(initialFilters?.sort ?? DEFAULT_SORT);
+  /** Whether the sort is being walked with the arrow keys; see
+   *  `handleSortChange`. */
+  const [sortTyping, setSortTyping] = useState(false);
   const [page, setPage] = useState(1);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -297,6 +303,9 @@ function TrialMatchesInner({
   const debouncedSponsor = useDebounced(filters.sponsor, 400, !typing);
   const debouncedDistance = useDebounced(filters.distance, 400, !typing);
   const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400, !typing);
+  // Shorter than the 400ms the text boxes take: this is one keypress per
+  // option, not a word being typed.
+  const debouncedSort = useDebounced(sort, 250, !sortTyping);
   // Ownership is per patient: what the previous one had saved is not evidence
   // about this one. Kept in step with `stateKey` — the same key the saved-set
   // load is keyed on, so the clear lands before that patient's answer does.
@@ -443,7 +452,7 @@ function TrialMatchesInner({
       distance: debouncedDistance,
       distanceUnits: debouncedDistanceUnits,
       type: activeTabDef.param,
-      sort: sort as FilterState["sort"],
+      sort: debouncedSort as FilterState["sort"],
     }),
     [
       effectiveFilters,
@@ -453,7 +462,7 @@ function TrialMatchesInner({
       debouncedDistance,
       debouncedDistanceUnits,
       activeTabDef.param,
-      sort,
+      debouncedSort,
     ],
   );
 
@@ -734,7 +743,14 @@ function TrialMatchesInner({
   }, [isPageNotFound, page]);
 
   const handleTabChange = (next: TabValue) => setActiveTab(next);
-  const handleSortChange = (next: string) => setSort(next);
+  // Arrows choose as they move, so walking from "Suitability" to "Distance"
+  // passes through "Matching" — and every stop on the way is a list request
+  // and a full re-rank under the reader. The keyboard's run is held back
+  // like a typed filter; a click, which chooses once, is not.
+  const handleSortChange = (next: string, source: SegmentSource = "pointer") => {
+    setSortTyping(source === "keyboard");
+    setSort(next);
+  };
   const handleFiltersChange = (next: FilterState) => {
     // The reader picking a type claims it for the patient on screen. The
     // panel is fed `effectiveFilters`, so an unrelated edit hands back the
@@ -816,6 +832,33 @@ function TrialMatchesInner({
   // its own: every row already carries its closest site, so a second fetch
   // would be a second matcher run to learn what is in hand.
   const [mapOpen, setMapOpen] = useState(false);
+
+  // Does the controls row have room for the view mode, all three orders and
+  // the three actions side by side? Measured, because this is a remote: the
+  // window is the host's, and the same 1280px window gives this list a 900px
+  // column in ht-phr and the full width in CB. Without a ResizeObserver
+  // (jsdom, an old browser) the answer stays "no", which is the layout that
+  // fits either way.
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const [wideControlsRow, setWideControlsRow] = useState(false);
+  // A ref callback, not an effect on mount: opening a trial returns the detail
+  // page from this same component, so the row unmounts while the component
+  // does not. An effect with `[]` would keep watching the detached node — it
+  // reports 0x0, the row goes narrow, and coming back mounts a row nothing
+  // observes, leaving the wide layout dead for the rest of the session however
+  // wide the host's column is. React calls this with null on the way out.
+  const controlsRef = useCallback((row: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
+    if (!row || typeof ResizeObserver === "undefined") return;
+    // Observing the row is safe from feedback: its width comes from the list
+    // around it, and moving the sort between its rows does not change it.
+    const observer = new ResizeObserver(([entry]) => {
+      setWideControlsRow(entry.contentRect.width >= WIDE_CONTROLS_ROW);
+    });
+    observer.observe(row);
+    observerRef.current = observer;
+  }, []);
   const handleSelectFromMap = (trial: TrialMatch) => {
     setMapOpen(false);
     handleSelect(trial);
@@ -947,29 +990,29 @@ function TrialMatchesInner({
         stateCounts={stateCounts}
       />
 
-      <div className="exact-list__controls">
-        <SortControl value={sort} onChange={handleSortChange} />
+      <div className="exact-list__controls" ref={controlsRef}>
+        {/* CB's row 1 is the view mode on the left and the actions on the
+            right; the sort joins them there when the row is wide enough and
+            takes a row of its own when it is not.
+            
+            Which row it is on decides where it is WRITTEN, not just where it
+            is painted. CSS `order` moves the box and leaves the tab stop
+            behind, so on the narrow layout the keyboard went from row 1 down
+            to the sort and back up to the actions (WCAG 2.4.3). CB solves the
+            same problem by rendering the control twice and hiding one; one
+            control in the right place is the same layout without a second
+            copy of it in the accessibility tree. */}
+        <ViewModeControl
+          value={mapOpen ? "map" : "list"}
+          onChange={(mode) => setMapOpen(mode === "map")}
+        />
+
+        {wideControlsRow ? <SortControl value={sort} onChange={handleSortChange} /> : null}
 
         <div className="exact-list__triggers">
         {/* CB's toolbar tooltips. A control that cannot act says why in its
             tooltip instead, in place of the `title` it used to carry, so
             there is one box, not a styled one and a native one. */}
-        <ActionTooltip text={mapOpen ? ACTION_TOOLTIPS.list : ACTION_TOOLTIPS.map}>
-          {(tipId) => (
-            <button
-              type="button"
-              className={`exact-filters__trigger${mapOpen ? " is-on" : ""}`}
-              aria-describedby={tipId}
-              // No `aria-pressed`: the label is the ACTION, not the state, and the
-              // two together announce "List, pressed" while the map is open —
-              // which says list mode is on, the opposite of what is on screen.
-              onClick={() => setMapOpen((open) => !open)}
-            >
-              {mapOpen ? "List" : "Map"}
-            </button>
-          )}
-        </ActionTooltip>
-
         <ActionTooltip
           text={
             graphUnavailable
@@ -1027,6 +1070,12 @@ function TrialMatchesInner({
           )}
         </ActionTooltip>
         </div>
+
+        {wideControlsRow ? null : (
+          <div className="exact-list__sort">
+            <SortControl value={sort} onChange={handleSortChange} />
+          </div>
+        )}
       </div>
 
       {graphOpen && !graphUnavailable ? (

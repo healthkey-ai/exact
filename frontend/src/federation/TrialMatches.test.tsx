@@ -2368,10 +2368,7 @@ describe("the page number, and what should and should not reset it", () => {
     await userEvent.click(await screen.findByRole("button", { name: "2" }));
     await waitFor(() => expect(listed(api).length).toBe(2));
 
-    await userEvent.selectOptions(
-      screen.getByRole("combobox", { name: /Sort/ }),
-      "matchScore",
-    );
+    await userEvent.click(screen.getByRole("radio", { name: "Sort by Matching Score" }));
 
     await waitFor(() => expect(listed(api).length).toBe(3));
     const last = listed(api)[2];
@@ -3387,10 +3384,12 @@ describe("action tooltips", () => {
     expect(await tab(/^Registered/)).toHaveAccessibleDescription(/registered interest in/);
     expect(await tab(/^Favorites/)).toHaveAccessibleDescription(/saved to review later/);
 
-    expect(screen.getByRole("combobox", { name: /Sort/ })).toHaveAccessibleDescription(
-      /overall suitability/,
+    expect(
+      screen.getByRole("radio", { name: "Sort By Suitability Score" }),
+    ).toHaveAccessibleDescription(/overall suitability/);
+    expect(screen.getByRole("radio", { name: "Map view" })).toHaveAccessibleDescription(
+      /on a map/,
     );
-    expect(screen.getByRole("button", { name: "Map" })).toHaveAccessibleDescription(/on a map/);
     expect(screen.getByRole("button", { name: "Explore Trials" })).toHaveAccessibleDescription(
       /single view/,
     );
@@ -3406,16 +3405,18 @@ describe("action tooltips", () => {
     expect(star).toHaveAccessibleDescription(/Save this trial to your Favorites/);
   });
 
-  it("follows the sort that is applied", async () => {
+  it("says what every order does, not only the one already applied", async () => {
+    // The `<select>` this replaced could carry a single tooltip, and it
+    // described the order already chosen — the reader could not find out
+    // what the other two would do before picking one.
     const api = fakeApi();
     renderTrialMatches(api);
-    const sort = await screen.findByRole("combobox", { name: /Sort/ });
-    await userEvent.selectOptions(sort, "distance");
-    await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: /Sort/ })).toHaveAccessibleDescription(
-        /how close the trial locations are/,
-      ),
-    );
+    expect(
+      await screen.findByRole("radio", { name: "Sort by Distance" }),
+    ).toHaveAccessibleDescription(/how close the trial locations are/);
+    expect(
+      screen.getByRole("radio", { name: "Sort by Matching Score" }),
+    ).toHaveAccessibleDescription(/matches the trial's eligibility criteria/);
   });
 
   it("draws the bookmark as CB's bookmark icon, not a star glyph", async () => {
@@ -3568,10 +3569,10 @@ describe("action tooltips", () => {
     // from it and swallow the next keyboard focus.
     const api = fakeApi();
     renderTrialMatches(api);
-    const button = await screen.findByRole("button", { name: "Map" });
+    const button = await screen.findByRole("radio", { name: "Map view" });
     const box = () => document.getElementById(button.getAttribute("aria-describedby")!)!;
     await userEvent.click(button);
-    await userEvent.click(await screen.findByRole("button", { name: "List" }));
+    await userEvent.click(button);
     await userEvent.unhover(button);
     await waitFor(() => expect(box()).not.toHaveClass("is-open"));
     await userEvent.tab();
