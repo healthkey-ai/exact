@@ -35,6 +35,9 @@ export function assertExactTokens(): string[] {
     "--exact-color-border",
     "--exact-color-text",
     "--exact-color-text-muted",
+    // The chosen segment's fill. Its own token because it must move with
+    // `--exact-color-primary`, which is painted ON it.
+    "--exact-color-primary-50",
   ];
   const styles = getComputedStyle(document.documentElement);
   return required.filter((name) => !styles.getPropertyValue(name).trim());

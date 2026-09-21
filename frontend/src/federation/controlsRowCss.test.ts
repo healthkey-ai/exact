@@ -12,14 +12,25 @@ import { describe, expect, it } from "vitest";
 describe("the controls row", () => {
   const css = readFileSync(new URL("./exact.css", import.meta.url), "utf8");
 
-  it("declares its query container on the element that carries both classes", () => {
-    // The list root is `<div class="exact-root exact-list">`, so the
-    // descendant form every other rule in the sheet uses — `.exact-root
-    // .exact-list` — matches nothing here. Written that way the container
-    // never exists, and each `@container` rule below silently never applies:
-    // nothing throws, nothing logs, the row is simply always the narrow one.
-    expect(css).toMatch(/\.exact-root\.exact-list\s*\{[^}]*container-type:\s*inline-size/);
-    expect(css).not.toMatch(/\.exact-root \.exact-list\s*\{[^}]*container-type/);
+  it("declares its query container off the element the host mounts", () => {
+    // `inline-size` containment computes an element's intrinsic width as if
+    // it had no contents. On `.exact-list` — the element a host mounts —
+    // that collapses the whole list to its padding in any host that sizes
+    // the remote by content (a flex row, an `inline-block`, an auto grid
+    // track). The controls row takes its width from the list either way.
+    expect(css).toMatch(
+      /\.exact-root \.exact-list__controls\s*\{[^}]*container-type:\s*inline-size/,
+    );
+    expect(css).not.toMatch(/\.exact-root\.?\s?\.?exact-list\s*\{[^}]*container-type/);
+  });
+
+  it("names the container every query asks for", () => {
+    // A query naming a container that does not exist is not an error: it
+    // simply never matches, and the layout silently stays on its fallback.
+    const declared = [...css.matchAll(/container-name:\s*([\w-]+)/g)].map((m) => m[1]);
+    const asked = [...css.matchAll(/@container\s+([\w-]+)/g)].map((m) => m[1]);
+    expect(asked.length).toBeGreaterThan(0);
+    for (const name of asked) expect(declared).toContain(name);
   });
 
   /** Every `@media`/`@container` block in the sheet, as `[prelude, body]`.
@@ -58,6 +69,6 @@ describe("the controls row", () => {
         /\.exact-(seg|list__sort)/.test(body) && /\bm(in|ax)-width\b|\bwidth\s*[<>:]/.test(prelude),
     );
     expect(sized.length).toBeGreaterThan(0);
-    for (const [prelude] of sized) expect(prelude).toMatch(/^@container exact-list /);
+    for (const [prelude] of sized) expect(prelude).toMatch(/^@container exact-controls /);
   });
 });

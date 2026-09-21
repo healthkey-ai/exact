@@ -311,12 +311,17 @@ export function ActionTooltip({
   text,
   align = "end",
   className,
+  wrapRole,
   children,
 }: {
   text?: string;
   align?: "start" | "end";
   /** Extra class on the wrap, for a control whose layout the wrap must keep. */
   className?: string;
+  /** `"none"` takes the wrap out of the accessibility tree, for a control
+   *  whose parent must OWN it — a `radiogroup` owns its radios, and a plain
+   *  `<span>` between the two is not conforming. */
+  wrapRole?: "none";
   children: (tipId: string | undefined) => React.ReactNode;
 }) {
   const id = useId();
@@ -417,6 +422,7 @@ export function ActionTooltip({
     <span
       ref={wrapRef}
       className={`exact-action-tip${className ? ` ${className}` : ""}`}
+      role={wrapRole}
       onMouseEnter={enter}
       onMouseLeave={leaveSoon}
       // Clicking a control the keyboard had focused leaves focus where it is

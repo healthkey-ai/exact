@@ -69,6 +69,9 @@ export function SegmentedControl({ label, options, value, onChange, className }:
             text={option.tooltip}
             align="start"
             className="exact-seg__item"
+            // The group owns the radios; the wrap between them is not part of
+            // the picture a screen reader builds of the set.
+            wrapRole="none"
           >
             {(tipId) => (
               <button

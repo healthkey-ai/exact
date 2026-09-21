@@ -58,6 +58,7 @@ import { MAX_TRIAL_IDS, canEditFields } from "./state";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
+  WIDE_CONTROLS_ROW,
   tabValueForType,
   tabsFor,
   type TabValue,
@@ -817,6 +818,26 @@ function TrialMatchesInner({
   // its own: every row already carries its closest site, so a second fetch
   // would be a second matcher run to learn what is in hand.
   const [mapOpen, setMapOpen] = useState(false);
+
+  // Does the controls row have room for the view mode, all three orders and
+  // the three actions side by side? Measured, because this is a remote: the
+  // window is the host's, and the same 1280px window gives this list a 900px
+  // column in ht-phr and the full width in CB. Without a ResizeObserver
+  // (jsdom, an old browser) the answer stays "no", which is the layout that
+  // fits either way.
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const [wideControlsRow, setWideControlsRow] = useState(false);
+  useEffect(() => {
+    const row = controlsRef.current;
+    if (!row || typeof ResizeObserver === "undefined") return;
+    // Observing the row is safe from feedback: its width comes from the list
+    // around it, and moving the sort between its rows does not change it.
+    const observer = new ResizeObserver(([entry]) => {
+      setWideControlsRow(entry.contentRect.width >= WIDE_CONTROLS_ROW);
+    });
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, []);
   const handleSelectFromMap = (trial: TrialMatch) => {
     setMapOpen(false);
     handleSelect(trial);
@@ -948,19 +969,24 @@ function TrialMatchesInner({
         stateCounts={stateCounts}
       />
 
-      <div className="exact-list__controls">
+      <div className="exact-list__controls" ref={controlsRef}>
         {/* CB's row 1 is the view mode on the left and the actions on the
-            right, with the sort joining them there only when the window is
-            wide enough (xl); below that it takes a row of its own. The
-            wrapper is what gives it that row — see `exact-list__sort`. */}
+            right; the sort joins them there when the row is wide enough and
+            takes a row of its own when it is not.
+            
+            Which row it is on decides where it is WRITTEN, not just where it
+            is painted. CSS `order` moves the box and leaves the tab stop
+            behind, so on the narrow layout the keyboard went from row 1 down
+            to the sort and back up to the actions (WCAG 2.4.3). CB solves the
+            same problem by rendering the control twice and hiding one; one
+            control in the right place is the same layout without a second
+            copy of it in the accessibility tree. */}
         <ViewModeControl
           value={mapOpen ? "map" : "list"}
           onChange={(mode) => setMapOpen(mode === "map")}
         />
 
-        <div className="exact-list__sort">
-          <SortControl value={sort} onChange={handleSortChange} />
-        </div>
+        {wideControlsRow ? <SortControl value={sort} onChange={handleSortChange} /> : null}
 
         <div className="exact-list__triggers">
         {/* CB's toolbar tooltips. A control that cannot act says why in its
@@ -1023,6 +1049,12 @@ function TrialMatchesInner({
           )}
         </ActionTooltip>
         </div>
+
+        {wideControlsRow ? null : (
+          <div className="exact-list__sort">
+            <SortControl value={sort} onChange={handleSortChange} />
+          </div>
+        )}
       </div>
 
       {graphOpen && !graphUnavailable ? (

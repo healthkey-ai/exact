@@ -83,6 +83,45 @@ describe("the view mode control", () => {
   });
 });
 
+describe("the controls row", () => {
+  it("puts the sort where the keyboard reaches it last, as the eye does", async () => {
+    // Without a ResizeObserver (this environment) the row is the narrow one,
+    // where the sort paints on a second line under the actions. CSS `order`
+    // would paint it there and leave its tab stop on row 1, sending the
+    // keyboard down to the sort and back up to the actions (WCAG 2.4.3), so
+    // the sort is WRITTEN after them instead.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await screen.findByRole("radio", { name: "List view" });
+    const order = [
+      seg("List view"),
+      screen.getByRole("button", { name: "Explore Trials" }),
+      screen.getByRole("button", { name: "Export CSV" }),
+      screen.getByRole("button", { name: "Filter Results" }),
+      seg("Sort By Suitability Score"),
+    ];
+    for (const [i, node] of order.slice(1).entries()) {
+      // DOCUMENT_POSITION_FOLLOWING: each one comes after the one before it.
+      expect(order[i].compareDocumentPosition(node) & 4).toBe(4);
+    }
+
+    // And the tab sequence agrees: from the view mode (one stop for the whole
+    // group) forward through the actions, and only then the sort.
+    seg("List view").focus();
+    const stops: (string | null)[] = [];
+    for (let i = 1; i < order.length; i++) {
+      await userEvent.tab();
+      stops.push(document.activeElement?.textContent ?? null);
+    }
+    expect(stops).toEqual([
+      "Explore Trials",
+      "Export CSV",
+      "Filter Results",
+      "Sort By Suitability Score",
+    ]);
+  });
+});
+
 describe("the sort control", () => {
   it("offers CB's three orders and sends the one that is picked", async () => {
     const api = fakeApi();

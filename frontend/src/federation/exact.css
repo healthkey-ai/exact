@@ -54,7 +54,10 @@
    * star on blue with it. */
   --exact-color-on-primary: #ffffff;
   /* The tint behind a chosen segment — CB --brand-50, which it pairs with
-   * brand-700 text. `primary` stands in for that text here. */
+   * brand-700 text; `primary` stands in for that text here. A host that
+   * themes `primary` must theme this with it: the pair is the only thing
+   * that says which segment is chosen, so a dark host leaving this light
+   * gets light-on-light. Checked by `assertExactTokens`. */
   --exact-color-primary-50: hsl(199 100% 92%);
 
   /* Default to `inherit` so the remote picks up the host's typography
@@ -899,20 +902,6 @@
  * utility layer: everything stays scoped under `.exact-root` so nothing can
  * leak into the host.
  * ------------------------------------------------------------------------- */
-/* The list is a query container, so the controls row can answer to the width
- * the HOST gave this remote rather than to the window's. A viewport media
- * query is what CB uses, and it is wrong here: the same 1280px window shows
- * this list in a 900px column inside ht-phr and full width inside CB.
- *
- * Where container queries are not supported the rules below simply never
- * match, which leaves the narrow layout — the one that fits either way. */
-/* Compound, not descendant: the element carries BOTH classes
-   (`exact-root exact-list`), so `.exact-root .exact-list` matches nothing. */
-.exact-root.exact-list {
-  container-type: inline-size;
-  container-name: exact-list;
-}
-
 .exact-root .exact-list__title {
   margin: 0 0 1rem;
   font-size: 1.5rem;
@@ -1000,6 +989,20 @@
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 0.75rem;
+  /* A query container, so the labels below answer to the width the HOST gave
+     this remote rather than to the window's: the same 1280px window shows
+     this list in a 900px column inside ht-phr and full width inside CB.
+     Where container queries are unsupported those rules never match, which
+     leaves the wrapping labels — the ones that fit either way.
+
+     Declared HERE and not on `.exact-list`, which is the element the host
+     mounts: `inline-size` containment computes an element's intrinsic width
+     as if it had no contents, so a host that sizes the remote by its content
+     (a flex row, an `inline-block`, an auto grid track) would have collapsed
+     the whole list to its padding. This row takes its width from the list
+     either way, and the cards still speak for the list's own width. */
+  container-type: inline-size;
+  container-name: exact-controls;
 }
 
 /* The triggers travel together at the right, whatever else shares the row:
@@ -1012,24 +1015,15 @@
   margin-left: auto;
 }
 
-/* Three orders, each named in full, do not fit beside the actions unless the
-   list is wide. CB's answer, copied here: the sort takes a row of its own
-   when it is narrow and joins the view mode on row 1 when there is room.
-   `flex-basis: 100%` is what breaks the row; the control inside keeps its
-   own width, so it does not stretch across the page. */
+/* The sort's own row, when the row is too narrow to hold everything. Only
+   rendered in that case (`WIDE_CONTROLS_ROW` in `listChrome.ts` is the
+   measurement, `TrialMatches` does the measuring), so there is no `order`
+   here: what is painted second is written second, and the keyboard follows
+   the same path as the eye. `flex-basis: 100%` breaks the row; the control
+   inside keeps its own width rather than stretching across the page. */
 .exact-root .exact-list__sort {
   display: flex;
-  order: 1;
   flex-basis: 100%;
-}
-
-/* Room for the view mode, all three orders and the three actions side by
-   side; measured in the browser at 99 + 519 + 364px plus the gaps. */
-@container exact-list (min-width: 66rem) {
-  .exact-root .exact-list__sort {
-    order: 0;
-    flex-basis: auto;
-  }
 }
 
 /* Segmented control — CB's `TrialsViewMode` / `TrialsSortControl`: joined
@@ -1077,6 +1071,11 @@
   line-height: 1.25rem;
   color: var(--exact-color-text-muted);
   cursor: pointer;
+  /* A segment is a third of the row and its labels are not short: on the
+     narrowest containers "Suitability" alone is wider than the share, and
+     without this the centred text spills sideways over its neighbours and
+     is clipped by the group's own `overflow: hidden`. */
+  overflow-wrap: break-word;
   /* Wrapping by default, one line once there is room: three orders named in
      full share a phone's width otherwise. Asked of the CONTAINER, like the
      row above — a desktop window can still hand this remote a column a few
@@ -1085,7 +1084,7 @@
   white-space: normal;
 }
 
-@container exact-list (min-width: 40rem) {
+@container exact-controls (min-width: 40rem) {
   .exact-root .exact-seg__btn {
     white-space: nowrap;
   }
@@ -1121,6 +1120,14 @@
   /* The icons are stroked with `currentColor`, so they follow the label. */
   .exact-root .exact-seg__btn.is-on svg {
     stroke: HighlightText;
+  }
+
+  /* `forced-color-adjust: none` above also hands this ring back to our own
+     token, which then paints a fixed blue over the user's `Highlight` fill —
+     on some palettes the ring all but disappears. Inside this mode the ring
+     belongs to the system pair too. */
+  .exact-root .exact-seg__btn.is-on:focus-visible {
+    outline-color: HighlightText;
   }
 }
 
