@@ -689,6 +689,104 @@ describe("saving", () => {
       .toEqual({ hemoglobin_g_dl: 13, platelet_count: 250 });
   });
 
+  it("...and does the same when the payload names a patient of its own", async () => {
+    // The same switch, with an id INSIDE the payload — ht-phr's shape. The
+    // two props identify different things: the payload is what the server
+    // answers from, `personId` is what the host's write adapter PATCHes. A
+    // handle taken from the payload alone holds still here, the writer built
+    // for Alice is not rebuilt, and its `live()` resolves against Bob's
+    // adapter: Alice's haemoglobin is written into Bob's record.
+    const writable: WritableFields = {
+      hemoglobin_g_dl: { kind: "direct", writable: true, value_kind: "number" },
+    };
+    const alice = fakeState({ writable });
+    const bob = fakeState({ writable });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    // One payload object, shared: the host moved only `personId`.
+    const payload = { person_id: 9009, disease: "multiple myeloma" };
+    const ui = (personId: string, state: typeof alice.adapter) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={payload}
+          personId={personId}
+          state={state}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("alice", alice.adapter));
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[0],
+    );
+    await screen.findByText("Back to all trials");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Still inside the debounce.
+    view.rerender(ui("bob", bob.adapter));
+
+    await waitFor(() => expect(alice.record.hemoglobin_g_dl).toBe(13));
+    expect(bob.record).toEqual({});
+    expect(bob.adapter.setPatientFields).not.toHaveBeenCalled();
+  });
+
+  it("...and when a blank id sits in front of the real one", async () => {
+    // `person_id: ""` is a real shape — a column that exists and is empty —
+    // and it is checked before `id`. Taken as an id on position alone, every
+    // patient carrying it hashes to the same handle, so the writer built for
+    // one is never rebuilt and `live()` sends the edit through the next
+    // one's adapter.
+    const writable: WritableFields = {
+      hemoglobin_g_dl: { kind: "direct", writable: true, value_kind: "number" },
+    };
+    const alice = fakeState({ writable });
+    const bob = fakeState({ writable });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (id: number, state: typeof alice.adapter) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ person_id: "", id, disease: "multiple myeloma" }}
+          state={state}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui(9009, alice.adapter));
+
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "View Trial" }))[0],
+    );
+    await screen.findByText("Back to all trials");
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Still inside the debounce.
+    view.rerender(ui(9010, bob.adapter));
+
+    await waitFor(() => expect(alice.record.hemoglobin_g_dl).toBe(13));
+    expect(bob.record).toEqual({});
+    expect(bob.adapter.setPatientFields).not.toHaveBeenCalled();
+  });
+
   it("writes a queued edit into the patient it was made for, not the next one", async () => {
     // The writer's flush runs on a patient switch, and the refs it would
     // reach through are written during render — so by then they describe the
@@ -945,5 +1043,453 @@ describe("saving", () => {
     await new Promise((r) => setTimeout(r, 400));
     expect(state.adapter.setPatientFields).not.toHaveBeenCalled();
     expect(state.record).toEqual({});
+  });
+});
+
+describe("telling the host what the record now says", () => {
+  // The host owns the patient payload, and that payload wins server-side over
+  // `personId`. So every query this remote makes after a write is answered
+  // from the host's copy — and if the host never learns, the page goes on
+  // describing the patient the reader just edited away from (#555). Only the
+  // host can end that, so it has to be told.
+
+  const editHemoglobin = async (
+    state: ReturnType<typeof fakeState>,
+    onPatientRecordChanged: (fields: Record<string, unknown>) => void,
+    fields = [row()],
+  ) => {
+    const api = fakeApi();
+    api.setDetail(detailWith(fields));
+    const view = renderTrialMatches(api, { state: state.adapter, onPatientRecordChanged });
+    await openDetail();
+    await userEvent.click(
+      await screen.findByRole("button", { name: `Edit ${fields[0].label}` }),
+    );
+    return { api, view };
+  };
+
+  it("tells the host what was written, once our own re-read has landed", async () => {
+    // Not when the write returns. The host refreshes its payload on this
+    // call, and a refresh that overlaps our own re-read has the page
+    // answering from two different records for a round trip.
+    const told = vi.fn();
+    const state = fakeState({ writable: WRITABLE });
+    const { api } = await editHemoglobin(state, told);
+
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+
+    const release = api.holdNextDetail();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+    expect(told).not.toHaveBeenCalled();
+
+    release();
+    await waitFor(() => expect(told).toHaveBeenCalledWith({ hemoglobin_g_dl: 13 }));
+  });
+
+  it("reports what the RECORD says, not what was typed", async () => {
+    // `differs` is a successful write whose stored value was canonicalised on
+    // the way back. Handing the host the typed value would have it refresh
+    // its payload with a number the record does not hold.
+    const told = vi.fn();
+    const state = fakeState({ writable: WRITABLE });
+    state.adapter.setPatientFields = vi.fn(async (fields: Record<string, unknown>) =>
+      Object.fromEntries(
+        Object.keys(fields).map((f) => [f, { status: "differs" as const, value: 12.5 }]),
+      ),
+    );
+    await editHemoglobin(state, told);
+
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(told).toHaveBeenCalledWith({ hemoglobin_g_dl: 12.5 }));
+  });
+
+  it("says nothing about a field the record did not answer for", async () => {
+    // `unconfirmed` is the record not mentioning the field — there is no
+    // value to report, and reporting the typed one would push a write the
+    // record may never have taken into the host's payload.
+    const told = vi.fn();
+    const state = fakeState({ writable: WRITABLE });
+    state.adapter.setPatientFields = vi.fn(async () => ({
+      hemoglobin_g_dl: { status: "unconfirmed" as const },
+    }));
+    const { api } = await editHemoglobin(state, told);
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.detailRequests().length).toBeGreaterThan(1));
+    expect(told).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a confirmed write into a failed one when the host throws", async () => {
+    // The host's refresh is not part of the write. A host that throws here
+    // has failed to catch up — the page is as stale as it was before, which
+    // is not the same as the save having failed, and must not be shown as
+    // one.
+    //
+    // The throw is also not swallowed. It lands inside the settle chain,
+    // where an uncaught one is an unhandled rejection: nothing on screen
+    // changes either way, so the warning is the only thing that tells the
+    // operator their host is not catching up.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const state = fakeState({ writable: WRITABLE });
+    await editHemoglobin(state, () => {
+      throw new Error("host blew up");
+    });
+
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+    expect(state.record.hemoglobin_g_dl).toBe(13);
+    // No "Couldn't save that", and the editor stays closed rather than
+    // re-opening on the value to retry — both of which are how this page
+    // says a write failed.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Hemoglobin" })).toBeNull();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("the host could not be told"),
+      expect.any(Error),
+    );
+    warn.mockRestore();
+  });
+
+  it("does not leave an unhandled rejection when the host's refresh is async", async () => {
+    // The prop returns `void`, which an `async` function satisfies — and
+    // refreshing a payload is exactly the kind of thing a host does
+    // asynchronously. A rejection from one sails past a synchronous
+    // `try`/`catch` and lands as an unhandled rejection, which some hosts
+    // and test runners treat as fatal.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const state = fakeState({ writable: WRITABLE });
+    await editHemoglobin(state, (() =>
+      Promise.reject(new Error("refetch failed"))) as () => void);
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("the host could not be told"),
+        expect.any(Error),
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    warn.mockRestore();
+  });
+
+  it("says nothing to a host that is no longer showing this patient", async () => {
+    // The write still goes out — an edit the reader made and was told was
+    // saving must not be dropped because they navigated — but the REPORT is
+    // for a page that no longer exists. It carries no patient with it, so a
+    // host receiving it after the switch would refresh its payload on values
+    // belonging to whoever was on screen a moment ago.
+    const told = vi.fn();
+    const state = fakeState({ writable: WRITABLE });
+    const { view } = await editHemoglobin(state, told);
+
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    // Inside the queue's debounce, so the write leaves through the unmount
+    // flush rather than having already gone.
+    view.unmount();
+
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(told).not.toHaveBeenCalled();
+  });
+
+  it("tells the host developer when their payload names no patient", async () => {
+    // The prop only works if the payload carries an id: without one, every
+    // refresh reads as a new patient, so obeying "refresh your payload"
+    // closes the trial page the edit was made from and silently drops the
+    // report for anything edited while the refresh was in flight. Nothing
+    // here can distinguish that from a real switch, so the host is told
+    // rather than left to discover it in production.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, {
+      state: fakeState({ writable: WRITABLE }).adapter,
+      patientInfo: { disease: "multiple myeloma" },
+      onPatientRecordChanged: () => {},
+    });
+    await openDetail();
+
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("carries no patient id"),
+    );
+    warn.mockRestore();
+  });
+
+  it("says nothing to a host that named one", async () => {
+    // Non-vacuity: the warning must not fire for ht-phr's payload, which
+    // carries `person_id` through `/normalize-ctomop-row/`.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, {
+      state: fakeState({ writable: WRITABLE }).adapter,
+      patientInfo: { person_id: 9009, disease: "multiple myeloma" },
+      onPatientRecordChanged: () => {},
+    });
+    await openDetail();
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("carries no patient id"),
+    );
+    warn.mockRestore();
+  });
+
+  it("says nothing to a host that cannot edit at all", async () => {
+    // No adapter means no editing pair, so the prop can never fire and
+    // there is nothing for the host to act on. Warning anyway sends a host
+    // that merely passes the callback around looking for a bug it does not
+    // have.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, {
+      patientInfo: { disease: "multiple myeloma" },
+      onPatientRecordChanged: () => {},
+    });
+    await openDetail();
+
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("carries no patient id"),
+    );
+    warn.mockRestore();
+  });
+
+  it("says nothing once the host has taken the adapter away", async () => {
+    // The other half of the guard above, and the one a host reaches without
+    // unmounting: `state` gone means the pair is gone, which is how a host
+    // spells "not this patient any more" (a logout, a switch mid-flight).
+    // The write in hand is still finished — it was made and answered for the
+    // patient who was on screen — but reporting it now would hand those
+    // values to a host that has moved on.
+    const told = vi.fn();
+    const state = fakeState({ writable: WRITABLE });
+    const { view } = await editHemoglobin(state, told);
+
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    view.setProps({ state: undefined });
+
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(told).not.toHaveBeenCalled();
+  });
+
+  it("reports each batch on its own, not the batch before it as well", async () => {
+    // The values are collected in a ref across a batch and handed over when
+    // it settles. Left there, the next batch hands the host the previous
+    // one's fields again — and by then they may be the values the host has
+    // already caught up on, or ones a later edit has moved past.
+    const told = vi.fn();
+    const state = fakeState({
+      writable: {
+        ...WRITABLE,
+        platelet_count: { kind: "direct", writable: true, value_kind: "number" },
+      },
+    });
+    await editHemoglobin(state, told, [
+      row(),
+      row({ name: "plt", label: "Platelets", upatientField: "platelet_count", uvalue: 150 }),
+    ]);
+
+    const hgb = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(hgb);
+    await userEvent.type(hgb, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(told).toHaveBeenCalledTimes(1));
+    expect(told).toHaveBeenLastCalledWith({ hemoglobin_g_dl: 13 });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Platelets" }));
+    const plt = screen.getByRole("textbox", { name: "Platelets" });
+    await userEvent.clear(plt);
+    await userEvent.type(plt, "160");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(told).toHaveBeenCalledTimes(2));
+    expect(told).toHaveBeenLastCalledWith({ platelet_count: 160 });
+  });
+
+  it("does not wipe a second editor when the host acts on being told", async () => {
+    // The host's answer to this callback is to refresh its payload, and the
+    // payload is in the key of both the detail read and the writable-fields
+    // descriptor. Keyed on the whole payload, the refresh empties both: the
+    // attribute rows unmount and the controls are withheld, so an editor the
+    // reader has open on ANOTHER field — the normal way to work through a
+    // column of them — closes on whatever they had typed into it.
+    //
+    // Measured before the fix: the Platelets box and its "160" were gone,
+    // and identical to the no-refresh control after it.
+    const state = fakeState({
+      writable: {
+        ...WRITABLE,
+        platelet_count: { kind: "direct", writable: true, value_kind: "number" },
+      },
+    });
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row(),
+        row({ name: "plt", label: "Platelets", upatientField: "platelet_count", uvalue: 150 }),
+      ]),
+    );
+    // A host that does what the prop documents: re-read the profile, hand
+    // back a new payload. Same person, one year older.
+    let age = 50;
+    const patientOf = (years: number) => ({
+      person_id: 9009,
+      disease: "multiple myeloma",
+      patient_age: years,
+    });
+    const view = renderTrialMatches(api, {
+      state: state.adapter,
+      patientInfo: patientOf(age),
+      onPatientRecordChanged: () => {
+        age += 1;
+        view.setProps({ patientInfo: patientOf(age) });
+      },
+    });
+    await openDetail();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const hgb = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(hgb);
+    await userEvent.type(hgb, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Opened while the write, the re-read and the host's refresh are all
+    // still on their way.
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Platelets" }));
+    const plt = screen.getByRole("textbox", { name: "Platelets" });
+    await userEvent.clear(plt);
+    await userEvent.type(plt, "160");
+
+    await waitFor(() => expect(state.record.hemoglobin_g_dl).toBe(13));
+    await waitFor(() => expect(age).toBe(51));
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+
+    expect(screen.getByRole("textbox", { name: "Platelets" })).toHaveValue("160");
+  });
+
+  it("ends with the row showing what the record took — #555 itself", async () => {
+    // Everything else here is about collateral damage. This is the symptom:
+    // the reader edits a field, the write lands, and the page goes back to
+    // the old value because every query carries the host's payload and the
+    // server answers from it.
+    //
+    // The fake plays the server honestly: its detail answers 12 until the
+    // host refreshes its payload, and 13 afterwards. So the row reads 13 at
+    // the end only if the refresh actually happened and was answered.
+    const state = fakeState({ writable: WRITABLE });
+    const api = fakeApi();
+    api.setDetail(detailWith([row({ uvalue: 12 })]));
+    let age = 50;
+    const patientOf = (years: number) => ({
+      person_id: 9009,
+      disease: "multiple myeloma",
+      patient_age: years,
+    });
+    const view = renderTrialMatches(api, {
+      state: state.adapter,
+      patientInfo: patientOf(age),
+      onPatientRecordChanged: (fields) => {
+        api.setDetail(detailWith([row({ uvalue: fields.hemoglobin_g_dl as number })]));
+        age += 1;
+        view.setProps({ patientInfo: patientOf(age) });
+      },
+    });
+    await openDetail();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(age).toBe(51));
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
+    // Not the optimistic value: that is long retired by now, and 12 is what
+    // the page showed before.
+    expect(await screen.findByText("13")).toBeInTheDocument();
+    expect(screen.queryByText("12")).toBeNull();
+  });
+
+  it("finishes a second edit made while the host was catching up", async () => {
+    // The host's refresh arrives in the middle of the next edit. Keyed on the
+    // payload hash, the queue is rebuilt by it: the writer carrying this edit
+    // is no longer the current one, so its answer is discarded on arrival —
+    // the optimistic value is never retired, the row keeps saying "Saving…"
+    // over a write that succeeded, and the host is never told about it.
+    const state = fakeState({
+      writable: {
+        ...WRITABLE,
+        platelet_count: { kind: "direct", writable: true, value_kind: "number" },
+      },
+    });
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row(),
+        row({ name: "plt", label: "Platelets", upatientField: "platelet_count", uvalue: 150 }),
+      ]),
+    );
+    const told = vi.fn();
+    let age = 50;
+    const patientOf = (years: number) => ({
+      person_id: 9009,
+      disease: "multiple myeloma",
+      patient_age: years,
+    });
+    // The host's refresh is held rather than applied where it is asked for,
+    // so the test can drop it into the middle of the NEXT edit. Applied as
+    // soon as it is asked for, it lands between the two batches, where the
+    // key does not matter — which is why this needs arranging by hand.
+    let refresh: (() => void) | null = null;
+    const view = renderTrialMatches(api, {
+      state: state.adapter,
+      patientInfo: patientOf(age),
+      onPatientRecordChanged: (fields) => {
+        told(fields);
+        refresh = () => {
+          age += 1;
+          view.setProps({ patientInfo: patientOf(age) });
+        };
+      },
+    });
+    await openDetail();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Hemoglobin" }));
+    const hgb = screen.getByRole("textbox", { name: "Hemoglobin" });
+    await userEvent.clear(hgb);
+    await userEvent.type(hgb, "13");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(told).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit Platelets" }));
+    const plt = screen.getByRole("textbox", { name: "Platelets" });
+    await userEvent.clear(plt);
+    await userEvent.type(plt, "160");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    // Queued, not yet on the wire — the queue debounces. This is the window.
+    refresh!();
+
+    await waitFor(() => expect(state.record.platelet_count).toBe(160));
+    await waitFor(() => expect(told).toHaveBeenLastCalledWith({ platelet_count: 160 }));
+    await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
   });
 });
