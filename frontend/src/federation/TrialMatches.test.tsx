@@ -2707,6 +2707,97 @@ describe("the page number, and what should and should not reset it", () => {
       screen.getByRole("button", { name: "2" }),
     ).not.toHaveAttribute("aria-current", "page");
   });
+
+  it("keeps the open trial when the host RE-READS the same patient's profile", async () => {
+    // Not a re-render this time: the payload's CONTENT changed, because the
+    // profile was edited and the host read it again (#555). Keyed on the hash
+    // of the payload, that reads as a different patient and the open trial
+    // closes.
+    //
+    // Which lands on the reader who edited a field FROM a trial's detail page:
+    // the write succeeds, the host refreshes, and the page they were reading
+    // is gone. The row they were fixing is the reason they refreshed at all.
+    //
+    // The PAGE NUMBER behind it does still reset, from the separate reset on
+    // the query key — the one that serves a change of filters, sort or tab,
+    // where page 1 is the right answer. A payload refresh goes through it
+    // too. That costs the reader their place in the list, not the page they
+    // are reading, and is not what this test is about.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const view = renderTrialMatches(api, {
+      patientInfo: { person_id: 9009, disease: "multiple myeloma", patient_age: 50 },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    await userEvent.click((await screen.findAllByRole("button", { name: "View Trial" }))[0]);
+    await screen.findByText("Back to all trials");
+
+    // The same person, one year older.
+    view.setProps({
+      patientInfo: { person_id: 9009, disease: "multiple myeloma", patient_age: 51 },
+    });
+
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(2));
+    // Still reading the trial they opened, and reading it against the
+    // REFRESHED profile: the detail re-read is what puts the new value on
+    // the row they just edited.
+    expect(screen.getByText("Back to all trials")).toBeInTheDocument();
+  });
+
+  it("...and still resets when the person behind the payload changes", async () => {
+    // Non-vacuity for the test above: keyed on nothing, a refreshed payload
+    // and a different patient would be indistinguishable, and the open trial
+    // would follow the reader from one person to the next.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const view = renderTrialMatches(api, {
+      patientInfo: { person_id: 9009, disease: "multiple myeloma" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click(await screen.findByRole("button", { name: "2" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    await userEvent.click((await screen.findAllByRole("button", { name: "View Trial" }))[0]);
+    await screen.findByText("Back to all trials");
+
+    view.setProps({ patientInfo: { person_id: 9010, disease: "multiple myeloma" } });
+
+    await waitFor(() => expect(screen.queryByText("Back to all trials")).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "1" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+  });
+
+  it("...and when the payload moves to another patient under a steady personId", async () => {
+    // The other way a host names two patients with one id: `personId` holds
+    // (a subject, a session, an account) while the payload it is paired with
+    // is swapped. The payload is what the request is answered from, so this
+    // is a patient change — and keyed on `personId` alone the open trial
+    // would follow the reader into the next person's chart.
+    const api = fakeApi({ count: 3, itemsTotalCount: 25 });
+    const view = renderTrialMatches(api, {
+      personId: "acct-1",
+      patientInfo: { person_id: 9009, disease: "multiple myeloma" },
+    });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    await userEvent.click((await screen.findAllByRole("button", { name: "View Trial" }))[0]);
+    await screen.findByText("Back to all trials");
+
+    view.setProps({
+      personId: "acct-1",
+      patientInfo: { person_id: 9010, disease: "multiple myeloma" },
+    });
+
+    await waitFor(() => expect(screen.queryByText("Back to all trials")).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "1" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+  });
 });
 
 describe("the stale-data dimming", () => {

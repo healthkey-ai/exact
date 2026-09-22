@@ -3,6 +3,7 @@
 // (e.g. mounting two filtered views with the same patient doesn't
 // re-request).
 import {
+  hashKey,
   keepPreviousData,
   useQuery,
   type UseQueryResult,
@@ -25,6 +26,7 @@ import {
   fetchTrialDetail,
   fetchTrials,
   fetchTrialsGraph,
+  patientHandleOf,
 } from "./api";
 import { canEditFields } from "./state";
 import { PatientFieldWriter } from "./patientWriter";
@@ -162,6 +164,16 @@ export function useWritableFields(
 export function useQueuedPatientFields(
   state: TrialStateAdapter | undefined,
   key: string,
+  /** The values the RECORD came back with, once a batch has settled and the
+   *  re-read has landed.
+   *
+   *  Both `saved` and `differs` are reported: `differs` is not a refusal, it
+   *  is the record having canonicalised what was sent (mg/L whatever unit was
+   *  typed, a datetime for a date, `null` for a cleared `""`), so it is the
+   *  value the page should be showing. `unconfirmed` is left out — the
+   *  response did not mention the field, so there is nothing to report about
+   *  it. */
+  onConfirmed?: (fields: Record<string, unknown>) => void,
 ): {
   save: (field: string, value: unknown) => void;
   outstanding: Record<string, unknown>;
@@ -219,6 +231,10 @@ export function useQueuedPatientFields(
   // Fields reported in the current batch, retired together once the re-read
   // above has landed.
   const settledFields = useRef<string[]>([]);
+  // And what the record said they are now — see `onConfirmed`.
+  const settledValues = useRef<Record<string, unknown>>({});
+  const onConfirmedRef = useRef(onConfirmed);
+  onConfirmedRef.current = onConfirmed;
   settledRef.current = () => {
     queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
     queryClient.invalidateQueries({ queryKey: ["exact-writable-fields", key] });
@@ -266,13 +282,16 @@ export function useQueuedPatientFields(
     const built: PatientFieldWriter = new PatientFieldWriter(
       (fields) => live().setPatientFields!(fields),
       {
-        onSettled: (field) => {
+        onSettled: (field, outcome) => {
           if (writerRef.current && writerRef.current !== built) return;
           owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
           // Superseded: a newer edit to this field has not been answered yet,
           // and ITS value is what the row is showing.
           if (owed.current[field] > 0) return;
           settledFields.current.push(field);
+          if (outcome.status !== "unconfirmed") {
+            settledValues.current[field] = outcome.value;
+          }
           setFailed((current) => {
             if (!(field in current)) return current;
             const next = { ...current };
@@ -282,11 +301,63 @@ export function useQueuedPatientFields(
         },
         onBatchSettled: () => {
           const reported = settledFields.current;
+          const confirmed = settledValues.current;
           settledFields.current = [];
+          settledValues.current = {};
           if (writerRef.current && writerRef.current !== built) return;
           void settledRef.current().then(() => {
             if (writerRef.current && writerRef.current !== built) return;
             retire(reported);
+            // After the record has been re-read, not before: the host
+            // refreshes its payload on this, and doing that while our re-read
+            // of the detail is still in the air would have the page answering
+            // from two records at once. (The list and the descriptor are
+            // invalidated alongside it and not waited for — see `settledRef`.)
+            //
+            // One case where "re-read" is weaker than it sounds, and it is
+            // not the one it looks like. A second batch settling first does
+            // NOT make this resolve early: React Query cancels the refetch
+            // this was waiting on and the waiter chains onto the newer one
+            // instead, so the report lands after that — measured, at the
+            // newer fetch's completion, not the cancelled one's.
+            //
+            // What does skip the re-read is `refetchType: "active"`, the
+            // default: with the reader back on the list, the detail query
+            // has no observer, nothing refetches, and this resolves having
+            // re-read nothing. The report is still right — it carries what
+            // the RECORD answered, and the host refreshes from the record —
+            // and the page it would have repainted is not on screen.
+            //
+            // `=== built`, where the write itself accepts a null writer: an
+            // unmount and a host taking the adapter away both leave the ref
+            // null, and a write already on the wire must still be finished
+            // and answered. A REPORT after either is a different matter —
+            // there is no page left to refresh, or the page has moved to
+            // someone else, and the payload names no patient, so a host
+            // cannot tell that the value it is being handed belongs to the
+            // person who is no longer on screen.
+            if (writerRef.current !== built) return;
+            if (Object.keys(confirmed).length > 0) {
+              const failed = (error: unknown) =>
+                console.warn("[exact] the host could not be told what was written", error);
+              try {
+                // `Promise.resolve` because the prop returns `void` and an
+                // `async` host callback is assignable to that: a rejection
+                // from one would sail past the `catch` below and land as an
+                // unhandled rejection, which some hosts and test runners
+                // treat as fatal.
+                void Promise.resolve(onConfirmedRef.current?.(confirmed)).catch(failed);
+              } catch (error) {
+                failed(error);
+              }
+            }
+          }).catch((error) => {
+            // The chain is `invalidateQueries` and the two calls above, both
+            // of which guard themselves. Nothing here is expected to reject;
+            // an unhandled rejection is what would come of it if something
+            // did, and in a host's page that is somebody else's error
+            // reporter lighting up over a write that succeeded.
+            console.warn("[exact] the post-write settle did not finish", error);
           });
         },
         onError: (fields) => {
@@ -590,10 +661,58 @@ export function useTrialDetail({
       personId ?? null,
       patientInfo ?? null,
       filters ?? null,
+      // Derived from the two above it, and hashed the same way React Query
+      // hashes the key itself, so it draws no distinction the key did not
+      // already have. (`JSON.stringify` would: `hashKey` sorts a plain
+      // object's fields and it does not, so a host rebuilding its payload in
+      // another field order would have spelled a new key here and paid a
+      // round trip for it.) It is in the key so the hold below has something
+      // stable to compare WHO this answer was about — see there.
+      patientHandleOf(patientInfo, personId),
     ],
     queryFn: () => fetchTrialDetail({ apiClient, trialId, patientInfo, personId, filters }),
     enabled: enabled && trialId != null,
     staleTime: 30_000,
+    // Hold the previous answer while a re-read is in flight — but only when
+    // the trial, the filters and the patient are all still the same, so the
+    // only thing that moved is the payload itself.
+    //
+    // The key carries the patient payload, and a host refreshing that (which
+    // it does after an inline edit, #555) makes a NEW query: `data` goes
+    // undefined, the attribute rows unmount, and every editor open on one
+    // goes with them, half-typed value included. The reader's own save is
+    // what triggers the refresh, so this lands on exactly the person who is
+    // working through a column of fields.
+    //
+    // A blanket `keepPreviousData` would hold across all three, and each of
+    // them paints something the reader would read as current and true:
+    // another trial's eligibility under the title they just opened, a score
+    // computed under the weights they just changed, or — worst — the
+    // previous PATIENT's numbers. Nothing here dims or says "Updating…" the
+    // way the list does, so whatever is held is simply believed.
+    //
+    // Honest about all three: measured, NONE of them changes anything
+    // today, and no test holds any of them — a mutation setting any one to
+    // `true`, or dropping to a blanket `keepPreviousData`, leaves the suite
+    // green. What IS pinned is that a hold exists at all (`FieldEdit`'s
+    // "does not wipe a second editor" dies without it).
+    //
+    // They are dead for one reason: every condition here can only differ
+    // when something has also moved the detail out from under this observer
+    // — a trial change unmounts it (`selectedTrial` goes through null), and
+    // a patient change fires the reset effect that does the same. So the
+    // conditions are what keeps this honest if either of those stops being
+    // true: a "similar trials" link, or a reset keyed on less. A test
+    // asserting them today would pass against the blanket form too, which
+    // is worse than no test.
+    placeholderData: (previous, previousQuery) => {
+      const key = previousQuery?.queryKey;
+      if (!key) return undefined;
+      const sameTrial = key[1] === trialId;
+      const sameFilters = hashKey([key[4]]) === hashKey([filters ?? null]);
+      const samePatient = key[5] === patientHandleOf(patientInfo, personId);
+      return sameTrial && sameFilters && samePatient ? previous : undefined;
+    },
   });
 }
 

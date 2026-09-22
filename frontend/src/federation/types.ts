@@ -423,6 +423,61 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
+  /** The record took an inline edit, and here is what it says those fields
+   *  are now.
+   *
+   *  Called once a batch of edits has settled AND the record has been
+   *  re-read, with the values the RECORD answered — not always what was
+   *  typed, since it canonicalises units, dates and cleared values on the
+   *  way back. A field the record did not mention is left out.
+   *
+   *  A host that supplies `patientInfo` MUST refresh it here, and is the
+   *  only one that can: its payload wins server-side over `personId`, so
+   *  until the payload carries the new value every query this remote makes
+   *  is answered from the old one and the page keeps showing what the
+   *  reader just changed away from (#555).
+   *
+   *  **The payload must name the patient** — `personId`, `person_id`,
+   *  `externalId`, `external_id`, `patientId`, `patient_id` or `id`, any one
+   *  of them, non-blank. This remote has no other
+   *  way to tell a refresh of the same profile from a switch to a different
+   *  one, so with an id-less payload the refresh you make here reads as a
+   *  change of patient: the trial page the edit was made from closes, and an
+   *  edit made while your refresh is in flight is written but never reported
+   *  back. A console warning says so when the prop is wired to such a
+   *  payload.
+   *
+   *  **Re-read the profile; do not merge these fields into the payload.**
+   *  They are named the way the patient RECORD names them
+   *  (`hemoglobin_g_dl`), which is not the vocabulary a payload is in
+   *  (`hemoglobin_level`, and in different units for some) — the two are
+   *  bridged by `/normalize-ctomop-row/`, on the way in. Merged raw, a field
+   *  is dropped by the server's own filter or, worse, sits beside the
+   *  normalised copy it was supposed to replace. They are reported so a host
+   *  can log them, show them, or map them deliberately.
+   *
+   *  Ordering: the queue runs one batch at a time and each report waits on
+   *  that batch's own re-read — including when a later batch supersedes it,
+   *  which chains onto the newer read rather than cutting the wait short.
+   *  The one case that skips it is the reader leaving the detail page
+   *  before the write settles: nothing is observing that query, so nothing
+   *  refetches and the report arrives having re-read nothing. It still
+   *  carries what the record answered. What this cannot order is the HOST's
+   *  own work: if your refresh is asynchronous, make sure an older
+   *  one cannot land after a newer one and put the payload back. React
+   *  Query's `invalidateQueries` on one key does that for you — the newest
+   *  fetch wins; a hand-rolled fetch does not.
+   *
+   *  Deliberately not solved by chaining the calls here: waiting on the
+   *  host's promise lets a host that never settles block every later report,
+   *  and the page would go quiet on writes that succeeded.
+   *
+   *  A host that throws, or returns a promise that rejects, does not turn a
+   *  successful write into a failed one. Nothing is reported after this
+   *  remote unmounts or after the host takes the state adapter away: the
+   *  payload names no patient, so a host could not tell that what it was
+   *  handed belongs to whoever was on screen a moment ago. */
+  onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
   /** Draws the map behind the list/map view mode.
    *
    *  A function rather than an API key, because rendering tiles means loading

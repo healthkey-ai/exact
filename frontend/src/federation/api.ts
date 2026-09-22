@@ -12,6 +12,7 @@
 // caller has only a `personId`, we keep the GET path so the server-side
 // CTOMOP resolver (#102) handles patient fetching.
 
+import { hashKey } from "@tanstack/react-query";
 import type { AxiosInstance } from "axios";
 
 import { isUsableLastUpdate, isActiveDistance } from "./filters";
@@ -76,6 +77,76 @@ interface FetchTrialsArgs {
  *  through to the `person_id` path, so this must too. */
 export function hasInlinePatient(patientInfo: PatientInfo | null | undefined): boolean {
   return patientInfo != null && Object.keys(patientInfo).length > 0;
+}
+
+/** The id inside an inline payload, across the spellings a host may use.
+ *  EXACT's own `PatientInfo` is camelCase over the wire and names the patient
+ *  `externalId`; ht-phr's payload carries `person_id` and `id` as well.
+ *  `null` when the payload names nobody. */
+export function inlinePatientId(
+  patientInfo: PatientInfo | null | undefined,
+): string | null {
+  for (const field of [
+    "personId",
+    "person_id",
+    "externalId",
+    "external_id",
+    "patientId",
+    "patient_id",
+    "id",
+  ]) {
+    const value = patientInfo?.[field];
+    // Blank is not an id, and taking it as one is worse than having none:
+    // `person_id: ""` beside a real `id` would win here on position alone,
+    // every patient carrying it would hash to the same handle, and a write
+    // queued for one would be sent through the next one's adapter. NaN gets
+    // the same treatment — it is a number that equals nothing, itself
+    // included.
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
+}
+
+/** WHO the reader is looking at, for state that must survive the payload
+ *  being REFRESHED — the same patient, read again, in a new object.
+ *
+ *  Both props, because they identify different things and either moving is a
+ *  different patient. The payload is what the server answers from
+ *  (`resolve_patient_info` prefers it over `person_id`); `personId` is what
+ *  the host's write adapter is built from, so it names the record an edit is
+ *  PATCHed into. Keyed on one alone, the other can move underneath:
+ *
+ *   - `personId` only: a host holding it steady while swapping the payload to
+ *     another patient keeps one handle across both, and the open trial, the
+ *     writable-fields descriptor and the queued writes follow the reader into
+ *     the next person's chart.
+ *   - the payload's id only: a host moving `personId` under a steady payload
+ *     keeps the writer that was built for the previous one, and `live()` then
+ *     resolves it against the NEW adapter — one person's lab value written
+ *     into another person's record. Measured, both directions.
+ *
+ *  What it deliberately does NOT carry is the rest of the payload, which is
+ *  what `patientInfoKey` and `stateKey` hash: a host re-reading the profile
+ *  after an inline edit (#555) changes those, and state keyed on them is
+ *  discarded for a patient who never changed. When the payload names nobody
+ *  there is nothing else to go on and the whole hash stands in, so such a
+ *  host resets on every refresh — the safe direction to be wrong in. */
+export function patientHandleOf(
+  patientInfo: PatientInfo | null | undefined,
+  personId: string | number | undefined,
+): string {
+  // `hashKey`, not `JSON.stringify`, for the fallback: React Query hashes a
+  // query key with it and it SORTS plain-object keys, so a host rebuilding
+  // its payload with the fields in another order — which changes nothing
+  // about the patient — produces the same handle. `JSON.stringify` does not,
+  // and this handle is what decides whether the patient CHANGED: under it a
+  // reordered rebuild closed the open trial page and reset the pager, on top
+  // of refetching the descriptor and the detail.
+  //
+  // `hashKey` again for the pair rather than joining on a separator, which
+  // would let an id containing the separator spell another pair's handle.
+  return hashKey([personId ?? null, inlinePatientId(patientInfo) ?? hashKey([patientInfo ?? null])]);
 }
 
 export async function fetchTrials({

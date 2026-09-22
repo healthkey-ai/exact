@@ -48,7 +48,7 @@ import { TrialsGraph } from "./TrialsGraph";
 import { TrialsMap } from "./TrialsMap";
 import { EXPORT_URL_LIFETIME_MS, exportIsComplete, exportTrials } from "./api";
 import { Tabs } from "./Tabs";
-import { hasInlinePatient } from "./api";
+import { hasInlinePatient, inlinePatientId, patientHandleOf } from "./api";
 import {
   baselineFilters,
   countActiveFilters,
@@ -89,7 +89,6 @@ import { injectStyles, warnMissingExactTokens } from "./injectStyles";
 import { ACTION_TOOLTIPS } from "./tooltips";
 import type {
   FilterState,
-  PatientInfo,
   TabCounts,
   TrialMatch,
   TrialMatchesProps,
@@ -100,31 +99,6 @@ type StateKind = "favorites" | "registered";
 interface WriteState {
   pending: string[];
   failed: string[];
-}
-
-/** The stable half of an inline payload's identity, across the spellings a
- *  host may use. EXACT's own `PatientInfo` is camelCase over the wire and
- *  names the patient `externalId`; ht-phr's payload carries `person_id` and
- *  `id` as well. With none of them there is nothing stable to key on and the
- *  whole payload has to stand in — a refresh then reads as a new patient,
- *  which is the safe direction to be wrong in. */
-function inlinePatientHandle(
-  patientInfo: PatientInfo | null | undefined,
-  patientInfoKey: string | null,
-): string {
-  for (const field of [
-    "personId",
-    "person_id",
-    "externalId",
-    "external_id",
-    "patientId",
-    "patient_id",
-    "id",
-  ]) {
-    const value = patientInfo?.[field];
-    if (typeof value === "string" || typeof value === "number") return String(value);
-  }
-  return String(patientInfoKey ?? "");
 }
 
 /** The four weights with any that are at the server's default removed. */
@@ -171,6 +145,7 @@ function TrialMatchesInner({
   personId,
   initialFilters,
   onTrialSelect,
+  onPatientRecordChanged,
   renderMap,
   state,
   preferences,
@@ -261,6 +236,44 @@ function TrialMatchesInner({
   // is a different key.
   const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
 
+  // Who the reader is looking at, for anything that must survive the payload
+  // being REFRESHED. `patientIdentity` and `stateKey` both hash the whole
+  // inline payload, so a host re-reading the profile — same person, new
+  // object — changes them; a draft keyed on that is discarded for nothing.
+  // The id inside the payload is the stable half when it carries one.
+  //
+  // Who the reader is looking at, as opposed to which payload is in front of
+  // us — see `patientHandleOf` for why it takes both props and why the rest
+  // of the payload is deliberately left out of it.
+  const patientHandle = patientHandleOf(patientInfo, personId);
+  // A payload that names nobody has no handle to give, so the whole payload
+  // stands in and every refresh reads as a new patient. That is safe, and it
+  // is also the case where `onPatientRecordChanged` does the host no good: a
+  // host obeying the prop's "refresh your payload" closes the trial page the
+  // edit was made from, and any edit made while the refresh is in flight is
+  // written but never reported. Nothing here can tell the two apart, so the
+  // host is told instead of left to find out.
+  const namesPatient = inlinePatientId(patientInfo) != null;
+  const warnedNoId = useRef(false);
+  useEffect(() => {
+    // The editing PAIR, not merely an adapter: a bookmarks-only one can
+    // never fire this prop either, and warning such a host sends it looking
+    // for a bug it does not have.
+    if (!onPatientRecordChanged || !canEditFields(state) || !hasInlinePatient(patientInfo))
+      return;
+    if (namesPatient) return;
+    if (warnedNoId.current) return;
+    warnedNoId.current = true;
+    console.warn(
+      "[exact] onPatientRecordChanged is wired, but `patientInfo` carries no " +
+        "patient id — personId, person_id, externalId, external_id, " +
+        "patientId, patient_id or id. " +
+        "Refreshing the payload will then read as a change of patient: the " +
+        "open trial closes, and an edit made during the refresh is written " +
+        "but not reported. Include the id in the payload.",
+    );
+  }, [onPatientRecordChanged, state, patientInfo, namesPatient]);
+
   // The bar depends on whether a host gave us somewhere to keep bookmarks.
   const tabs = useMemo(() => tabsFor(state != null, activeTab), [state, activeTab]);
   // A host can take the adapter away — on logout, or when reconfiguring it.
@@ -283,8 +296,29 @@ function TrialMatchesInner({
   // The descriptor is about the patient, not the trial, so it is read here
   // once rather than on every detail page. Its absence is the safe state:
   // until it arrives, no row draws a control.
-  const writableFields = useWritableFields(state, stateKey);
-  const patientFields = useQueuedPatientFields(state, stateKey);
+  // On the HANDLE, like the queue below, where the rest of the per-patient
+  // state is on `stateKey`. What PROMOP will take a write to is a fact about
+  // the PERSON's record, not about the payload snapshot in front of us — and
+  // keyed on the payload, a host refreshing it (which this remote now asks
+  // it to, #555) empties the descriptor, withdraws every edit control, and
+  // closes any editor the reader has open. Measured together with the
+  // detail's own `placeholderData`: either one alone still loses the editor.
+  const writableFields = useWritableFields(state, patientHandle);
+  // The host owns the patient payload — ht-phr reads it, normalises it
+  // through this service, and passes it in — and that payload wins
+  // server-side over `personId`. So a field edited here is written, the
+  // record answers with the new value, our own queries re-read carrying the
+  // HOST's copy of it, and the server answers from that: the page keeps
+  // showing what the reader just changed away from (#555). Only the host can
+  // end that, so the host is told.
+  //
+  // An overlay here — the record's values held over the host's until its
+  // payload catches up — was tried first and withdrawn. It changes what the
+  // queries are keyed by, and a new key is a NEW query: the rows unmount and
+  // every open editor goes with them, half-typed value and all. That is the
+  // failure `FieldEdit`'s "does not wipe what the reader is typing" exists
+  // to catch, and it caught it.
+  const patientFields = useQueuedPatientFields(state, patientHandle, onPatientRecordChanged);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -423,10 +457,18 @@ function TrialMatchesInner({
   }
   const typing = typed.yes;
 
+  // On the HANDLE, not on the payload hash. The hash changes whenever the
+  // host re-reads the profile — which it now does after every inline edit
+  // (#555) — and keyed on that, saving a field from a trial's detail page
+  // closes the page you saved it from and drops the pager back to 1. The
+  // reader lands on the list, one round trip after asking for the opposite.
+  //
+  // A payload with no id in it still falls back to the whole hash, so a host
+  // that names nobody keeps resetting on any change: safe direction.
   useEffect(() => {
     setSelectedTrial(null);
     setPage(1);
-  }, [personId, patientInfoKey]);
+  }, [patientHandle]);
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -466,13 +508,6 @@ function TrialMatchesInner({
     : personId != null
       ? String(personId)
       : null;
-  // Who the reader is looking at, for anything that must survive the payload
-  // being REFRESHED. `patientIdentity` and `stateKey` both hash the whole
-  // inline payload, so a host re-reading the profile — same person, new
-  // object — changes them; a draft keyed on that is discarded for nothing.
-  // The person's own id is the stable half when the payload carries one.
-  const patientHandle =
-    personId != null ? String(personId) : inlinePatientHandle(patientInfo, patientInfoKey);
 
   // "Unclaimed" is `undefined`, NOT `null` — and the distinction is
   // load-bearing, because `null` is a real owner here: `patientIdentity` is
