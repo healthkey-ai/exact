@@ -324,6 +324,15 @@ function TrialMatchesInner({
       // in both places is a second mechanism for the same thing, and the one
       // below is the one that also covers a read which never calls back.
       const veto = overruled.current;
+      // Snapshotted BEFORE the claim below, for the weight overlay further
+      // down. That overlay exists to protect a weight the reader chose while
+      // this read was in flight — one they owned BEFORE the row landed. The
+      // claim is about to hand ownership to every key the ROW carries, and a
+      // weight owned only because the row just claimed it is the opposite
+      // case: its value in the panel is still the host's mount-time seed, so
+      // overlaying it would put the host's number over the reader's saved one
+      // and then store it as theirs (#546).
+      const ownedBeforeThisRow = new Set(ownedFields.current);
       // The keys are claimed because ownership is what makes a filter
       // clearable later — except after a Reset, where this row describes a
       // panel that no longer exists and the transport has already discarded
@@ -374,7 +383,9 @@ function TrialMatchesInner({
               // weight they own was theirs before it — and a row that
               // predates the write still on its way must not put the old
               // score back (#517).
-              ...ownedWeights(filters, ownedFields.current),
+              //
+              // `ownedBeforeThisRow`, not the set as it is now: see there.
+              ...ownedWeights(filters, ownedBeforeThisRow),
             };
       // A saved trial type came from THIS patient's storage, so it is this
       // patient's choice. Without claiming it the staleness rule — which
