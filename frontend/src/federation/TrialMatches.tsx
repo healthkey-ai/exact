@@ -54,6 +54,7 @@ import {
   countActiveFilters,
   countryFor,
   normalizeFilterState,
+  sameValue,
   userOwnedFilters,
 } from "./filters";
 import { MAX_TRIAL_IDS, canEditFields } from "./state";
@@ -299,18 +300,82 @@ function TrialMatchesInner({
   // do not agree about conditional writes, and the writer's queue belongs to
   // whichever it was built for.
   const preferenceSource = state != null ? "state" : "preferences";
+  // What the reader has overruled since a saved set could last have landed.
+  //
+  // NOT `ownedFields`: that is cumulative and answers "whose field is this",
+  // which is a different question from "did they touch it while this read was
+  // in flight". Two places where the two come apart, both found in review:
+  // Reset empties `ownedFields`, so a stale read landing after it would have
+  // passed every value straight back into the panel that was just cleared;
+  // and a host swapping one store for another keeps `ownedFields` (same
+  // patient), so the new store's saved values would be suppressed as though
+  // the reader had just typed them.
+  const overruled = useRef<{ fields: Set<string>; all: boolean }>({
+    fields: new Set(),
+    all: false,
+  });
   const savedFilters = useSavedFilters(
     preferenceStore,
     stateKey,
     (saved, applied) => {
-      for (const field of Object.keys(saved)) ownedFields.current.add(field);
-      // A weight the reader chose while this read was still in flight stands.
-      // The callback otherwise merges the row over it — `applied` is false in
-      // exactly that case — and the score would revert under them a second
-      // after they set it, with the write they made already on its way.
+      // Not cleared here: a writer has exactly one read, so the only veto
+      // that can outlive this callback belongs to the NEXT writer's read,
+      // and the effect keyed on `epoch` clears it for that one. Clearing it
+      // in both places is a second mechanism for the same thing, and the one
+      // below is the one that also covers a read which never calls back.
+      const veto = overruled.current;
+      // The keys are claimed because ownership is what makes a filter
+      // clearable later — except after a Reset, where this row describes a
+      // panel that no longer exists and the transport has already discarded
+      // it. Claiming them there hands the reader ownership of values they
+      // just threw away, and a later unrelated edit would write the host's
+      // baseline back as their standing preference.
+      if (!veto.all) {
+        for (const field of Object.keys(saved)) ownedFields.current.add(field);
+      }
+      // The VALUES are the half it does. `applied` is false when the reader
+      // edited while this read was in flight, and merging the row over that
+      // edit reverts it in front of them — measured: type "Acme" into
+      // Sponsor during a slow read and the box reads "Stored" a moment
+      // later, with the search already narrowed by a value they never
+      // entered (#537).
+      //
+      // Held back is what they OVERRULED while this read was in flight, and
+      // only that: the rest of the row is theirs too, saved earlier, and
+      // dropping all of it would trade one silent change for another. Reset
+      // is the exception, below — it overrules the whole row, because an
+      // empty panel is what was asked for.
       const incoming: FilterState = applied
         ? saved
-        : { ...saved, ...ownedWeights(filters, ownedFields.current) };
+        : veto.all
+          ? // Reset overrules the whole row: the reader asked for an empty
+            // panel, and handing them a stale one back is the same silent
+            // change in a louder place. The transport usually agrees — its
+            // generation moves and the row is refused into `stored` and
+            // everything behind the same guard (`believed`, the version) —
+            // but not always: `PreferenceWriter.reset()` bumps only its OWN
+            // generation and queues the transport's behind a write already
+            // in flight. And a refused row is still RETURNED to us either
+            // way. So this is the half that keeps it off the panel, and it
+            // does not lean on the other one.
+            //
+            // No weights spread here. Reset keeps them, but it is
+            // `handleFiltersReset` that does it, by putting them into the
+            // panel; adding them again on this branch is at best a no-op
+            // over the state they already sit in, and at worst writes the
+            // older of two queued values back over the newer.
+            {}
+          : {
+              ...Object.fromEntries(
+                Object.entries(saved).filter(([field]) => !veto.fields.has(field)),
+              ),
+              // The weights on top, and this one is not a no-op: the veto
+              // knows what the reader touched during THIS read, while a
+              // weight they own was theirs before it — and a row that
+              // predates the write still on its way must not put the old
+              // score back (#517).
+              ...ownedWeights(filters, ownedFields.current),
+            };
       // A saved trial type came from THIS patient's storage, so it is this
       // patient's choice. Without claiming it the staleness rule — which
       // exists to expire a type picked for someone else — would mask the very
@@ -461,6 +526,13 @@ function TrialMatchesInner({
       WEIGHT_FIELDS.map(({ key }) => key).filter((key) => ownedFields.current.has(key)),
     );
   }, [stateKey]);
+  // Per READ, not per patient. A read that fails or is cancelled never calls
+  // back, so without this its veto outlives it — and the next read, from a
+  // store the host swapped in for the same patient, would find fields marked
+  // as overruled that nobody touched while IT was in flight.
+  useEffect(() => {
+    overruled.current = { fields: new Set(), all: false };
+  }, [savedFilters.epoch]);
 
   // NOTE on switching patients in place: the reader's session filters are
   // deliberately KEPT, and only the trial-type ownership is re-decided (see
@@ -940,6 +1012,17 @@ function TrialMatchesInner({
       setTrialTypeOwner(patientIdentity);
     }
     setTyped({ epoch: savedFilters.epoch, yes: true });
+    // Exactly what moved, for the read that may be in flight behind this.
+    //
+    // Against `effectiveFilters`, which is what the panel was HANDED, not the
+    // raw state behind it: a stale `trialType` is masked on its way in, so
+    // comparing with the raw value reads the mask itself as an edit — and
+    // then suppresses the new patient's saved type while claiming the old
+    // patient's for them.
+    for (const field of new Set([...Object.keys(next), ...Object.keys(effectiveFilters)])) {
+      const key = field as keyof FilterState;
+      if (!sameValue(next[key], effectiveFilters[key])) overruled.current.fields.add(field);
+    }
     setFilters(next);
     // Only what the reader changed. `next` carries the host's mount-time
     // scope too, and saving that would make one mount's scope their standing
@@ -961,6 +1044,7 @@ function TrialMatchesInner({
     // the cleared panel sat over the narrowed rows for 400ms — an empty
     // box, a badge reading no filters, and the old result set underneath.
     setTyped({ epoch: savedFilters.epoch, yes: false });
+    overruled.current = { fields: new Set(), all: true };
     // The weights come through. This button is "Reset filters", the badge
     // beside it has deliberately never counted them, and the score is not a
     // filter — so clearing it here would be a change the reader was not
