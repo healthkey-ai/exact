@@ -30,7 +30,9 @@ interface Props {
   options: Segment[];
   value: string;
   onChange: (next: string, source: SegmentSource) => void;
-  /** `exact-seg--grow` makes the segments share the width evenly. */
+  /** `exact-seg--grow` lets the segments fill the row, each sized by its own
+   *  label. (It shared the width evenly until #554, where the longest label
+   *  could not fit its third and spilled over its neighbour.) */
   className?: string;
 }
 

@@ -1103,10 +1103,42 @@
   min-width: 0;
 }
 
-/* The options share the width evenly: three sort labels of very different
-   lengths otherwise give the shortest order the smallest target. */
+/* `auto`, not `0`. The group is sized by its content — 519px for these three
+   — and `flex: 1 1 0` then split that budget EQUALLY, 173px each, while the
+   longest label needs 193. So the longest always starved, the button could
+   not shrink into its share, and what overflowed was painted over by the next
+   segment's fill (#554).
+
+   Sized from content instead, the same 519px goes 193/187/140 and all three
+   labels are whole. It fixes the wide row and the narrow one together, which
+   matters because they are different parents: the narrow layout wraps the
+   group in `.exact-list__sort` and the wide one does not, so a rule hung on
+   that wrapper reaches only one of them — measured at 1500px, where the
+   labels were being ellipsised with 600px of row to spare.
+
+   The even split was deliberate — "the shortest order should not get the
+   smallest target" — and this does cost that: Distance is now 140px against
+   Suitability's 193. Both are far past any tap-target floor, and a label cut
+   in half is the worse trade.
+
+   The `min-width: 0` below is the guard for what this cannot do on its own.
+   Two measurements of it disagree, and it is kept because of how they
+   disagree rather than despite it: in one replica it is a provable no-op —
+   those buttons compute `min-width: 0` already, being flex CONTAINERS in a
+   block parent rather than flex items — and in another it recovers a label
+   that was being cut at the group's edge, a host-supplied fourth order in
+   the narrow row. Nothing measured it doing harm. A rule that is either
+   nothing or a repair is worth keeping; what is not worth keeping is a
+   confident claim about which. */
 .exact-root .exact-seg--grow .exact-seg__item {
-  flex: 1 1 0;
+  flex: 1 1 auto;
+}
+
+/* See above. Only on the labelled group: the view-mode segments hold a bare
+   20px icon with no label to ellipsise, and unscoped the padding squeezes
+   the icon instead — 15.5px at a 90px column, 0 at 50px. */
+.exact-root .exact-seg--grow .exact-seg__btn {
+  min-width: 0;
 }
 
 .exact-root .exact-seg__item:not(:last-child) > .exact-seg__btn {

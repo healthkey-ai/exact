@@ -219,7 +219,17 @@ export const DEFAULT_SORT = "goodnessScore";
  *  does not offer, and a threshold measured on three sends four into a row
  *  that cannot hold them. Measured in the browser: 99 (view mode) + 364
  *  (actions) + two 12px gaps, and 173 per segment; plus 50 so the segments
- *  are not pressed against the buttons. Three gives 1056. */
+ *  are not pressed against the buttons. Three gives 1056.
+ *
+ *  The 173 is stale as a model, and only accidentally right. Since #554 the
+ *  segments are sized by their labels rather than into equal thirds, and the
+ *  three shipped ones happen to sum to the same 519 — so the 1056 stands
+ *  while the reasoning behind it does not. The fourth does NOT: a
+ *  host-supplied `Sorted by <key>` measures 755 for the group, so 1229 is
+ *  about 20px short of a row that merely fits and 60px short of one that
+ *  keeps the same 50px of slack the three-option threshold does; the actions
+ *  wrap in that band (#559). Measured 754 both before and after #554, so
+ *  the threshold was already wrong rather than made wrong by it. */
 export function wideControlsRow(sortOptionCount: number): number {
   return 537 + 173 * sortOptionCount;
 }
