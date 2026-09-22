@@ -798,23 +798,28 @@ describe("counts while a state tab is active", () => {
     // they describe the bookmarks. On the Eligible & Potential badge they
     // would read as the corpus — "Eligible & Potential, 1" for a reader with
     // one bookmarked eligible trial and many matching.
-    const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
+    // 19 against a narrowed 1, so the two are distinguishable. With a corpus
+    // of 1 they are the same badge, and this test — whose whole subject is
+    // telling them apart — passes either way.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
     // The state counts are there to begin with — without this the test
     // cannot tell "put away" from "never arrived".
     await screen.findByRole("button", { name: "Favorites, 1 trial" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /Eligible & Potential, / })).toBeNull(),
-    );
-    // And the state tabs put theirs away with it. Their counts are still
-    // true — they come from the adapter, not from this response — but a
-    // number beside a blank is what makes the blank read as a zero, and the
-    // blank one here is the whole corpus (#536).
-    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
-    await screen.findByRole("button", { name: "Favorites" });
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    // The narrowed count is refused — that is the invariant. What takes its
+    // place is not a blank but the count taken over THIS corpus a moment
+    // ago: switching tabs does not change how many trials match, and the
+    // reader keeps the one number the page exists to show. The state tabs
+    // keep theirs too, because nothing beside them is blank to read as a
+    // zero (#536).
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(3);
   });
 
   it("waits for a slow adapter before numbering its tab, and no longer", async () => {
@@ -895,18 +900,25 @@ describe("counts while a state tab is active", () => {
     const release = api.deferNextList();
     await userEvent.click(screen.getByRole("button", { name: /^Eligible/ }));
     await waitFor(() => expect(listed(api).length).toBe(4));
-    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    // The lie stays refused: whatever the badge says, it is not the 1 that
+    // came back over the saved ids.
     expect(screen.queryByRole("button", { name: /Eligible & Potential, 1 trial/ })).toBeNull();
+    // And what it does say is this corpus's own 19 — same patient, same
+    // filters; only the sort moved, which cannot change how many match.
+    expect(screen.getByRole("button", { name: /^Eligible/ })).toHaveAccessibleName(
+      "Eligible & Potential, 19 trials",
+    );
 
     release();
     await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
   });
 
-  it("does not leave the corpus numbers up on the way to a state tab", async () => {
-    // The moment between the click and the narrowed answer. The corpus
-    // response is still in `query.data`, and its counts are true — but a bar
-    // that numbers itself and then blanks is the flicker the whole "all or
-    // none" shape exists to avoid, and it lasts a full round trip.
+  it("does not flicker its numbers on the way to a state tab", async () => {
+    // The moment between the click and the narrowed answer, and the moment
+    // after it. A bar that numbers itself and then blanks is a flicker that
+    // lasts a full round trip — and blanking at the end of it, when the
+    // corpus count in hand is still true for this corpus, is the false zero
+    // this all exists to prevent. Same numbers throughout.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
     await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
@@ -915,14 +927,15 @@ describe("counts while a state tab is active", () => {
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
 
     await waitFor(() => expect(listed(api).length).toBe(2));
-    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    const numbers = () => screen.getAllByTestId("tab-count").map((el) => el.textContent);
+    expect(numbers()).toEqual(["19", "0", "1"]);
 
-    // Settled, not `waitFor`: the badges are already 0 when the answer is
-    // released, so a poll that passes on its first try asserts nothing about
-    // what the narrowed response does when it lands.
+    // Settled, not `waitFor`: the badges already read this when the answer
+    // is released, so a poll that passes on its first try asserts nothing
+    // about what the narrowed response does when it lands.
     release();
     await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    expect(numbers()).toEqual(["19", "0", "1"]);
   });
 
   it("does not paint a deep-linked tab's total on the corpus badge", async () => {
@@ -953,7 +966,7 @@ describe("counts while a state tab is active", () => {
     renderIt(api, state());
     await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
-    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(0));
+    await waitFor(() => expect(listed(api).length).toBe(2));
 
     await userEvent.click(screen.getByRole("button", { name: /^Eligible/ }));
 
@@ -965,6 +978,107 @@ describe("counts while a state tab is active", () => {
       "0",
       "1",
     ]);
+  });
+
+  it("shows nothing for a corpus it has never counted", async () => {
+    // A reader landing straight on Favorites — a deep link, or a host that
+    // opens there. Nothing has ever been counted over this corpus, so there
+    // is nothing true to show and the bar empties entirely, state tabs
+    // included: a number beside a blank is what makes the blank read as a
+    // zero, and the blank one is the corpus.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    const release = api.deferNextList();
+    renderIt(api, state());
+    // Away before the corpus tab has ever been answered, so nothing has
+    // been counted over this corpus.
+    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
+    release();
+
+    await screen.findByRole("button", { name: "Favorites" });
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(1));
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+  });
+
+  it("does not let a malformed payload poison what it keeps", async () => {
+    // `tabCounts` is unvalidated wire data and the corpus count is their
+    // SUM, so one missing field makes a NaN. `barCounts` refuses to paint
+    // it; stored, it would outlive the response and blank every state tab
+    // for this corpus.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    api.setResponse({ tabCounts: { eligible: 5 } as never });
+    await userEvent.click(screen.getByRole("radio", { name: "Sort by Matching Score" }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    // Nothing paints from it — that is `barCounts` — and nothing keeps it.
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(0));
+
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+
+    // The good counts are still what this corpus is remembered by.
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+  });
+
+  it("does not file the previous filters' count under the new ones", async () => {
+    // `keepPreviousData` holds the old response for a whole round trip, and
+    // `countScope` lets it through on purpose: the rows it carries are the
+    // rows on screen, so painting its count beside them is honest. Filing it
+    // under the NEW filters is not — it would outlive the window and turn up
+    // on a state tab as a number for a corpus nobody counted.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    // New filters, held open, so the old response is all there is.
+    const before = listed(api).length;
+    const release = api.deferNextList();
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "daratumumab");
+    await waitFor(() => expect(listed(api).length).toBeGreaterThan(before));
+    // Away before it lands, so nothing can be counted over the new corpus.
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    release();
+
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(0));
+  });
+
+  it("never carries one patient's count into another's chart", async () => {
+    // The memory is keyed by patient as well as by filters, so this cannot
+    // happen by construction — which is worth a test precisely because it is
+    // the expensive failure: a number about someone else, in a chart, with
+    // nothing on screen to say so.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    const { setProps } = renderTrialMatches(api, {
+      state: fakeState({ favorites: ["1"] }).adapter,
+    });
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    setProps({ patientInfo: { disease: "mantle cell lymphoma" } });
+
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(0));
+  });
+
+  it("stops showing a count the filters have left behind", async () => {
+    // Kept across a tab switch because the corpus did not change. Change the
+    // filters while on a state tab and it describes a corpus nobody has
+    // counted, so it goes — and the bar goes with it.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "daratumumab");
+
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(0));
   });
 
   it("runs no matcher query behind a failed saved-ids read", async () => {
