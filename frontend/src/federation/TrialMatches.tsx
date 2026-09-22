@@ -87,7 +87,13 @@ import {
 } from "./hooks";
 import { injectStyles, warnMissingExactTokens } from "./injectStyles";
 import { ACTION_TOOLTIPS } from "./tooltips";
-import type { FilterState, PatientInfo, TrialMatch, TrialMatchesProps } from "./types";
+import type {
+  FilterState,
+  PatientInfo,
+  TabCounts,
+  TrialMatch,
+  TrialMatchesProps,
+} from "./types";
 
 type StateKind = "favorites" | "registered";
 /** Which trials have a write in flight, and which have one that failed. */
@@ -738,6 +744,15 @@ function TrialMatchesInner({
     ],
   );
 
+  // What a COUNT is true for: this patient and these filters, minus the
+  // three things that narrow or order a request without changing how many
+  // trials match — the tab's own `type`, the saved ids a state tab sends,
+  // and the sort. A different question from `countScope`, which asks whether
+  // the response in hand belongs to the view on screen.
+  const { type: _tabNotInCorpus, sort: _orderNotInCorpus, ...corpusFilters } =
+    queryFilters;
+  const corpusKey = hashKey([personId ?? null, patientInfo ?? null, corpusFilters]);
+
   const query = useTrials({
     apiClient,
     patientInfo,
@@ -747,6 +762,7 @@ function TrialMatchesInner({
     limit: PAGE_SIZE,
     trialIds,
     scope: countScope,
+    corpus: corpusKey,
     // `!idsFailed` too: without it a failed Favorites read still fires an
     // ordinary unfiltered search behind the error message — rows nobody
     // shows, and a full matcher run to produce them.
@@ -858,6 +874,44 @@ function TrialMatchesInner({
     staleResponse || query.data?.narrowed || !countsDescribeThisView
       ? undefined
       : query.data?.tabCounts;
+
+  // The last counts that described this corpus, kept for the tabs that
+  // cannot ask for them. A state tab's request comes back narrowed to the
+  // saved ids, so its counts are refused above — and the bar then empties
+  // entirely, which is right when there is nothing true to show and wasteful
+  // when there is. Switching tabs does not change the corpus.
+  //
+  // Remembered against the corpus the RESPONSE was fetched for, not the one
+  // on screen. The two come apart for a whole round trip: `keepPreviousData`
+  // holds the previous filters' response while the new ones are in flight,
+  // and `countScope` lets it through on purpose — the rows it carries are
+  // the rows being shown. Painting its count beside those rows is honest;
+  // FILING it under the new filters is not, and it would then outlive the
+  // window, on a state tab, as a number for a corpus nobody counted.
+  //
+  // One slot, so a reader who filters and comes back to the previous set
+  // gets a blank until the answer lands rather than the number they had a
+  // moment ago. Keeping more would mean keeping them per filter set, which
+  // is unbounded; what this is for is the tab switch, which does not change
+  // the corpus at all.
+  const rememberedCounts = useRef<{ key: string; counts: TabCounts } | null>(null);
+  if (
+    tabCounts &&
+    query.data?.corpus === corpusKey &&
+    // Both fields, because this is unvalidated wire data and the corpus
+    // count is their SUM. `barCounts` refuses to paint the NaN that a
+    // missing one makes, but stored it would poison this slot and blank
+    // every state tab for this corpus — a bad response outliving itself.
+    Number.isFinite(tabCounts.eligible) &&
+    Number.isFinite(tabCounts.potential)
+  ) {
+    rememberedCounts.current = { key: corpusKey, counts: tabCounts };
+  }
+  const countsForBar =
+    tabCounts ??
+    (rememberedCounts.current?.key === corpusKey
+      ? rememberedCounts.current.counts
+      : undefined);
 
   // Reset to the first page whenever the *effective* query changes — tab,
   // sort, or a filter that has finished debouncing. Adjusting state during
@@ -1430,7 +1484,10 @@ function TrialMatchesInner({
         // — is refused above, by the response rather than by the tab. The
         // guard here answered about the request about to go out, which is
         // the wrong moment for data already in hand.
-        counts={tabCounts}
+        //
+        // Refused, and then REPLACED where we have something true: the last
+        // counts taken over this same corpus. See `rememberedCounts`.
+        counts={countsForBar}
         activeTabTotal={totalCount}
         stateCounts={stateCounts}
       />

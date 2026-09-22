@@ -411,6 +411,8 @@ interface UseTrialsArgs {
    *  not the other, and a scope that quietly stops matching leaves the
    *  caller with nothing to paint. */
   scope: string;
+  /** Which CORPUS the answer will be about — see `ScopedTrialsResponse`. */
+  corpus: string;
   /** Skip the query until the host has a patient context. Without
    *  patient context the response would be a public/unscoped trial
    *  list — usually not what a TrialMatches mount wants. */
@@ -496,10 +498,17 @@ export function preferenceMethodsThrough(
  *  (#536). And `keepPreviousData` outlives the state that made the request,
  *  so "which tab is active" and "which patient is on screen" answer about
  *  the request ABOUT TO GO OUT, not about the data in hand. Carried with the
- *  response, `scope` cannot come apart from it. */
+ *  response, `scope` cannot come apart from it.
+ *
+ *  `corpus` answers a third question, and a narrower one: WHICH CORPUS was
+ *  counted. `scope` deliberately leaves the filters out — a response fetched
+ *  for the previous filters is still about this patient and this tab, and the
+ *  rows it holds are the ones on screen. But a count kept BEYOND that window
+ *  has to know the filters it was taken under, or it outlives them. */
 export type ScopedTrialsResponse = TrialsResponse & {
   narrowed: boolean;
   scope: string;
+  corpus: string;
 };
 
 export function useTrials({
@@ -511,6 +520,7 @@ export function useTrials({
   limit,
   trialIds,
   scope,
+  corpus,
   enabled = true,
 }: UseTrialsArgs): UseQueryResult<ScopedTrialsResponse> {
   return useQuery({
@@ -537,7 +547,7 @@ export function useTrials({
       });
       // What produced this, carried WITH it, so no caller has to reconstruct
       // it from state that has already moved on.
-      return { ...response, narrowed: trialIds !== undefined, scope };
+      return { ...response, narrowed: trialIds !== undefined, scope, corpus };
     },
     // Paged, not infinite: CB paginates by number and so does this now, and
     // an infinite list cannot show per-tab totals or jump to a page. Previous
