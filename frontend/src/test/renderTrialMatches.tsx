@@ -549,6 +549,9 @@ export interface TrialMatchesProps {
    *  that and nothing else — see `TrialPreferenceStore`. */
   preferences?: TrialPreferenceStore;
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
+  onTrialSelect?: (trial: TrialMatch) => void;
+  trialId?: number | string | null;
+  onTrialIdChange?: (trialId: number | null) => void;
 }
 
 export function renderTrialMatches(
@@ -599,6 +602,9 @@ export function renderTrialMatches(
         state={next.state}
         preferences={next.preferences}
         onPatientRecordChanged={next.onPatientRecordChanged}
+        onTrialSelect={next.onTrialSelect}
+        trialId={next.trialId}
+        onTrialIdChange={next.onTrialIdChange}
       />
     </QueryClientProvider>
   );

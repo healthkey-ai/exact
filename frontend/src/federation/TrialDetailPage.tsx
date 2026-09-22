@@ -702,8 +702,16 @@ export function TrialDetailPage({
       ) : null}
 
       {query.isError ? (
-        <p style={{ color: "var(--exact-color-not-eligible)" }}>
-          Failed to load trial: {(query.error as Error)?.message ?? "unknown error"}
+        /* A 404 is not a failure to report as one. With the host keeping the
+         * trial in its URL (#552), this page is reachable by typing — and
+         * `/trials/nonsense` answering "Failed to load trial: Request failed
+         * with status code 404" reads as something broken here rather than
+         * an address that names no trial. Anything else keeps the message
+         * it came with, because that one IS about us. */
+        <p role="alert" style={{ color: "var(--exact-color-error-700)" }}>
+          {(query.error as { response?: { status?: number } })?.response?.status === 404
+            ? "We could not find that trial. It may have been withdrawn, or the address may be wrong."
+            : `Failed to load trial: ${(query.error as Error)?.message ?? "unknown error"}`}
         </p>
       ) : null}
 

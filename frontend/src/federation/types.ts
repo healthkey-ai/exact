@@ -423,6 +423,35 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
+  /** The trial the HOST has in its address bar.
+   *
+   *  Passing this — `null` included — hands the remote's navigation to the
+   *  host: it renders the trial named here, and asks for a change through
+   *  `onTrialIdChange` instead of moving history itself. Omit it, and the
+   *  remote keeps its own selection and pushes a synthetic history entry so
+   *  the browser's back button returns to the list; that is what a host
+   *  with no route for a trial gets, and it is unchanged.
+   *
+   *  Pass `onTrialIdChange` with it. Alone, this prop would leave the remote
+   *  with nowhere to report a change and the reader stuck on a detail page
+   *  whose back button does nothing, so half a contract is read as none: the
+   *  remote keeps its own selection and says so at the console.
+   *
+   *  Exactly one of the two pushes. Both pushing is how a back button starts
+   *  needing two presses.
+   *
+   *  A string is taken as it comes — a URL segment is a string — and handed
+   *  to the detail request. An id nothing answers for lands on the detail
+   *  page's own "we could not find that trial", which is a page with a way
+   *  back rather than an empty frame. */
+  trialId?: number | string | null;
+  /** The reader opened a trial, or left one — `null` for the list.
+   *
+   *  Only meaningful alongside `trialId`: it is how the remote asks the host
+   *  to change the URL it is being told to render. `onTrialSelect` still
+   *  fires for an opening, and carries the whole row; this one carries what
+   *  goes in an address bar. */
+  onTrialIdChange?: (trialId: number | null) => void;
   /** The record took an inline edit, and here is what it says those fields
    *  are now.
    *
