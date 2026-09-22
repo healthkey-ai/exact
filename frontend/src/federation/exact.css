@@ -933,6 +933,32 @@
   margin-bottom: 1rem;
   border-bottom: 1px solid var(--exact-color-border);
   overflow-x: auto;
+  /* `overflow-x` alone does not stop this strip widening the page (#535).
+     A scroll container's automatic minimum size is only zeroed for a FLEX
+     item, and this is a block child of the list — so its min-content, the
+     sum of the tabs, travelled up to the host's flex column and stretched
+     it: 569px of document inside a 390px window, with the right edge of
+     every card off-screen. Inline-size containment says the box's own
+     width does not depend on its contents, which is the claim `overflow-x`
+     was already making about the reader's experience of it. Measured: the
+     document comes back to 390 and the strip finally scrolls itself. */
+  contain: inline-size;
+  /* Not `container-type: inline-size`, which would be the obvious symmetry
+     with the controls row: that also applies LAYOUT containment, making this
+     a containing block for fixed-position descendants and a stacking context
+     — neither of which this strip should become. `contain: inline-size` is
+     the one axis of it that is needed, and it lands in Firefox 101 against
+     `container-type`'s 110. */
+  /* And now that it really scrolls, a swipe past its end stays in it rather
+     than turning into the browser's back gesture. */
+  overscroll-behavior-x: contain;
+  /* The strip corrects its own scroll position when the tab in force would
+     otherwise be off-screen, and that correction has to be instant: a host
+     with `* { scroll-behavior: smooth }` would turn it into an animation,
+     whose intermediate scroll events are indistinguishable from the reader
+     moving the strip themselves. `Tabs.tsx` asks for `instant` outright;
+     this covers an engine that takes no options. */
+  scroll-behavior: auto;
   /* Room for the focus ring. `overflow-x: auto` computes `overflow-y` to
    * `auto` as well, so the outline is clipped on both axes at the padding
    * box: 3px for the ring's 2px width at 1px offset, and 4px below, where
@@ -1033,7 +1059,11 @@
    middle of the row rather than beside the one it belongs with. */
 .exact-root .exact-list__triggers {
   display: flex;
+  /* Three buttons that do not wrap are 364px of row in a 278px column, and
+     the overflow lands on the page rather than on them (#535). */
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 0.75rem;
   margin-left: auto;
 }
