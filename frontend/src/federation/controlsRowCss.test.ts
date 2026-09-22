@@ -9,73 +9,51 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
+import { blocksIn, importantAt, rulesIn, uncommented } from "../test/cssCascade";
+
 describe("the controls row", () => {
   const raw = readFileSync(new URL("./exact.css", import.meta.url), "utf8");
-
-  /** Comments out, because a declaration inside one is not a declaration:
-   *  commenting either of the rules below out left every assertion green.
-   *  Scanned rather than replaced, because `content: "/*"` is a string, not
-   *  the start of a comment — a regex takes it for one and swallows the sheet
-   *  to the next `*` + `/`, hiding every override in between. */
-  const uncommented = (src: string) => {
-    let out = "";
-    let i = 0;
-    while (i < src.length) {
-      const c = src[i];
-      if (c === '"' || c === "'") {
-        let j = i + 1;
-        while (j < src.length && src[j] !== c) j += src[j] === "\\" ? 2 : 1;
-        out += src.slice(i, j + 1);
-        i = j + 1;
-      } else if (/^url\(/i.test(src.slice(i, i + 4))) {
-        // Nor inside `url()`, where `/*` is part of a path: `url(/img/a/*.svg)`
-        // would otherwise swallow the sheet to the next `*` + `/`, hiding
-        // every rule in between — the same failure as above, one token later.
-        const end = src.indexOf(")", i);
-        const stop = end === -1 ? src.length : end + 1;
-        out += src.slice(i, stop);
-        i = stop;
-      } else if (c === "/" && src[i + 1] === "*") {
-        const end = src.indexOf("*/", i + 2);
-        i = end === -1 ? src.length : end + 2;
-      } else {
-        out += c;
-        i += 1;
-      }
-    }
-    return out;
-  };
   const css = uncommented(raw);
+  const blocksFor = (...names: readonly string[]) => blocksIn(css, ...names);
+  /** The segment slot, by both the classes it carries. */
+  const SEGMENT = [".exact-seg__item", ".exact-action-tip"] as const;
 
-  /** Every declaration block in the sheet, as `[selector, body]` — inside
-   *  at-rules too, since a `@media` override is still an override. An at-rule
-   *  prelude never pairs with a `}` of its own, so it never reads as one. */
-  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(
-    (m) => [m[1].trim(), m[2]] as const,
-  );
-
-  /** Every block that styles THE element carrying a class, in source order.
-   *  Matched on the class rather than one spelling of the selector: a later
-   *  `.exact-root .exact-list .exact-tabs` outranks the original and would
-   *  slip past a test looking for the string it was written with. Only the
-   *  last compound counts — `.exact-tabs button` styles the buttons. */
-  const blocksFor = (className: string) => {
-    const token = new RegExp(`\\${className}(?![\\w-])`);
-    return rules
-      .filter(([selector]) =>
-        selector
-          .split(",")
-          .some((one) => token.test(one.trim().split(/[\s>+~]+/).at(-1) ?? "")),
-      )
-      .map(([, body]) => body);
-  };
-
-  /** A declaration that is made, and not taken back by any later block for
-   *  the same element. */
-  const stands = (blocks: string[], declared: RegExp, undone: RegExp) => {
-    const at = blocks.findIndex((block) => declared.test(block));
+  /** A declaration that is made, and that nothing else takes back.
+   *
+   *  Not merely "no later block": the cascade weighs specificity FIRST and
+   *  only then source order, so a heavier selector ANYWHERE in the sheet
+   *  wins — including above. Modelled on order alone, this helper passed a
+   *  rule inserted above the fix that fully reverted it. */
+  const stands = (
+    blocks: readonly (readonly [string, string, number])[],
+    declared: RegExp,
+    undone: RegExp,
+  ) => {
+    const at = blocks.findIndex(([, body]) => declared.test(body));
     expect(at, `nothing declares ${declared}`).toBeGreaterThanOrEqual(0);
-    for (const block of blocks.slice(at + 1)) expect(block).not.toMatch(undone);
+    // The winning block is read for what comes AFTER the declaration too. A
+    // block that says the property twice takes the cascade with its second
+    // copy, and `flex: 1 1 auto; flex: 1 1 0;` in one block — the shape a
+    // careless merge leaves — reverted the fix with every assertion green.
+    const own = blocks[at][1];
+    const mineAt = own.search(declared);
+    expect(own.slice(mineAt + 1), "the declaring block takes it back").not.toMatch(undone);
+    const mine = blocks[at][2];
+    const mineShouts = importantAt(own, declared);
+    blocks.forEach(([, body, pushes], index) => {
+      if (index === at) return;
+      // `!important` is decided BEFORE specificity and order, so one of them
+      // anywhere in the sheet takes the declaration back — including from a
+      // lighter selector above it. Measured: `flex: 1 1 0 !important` added
+      // to the earlier, lighter `.exact-root .exact-seg__item` block fully
+      // reverted the fix in a browser while every assertion here stayed
+      // green.
+      const shouts = importantAt(body, undone);
+      const wins = mineShouts
+        ? shouts && (pushes > mine || (index > at && pushes === mine))
+        : shouts || pushes > mine || (index > at && pushes === mine);
+      if (wins) expect(body).not.toMatch(undone);
+    });
   };
 
   it("never spells the undoing of either fix, in any rule", () => {
@@ -182,7 +160,7 @@ describe("the controls row", () => {
     // to its padding in any host that sizes the remote by content. The
     // sibling assertion above forbids `container-type` there for the same
     // reason; `contain` reaches it by a different word.
-    for (const [selector, body] of rules) {
+    for (const [selector, body] of rulesIn(css)) {
       const last = selector.split(",").map((one) => one.trim().split(/[\s>+~]+/).at(-1) ?? "");
       // `.exact-root` as well: containment there collapses everything below
       // it, the list included, by exactly the same route.
@@ -198,6 +176,49 @@ describe("the controls row", () => {
         expect.stringMatching(/(?:container-type|contain)\s*:/),
       ]);
     }
+  });
+
+  it("sizes the sort segments from their labels, not into equal thirds", () => {
+    // Measured in a browser, because jsdom lays nothing out: the group is
+    // content-sized at 519px, and `flex: 1 1 0` split that equally — 173px
+    // each against a longest label of 190 — so the longest always starved
+    // and its button overhung the slot (#554). From content the same 519px
+    // goes 190/188/140 and every label is whole, in the wide row and the
+    // narrow one alike.
+    //
+    // `1 1 auto` exactly: `1 1 0` is the bug, and a bare `flex: 1` means
+    // `1 1 0%`, which is the same thing spelled shorter.
+    //
+    // The longhands are in the `undone` pattern because they say the same
+    // thing one word at a time: `flex-basis: 0` alone restores the bug
+    // exactly, and a test watching only the shorthand passes over it.
+    // `width` is in `undone` because with `flex-basis: auto` the base size
+    // comes from it: `width: 0` on the slot IS `flex: 1 1 0`, and measured,
+    // it is worse than the bug — all three labels clipped, not two.
+    stands(
+      blocksFor(...SEGMENT),
+      /flex:\s*1 1 auto\s*;/,
+      /flex(-grow|-shrink|-basis)?\s*:|width\s*:/,
+    );
+  });
+
+  it("lets a labelled segment's button shrink, and leaves the icon ones alone", () => {
+    // The other half of the fix, and the half that carries the narrow row.
+    // The slot is `inline-flex` (`.exact-action-tip`), so the button is a
+    // flex item and its automatic minimum size is its min-content: without
+    // this it cannot shrink into a slot narrower than its label, and it
+    // hangs out of the group, which clips it. Measured at a 278px column:
+    // 12.9px of the third label with three orders, 27.2px of the fourth
+    // with a host-supplied one, and 0 with this.
+    //
+    // Scoped to the labelled group, because the view-mode segments hold a
+    // bare 20px icon with nothing to ellipsise and the padding would squeeze
+    // the icon instead — 15.5px at a 90px column, 0 at 50px.
+    const buttons = blocksFor(".exact-seg__btn");
+    stands(buttons, /min-width:\s*0\s*;/, /min-width\s*:/);
+    const scoped = buttons.filter(([, body]) => /min-width:\s*0/.test(body));
+    expect(scoped).toHaveLength(1);
+    expect(css).toMatch(/\.exact-seg--grow\s+\.exact-seg__btn\s*\{[^}]*min-width:\s*0/);
   });
 
   it("lets the row's actions wrap rather than overflow", () => {
