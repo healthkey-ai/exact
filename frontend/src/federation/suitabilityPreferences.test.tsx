@@ -36,6 +36,24 @@ const rowStore = () => {
   };
 };
 
+/** A store whose read is still in flight until the test lets it land, so a
+ *  keystroke can land first — which is what makes `applied` false. */
+const slowStore = (row: Record<string, unknown>) => {
+  let land: () => void = () => {};
+  const arrived = new Promise<void>((resolve) => {
+    land = resolve;
+  });
+  return {
+    land: () => land(),
+    getPreferences: vi.fn(async () => {
+      await arrived;
+      return row;
+    }),
+    savePreferences: vi.fn(async (_filters: Record<string, unknown>) => undefined),
+    resetPreferences: vi.fn(async () => undefined),
+  };
+};
+
 const openDialog = async () => {
   await userEvent.click(await screen.findByRole("button", { name: /Suitability Preferences/ }));
   return screen.getByRole("dialog", { name: "Suitability Preferences" });
@@ -536,5 +554,106 @@ describe("the suitability preferences control", () => {
     expect(
       await screen.findByRole("button", { name: /Suitability Preferences changed/ }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("a weight the host seeded, against one the reader saved", () => {
+  it("does not let the host's mount-time weight win over the stored one", async () => {
+    // The overlay below the saved-filter read exists to protect a weight the
+    // reader chose while that read was in flight. It used to read every
+    // weight the ROW had just claimed — and the panel still holds the host's
+    // `initialFilters` seed for those, so the host's number went over the
+    // reader's saved one (#546).
+    const api = fakeApi();
+    const store = slowStore({ riskWeight: 70, sponsor: "Stored" });
+    renderTrialMatches(api, {
+      preferences: store,
+      initialFilters: { riskWeight: 5 },
+    });
+    await waitFor(() => expect(store.getPreferences).toHaveBeenCalled());
+    // Typed while the read is out, which is what makes it `applied: false`.
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "daratum");
+
+    store.land();
+
+    await waitFor(() =>
+      expect(api.listRequests().at(-1)!.params.riskWeight).toBe("70"),
+    );
+  });
+
+  it("does not store the host's weight as the reader's own", async () => {
+    // Worse than the wrong ranking: one more keystroke and the row itself
+    // holds the host's number, as though the reader had chosen it. It would
+    // then follow them to a host that never asked for it.
+    const api = fakeApi();
+    const store = slowStore({ riskWeight: 70, sponsor: "Stored" });
+    renderTrialMatches(api, {
+      preferences: store,
+      initialFilters: { riskWeight: 5 },
+    });
+    await waitFor(() => expect(store.getPreferences).toHaveBeenCalled());
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "daratum");
+    store.land();
+    await waitFor(() =>
+      expect(api.listRequests().at(-1)!.params.riskWeight).toBe("70"),
+    );
+
+    // Counted first: the edit BEFORE the row landed has a save of its own,
+    // and `toHaveBeenCalled()` would be satisfied by that one — leaving the
+    // assertions to run over a write made before the bug could reach it.
+    const before = store.savePreferences.mock.calls.length;
+
+    await userEvent.type(screen.getByLabelText("Title"), "umab");
+
+    await waitFor(() =>
+      expect(store.savePreferences.mock.calls.length).toBeGreaterThan(before),
+    );
+    for (const [written] of store.savePreferences.mock.calls) {
+      expect(written.riskWeight).not.toBe(5);
+    }
+  });
+});
+
+describe("Reset", () => {
+  it("keeps the weights it kept, twice over", async () => {
+    // Reset gives the panel back to the host and keeps the weights, which
+    // means it has to keep OWNING them: ownership is what carries a weight
+    // through the next Reset. Dropping it takes two steps to show — reset,
+    // edit, reset — and then the weights leave both the page and the row,
+    // which is the silent change the code above that line forbids.
+    const api = fakeApi();
+    const store = rowStore();
+    renderTrialMatches(api, { preferences: store });
+    await waitFor(() => expect(api.listRequests().length).toBeGreaterThan(0));
+    await openDialog();
+    await userEvent.clear(field("Risk Weight"));
+    await userEvent.type(field("Risk Weight"), "70");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(store.read().riskWeight).toBe(70));
+
+    // The dialog is done with; Reset lives in the filter panel behind it.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    const filterThenReset = async (title: string) => {
+      // Reset is disabled until something is filtered — the weights are not
+      // filters and the badge beside it has never counted them.
+      await userEvent.type(await screen.findByLabelText("Title"), title);
+      await waitFor(() => expect(store.read().searchTitle).toBe(title));
+      await userEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+    };
+    await filterThenReset("daratum");
+    await filterThenReset("carfilzomib");
+
+    await waitFor(() => expect(store.read().riskWeight).toBe(70));
+    await openDialog();
+    expect(field("Risk Weight").value).toBe("70");
   });
 });
