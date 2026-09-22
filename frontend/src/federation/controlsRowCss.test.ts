@@ -33,6 +33,18 @@ describe("the controls row", () => {
     for (const name of asked) expect(declared).toContain(name);
   });
 
+  it("keeps the tab strip a block that fills its row", () => {
+    // The strip's bottom rule is what the active tab's underline sits on, so
+    // it has to span the row rather than stop at the last tab. That holds
+    // while the strip is a BLOCK in the list — `inline-flex`, or a flex
+    // parent putting something beside it, shrinks it to its contents and the
+    // rule with it. The markup half is pinned in the component suite; this is
+    // the half jsdom cannot see.
+    const strip = css.match(/\.exact-root \.exact-tabs\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(strip).toMatch(/display:\s*flex/);
+    expect(strip).toMatch(/border-bottom:/);
+  });
+
   /** Every `@media`/`@container` block in the sheet, as `[prelude, body]`.
    *  Brace-matched rather than regex-cut: a lazy `[^@]*?` runs straight
    *  through the end of one block into the next and reports rules that are

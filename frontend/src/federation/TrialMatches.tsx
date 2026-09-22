@@ -41,6 +41,7 @@ import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
+import { SuitabilityPreferences } from "./SuitabilityPreferences";
 import type { SegmentSource } from "./SegmentedControl";
 import { ViewModeControl } from "./ViewModeControl";
 import { TrialsGraph } from "./TrialsGraph";
@@ -56,6 +57,13 @@ import {
   userOwnedFilters,
 } from "./filters";
 import { MAX_TRIAL_IDS, canEditFields } from "./state";
+import {
+  DEFAULT_WEIGHT,
+  WEIGHT_FIELDS,
+  isUsableWeight,
+  weightsToSave,
+  type WeightKey,
+} from "./weights";
 import {
   DEFAULT_SORT,
   PAGE_SIZE,
@@ -78,13 +86,76 @@ import {
 } from "./hooks";
 import { injectStyles, warnMissingExactTokens } from "./injectStyles";
 import { ACTION_TOOLTIPS } from "./tooltips";
-import type { FilterState, TrialMatch, TrialMatchesProps } from "./types";
+import type { FilterState, PatientInfo, TrialMatch, TrialMatchesProps } from "./types";
 
 type StateKind = "favorites" | "registered";
 /** Which trials have a write in flight, and which have one that failed. */
 interface WriteState {
   pending: string[];
   failed: string[];
+}
+
+/** The stable half of an inline payload's identity, across the spellings a
+ *  host may use. EXACT's own `PatientInfo` is camelCase over the wire and
+ *  names the patient `externalId`; ht-phr's payload carries `person_id` and
+ *  `id` as well. With none of them there is nothing stable to key on and the
+ *  whole payload has to stand in — a refresh then reads as a new patient,
+ *  which is the safe direction to be wrong in. */
+function inlinePatientHandle(
+  patientInfo: PatientInfo | null | undefined,
+  patientInfoKey: string | null,
+): string {
+  for (const field of [
+    "personId",
+    "person_id",
+    "externalId",
+    "external_id",
+    "patientId",
+    "patient_id",
+    "id",
+  ]) {
+    const value = patientInfo?.[field];
+    if (typeof value === "string" || typeof value === "number") return String(value);
+  }
+  return String(patientInfoKey ?? "");
+}
+
+/** The four weights with any that are at the server's default removed. */
+function atDefaultsDropped(filters: FilterState): FilterState {
+  const out: FilterState = {};
+  for (const { key } of WEIGHT_FIELDS) {
+    out[key] = isUsableWeight(filters[key]) && filters[key] !== DEFAULT_WEIGHT
+      ? filters[key]
+      : undefined;
+  }
+  return out;
+}
+
+/** The weights the READER owns: set here, or loaded from their own row.
+ *
+ *  Not "every weight in `filters`". A host may mount with weights of its own
+ *  in `initialFilters`, and those are the host's scope for this mount, not the
+ *  reader's standing preference — stored, they would outlive the mount that
+ *  asked for them and follow the reader to hosts that did not. This is the
+ *  same distinction `userOwnedFilters` draws for the panel's fields, drawn
+ *  from the same `owned` set. */
+function ownedWeights(filters: FilterState, owned: ReadonlySet<string>): FilterState {
+  const out: FilterState = {};
+  for (const { key } of WEIGHT_FIELDS) {
+    if (owned.has(key) && isUsableWeight(filters[key])) out[key] = filters[key];
+  }
+  return out;
+}
+
+/** A save payload that carries both halves of what is remembered: the panel
+ *  fields the reader owns, and the weights. Either saver alone would retire
+ *  the other's queued write — see `handleWeightsChange`. */
+function withWeights(
+  owned: FilterState,
+  from: FilterState,
+  ownedKeys: ReadonlySet<string>,
+): FilterState {
+  return { ...owned, ...ownedWeights(from, ownedKeys) };
 }
 
 function TrialMatchesInner({
@@ -231,8 +302,15 @@ function TrialMatchesInner({
   const savedFilters = useSavedFilters(
     preferenceStore,
     stateKey,
-    (saved) => {
+    (saved, applied) => {
       for (const field of Object.keys(saved)) ownedFields.current.add(field);
+      // A weight the reader chose while this read was still in flight stands.
+      // The callback otherwise merges the row over it — `applied` is false in
+      // exactly that case — and the score would revert under them a second
+      // after they set it, with the write they made already on its way.
+      const incoming: FilterState = applied
+        ? saved
+        : { ...saved, ...ownedWeights(filters, ownedFields.current) };
       // A saved trial type came from THIS patient's storage, so it is this
       // patient's choice. Without claiming it the staleness rule — which
       // exists to expire a type picked for someone else — would mask the very
@@ -241,7 +319,7 @@ function TrialMatchesInner({
       // Normalized for the same reason as the initial state, and the more
       // likely source: this is what the PREVIOUS build of this remote saved,
       // when `trialPurpose` was a single string.
-      setFilters((current) => normalizeFilterState({ ...current, ...saved }));
+      setFilters((current) => normalizeFilterState({ ...current, ...incoming }));
     },
     preferenceSource,
   );
@@ -306,6 +384,14 @@ function TrialMatchesInner({
     : personId != null
       ? String(personId)
       : null;
+  // Who the reader is looking at, for anything that must survive the payload
+  // being REFRESHED. `patientIdentity` and `stateKey` both hash the whole
+  // inline payload, so a host re-reading the profile — same person, new
+  // object — changes them; a draft keyed on that is discarded for nothing.
+  // The person's own id is the stable half when the payload carries one.
+  const patientHandle =
+    personId != null ? String(personId) : inlinePatientHandle(patientInfo, patientInfoKey);
+
   // "Unclaimed" is `undefined`, NOT `null` — and the distinction is
   // load-bearing, because `null` is a real owner here: `patientIdentity` is
   // `null` for a host placeholder like `patientInfo={}`, or for the render
@@ -365,7 +451,15 @@ function TrialMatchesInner({
   // (The reader's session FILTERS are deliberately kept across the switch; it
   // is the claim about who owns them that does not carry over.)
   useEffect(() => {
-    ownedFields.current = new Set();
+    // The weights are the exception, and for the same reason the session
+    // filters are kept across the switch: they are the reader's, not the
+    // patient's. Cleared here, they stayed live on the wire and on the
+    // trigger while quietly ceasing to be owned — so the next Reset dropped
+    // them from the page and wrote nothing back, which is exactly the
+    // silent change this control is not allowed to make.
+    ownedFields.current = new Set(
+      WEIGHT_FIELDS.map(({ key }) => key).filter((key) => ownedFields.current.has(key)),
+    );
   }, [stateKey]);
 
   // NOTE on switching patients in place: the reader's session filters are
@@ -506,6 +600,12 @@ function TrialMatchesInner({
       distanceUnits: debouncedDistanceUnits,
       type: activeTabDef.param,
       sort: debouncedSort as FilterState["sort"],
+      // A weight sitting at the server's own default says nothing, and the
+      // wire already omits it. Left in here it would still move the key:
+      // opening the dialog and pressing Save unchanged wrote 25s over
+      // absences, which is a different FilterState with identical params —
+      // a second full matcher run, and the reader thrown back to page 1.
+      ...atDefaultsDropped(effectiveFilters),
     }),
     [
       effectiveFilters,
@@ -846,7 +946,7 @@ function TrialMatchesInner({
     // preference — a later mount with a different scope would lose to it.
     const owned = userOwnedFilters(next, baseline, ownedFields.current);
     for (const field of Object.keys(owned)) ownedFields.current.add(field);
-    savedFilters.persist(owned);
+    savedFilters.persist(withWeights(owned, next, ownedFields.current));
   };
   // Reset goes back to the baseline, not to `{}`: clearing the seeded
   // country would silently widen the search to every country in the
@@ -861,16 +961,60 @@ function TrialMatchesInner({
     // the cleared panel sat over the narrowed rows for 400ms — an empty
     // box, a badge reading no filters, and the old result set underneath.
     setTyped({ epoch: savedFilters.epoch, yes: false });
-    setFilters(baseline);
-    // Reset gives the fields back to the host, so nothing is owned any more.
-    ownedFields.current = new Set();
+    // The weights come through. This button is "Reset filters", the badge
+    // beside it has deliberately never counted them, and the score is not a
+    // filter — so clearing it here would be a change the reader was not
+    // offered and cannot see coming.
+    const keptWeights = ownedWeights(filters, ownedFields.current);
+    setFilters({ ...baseline, ...keptWeights });
+    // Reset gives the PANEL fields back to the host, so nothing there is
+    // owned any more. The weights stay owned: they are still the reader's.
+    ownedFields.current = new Set(Object.keys(keptWeights));
     // `reset`, not `persist(baseline)`: the row is meant to end up EMPTY, and
     // writing the baseline would store the host's scope as the reader's
     // standing preference instead. It also retires a save already on the
     // wire, which would otherwise land afterwards and restore what was
     // just cleared.
     savedFilters.reset();
+    // Written back AFTER the reset, never merged into it: `reset` empties the
+    // row and retires whatever was queued, so a weight persisted before it
+    // would be cleared by the very call meant to keep the panel's fields out.
+    if (Object.keys(keptWeights).length) savedFilters.persist(keptWeights);
   };
+
+  // The weights are not panel fields: the Filters badge does not count them
+  // and Reset does not clear them, because they change the ORDER of the list
+  // and the number on each card, never which trials are in it. So they are
+  // saved here rather than through `userOwnedFilters`, and all four go at
+  // once — the store merges, and a partial write would leave the reader with
+  // a pair of weights they never chose.
+  const handleWeightsChange = (weights: Record<WeightKey, number>) => {
+    const saved = weightsToSave(weights);
+    const next = { ...filters, ...saved };
+    setFilters(next);
+    for (const field of Object.keys(saved)) ownedFields.current.add(field);
+    // The panel's own fields travel with them. The writer's debounce REPLACES
+    // what is queued rather than merging it, so two savers writing disjoint
+    // halves inside one 400ms window lose one half each: weights saved and
+    // then a filter typed stored no weights at all, and a filter CLEARED and
+    // then weights saved dropped the tombstone, so the cleared filter came
+    // back on the next mount and narrowed the list again.
+    savedFilters.persist(
+      withWeights(
+        userOwnedFilters(next, baseline, ownedFields.current),
+        next,
+        ownedFields.current,
+      ),
+    );
+  };
+
+  // What anything keyed on these filters should see: the weights at their
+  // default say nothing, and saying it differently from `queryFilters` is
+  // what makes two keys for one question.
+  const detailFilters = useMemo(
+    () => ({ ...effectiveFilters, ...atDefaultsDropped(effectiveFilters) }),
+    [effectiveFilters],
+  );
 
   // Opened on demand: the graph is a second full matcher run over the same
   // search, so it is not something to have ready just in case.
@@ -1096,7 +1240,11 @@ function TrialMatchesInner({
         // `filters`. Passing raw state sent the detail request without the
         // patient's country, so its scores and distance could disagree with
         // the card the reader clicked.
-        filters={effectiveFilters}
+        // Normalised like `queryFilters`: four explicit 25s and four absences
+        // ask this endpoint for exactly the same thing, and the detail query
+        // is keyed on what it is handed — so a Save that changed nothing
+        // would re-fetch the open trial and blank it back to loading.
+        filters={detailFilters}
         onBack={() => window.history.back()}
       />
     );
@@ -1104,7 +1252,22 @@ function TrialMatchesInner({
 
   return (
     <div className="exact-root exact-list" ref={exactRootRef} style={{ padding: "1rem" }}>
-      <h1 className="exact-list__title">Your Trials</h1>
+      {/* CB's header block: the title and the preferences button on one
+          line, the tab strip on its own below. CB puts the button on the
+          TAB row from lg up and beside the title below it, rendering it
+          twice and hiding one — two tab stops' worth of markup, and a
+          dialog that vanishes mid-edit when the breakpoint is crossed.
+          One copy, in the position CB uses at the width where the strip
+          needs its whole line, and the strip keeps its rule across the row
+          at every width. */}
+      <div className="exact-list__head">
+        <h1 className="exact-list__title">Your Trials</h1>
+        <SuitabilityPreferences
+          filters={filters}
+          patientKey={patientHandle}
+          onChange={handleWeightsChange}
+        />
+      </div>
 
       <Tabs
         tabs={tabs}

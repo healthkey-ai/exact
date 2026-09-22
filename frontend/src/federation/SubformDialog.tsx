@@ -12,8 +12,7 @@
 // Which inputs it can actually offer is a narrower question than "does the
 // row have any" — see `entryIsOffered`.
 
-import { useEffect, useRef } from "react";
-
+import { Dialog } from "./Dialog";
 import { FieldEdit } from "./FieldEdit";
 import { editabilityOf } from "./writable";
 import { formatValue } from "./TrialDetailPage";
@@ -68,92 +67,12 @@ export function subformCanBeEdited(
 }
 
 export function SubformDialog({ field, entries, editing, onClose }: SubformDialogProps) {
-  const panel = useRef<HTMLDivElement>(null);
-  const closer = useRef<HTMLButtonElement>(null);
-  // Read through a ref so the effect below can run ONCE. Keyed on `onClose`
-  // it re-ran on every render — the parent hands over a new closure each
-  // time — and each run put focus back on Close. A write settling a quarter
-  // second later, which is exactly what this dialog is built to produce,
-  // yanked the caret out of the field the reader was typing in.
-  const close = useRef(onClose);
-  close.current = onClose;
-
-  // `aria-modal` is a claim about behaviour, not a mechanism: it tells a
-  // screen reader the rest of the page is inert and does nothing whatever to
-  // the Tab key. Left at that, a keyboard reader tabs straight out of the
-  // dialog into controls they cannot see, and lands back in the table with no
-  // idea the dialog is still open behind them. So focus moves in on open,
-  // cycles inside while it is open, and goes back to the button that opened
-  // it on close.
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    closer.current?.focus();
-
-    const focusable = () =>
-      Array.from(
-        panel.current?.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      ).filter((el) => !el.hasAttribute("disabled"));
-
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        close.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const items = focusable();
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      // Also when focus has already escaped — a click on the scrim, a
-      // programmatic move — because the next Tab is the reader's way back in.
-      if (!panel.current?.contains(active as Node)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-      }
-      if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      } else if (event.shiftKey && active === first) {
-        event.preventDefault();
-        last.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      opener?.focus?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   return (
-    <div className="exact-subform__scrim" onClick={onClose}>
-      <div
-        ref={panel}
-        className="exact-subform"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`${field.label}: the values it is computed from`}
-        // The scrim closes on click; the panel must not, or every click
-        // inside the dialog would shut it.
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="exact-subform__head">
-          <h3 className="exact-subform__title">{field.label}</h3>
-          <button
-            type="button"
-            ref={closer}
-            className="exact-subform__close"
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </div>
-
+    <Dialog
+      label={`${field.label}: the values it is computed from`}
+      title={field.label}
+      onClose={onClose}
+    >
         <p className="exact-subform__note">
           This value is worked out from the ones below. Change those and it
           follows.
@@ -218,7 +137,6 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
             );
           })}
         </ul>
-      </div>
-    </div>
+    </Dialog>
   );
 }

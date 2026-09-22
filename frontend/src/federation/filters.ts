@@ -3,6 +3,7 @@
 // suite can test it (see vitest.config.ts, and #426 for the component-level
 // gap).
 
+import { WEIGHT_FIELDS, isUsableWeight } from "./weights";
 import type { FilterState } from "./types";
 
 export interface DistanceUnitOption {
@@ -394,6 +395,21 @@ export function sanitizeStoredFilters(raw: unknown): FilterState {
   // while the control shows "Any".
   if (isUsableLastUpdate(input.lastUpdate)) {
     out.lastUpdate = input.lastUpdate as string;
+  }
+
+  // The four suitability weights. A value from somewhere else — another
+  // client, an older build, a hand-edited `localStorage` — is a claim like
+  // any other here, and one the control could not show is not a claim this
+  // UI can act on. Dropped, the field falls back to the server's own 25,
+  // which is the score everyone else sees.
+  //
+  // `isUsableWeight` rather than the bounds spelled out again: one predicate
+  // for both doors is the whole point of #538, and prose is where it would
+  // drift back apart first.
+  for (const { key } of WEIGHT_FIELDS) {
+    const value = input[key];
+    if (!isUsableWeight(value)) continue;
+    (out as Record<string, unknown>)[key] = value;
   }
 
   if (typeof input.validatedOnly === "boolean") {

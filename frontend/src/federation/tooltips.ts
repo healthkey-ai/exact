@@ -698,6 +698,13 @@ export const ACTION_TOOLTIPS = {
   // is worth a sentence.
   map: "Show where the trials on this page are, on a map and as a list of places.",
   list: "Show the trials as a list.",
+  // Not in CB, which gives this button an editable tooltip authored in its
+  // own database — there is no bundled string for it anywhere in the repo, so
+  // a port has nothing to copy. Written here instead, because a button that
+  // changes how everything on the page is ranked should say so before it is
+  // pressed.
+  suitabilityPreferences:
+    "Choose what the Suitability Score weighs: the possible benefit, the demands on you, the risks, and how far you would have to travel.",
   // trials.exploreTrials.tooltip — "AI" and the graph/list switch dropped.
   exploreTrials:
     "Visualize the trials you may be eligible for in a single view.\nSee which eligibility requirements you meet, which are missing, and which trials share them.",

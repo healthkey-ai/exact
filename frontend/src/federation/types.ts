@@ -388,6 +388,18 @@ export interface FilterState {
     | "updated"
     | "enrollment"
     | "patientBurdenScore";
+  /** How the Suitability Score weighs its four terms, 0 and up.
+   *
+   *  Not filters: they change the ORDER and the percentage on each card, not
+   *  which trials come back, so they are deliberately outside `PANEL_FIELDS`
+   *  — the Filters badge does not count them and Reset does not clear them.
+   *  Each defaults to 25 server-side, and only a weight that differs from
+   *  that goes on the wire. All four at zero is not an error: the server
+   *  reads a zero sum as "no opinion" and scores 25/25/25/25. */
+  benefitWeight?: number;
+  patientBurdenWeight?: number;
+  riskWeight?: number;
+  distancePenaltyWeight?: number;
 }
 
 /** Public props for the federated `./TrialMatches` export. Host-agnostic:

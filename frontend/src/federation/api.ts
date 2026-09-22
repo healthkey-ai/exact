@@ -15,6 +15,7 @@
 import type { AxiosInstance } from "axios";
 
 import { isUsableLastUpdate, isActiveDistance } from "./filters";
+import { DEFAULT_WEIGHT, WEIGHT_FIELDS, isUsableWeight } from "./weights";
 import type {
   FilterState,
   PatientInfo,
@@ -414,5 +415,14 @@ export function filterStateToParams(filters?: FilterState): Record<string, strin
   if (filters.searchTreatment) out.searchTreatment = filters.searchTreatment;
   if (filters.type) out.type = filters.type;
   if (filters.sort) out.sort = filters.sort;
+  // Only a weight that differs from the server's own default travels. Sending
+  // all four when the reader has changed none would put them in the query key
+  // for nothing; sending an unusable one — a host's `initialFilters` never
+  // passed through the form — would be read as a deliberate 0 once the server
+  // clamps it.
+  for (const { key } of WEIGHT_FIELDS) {
+    const value = filters[key];
+    if (isUsableWeight(value) && value !== DEFAULT_WEIGHT) out[key] = String(value);
+  }
   return out;
 }
