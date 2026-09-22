@@ -33,12 +33,32 @@
   --exact-color-border: hsl(0 0% 91.4%); /* CB --border-secondary */
   --exact-color-text: hsl(216 17% 14%); /* CB --text-primary-900 */
   --exact-color-text-muted: hsl(220 9% 32%); /* CB --text-secondary-700 */
-  --exact-color-text-tertiary: hsl(218 8% 46%); /* CB --text-quaternary-500 */
+  /* 44%, where CB's own is 46%. The units sit INSIDE the eligibility cells
+   * — as does the stacked "Required" / "Your Value" header, below 679px —
+   * so the surface under them is a tinted fill and not the card: 4.49:1 on
+   * the matched fill and 4.36:1 on the mismatched one, both under AA, where
+   * the same token on the card passes at 4.78. Two steps down clears both
+   * (4.83 and 4.70) and stays well clear of `text-muted` at 32%.
+   *
+   * Not the "not a requirement" note, which reads as the obvious third case
+   * and is not one: it renders only for a field the trial does not evaluate,
+   * and a cell is tinted only when it matched, so that note is never on a
+   * fill. #553. */
+  --exact-color-text-tertiary: hsl(218 8% 44%);
 
   /* Score-pill tiers — CB success / warning / error ramps. */
   --exact-color-success-50: hsl(152 88% 95%);
   --exact-color-success-200: hsl(152 68% 81%);
-  --exact-color-success-700: hsl(152 91% 29%);
+  /* 26%, where CB's ramp says 29%. At 29% this is 4.01:1 on `success-50`
+   * and 4.26:1 on the card — the matched criterion cell, the check mark
+   * beside it, the MCL verdict line and the green score pill, all below the
+   * 4.5:1 AA asks of them, and the one tier of the three carrying good news
+   * (the amber pair measures 4.87 and the red 5.88). Lightening the FILL
+   * cannot repair it: white behind this green is still only 4.26, so the
+   * text is the half that has to move. 26% gives 4.78 on the fill and 5.08
+   * on the card, and is the first step that clears the bar (27% is 4.48).
+   * #553. */
+  --exact-color-success-700: hsl(152 91% 26%);
   --exact-color-warning-50: hsl(48 100% 96%);
   --exact-color-warning-200: hsl(43 98% 77%);
   --exact-color-warning-700: hsl(25 95% 37%);
@@ -50,7 +70,10 @@
    * `on-brand` is the label color that sits on the green fill; tokenized so a
    * host that themes the CTA to a light color can keep the text readable. */
   --exact-color-brand-green: hsl(146 70% 45%);
-  --exact-color-brand-green-hover: hsl(152 91% 29%);
+  /* Referenced, not copied: the comment above says the hover IS
+   * `success-700`, and it was a second literal of the same value that would
+   * have quietly stayed at 29% when that moved. */
+  --exact-color-brand-green-hover: var(--exact-color-success-700);
   --exact-color-on-brand: #ffffff;
   /* The label color on a `primary` fill (the bookmark when it is on). Its own
    * token: a host that darkens `on-brand` for a light CTA must not darken the
@@ -1936,7 +1959,20 @@
 /* Its own line, so a long message does not squeeze the box it is about. */
 .exact-root .exact-elig__error {
   flex: 1 0 100%;
-  color: var(--exact-color-not-eligible);
+  /* `error-700`, not `not-eligible`. This is a sentence, and one of the
+   * four places it renders is inside the "Your Value" cell while that cell
+   * is tinted `error-50`: there the verdict MARK's red measures 4.41:1,
+   * under AA, where the ramp's own text step gives 5.88. The other three —
+   * a refused write on a row that matched, and both routes through the
+   * subform dialog — are on the plain card, where the same change takes it
+   * from 4.83 to 6.43.
+   *
+   * In the tinted cell this now says what the cell already says (`is-
+   * mismatch` sets the same colour), so the alert no longer reads as a
+   * different red from the value above it. That distinction was worth less
+   * than the 1.47 it cost. The ✕ beside it keeps `not-eligible`: a mark is
+   * held to 3:1 and reads as the verdict, which is what it is. #553. */
+  color: var(--exact-color-error-700);
   font-size: 0.8125rem;
 }
 
