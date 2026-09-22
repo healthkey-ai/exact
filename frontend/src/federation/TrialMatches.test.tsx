@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TrialMatches } from "./TrialMatches";
 import type { TrialStateAdapter } from "./state";
+import type { PatientInfo } from "./types";
 import { fakeApi, fakeState, renderTrialMatches, trial } from "../test/renderTrialMatches";
 
 /** The header copy of the interest button. The detail page draws it twice, as
@@ -800,13 +801,170 @@ describe("counts while a state tab is active", () => {
     const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
     renderIt(api, state());
     await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    // The state counts are there to begin with — without this the test
+    // cannot tell "put away" from "never arrived".
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /Eligible & Potential, / })).toBeNull(),
     );
-    // The state tab's own count still comes from the adapter.
-    await screen.findByRole("button", { name: "Favorites, 1 trial" });
+    // And the state tabs put theirs away with it. Their counts are still
+    // true — they come from the adapter, not from this response — but a
+    // number beside a blank is what makes the blank read as a zero, and the
+    // blank one here is the whole corpus (#536).
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    await screen.findByRole("button", { name: "Favorites" });
+  });
+
+  it("waits for a slow adapter before numbering its tab, and no longer", async () => {
+    // The adapter's counts come from a read of their own, and it can be the
+    // slow one. Its tab waits for it; the corpus count does not wait for
+    // the adapter.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
+    renderIt(api, {
+      ...state(),
+      listFavoriteIds: vi.fn(async () => {
+        await held;
+        return ["1"];
+      }),
+    });
+
+    // The corpus number is out as soon as it is known — it does not wait for
+    // the adapter — and it is the ONLY number: Registered has resolved and
+    // its 0 is true, but printed beside a blank Favorites it reads as one.
+    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(1));
+    await screen.findByRole("button", { name: "Registered" });
+    await screen.findByRole("button", { name: "Favorites" });
+
+    release();
+
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(3));
+  });
+
+  it("keeps the corpus count when the saved ids cannot be read", async () => {
+    // The asymmetry, and the reason for it: PROMOP being unreachable is not
+    // a reason to stop saying how many trials match this patient. The
+    // production client retries with backoff and does not poll, so blanking
+    // it here would blank the landing view until the reader did something.
+    const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
+    renderIt(api, {
+      ...state(),
+      listFavoriteIds: vi.fn(async () => {
+        throw new Error("promop unreachable");
+      }),
+    });
+
+    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+    // And BOTH state tabs go quiet, not just the one that failed: Registered
+    // read fine and its 0 is true, but printed beside a blank Favorites it
+    // is the same false zero one tab over.
+    expect(screen.getAllByTestId("tab-count").map((el) => el.textContent)).toEqual(["1"]);
+    await screen.findByRole("button", { name: "Registered" });
+    await screen.findByRole("button", { name: "Favorites" });
+  });
+
+  it("never paints a corpus badge from a narrowed response", async () => {
+    // The counts and the response are one thing, and the ACTIVE TAB is
+    // another. `keepPreviousData` keeps a Favorites response on screen after
+    // the reader has left that tab, so asking "is a state tab active" gets
+    // the wrong answer for the whole placeholder window: leave Favorites,
+    // change the sort, come back, and the corpus badge is painted from the
+    // narrowed counts — "Eligible & Potential, 1 trial" against a corpus of
+    // 19. This is the exact lie the withholding exists to prevent, arriving
+    // through the cache instead of through the request.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    // A narrowed response, counted over the saved ids: one trial.
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    // Anything that changes the query key while the reader is on this tab.
+    await userEvent.click(screen.getByRole("radio", { name: "Sort by Matching Score" }));
+    await waitFor(() => expect(listed(api).length).toBe(3));
+
+    // Back to the corpus tab, with its new key not yet answered — so what
+    // `query.data` holds is the narrowed response.
+    const release = api.deferNextList();
+    await userEvent.click(screen.getByRole("button", { name: /^Eligible/ }));
+    await waitFor(() => expect(listed(api).length).toBe(4));
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /Eligible & Potential, 1 trial/ })).toBeNull();
+
+    release();
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+  });
+
+  it("does not leave the corpus numbers up on the way to a state tab", async () => {
+    // The moment between the click and the narrowed answer. The corpus
+    // response is still in `query.data`, and its counts are true — but a bar
+    // that numbers itself and then blanks is the flicker the whole "all or
+    // none" shape exists to avoid, and it lasts a full round trip.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    const release = api.deferNextList();
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+
+    // Settled, not `waitFor`: the badges are already 0 when the answer is
+    // released, so a poll that passes on its first try asserts nothing about
+    // what the narrowed response does when it lands.
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+  });
+
+  it("does not paint a deep-linked tab's total on the corpus badge", async () => {
+    // `itemsTotalCount` belongs to the tab that asked for it. With no
+    // `tabCounts` from the server the corpus badge falls back to that total,
+    // so coming back from a deep-linked Fully matched tab painted ITS total
+    // — the eligible-only one — on the corpus badge for the whole round
+    // trip. The tab is in the scope for this, and only this test says so.
+    const api = fakeApi({ tabCounts: undefined, itemsTotalCount: 5 });
+    renderTrialMatches(api, {
+      state: fakeState({ favorites: ["1"] }).adapter,
+      initialFilters: { type: "eligible" },
+    });
+    await screen.findByRole("button", { name: "Fully matched" });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const release = api.deferNextList();
+    await userEvent.click(screen.getByRole("button", { name: /^Eligible & Potential/ }));
+    await waitFor(() => expect(listed(api).length).toBe(2));
+
+    // Not 5, and not anything: the answer for this tab has not arrived.
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    release();
+  });
+
+  it("brings every count back on a tab that can be counted", async () => {
+    const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(0));
+
+    await userEvent.click(screen.getByRole("button", { name: /^Eligible/ }));
+
+    // All three together, or the bar is back to saying something it cannot
+    // know about the tab that has none.
+    await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(3));
+    expect(screen.getAllByTestId("tab-count").map((el) => el.textContent)).toEqual([
+      "1",
+      "0",
+      "1",
+    ]);
   });
 
   it("runs no matcher query behind a failed saved-ids read", async () => {
@@ -3356,6 +3514,94 @@ describe("the pager across a patient switch", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument(),
     );
+  });
+});
+
+describe("the counts across a patient switch", () => {
+  it("does not paint the previous patient's counts", async () => {
+    // The third way "what the counts are about" comes apart from "what is on
+    // screen", and the one the pager next door already guards: the patient.
+    // Held through the new patient's search, the badge reported the previous
+    // patient's corpus for the whole matcher round trip — and a matcher round
+    // trip is not a short window.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    const real = api.client.post as unknown as (...a: unknown[]) => Promise<unknown>;
+    let armed = false;
+    const gate: { release: (() => void) | null } = { release: null };
+    (api.client as unknown as { post: unknown }).post = (...args: unknown[]) => {
+      const answer = real(...args);
+      if (!armed) return answer;
+      armed = false;
+      return new Promise((resolve) => {
+        gate.release = () => resolve(answer);
+      });
+    };
+    const state = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (ref: string) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={{ disease: "multiple myeloma", ref }}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui("A"));
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+
+    armed = true;
+    // A different corpus for B, so the closing assertion can tell whose
+    // numbers arrived — with both patients on 19 it could not.
+    api.setResponse({ tabCounts: { eligible: 2, potential: 1 } });
+    view.rerender(ui("B"));
+
+    await waitFor(() => expect(gate.release).not.toBeNull());
+    expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /Eligible & Potential, 19/ })).toBeNull();
+
+    gate.release?.();
+    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
+  });
+
+  it("keeps the counts when the host re-spells the same patient", async () => {
+    // The scope has to be hashed the way React Query hashes its key, which
+    // sorts an object's keys; `JSON.stringify` does not. A host handing back
+    // the same patient with its fields in another order gets the SAME cache
+    // entry — so nothing refetches — and a scope that never again matches
+    // the one stored with the response. Measured before the fix: every badge
+    // gone, rows still on screen, and still gone at 2s.
+    const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
+    const state = fakeState();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+    });
+    const ui = (info: PatientInfo) => (
+      <QueryClientProvider client={queryClient}>
+        <TrialMatches
+          apiClient={api.client}
+          queryClient={queryClient}
+          patientInfo={info}
+          state={state.adapter}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(ui({ disease: "multiple myeloma", ref: "A" }));
+    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    const before = listed(api).length;
+
+    view.rerender(ui({ ref: "A", disease: "multiple myeloma" }));
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(listed(api).length).toBe(before);
+    expect(screen.getAllByTestId("tab-count").map((el) => el.textContent)).toEqual([
+      "19",
+      "0",
+      "0",
+    ]);
   });
 });
 

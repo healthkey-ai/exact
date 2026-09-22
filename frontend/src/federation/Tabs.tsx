@@ -3,7 +3,7 @@
 import { useCallback, useLayoutEffect, useRef } from "react";
 
 import { ActionTooltip } from "./bits";
-import { tabCount, type TabDef, type TabValue } from "./listChrome";
+import { barCounts, type TabDef, type TabValue } from "./listChrome";
 import { TAB_TOOLTIPS } from "./tooltips";
 import type { TabCounts } from "./types";
 
@@ -14,7 +14,8 @@ interface Props {
   active: TabValue;
   onChange: (tab: TabValue) => void;
   /** Server-side totals over the whole matched corpus. Absent when the
-   *  server could not judge — see `tabCount`. */
+   *  server could not judge, and withheld by the caller when the request was
+   *  narrowed to the saved ids — see `barCounts`. */
   counts?: TabCounts;
   /** `itemsTotalCount` of the current response, used only to label the
    *  default tab when the server sent no counts and that tab is the one
@@ -48,6 +49,11 @@ export function Tabs({
   // the one we caused.
   const readerScrolled = useRef(false);
   const ourScroll = useRef<number | null>(null);
+  // How wide the tabs were last time we looked, and whether the last thing
+  // that happened to the strip was them getting narrower. See `noteScroll`.
+  const contentWidth = useRef(0);
+  const lastScroll = useRef(0);
+  const absorbClamp = useRef(false);
   const keepActiveInView = useCallback(() => {
     const strip = stripRef.current;
     const tab = activeRef.current;
@@ -83,6 +89,7 @@ export function Tabs({
     // move is read as ours.
     if (next === strip.scrollLeft) return;
     ourScroll.current = next;
+    lastScroll.current = next;
     // `scrollTo` with `instant`, not an assignment: the assignment path obeys
     // CSS `scroll-behavior`, and a host writing `* { scroll-behavior: smooth }`
     // — which does reach this strip, unlike the `html` rule people mean to
@@ -111,6 +118,11 @@ export function Tabs({
   const noteScroll = useCallback(() => {
     const strip = stripRef.current;
     if (!strip) return;
+    // Consumed whichever branch this event takes, so a mark set by a
+    // narrowing can never outlive the event it was set for.
+    const clamped = absorbClamp.current;
+    absorbClamp.current = false;
+    lastScroll.current = strip.scrollLeft;
     // Our own move, coming back to us as an event. Browsers may coalesce a
     // run of them, so this clears the mark on the first one that matches and
     // treats anything further as the reader's.
@@ -118,8 +130,75 @@ export function Tabs({
       ourScroll.current = null;
       return;
     }
+    // And the browser's own move. When the tabs get narrower than the
+    // position the strip is scrolled to, the engine clamps `scrollLeft` and
+    // reports it as a scroll — with no mark of ours on it, so it read as the
+    // reader scrolling and suppressed every later correction until they
+    // changed tab. The whole bar now loses its numbers at once (#536), which
+    // is the largest narrowing this strip has and makes that the ordinary
+    // path rather than a corner: on a phone the reader who scrolled to
+    // Favorites, opened it, and then rotated found the tab they were on off
+    // the edge with nothing bringing it back.
+    if (clamped) return;
     readerScrolled.current = true;
   }, []);
+
+  // Measured off the tabs rather than `scrollWidth`, which is the same
+  // number in a browser and zero in jsdom — this has to be observable in a
+  // test, because what it guards against is invisible in one.
+  useLayoutEffect(() => {
+    const strip = stripRef.current;
+    if (!strip) return;
+    // `scrollWidth`/`clientWidth` when the engine has them, because their
+    // difference IS the scroll range — padding and all. Measured off the
+    // tabs instead, the two sides are different boxes: the tabs are content
+    // and the strip's rect is its border box, and `.exact-tabs` pads itself
+    // by 3px either side for the focus ring (#535). A scroll container's
+    // range includes that padding, so the tab-measured range is 6px short —
+    // and `keepActiveInView`, which aligns to the border box, parks the
+    // strip inside exactly that gap when it brings the last tab into view.
+    // Every later narrowing then armed the clamp mark with no clamp coming,
+    // and swallowed the reader's next scroll.
+    const buttons = strip.querySelectorAll("button");
+    const first = buttons[0]?.getBoundingClientRect();
+    const last = buttons[buttons.length - 1]?.getBoundingClientRect();
+    // From the extremes, not `last.right - first.left`: under `dir="rtl"`
+    // the first button in the DOM is the rightmost on screen and that
+    // subtraction goes negative, so the strip would stop recognising its own
+    // clamps and start reading them as the reader — the bug this guards
+    // against, in the layout nobody tests by hand.
+    // jsdom reports 0 for both, which is why the fallback exists at all: it
+    // lays nothing out, so the tabs' stated rects are the only measurement
+    // there is. In a browser these are never 0 for a rendered strip.
+    const room = strip.clientWidth || strip.getBoundingClientRect().width;
+    const measured = strip.scrollWidth;
+    const width =
+      measured ||
+      (first && last
+        ? Math.max(first.right, last.right) - Math.min(first.left, last.left)
+        : 0);
+    // Only when the position the strip was AT cannot survive the new width.
+    // Narrower tabs with the scroll already inside the new range clamp
+    // nothing and send no event, and a mark left standing for an event that
+    // never comes is one the reader's next scroll is swallowed by — their
+    // own move read as the engine's, which is this bug with the two sides
+    // swapped.
+    //
+    // The position it was at, not the one it is at: the engine clamps
+    // during layout, so by the time this runs `scrollLeft` is already the
+    // clamped value and the question cannot be asked of it.
+    // `Math.abs`, for the same reason: RTL counts `scrollLeft` DOWN from
+    // zero in most engines, so what matters is the distance from the origin
+    // rather than the sign of it.
+    if (width < contentWidth.current && Math.abs(lastScroll.current) > Math.max(0, width - room)) {
+      absorbClamp.current = true;
+    }
+    contentWidth.current = width;
+    lastScroll.current = strip.scrollLeft;
+  });
+
+  // All of them or none: see `barCounts`.
+  const numbered = barCounts(tabs, active, counts, activeTabTotal, stateCounts);
 
   // Not on `[active]` alone: the tab in force can leave the window without
   // being changed. The counts arrive from a request of their own, so a badge
@@ -127,18 +206,16 @@ export function Tabs({
   // on this strip that is the ordinary case, not a corner one. `labels` is
   // the rendered text of the whole bar, so it changes exactly when a tab's
   // width can have.
+  //
+  // Read from `numbered`, the same thing the badges are painted from, so
+  // there is one answer to "what does the bar say" rather than two. Not for
+  // correctness: `numbered` is a function of what `tabCount` returns, so it
+  // can never change where a per-tab reading would not. It can fail to
+  // change where one would — a Favorites count moving while the bar is
+  // unnumbered — and the correction that costs is a no-op anyway, since
+  // nothing on screen moved.
   const labels = tabs
-    .map(
-      (tab) =>
-        `${tab.label}:${
-          tabCount(
-            tab.value,
-            counts,
-            tab.value === active ? activeTabTotal : null,
-            stateCounts,
-          ) ?? ""
-        }`,
-    )
+    .map((tab) => `${tab.label}:${numbered?.get(tab.value) ?? ""}`)
     .join("|");
   // Changing tab is a fresh intent: it overrides wherever the reader had
   // scrolled the strip to, and starts the next stretch of looking. One case
@@ -196,15 +273,7 @@ export function Tabs({
     >
       {tabs.map((tab) => {
         const isActive = tab.value === active;
-        const count = tabCount(
-          tab.value,
-          counts,
-          // Only the active tab's own total is meaningful as a fallback;
-          // labelling an inactive tab with the active tab's count would be
-          // a plain lie.
-          isActive ? activeTabTotal : null,
-          stateCounts,
-        );
+        const count = numbered?.get(tab.value) ?? null;
         const tip = TAB_TOOLTIPS[tab.value];
         const button = (tipId?: string) => (
           <button

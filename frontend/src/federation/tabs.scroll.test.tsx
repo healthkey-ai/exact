@@ -24,6 +24,8 @@ import { tabsFor } from "./listChrome";
 import type { TabCounts } from "./types";
 import { fakeApi, fakeState, renderTrialMatches } from "../test/renderTrialMatches";
 
+const COUNTS_RTL: TabCounts = { eligible: 300, potential: 69 };
+
 const rect = (left: number, width: number) =>
   ({
     left,
@@ -356,6 +358,85 @@ describe("the tab strip, when the tabs themselves move", () => {
     expect(strip().scrollLeft).toBe(100);
   });
 
+  it("does not read the browser's own clamp as the reader scrolling", async () => {
+    // When the tabs get narrower than the position the strip is scrolled to,
+    // the engine clamps `scrollLeft` and reports it as a scroll. It carries
+    // no mark of ours, so it read as the reader moving the strip — and every
+    // later correction was suppressed until they changed tab. The whole bar
+    // losing its numbers at once (#536) is the largest narrowing this strip
+    // has, which is what turns this from a corner case into the ordinary
+    // one.
+    widths = [160, 100, 100];
+    const view = render(bar(COUNTS));
+    expect(strip().scrollLeft).toBe(160);
+
+    // The numbers go, the bar narrows, and the engine pulls the scroll back
+    // to the new end.
+    widths[0] = 100;
+    view.rerender(bar());
+    strip().scrollLeft = 100;
+    fireEvent.scroll(strip());
+
+    // The numbers come back, wider than before. Read as the reader's, the
+    // clamp would have left the tab in force off the edge for good.
+    widths[0] = 220;
+    view.rerender(bar(COUNTS));
+
+    await waitFor(() => expect(strip().scrollLeft).toBe(220));
+  });
+
+  it("goes back to listening to the reader after one clamp", async () => {
+    // The mark that says "that was the engine, not them" is for ONE event.
+    // Left standing, the reader's very next scroll is swallowed too, and
+    // the strip starts overruling the person it exists to follow.
+    widths = [160, 100, 100];
+    const view = render(bar(COUNTS));
+    expect(strip().scrollLeft).toBe(160);
+
+    widths[0] = 100;
+    view.rerender(bar());
+    strip().scrollLeft = 100;
+    fireEvent.scroll(strip()); // the clamp, absorbed
+
+    // Now the reader moves it themselves.
+    strip().scrollLeft = 0;
+    fireEvent.scroll(strip());
+
+    widths[0] = 220;
+    view.rerender(bar(COUNTS));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(strip().scrollLeft).toBe(0);
+  });
+
+  it("does not arm itself when the narrowing clamps nothing", async () => {
+    // Narrower tabs with the scroll already inside the new range clamp
+    // nothing and send no event. Armed anyway, the mark waits — and the
+    // reader's next scroll is swallowed by it, their own move read as the
+    // engine's. The same bug as the one above with the two sides swapped.
+    // A bar that fits, so mounting scrolls nothing and the reader's move
+    // below is the FIRST scroll event of the test — which is what makes it
+    // the one a wrongly-armed mark would swallow.
+    widths = [40, 40, 40];
+    const view = render(bar(COUNTS));
+    expect(strip().scrollLeft).toBe(0);
+
+    // Narrower, with the scroll already inside the new range: nothing to
+    // clamp, so no event — and nothing to absorb.
+    widths[0] = 20;
+    view.rerender(bar());
+
+    // Now the reader moves it, and a relayout that would otherwise pull the
+    // tab in force back must leave them where they are.
+    strip().scrollLeft = 10;
+    fireEvent.scroll(strip());
+    widths[0] = 400;
+    view.rerender(bar(COUNTS));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(strip().scrollLeft).toBe(10);
+  });
+
   it("does not drag the strip back from where the reader put it", async () => {
     const view = render(bar());
     expect(strip().scrollLeft).toBe(100);
@@ -483,5 +564,197 @@ describe("the tab strip, when the host resizes the column", () => {
     const observer = FakeResizeObserver.current();
     view.unmount();
     expect(observer.disconnected).toBe(true);
+  });
+});
+
+/** The same strip under `dir="rtl"`, where every sign is the other way.
+ *
+ *  The first button in the DOM is the rightmost on screen, and `scrollLeft`
+ *  counts DOWN from zero. Nothing here is hand-tested in that layout, so the
+ *  geometry is stated the way those engines report it: the tabs are laid out
+ *  to the left of the strip's right edge, and scrolling forward makes
+ *  `scrollLeft` negative and pushes the first tab off the right.
+ */
+describe("the tab strip, right to left", () => {
+  const WINDOW = 200;
+  let widths: number[] = [];
+  let original: typeof Element.prototype.getBoundingClientRect;
+
+  beforeEach(() => {
+    widths = [100, 100, 100];
+    original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function measured(this: Element) {
+      const strip = this.closest(".exact-tabs") as HTMLElement | null;
+      if (this.classList.contains("exact-tabs")) return rect(0, WINDOW);
+      if (!strip || !(this instanceof HTMLButtonElement)) return original.call(this);
+      const index = [...strip.querySelectorAll("button")].indexOf(this);
+      if (index < 0) return original.call(this);
+      const before = widths.slice(0, index).reduce((sum, w) => sum + w, 0);
+      const right = WINDOW - before - strip.scrollLeft;
+      return rect(right - widths[index], widths[index]);
+    };
+  });
+
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = original;
+  });
+
+  const strip = () => document.querySelector(".exact-tabs") as HTMLElement;
+  const bar = (counts?: TabCounts) => (
+    <Tabs
+      tabs={tabsFor(true)}
+      active="favorites"
+      onChange={() => {}}
+      counts={counts}
+      activeTabTotal={null}
+      stateCounts={{ favorites: 1, registered: 0 }}
+    />
+  );
+
+  it("knows its own clamp with the signs reversed", async () => {
+    // Favorites is the third tab, so in this layout it starts off the LEFT
+    // edge and the strip scrolls to a NEGATIVE position to reach it.
+    widths = [160, 100, 100];
+    const view = render(bar(COUNTS_RTL));
+    expect(strip().scrollLeft).toBe(-160);
+
+    // The numbers go, the bar narrows, the engine pulls the scroll back
+    // toward zero and reports it.
+    widths[0] = 100;
+    view.rerender(bar());
+    strip().scrollLeft = -100;
+    fireEvent.scroll(strip());
+
+    // Measured as a width rather than a difference of edges, and as a
+    // distance rather than a position, this is still a clamp — so the tab in
+    // force is still brought back when the numbers return.
+    widths[0] = 220;
+    view.rerender(bar(COUNTS_RTL));
+
+    await waitFor(() => expect(strip().scrollLeft).toBe(-220));
+  });
+});
+
+/** The strip as it actually is: padded, and clamped by the engine.
+ *
+ *  `.exact-tabs` pads itself 3px either side so `overflow-x: auto` does not
+ *  clip the focus ring. That padding is inside the scroll range, so the
+ *  range is 6px wider than the tabs are — and the correction, which aligns
+ *  to the border box, parks the strip inside exactly that gap. Every test
+ *  above models a strip with no padding, where the gap does not exist.
+ *
+ *  The clamp is modelled where the engine does it, too: during layout, on
+ *  the first measurement of the new geometry, so a layout effect reading
+ *  `scrollLeft` sees the clamped value and not the one the strip was at.
+ */
+describe("the tab strip, padded and clamped the way a browser does it", () => {
+  const COUNTS: TabCounts = { eligible: 300, potential: 69 };
+  const PADDING = 3;
+  const ROOM = 200;
+  let widths: number[] = [];
+  let clamping = false;
+  let original: typeof Element.prototype.getBoundingClientRect;
+
+  const content = () => widths.reduce((sum, w) => sum + w, 0);
+  const range = () => Math.max(0, content() + PADDING * 2 - ROOM);
+
+  beforeEach(() => {
+    widths = [140, 100, 100];
+    clamping = false;
+    original = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function measured(this: Element) {
+      const strip = this.closest(".exact-tabs") as HTMLElement | null;
+      if (this.classList.contains("exact-tabs")) {
+        // The engine clamps when it lays the new width out, which is before
+        // anything can read it.
+        if (clamping && this instanceof HTMLElement && this.scrollLeft > range()) {
+          this.scrollLeft = range();
+        }
+        return rect(0, ROOM);
+      }
+      if (!strip || !(this instanceof HTMLButtonElement)) return original.call(this);
+      const index = [...strip.querySelectorAll("button")].indexOf(this);
+      if (index < 0) return original.call(this);
+      const left = PADDING + widths.slice(0, index).reduce((sum, w) => sum + w, 0);
+      return rect(left - strip.scrollLeft, widths[index]);
+    };
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains("exact-tabs") ? ROOM : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains("exact-tabs") ? content() + PADDING * 2 : 0;
+      },
+    });
+  });
+
+  afterEach(() => {
+    Element.prototype.getBoundingClientRect = original;
+    Reflect.deleteProperty(HTMLElement.prototype, "clientWidth");
+    Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+  });
+
+  const strip = () => document.querySelector(".exact-tabs") as HTMLElement;
+  const bar = (counts?: TabCounts) => (
+    <Tabs
+      tabs={tabsFor(true)}
+      active="favorites"
+      onChange={() => {}}
+      counts={counts}
+      activeTabTotal={null}
+      stateCounts={{ favorites: 1, registered: 0 }}
+    />
+  );
+
+  it("does not arm on a narrowing the padding absorbs", async () => {
+    const view = render(bar(COUNTS));
+    // Parked where the correction leaves it: the last tab's right edge on
+    // the border box, which is INSIDE the scroll range by the padding.
+    expect(strip().scrollLeft).toBe(143);
+    expect(range()).toBe(146);
+
+    // Two pixels narrower — a webfont swapping in, a digit losing width.
+    // 143 still fits in the new range, so nothing clamps and no event comes.
+    widths[0] = 138;
+    view.rerender(bar());
+
+    // The reader moves the strip. Measured against the tabs instead of the
+    // scroll range, the mark would be standing here and would eat this.
+    strip().scrollLeft = 100;
+    fireEvent.scroll(strip());
+
+    widths[0] = 300;
+    view.rerender(bar(COUNTS));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(strip().scrollLeft).toBe(100);
+  });
+
+  it("asks where the strip WAS, not where the clamp has already put it", () => {
+    clamping = true;
+    const view = render(bar(COUNTS));
+    expect(strip().scrollLeft).toBe(143);
+
+    // A narrowing the padding cannot absorb: the engine clamps during
+    // layout, so by the time the effect runs `scrollLeft` already reads the
+    // new maximum and the question "did it have to move?" cannot be asked of
+    // it any more.
+    widths[0] = 100;
+    view.rerender(bar());
+    expect(strip().scrollLeft).toBe(106);
+    fireEvent.scroll(strip());
+
+    // The numbers come back wider. The clamp was the engine's, so the tab in
+    // force is still brought into view — parked, as always, with the last
+    // tab's right edge on the border box, which is the padding short of the
+    // end of the range.
+    widths[0] = 260;
+    view.rerender(bar(COUNTS));
+
+    expect(strip().scrollLeft).toBe(range() - PADDING);
   });
 });

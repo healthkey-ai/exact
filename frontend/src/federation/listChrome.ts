@@ -116,6 +116,85 @@ export function tabCount(
   return tab === "eligible" ? counts.eligible : counts.potential;
 }
 
+/** Every tab's count, or none at all (#536).
+ *
+ *  A number missing from one badge while its neighbours keep theirs does not
+ *  read as "not counted" — it reads as ZERO, and it reads that way BECAUSE
+ *  of the neighbours. Measured on the local stack: the bar says
+ *  "Eligible & Potential 369 / Registered 1 / Favorites 1", and opening
+ *  Favorites leaves "Eligible & Potential" bare beside two tabs that still
+ *  have their numbers. A reader with one bookmark is being told, in the only
+ *  language a badge has, that nothing matches them.
+ *
+ *  So a CORPUS tab that cannot be counted takes the whole bar down with it.
+ *  The reasons it cannot are several — the request was narrowed to the saved
+ *  ids, the saved filters or the saved ids are still on their way, the
+ *  server had no patient context — and they all end the same way, which is
+ *  why this asks the outcome rather than enumerating them. The cost is a
+ *  Favorites count that WAS correct, since it comes from the adapter rather
+ *  than from this response; a number beside a blank is what makes the blank
+ *  read as zero, and it is the corpus that is blank there.
+ *
+ *  A STATE tab that cannot be counted takes the other state tab with it and
+ *  stops there — they are two reads, and the slower one sitting blank beside
+ *  the faster one's number is this same bug on a cold load. What it does not
+ *  take is the corpus, and that is the asymmetry: the argument above does not
+ *  run backwards. Blanking the corpus because the BOOKMARKS service is
+ *  unreachable gives up the one number the page exists to show — on the view
+ *  every reader lands on, and not briefly: the production client retries with
+ *  backoff and does not poll, so it would stay blank until the reader did
+ *  something. What it would buy is avoiding a false zero about how many
+ *  trials the reader saved, which they already know and can disprove in a
+ *  click. A false zero about a clinical result nobody produced is the
+ *  expensive one — the same reason `tabCount` returns null rather than 0 —
+ *  and the two are not the same size.
+ *
+ *  Either way it costs a reflow: the bar narrows when numbers go away,
+ *  under a pointer that has just clicked the tab it rests on. */
+export function barCounts(
+  tabs: TabDef[],
+  active: TabValue,
+  counts: TabCounts | undefined,
+  activeTabTotal: number | null,
+  stateCounts?: { favorites?: number; registered?: number },
+): Map<TabValue, number> | null {
+  const numbered = new Map<TabValue, number>();
+  const fromState: TabValue[] = [];
+  let stateIncomplete = false;
+  for (const tab of tabs) {
+    const count = tabCount(
+      tab.value,
+      counts,
+      // Only the active tab's own total is meaningful as a fallback;
+      // labelling an inactive tab with the active tab's count would be a
+      // plain lie.
+      tab.value === active ? activeTabTotal : null,
+      stateCounts,
+    );
+    // `isFinite`, not just `!= null`: `tabCounts` is unvalidated wire data
+    // and the default tab's count is a SUM, so one missing field paints a
+    // badge reading `NaN` and an accessible name reading "NaN trials".
+    if (count == null || !Number.isFinite(count)) {
+      // Written for any corpus tab, though only the default one can reach
+      // it today: `tabsFor` carries a deep-link tab only while it is
+      // active, and an unnumberable deep-link tab means the counts are
+      // missing, which leaves the default tab unnumberable too — and it
+      // comes first. So this arm is the rule, not a tested path.
+      if (!tab.needsState) return null;
+      stateIncomplete = true;
+      continue;
+    }
+    if (tab.needsState) fromState.push(tab.value);
+    numbered.set(tab.value, count);
+  }
+  // The state tabs answer together or not at all. They are two reads, not
+  // one, so on an ordinary cold load the slower one is blank beside the
+  // faster one's number — the same false zero this exists to prevent,
+  // arriving without anyone having done anything.
+  if (stateIncomplete) for (const tab of fromState) numbered.delete(tab);
+  return numbered;
+}
+
 export interface SortOption {
   value: string;
   label: string;

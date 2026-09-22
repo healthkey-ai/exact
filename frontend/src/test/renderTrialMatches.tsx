@@ -293,7 +293,22 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
       if (ids === undefined) return { data: response };
       const wanted = new Set(ids.map(String));
       const results = response.results.filter((t) => wanted.has(String(t.trialId)));
-      return { data: { ...response, results, itemsTotalCount: results.length } };
+      return {
+        data: {
+          ...response,
+          results,
+          itemsTotalCount: results.length,
+          // Counted over the narrowed queryset, the way the server counts
+          // its own — which is the whole premise of #536. Passing the
+          // corpus counts through instead made a narrowed response and a
+          // corpus one indistinguishable by count, so no test could tell
+          // whether a badge had been painted from the wrong one. The split
+          // between the two buckets is not modelled; the size is.
+          ...(response.tabCounts
+            ? { tabCounts: { eligible: results.length, potential: 0 } }
+            : {}),
+        },
+      };
     };
     // After the payload is decided, not instead of deciding it: a `trial_ids`
     // request is a list request, and deferring only the unnarrowed ones would
