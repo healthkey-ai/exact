@@ -87,7 +87,13 @@ import {
 } from "./hooks";
 import { injectStyles, warnMissingExactTokens } from "./injectStyles";
 import { ACTION_TOOLTIPS } from "./tooltips";
-import type { FilterState, PatientInfo, TrialMatch, TrialMatchesProps } from "./types";
+import type {
+  FilterState,
+  PatientInfo,
+  TabCounts,
+  TrialMatch,
+  TrialMatchesProps,
+} from "./types";
 
 type StateKind = "favorites" | "registered";
 /** Which trials have a write in flight, and which have one that failed. */
@@ -831,6 +837,34 @@ function TrialMatchesInner({
     JSON.stringify([stateKey, forFilters, activeTab, trialIds ?? null]);
   const queryKey = viewKeyFor(queryFilters);
 
+  // What the corpus counts are TRUE for: this patient and these filters,
+  // minus the three things that narrow or order a request without changing
+  // how many trials match — the tab's own `type`, the saved ids a state tab
+  // sends, and the sort.
+  const { type: _tabNotInCountsKey, sort: _orderNotInCountsKey, ...corpusFilters } =
+    queryFilters;
+  const corpusKey = JSON.stringify([stateKey, corpusFilters]);
+  // The last counts computed for THIS corpus, kept so a state tab can still
+  // show the one number it cannot recompute.
+  const [countsForCorpus, setCountsForCorpus] = useState<{
+    key: string;
+    counts: TabCounts;
+  } | null>(null);
+  useEffect(() => {
+    // Only from a request that was NOT narrowed to saved ids: that is the
+    // whole reason the narrowed ones are withheld below.
+    if (stateTab || !tabCounts) return;
+    // And not from the PREVIOUS corpus's response. Rows are kept on screen
+    // while the next request is in flight (`keepPreviousData`), so after a
+    // filter or a patient changes there is a window where `corpusKey`
+    // already describes the new corpus and `tabCounts` still describes the
+    // old one. Stored then, the number is not old — it is mislabelled, and
+    // a reader who switches to Favorites before the new request lands keeps
+    // it for as long as they stay there.
+    if (query.isPlaceholderData) return;
+    setCountsForCorpus({ key: corpusKey, counts: tabCounts });
+  }, [stateTab, tabCounts, corpusKey, query.isPlaceholderData]);
+
   // The export is a file, not a view: no cache, no retry, and a status the
   // reader can see. React Query would serve the same bytes back on a second
   // click, which for a download means the reader gets a stale file.
@@ -1368,13 +1402,36 @@ function TrialMatchesInner({
         tabs={tabs}
         active={activeTab}
         onChange={handleTabChange}
-        // Withheld while a state tab is active: those counts came back from
-        // a request narrowed to the saved ids, so they describe the
-        // bookmarks, not the corpus. Painted on the Eligible / Fully
-        // matched / Potential badges they would read as the corpus —
-        // "Fully matched, 1" for a reader who has one bookmarked eligible
-        // trial and two hundred matching ones.
-        counts={stateTab ? undefined : tabCounts}
+        // On a state tab the response's own counts are withheld: they came
+        // back from a request narrowed to the saved ids, so they describe
+        // the bookmarks, not the corpus. Painted on the Eligible badge they
+        // would read as the corpus — "Eligible & Potential, 1" for a reader
+        // with one bookmarked trial and two hundred matching ones.
+        //
+        // What goes there instead is the last count computed for THIS
+        // corpus — same patient, same filters. Not a stale number needing a
+        // caveat: switching tabs does not change how many trials match, and
+        // the key says so. Withholding it outright was worse than it looks,
+        // because the state tabs keep their own counts (a separate read that
+        // does not depend on the open tab): a badge that empties while its
+        // neighbours keep theirs does not read as "not recomputed", it reads
+        // as ZERO (#536). Nothing remembered — a reader who arrives straight
+        // onto a state tab — still shows nothing, which is honest: this
+        // corpus has never been counted.
+        //
+        // Painted even while `staleResponse` holds — a failed ids read, too
+        // many saved ids, a store still loading — where the match tabs
+        // withhold their own. Deliberate, and safe for the same reason the
+        // whole thing is: this number is keyed to the FILTERS, not to the
+        // response. If a late saved set changes them, the key changes with
+        // them in that same render and the badge empties on its own.
+        counts={
+          stateTab
+            ? countsForCorpus?.key === corpusKey
+              ? countsForCorpus.counts
+              : undefined
+            : tabCounts
+        }
         activeTabTotal={stateTab ? null : totalCount}
         stateCounts={stateCounts}
       />

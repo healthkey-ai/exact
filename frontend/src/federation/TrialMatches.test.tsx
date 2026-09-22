@@ -797,16 +797,91 @@ describe("counts while a state tab is active", () => {
     // they describe the bookmarks. On the Eligible & Potential badge they
     // would read as the corpus — "Eligible & Potential, 1" for a reader with
     // one bookmarked eligible trial and many matching.
-    const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
+    const api = fakeApi({
+      results: [trial(1), trial(2), trial(3)],
+      itemsTotalCount: 3,
+      tabCounts: { eligible: 3, potential: 0 },
+    });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
-    await waitFor(() =>
-      expect(screen.queryByRole("button", { name: /Eligible & Potential, / })).toBeNull(),
-    );
-    // The state tab's own count still comes from the adapter.
+
+    // One bookmark, so the narrowed response counts one. The badge must not
+    // say so — and must not empty either, which reads as zero (#536): it
+    // keeps the count last computed for this corpus.
     await screen.findByRole("button", { name: "Favorites, 1 trial" });
+    // Waited on the narrowed RESPONSE, not on the request leaving: the rows
+    // are what it produced, so this cannot pass before the counts it
+    // carries have had their chance to reach the badge.
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "View Trial" })).toHaveLength(1),
+    );
+    expect(
+      screen.getByRole("button", { name: /^Eligible & Potential/ }),
+    ).toHaveAccessibleName("Eligible & Potential, 3 trials");
+  });
+
+  it("does not remember a count from the corpus the reader just left", async () => {
+    // Rows stay on screen while the next request is in flight, so between a
+    // filter change and its answer the response describes the OLD corpus
+    // while the key describes the new one. Stored then, the number is not
+    // old — it is mislabelled, and switching to Favorites before the answer
+    // lands keeps it on the badge for as long as the reader stays there.
+    const api = fakeApi({
+      results: [trial(1), trial(2), trial(3)],
+      itemsTotalCount: 3,
+      tabCounts: { eligible: 3, potential: 0 },
+    });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
+
+    // Held open, so the new corpus has no answer yet.
+    const atMount = api.listRequests().length;
+    const release = api.deferNextList();
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "daratumumab");
+    // Counted from what mount actually issued: a hard-coded 1 would let a
+    // second mount request swallow the deferral, and the Favorites request
+    // below would be the one held instead — a different test, quietly.
+    await waitFor(() =>
+      expect(api.listRequests().length).toBeGreaterThan(atMount),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+
+    await screen.findByRole("button", { name: "Favorites, 1 trial" });
+    expect(
+      screen.getByRole("button", { name: /^Eligible & Potential/ }),
+    ).toHaveAccessibleName("Eligible & Potential");
+    release();
+  });
+
+  it("drops the remembered count when the filters it belonged to change", async () => {
+    // Kept across a tab switch because the corpus did not change. Change the
+    // filters while on a state tab and it describes a corpus nobody counted,
+    // so it goes rather than mislead.
+    const api = fakeApi({
+      results: [trial(1), trial(2), trial(3)],
+      itemsTotalCount: 3,
+      tabCounts: { eligible: 3, potential: 0 },
+    });
+    renderIt(api, state());
+    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
+    await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
+    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
+
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+    await userEvent.type(await screen.findByLabelText("Title"), "daratumumab");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /^Eligible & Potential/ }),
+      ).toHaveAccessibleName("Eligible & Potential"),
+    );
   });
 
   it("runs no matcher query behind a failed saved-ids read", async () => {

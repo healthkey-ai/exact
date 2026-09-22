@@ -293,7 +293,37 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
       if (ids === undefined) return { data: response };
       const wanted = new Set(ids.map(String));
       const results = response.results.filter((t) => wanted.has(String(t.trialId)));
-      return { data: { ...response, results, itemsTotalCount: results.length } };
+      // `tabCounts` narrows with the rows, because a server computing them
+      // over a `trial_ids` request counts what that request matched. Left at
+      // the corpus values they were indistinguishable from the real ones,
+      // and the test that exists to prove the narrowed counts never reach a
+      // badge could not tell the two apart (#536).
+      // The server partitions the narrowed set exactly — every row it
+      // returns is one or the other — so a fake that let a third kind
+      // through would hand a test `eligible + potential < itemsTotalCount`,
+      // which no server can produce. Say so rather than answer it.
+      const stray = results.find(
+        (t) => t.matchingType !== "eligible" && t.matchingType !== "potential",
+      );
+      if (response.tabCounts && stray) {
+        throw new Error(
+          `fakeApi: a narrowed row is neither eligible nor potential ` +
+            `(trial ${stray.trialId}, matchingType ${String(stray.matchingType)}). ` +
+            `The server cannot answer that, so neither will this.`,
+        );
+      }
+      const narrowedCounts = response.tabCounts && {
+        eligible: results.filter((t) => t.matchingType === "eligible").length,
+        potential: results.filter((t) => t.matchingType === "potential").length,
+      };
+      return {
+        data: {
+          ...response,
+          results,
+          itemsTotalCount: results.length,
+          ...(narrowedCounts ? { tabCounts: narrowedCounts } : {}),
+        },
+      };
     };
     // After the payload is decided, not instead of deciding it: a `trial_ids`
     // request is a list request, and deferring only the unnarrowed ones would
