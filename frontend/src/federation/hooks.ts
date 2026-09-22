@@ -400,6 +400,17 @@ interface UseTrialsArgs {
   limit?: number;
   /** Narrow to these ids; `[]` means "none", not "no filter". */
   trialIds?: string[];
+  /** What the answer will be ABOUT, in the caller's own spelling — the
+   *  patient and the tab, hashed the way React Query hashes a query key.
+   *  Returned with the response, so the caller can ask whether the data in
+   *  hand still describes the view on screen instead of asking state that
+   *  has already moved on.
+   *
+   *  Taken from the caller rather than rebuilt here: written in both places
+   *  it would stop tracking the caller's the day a dimension joins one and
+   *  not the other, and a scope that quietly stops matching leaves the
+   *  caller with nothing to paint. */
+  scope: string;
   /** Skip the query until the host has a patient context. Without
    *  patient context the response would be a public/unscoped trial
    *  list — usually not what a TrialMatches mount wants. */
@@ -476,6 +487,21 @@ export function preferenceMethodsThrough(
 }
 
 
+/** A response, plus the two things the server cannot tell us about it: whether
+ *  the request was narrowed to a list of ids, and what the caller says the
+ *  answer will be ABOUT.
+ *
+ *  Counted over a narrowed queryset, `tabCounts` describes the bookmarks
+ *  rather than the corpus, and must not be painted on the corpus badges
+ *  (#536). And `keepPreviousData` outlives the state that made the request,
+ *  so "which tab is active" and "which patient is on screen" answer about
+ *  the request ABOUT TO GO OUT, not about the data in hand. Carried with the
+ *  response, `scope` cannot come apart from it. */
+export type ScopedTrialsResponse = TrialsResponse & {
+  narrowed: boolean;
+  scope: string;
+};
+
 export function useTrials({
   apiClient,
   patientInfo,
@@ -484,8 +510,9 @@ export function useTrials({
   page = 1,
   limit,
   trialIds,
+  scope,
   enabled = true,
-}: UseTrialsArgs): UseQueryResult<TrialsResponse> {
+}: UseTrialsArgs): UseQueryResult<ScopedTrialsResponse> {
   return useQuery({
     queryKey: [
       "exact-trials",
@@ -498,8 +525,20 @@ export function useTrials({
       // `undefined` are different questions and must be different keys.
       trialIds ?? null,
     ],
-    queryFn: () =>
-      fetchTrials({ apiClient, patientInfo, personId, filters, page, limit, trialIds }),
+    queryFn: async () => {
+      const response = await fetchTrials({
+        apiClient,
+        patientInfo,
+        personId,
+        filters,
+        page,
+        limit,
+        trialIds,
+      });
+      // What produced this, carried WITH it, so no caller has to reconstruct
+      // it from state that has already moved on.
+      return { ...response, narrowed: trialIds !== undefined, scope };
+    },
     // Paged, not infinite: CB paginates by number and so does this now, and
     // an infinite list cannot show per-tab totals or jump to a page. Previous
     // data is kept across page/filter changes so the list does not blank out

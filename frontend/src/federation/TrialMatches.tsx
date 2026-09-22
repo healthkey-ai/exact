@@ -33,7 +33,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
   }, [value, delay, immediate]);
   return immediate ? value : debounced;
 }
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ActionTooltip } from "./bits";
 import { FilterPanel } from "./FilterPanel";
@@ -659,6 +659,42 @@ function TrialMatchesInner({
   // here and this is it.
   const tooManySavedIds = savedIds != null && savedIds.length > MAX_TRIAL_IDS;
   const trialIds = tooManySavedIds ? undefined : savedIds;
+  // What a set of counts is ABOUT: this patient, and this tab.
+  //
+  // Coarser than the query key on purpose. A sort or a page turn does not
+  // change what the counts describe, and blanking the bar through every
+  // refetch would trade one flicker for a worse one — the rows stay up
+  // through those windows too, dimmed. The filters are left out on the same
+  // terms, and that one IS a real difference rather than a no-op: a filter
+  // change does change `tabCounts`, so the badge holds the previous
+  // response's number until the new answer lands, exactly as the rows do.
+  // What it does NOT leave out is the tab: `itemsTotalCount` belongs to the
+  // tab that asked, so a deep-linked Fully-matched response painted the
+  // corpus badge with the eligible-only total on the way back.
+  //
+  // Through `hashKey`, the function React Query hashes the query key with,
+  // and not `JSON.stringify`: that one is sensitive to the ORDER of an
+  // object's keys and `hashKey` sorts them. A host handing us the same
+  // `patientInfo` spelled `{ref, disease}` instead of `{disease, ref}` gets
+  // the same cache entry — so nothing refetches — and would have got a
+  // different scope here, which never then agrees with the stored one. The
+  // bar goes blank and stays blank, with the rows still on screen. Measured
+  // before this line: no badge at 100ms, 500ms, 1s, 2s, and recovery only
+  // when the reader changes the sort.
+  //
+  // `hashKey` and not the host's client, which is the other way to spell
+  // this (`queryClient.defaultQueryOptions({ queryKey }).queryHash` follows
+  // a custom `queryKeyHashFn`). Deliberate: a host installing a COARSER
+  // hash has a cache that answers one patient with another's response, and
+  // a scope derived from it would agree and paint those counts. Computed
+  // here it disagrees instead, and the bar goes quiet. Blank under a broken
+  // cache is the right way round; the whole point of this file is that a
+  // wrong number costs more than a missing one.
+  //
+  // The saved ids are deliberately NOT in here: a narrowed response is
+  // refused outright below, so their contents could do no work — and it is
+  // 500 ids through a hash on every render to reach the same answer.
+  const countScope = hashKey([personId ?? null, patientInfo ?? null, activeTab]);
   // `isPending`, not `data === undefined`: a rejected fetch also has no
   // data, and treating that as "still loading" left the tab on
   // "Loading trials…" for ever, with the trials query disabled so even its
@@ -710,6 +746,7 @@ function TrialMatchesInner({
     page,
     limit: PAGE_SIZE,
     trialIds,
+    scope: countScope,
     // `!idsFailed` too: without it a failed Favorites read still fires an
     // ordinary unfiltered search behind the error message — rows nobody
     // shows, and a full matcher run to produce them.
@@ -800,8 +837,27 @@ function TrialMatchesInner({
     savedFilters.pending || waitingForIds || idsFailed || tooManySavedIds;
   const staleRows = staleResponse || showingOtherTabsRows;
   const trials = staleRows ? [] : query.data?.results ?? [];
-  const totalCount = staleResponse ? null : query.data?.itemsTotalCount ?? null;
-  const tabCounts = staleResponse ? undefined : query.data?.tabCounts;
+  // Both questions are asked of the RESPONSE, not of the state around it.
+  // Two ways the two come apart, both measured:
+  //
+  //   - leave Favorites, change the sort, come back: `keepPreviousData`
+  //     still holds the narrowed response, and the corpus badge was painted
+  //     from counts taken over the saved ids — "Eligible & Potential, 1
+  //     trial" against a corpus of 19.
+  //   - switch patient with the new request in flight: the badge held the
+  //     PREVIOUS patient's 19 for the whole matcher round trip.
+  //
+  // Neither is reachable by asking which tab is active or which patient is
+  // mounted, because by then both have already changed.
+  const countsDescribeThisView = query.data?.scope === countScope;
+  const totalCount =
+    staleResponse || query.data?.narrowed || !countsDescribeThisView
+      ? null
+      : query.data?.itemsTotalCount ?? null;
+  const tabCounts =
+    staleResponse || query.data?.narrowed || !countsDescribeThisView
+      ? undefined
+      : query.data?.tabCounts;
 
   // Reset to the first page whenever the *effective* query changes — tab,
   // sort, or a filter that has finished debouncing. Adjusting state during
@@ -1368,14 +1424,14 @@ function TrialMatchesInner({
         tabs={tabs}
         active={activeTab}
         onChange={handleTabChange}
-        // Withheld while a state tab is active: those counts came back from
-        // a request narrowed to the saved ids, so they describe the
-        // bookmarks, not the corpus. Painted on the Eligible / Fully
-        // matched / Potential badges they would read as the corpus —
-        // "Fully matched, 1" for a reader who has one bookmarked eligible
-        // trial and two hundred matching ones.
-        counts={stateTab ? undefined : tabCounts}
-        activeTabTotal={stateTab ? null : totalCount}
+        // No `stateTab` guard here any more: a narrowed response — the one
+        // that would read as the corpus, "Fully matched, 1" for a reader
+        // with one bookmarked eligible trial and two hundred matching ones
+        // — is refused above, by the response rather than by the tab. The
+        // guard here answered about the request about to go out, which is
+        // the wrong moment for data already in hand.
+        counts={tabCounts}
+        activeTabTotal={totalCount}
         stateCounts={stateCounts}
       />
 

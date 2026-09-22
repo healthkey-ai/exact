@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  barCounts,
   SORT_OPTIONS,
   TABS,
   tabsFor,
@@ -92,6 +93,105 @@ describe("tabCount", () => {
     // so an inactive tab cannot be labelled with the active tab's number.
     expect(tabCount("eligible_and_potential", undefined, 40)).toBe(40);
     expect(tabCount("eligible_and_potential", undefined, null)).toBeNull();
+  });
+});
+
+describe("barCounts", () => {
+  const counts = { eligible: 7, potential: 12 };
+  const bar = tabsFor(true);
+
+  it("numbers every tab when every tab can be numbered", () => {
+    const numbered = barCounts(bar, "eligible_and_potential", counts, 19, {
+      favorites: 2,
+      registered: 1,
+    });
+    expect(numbered && [...numbered]).toEqual([
+      ["eligible_and_potential", 19],
+      ["registered", 1],
+      ["favorites", 2],
+    ]);
+  });
+
+  it("numbers none of them when a CORPUS tab cannot be numbered", () => {
+    // The corpus counts are withheld while a state tab is active, because
+    // they came back from a request narrowed to the saved ids. The state
+    // tabs' own counts are still true — and still put away, because a
+    // number beside a blank is what makes the blank read as zero (#536).
+    expect(barCounts(bar, "favorites", undefined, null, { favorites: 2, registered: 1 })).toBeNull();
+  });
+
+  it("lets the state tabs go unnumbered without taking the corpus with them", () => {
+    // Not the other way round. The bookmarks service being unreachable is
+    // not a reason to stop saying how many trials match the patient — that
+    // is the number the page exists for, and it is knowable here.
+    const numbered = barCounts(bar, "eligible_and_potential", counts, 19, {});
+    expect(numbered && [...numbered]).toEqual([["eligible_and_potential", 19]]);
+  });
+
+  it("numbers the state tabs together or not at all", () => {
+    // They are two reads. One landing first leaves the other blank beside a
+    // number, which is #536 in miniature and arrives on an ordinary cold
+    // load, with the reader having done nothing.
+    const half = barCounts(bar, "eligible_and_potential", counts, 19, { registered: 1 });
+    expect(half && [...half]).toEqual([["eligible_and_potential", 19]]);
+    const both = barCounts(bar, "eligible_and_potential", counts, 19, {
+      registered: 1,
+      favorites: 2,
+    });
+    expect(both && [...both]).toEqual([
+      ["eligible_and_potential", 19],
+      ["registered", 1],
+      ["favorites", 2],
+    ]);
+  });
+
+  it("does not paint arithmetic on an incomplete response", () => {
+    // `tabCounts` is unvalidated wire data and the default tab's count is a
+    // sum, so a missing field is `NaN` — which is not null, and would be
+    // painted as a badge reading "NaN" and announced as "NaN trials".
+    const partial = { eligible: 7 } as unknown as typeof counts;
+    expect(barCounts(bar, "eligible_and_potential", partial, 19, { favorites: 2, registered: 1 })).toBeNull();
+  });
+
+  it("asks each tab about itself, not about the one being listed", () => {
+    // The response total stands in for the default tab's count when the
+    // server sent none. A deep-linked tab has no such fallback, so a bar
+    // holding one goes unnumbered rather than borrow the number.
+    const deepLinked = tabsFor(false, "eligible");
+    expect(barCounts(deepLinked, "eligible", undefined, 40)).toBeNull();
+    // And the sharp edge of the same rule: a total belonging to a state
+    // tab's narrowed response, handed to the corpus tab, is the "Fully
+    // matched, 1" this whole thing exists to prevent. `TrialMatches` passes
+    // null there — and what this holds is `barCounts`'s own contract, not
+    // the caller's choice: removing the caller's null changes nothing
+    // observable, for the narrower reason that the fallback is read only
+    // for the ACTIVE tab, and the active tab in that state is a state tab,
+    // which never reads a response total at all.
+    expect(
+      barCounts(bar, "favorites", undefined, 40, { favorites: 2, registered: 1 }),
+    ).toBeNull();
+  });
+
+  it("numbers a deep-linked tab from its own bucket", () => {
+    // Both of them, because a rule written per-tab can miss one: a bar that
+    // skips `potential` is #536 reproduced exactly — one bare tab between
+    // numbered neighbours.
+    const eligible = barCounts(tabsFor(true, "eligible"), "eligible", counts, 7, {
+      favorites: 2,
+      registered: 1,
+    });
+    expect(eligible?.get("eligible")).toBe(7);
+    expect(eligible?.get("eligible_and_potential")).toBe(19);
+    const potential = barCounts(tabsFor(true, "potential"), "potential", counts, 12, {
+      favorites: 2,
+      registered: 1,
+    });
+    expect(potential && [...potential]).toEqual([
+      ["eligible_and_potential", 19],
+      ["potential", 12],
+      ["registered", 1],
+      ["favorites", 2],
+    ]);
   });
 });
 
