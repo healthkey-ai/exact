@@ -8,6 +8,7 @@ EXACT's matching engine expects.  Tests are split by concern:
 * DB-backed alias tests (receptor statuses, ethnicity) — use mocked code-lookup
   so they run without a live 'trials' DB alias.
 """
+from datetime import date
 from unittest.mock import patch
 
 import pytest
@@ -288,11 +289,22 @@ class TestGeneticMutationsNormalization:
 # ---------------------------------------------------------------------------
 
 class TestLabValueFallbacks:
+    """The four labs that live in two columns each.
+
+    CTOMOP's writable-fields descriptor splits them: for ANC and LDH the
+    EXACT-named column is a read-only `alias` whose `canonical` is the
+    CTOMOP-named one, and for haemoglobin and ALC both are `direct` and
+    `writable`. That split is what these tests are about — the first two
+    follow the canonical, the second two keep whatever is already there.
+    """
+
     def test_hemoglobin_fallback(self):
         result = _normalize_ctomop_row(_row(hemoglobin_g_dl=12.5))
         assert result['hemoglobin_level'] == 12.5
 
     def test_hemoglobin_existing_value_not_overridden(self):
+        # Both columns are writable here and EXACT's own editor writes this
+        # one, so a value in it is the reader's and must not be replaced.
         result = _normalize_ctomop_row(_row(hemoglobin_level=11.0, hemoglobin_g_dl=12.5))
         assert result['hemoglobin_level'] == 11.0
 
@@ -300,21 +312,179 @@ class TestLabValueFallbacks:
         result = _normalize_ctomop_row(_row(anc_thousand_per_ul=2.5))
         assert result['absolute_neutrophile_count'] == pytest.approx(2500.0)
 
-    def test_anc_existing_not_overridden(self):
+    def test_anc_follows_the_canonical_column_even_when_the_mirror_is_set(self):
+        # CTOMOP calls `absolute_neutrophile_count` a read-only mirror of
+        # `anc_thousand_per_ul`, so a value in it is either older than the
+        # canonical or copied from it — never fresher. Taking it kept the
+        # patient's previous count after every write to the real one (#557).
         result = _normalize_ctomop_row(_row(absolute_neutrophile_count=1800, anc_thousand_per_ul=2.5))
+        assert result['absolute_neutrophile_count'] == pytest.approx(2500.0)
+
+    def test_anc_is_not_read_in_the_units_of_the_other_column(self):
+        # What CTOMOP's mirroring actually writes: a COPY, so the mirror
+        # holds 2.5 where its own unit is cells/µL. Read as it stands, this
+        # patient has 2.5 neutrophils per microlitre and fails every ANC
+        # floor a trial can name, by three orders of magnitude.
+        result = _normalize_ctomop_row(_row(absolute_neutrophile_count=2.5, anc_thousand_per_ul=2.5))
+        assert result['absolute_neutrophile_count'] == pytest.approx(2500.0)
+
+    def test_anc_keeps_a_mirror_that_is_all_there_is(self):
+        # A patient whose value predates the split has only the mirror, and
+        # it is in its own unit already.
+        result = _normalize_ctomop_row(_row(absolute_neutrophile_count=1800))
         assert result['absolute_neutrophile_count'] == 1800
 
     def test_alc_fallback_scaled_by_1000(self):
         result = _normalize_ctomop_row(_row(alc_thousand_per_ul=1.5))
         assert result['absolute_lymphocyte_count'] == pytest.approx(1500.0)
 
+    def test_alc_existing_not_overridden(self):
+        # ALC is the pair CTOMOP has NOT declared: both columns writable,
+        # nothing mirroring, so the value already there stands.
+        result = _normalize_ctomop_row(_row(absolute_lymphocyte_count=1200, alc_thousand_per_ul=1.5))
+        assert result['absolute_lymphocyte_count'] == 1200
+
     def test_ldh_fallback(self):
         result = _normalize_ctomop_row(_row(ldh_u_l=300))
         assert result['lactate_dehydrogenase_level'] == 300
 
-    def test_ldh_existing_not_overridden(self):
+    def test_ldh_follows_the_canonical_column(self):
+        # Declared a mirror like ANC, and in the same unit — so this is
+        # about staleness rather than scale, but it is the same rule.
         result = _normalize_ctomop_row(_row(lactate_dehydrogenase_level=250, ldh_u_l=300))
+        assert result['lactate_dehydrogenase_level'] == 300
+
+    def test_ldh_keeps_a_mirror_that_is_all_there_is(self):
+        result = _normalize_ctomop_row(_row(lactate_dehydrogenase_level=250))
         assert result['lactate_dehydrogenase_level'] == 250
+
+    # ── The values as they actually arrive ────────────────────────────
+    #
+    # CTOMOP serialises a DecimalField as a STRING. Measured on the live
+    # payload the host posts to `/normalize-ctomop-row/`:
+    #
+    #     "anc_thousand_per_ul": "2.5", "absolute_neutrophile_count": "2.50"
+    #
+    # which matters because `'2.5' * 1000` is not 2500.
+
+    def test_a_string_canonical_is_a_number_and_not_repeated_text(self):
+        # `'2.5' * 1000` is three thousand characters of "2.52.52.5…". The
+        # in-memory builder then drops it as unparseable, so the patient
+        # reached the matcher with NO neutrophil count and every trial that
+        # names one read as "unknown" for them — silently.
+        result = _normalize_ctomop_row(_row(anc_thousand_per_ul='2.5'))
+        assert result['absolute_neutrophile_count'] == pytest.approx(2500)
+        assert not isinstance(result['absolute_neutrophile_count'], str)
+
+    def test_a_string_mirror_is_recognised_as_present(self):
+        # The fill-if-empty pairs read the EXACT-named column to decide
+        # whether to fill it. `'11.0'` is a value, not an absence.
+        result = _normalize_ctomop_row(_row(hemoglobin_level='11.0', hemoglobin_g_dl='12.5'))
+        assert result['hemoglobin_level'] == '11.0'
+
+    def test_a_blank_canonical_does_not_erase_the_mirror(self):
+        # A blank arrives through JSON where a decimal is optional. Read as
+        # present it would overwrite a usable value with `'' * 1000`, which
+        # is the empty string.
+        result = _normalize_ctomop_row(
+            _row(absolute_neutrophile_count=1800, anc_thousand_per_ul='')
+        )
+        assert result['absolute_neutrophile_count'] == 1800
+
+    def test_a_blank_mirror_is_filled_from_the_canonical(self):
+        result = _normalize_ctomop_row(_row(hemoglobin_level='', hemoglobin_g_dl='12.5'))
+        assert result['hemoglobin_level'] == pytest.approx(12.5)
+
+    def test_running_twice_does_not_scale_twice(self):
+        # The module's own contract: "Idempotent." A second pass must not
+        # read its own output as a new canonical value.
+        once = _normalize_ctomop_row(_row(anc_thousand_per_ul='2.5'))
+        twice = _normalize_ctomop_row(dict(once))
+        assert twice['absolute_neutrophile_count'] == pytest.approx(2500)
+
+    def test_a_canonical_that_is_not_a_finite_number_leaves_the_mirror_alone(self):
+        # `Decimal('NaN')` and `Decimal('Infinity')` CONSTRUCT, so a parse
+        # that only catches exceptions lets them through. A NaN then reaches
+        # DRF's renderer, which refuses to emit it and answers 500 where the
+        # row used to normalise fine; through the non-HTTP path it is quieter
+        # and worse, because every threshold comparison against NaN is False
+        # and the patient fails criteria nobody can see them failing.
+        for spelling in ('NaN', 'nan', 'Infinity', 'inf', '-Infinity'):
+            result = _normalize_ctomop_row(
+                _row(absolute_neutrophile_count=1800, anc_thousand_per_ul=spelling)
+            )
+            assert result['absolute_neutrophile_count'] == 1800, spelling
+
+    def test_a_signalling_nan_does_not_raise_out_of_the_function(self):
+        # `Decimal('sNaN')` constructs too, so it survives the parse — and
+        # then raises on the first arithmetic, which is outside it.
+        result = _normalize_ctomop_row(
+            _row(absolute_neutrophile_count=1800, anc_thousand_per_ul='sNaN')
+        )
+        assert result['absolute_neutrophile_count'] == 1800
+
+    def test_a_float_nan_is_ignored_too(self):
+        # Not only the string spelling: Python's own `json.loads` accepts a
+        # bare `NaN` literal, so a body that names one arrives here as a
+        # float rather than as text.
+        for junk in (float('nan'), float('inf'), float('-inf')):
+            result = _normalize_ctomop_row(
+                _row(absolute_neutrophile_count=1800, anc_thousand_per_ul=junk)
+            )
+            assert result['absolute_neutrophile_count'] == 1800, junk
+
+    def test_an_integer_too_big_for_a_float_does_not_raise(self):
+        # JSON carries an integer of any length, and `math.isfinite` converts
+        # to float before answering — so asking it about a 309-digit integer
+        # raises `OverflowError` rather than returning True.
+        huge = 10 ** 309
+        result = _normalize_ctomop_row(_row(anc_thousand_per_ul=huge))
+        assert result['absolute_neutrophile_count'] == huge * 1000
+
+    def test_a_canonical_that_is_not_a_number_at_all_is_ignored(self):
+        # A list is the string bug in another type: `[1] * 1000`. A date
+        # raises instead. Neither is a lab value.
+        for junk in ([1], {'a': 1}, date(2026, 1, 1), True, False):
+            result = _normalize_ctomop_row(
+                _row(absolute_neutrophile_count=1800, anc_thousand_per_ul=junk)
+            )
+            assert result['absolute_neutrophile_count'] == 1800, junk
+
+    def test_zero_in_the_exact_column_is_a_reading_and_not_an_absence(self):
+        # `not row.get(...)` counted 0 as empty, so a lymphocyte count of
+        # zero — which a patient can have — was replaced by the other column.
+        result = _normalize_ctomop_row(
+            _row(absolute_lymphocyte_count=0, alc_thousand_per_ul=1.5)
+        )
+        assert result['absolute_lymphocyte_count'] == 0
+
+    def test_an_unparseable_exact_column_gives_way_to_the_other_one(self):
+        # `'unknown'` or a censored `'<0.5'` is not a number, and the builder
+        # drops it later anyway — leaving the patient with nothing where the
+        # CTOMOP column had a usable value.
+        result = _normalize_ctomop_row(
+            _row(hemoglobin_level='unknown', hemoglobin_g_dl='12.5')
+        )
+        assert result['hemoglobin_level'] == pytest.approx(12.5)
+
+    def test_running_twice_does_not_scale_twice_for_the_filled_pairs(self):
+        # The second pass reads a Decimal out of the column the first pass
+        # wrote, which must read as "already has a value".
+        once = _normalize_ctomop_row(_row(alc_thousand_per_ul='1.5'))
+        twice = _normalize_ctomop_row(dict(once))
+        assert twice['absolute_lymphocyte_count'] == pytest.approx(1500)
+
+    def test_string_canonicals_for_the_other_two_pairs(self):
+        alc = _normalize_ctomop_row(_row(alc_thousand_per_ul='1.5'))
+        assert alc['absolute_lymphocyte_count'] == pytest.approx(1500)
+        ldh = _normalize_ctomop_row(_row(ldh_u_l='300'))
+        assert ldh['lactate_dehydrogenase_level'] == pytest.approx(300)
+
+    def test_a_canonical_that_names_nothing_leaves_the_mirror_alone(self):
+        result = _normalize_ctomop_row(
+            _row(absolute_neutrophile_count=1800, anc_thousand_per_ul='not a number')
+        )
+        assert result['absolute_neutrophile_count'] == 1800
 
 
 # ---------------------------------------------------------------------------
