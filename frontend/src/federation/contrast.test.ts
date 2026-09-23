@@ -100,6 +100,131 @@ const AA = 4.5;
 /** AA for a graphical mark that carries meaning on its own. */
 const MARK = 3;
 
+describe("what a host can reach", () => {
+  // The tooltip shipped its navy as a literal — `background: #1e3a5f` — so
+  // no host could say otherwise, and the trials panel came up in HealthTree
+  // green with a CancerBot-blue chip over it. Nothing said so, because every
+  // OTHER colour in the sheet went through a token and the palette looked
+  // complete.
+  //
+  // So: a colour that paints a surface or a label must come from a token.
+  // Not every literal — a translucent hairline and a modal's scrim are
+  // effects over whatever is behind them, and a host theming those would be
+  // theming the effect rather than the colour.
+
+  /** Properties that carry a colour. Anything ENDING in `-color`, plus the
+   *  shorthands and the paint properties that take one without saying so.
+   *  Written as a shape rather than a list because a list is what let the
+   *  first version of this miss `border-top`, `outline`, `caret-color` and
+   *  `background-image` — every one of which this sheet uses. */
+  const PAINTS = /(?:^|-)color$|^(?:background|border|outline|fill|stroke|column-rule|text-decoration)(?:-|$)/i;
+
+  /** Every named colour CSS knows, so `color: red` is caught as surely as
+   *  `color: #f00`. `transparent` and `currentColor` are not colours a host
+   *  would theme, and neither are the wide keywords. */
+  const NAMED = new Set(
+    `aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue
+     blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk
+     crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki
+     darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+     darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue
+     dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite
+     gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki
+     lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+     lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+     lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen
+     magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+     mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream
+     mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid
+     palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum
+     powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+     seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen
+     steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow
+     yellowgreen`.split(/\s+/),
+  );
+
+  const namesAColour = (value: string) =>
+    /#[0-9a-f]{3,8}\b/i.test(value) ||
+    /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\(/i.test(value) ||
+    value.split(/[^a-z-]+/i).some((word) => NAMED.has(word.toLowerCase()));
+
+  /** The two effects, compared on their shape rather than their spelling: a
+   *  reformatter that closes up the spaces inside `rgba(255, 255, 255, .12)`
+   *  must not turn this red. */
+  const tidy = (declaration: string) => declaration.replace(/\s+/g, " ").trim();
+  const ALLOWED = [
+    // The inset hairline on a filled button, white at 12% — an edge on the
+    // fill, not a colour of its own.
+    "border: 2px solid rgba(255, 255, 255, 0.12)",
+    // The subform dialog's scrim: black at 45% over the page.
+    "background: rgb(0 0 0 / 45%)",
+  ].map(tidy);
+
+  const declarations = (body: string) =>
+    [...body.matchAll(/(?:^|[;{])\s*([a-z-]+)\s*:\s*([^;}]+)/gi)].map(([, property, value]) => ({
+      property,
+      value: value.trim(),
+      text: tidy(`${property}: ${value}`),
+    }));
+
+  /** The value with its `var()` references taken out — fallbacks included,
+   *  because a fallback only applies to a token nobody declared, and the
+   *  test below says there are none.
+   *
+   *  Scanned to the matching parenthesis rather than matched with a regex:
+   *  `var(--exact-color-surface-2, rgba(10, 13, 18, 0.06))` nests, and a
+   *  pattern that cannot see past the inner pair leaves the whole thing —
+   *  which is three real declarations in this sheet reported as literals. */
+  const withoutTokens = (value: string) => {
+    let out = "";
+    for (let i = 0; i < value.length; ) {
+      if (!value.startsWith("var(", i)) {
+        out += value[i];
+        i += 1;
+        continue;
+      }
+      let depth = 0;
+      let j = i + 3;
+      for (; j < value.length; j += 1) {
+        if (value[j] === "(") depth += 1;
+        else if (value[j] === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      out += " ";
+      i = j + 1;
+    }
+    return out;
+  };
+
+  const painted = uncommented(css)
+    // The token block itself is where literals belong.
+    .replace(/\.exact-root\s*\{[\s\S]*?\n\}/, "");
+
+  it("paints nothing with a colour a host cannot override", () => {
+    const literals = declarations(painted)
+      .filter(({ property }) => PAINTS.test(property))
+      // The literals AROUND the tokens, not "does this mention a token":
+      // `linear-gradient(var(--exact-color-primary), #fff)` is half
+      // themeable and half not, and the half that is not is the point.
+      .filter(({ value }) => namesAColour(withoutTokens(value)))
+      .map(({ text }) => text)
+      .filter((text) => !ALLOWED.includes(text));
+
+    expect(literals, "these cannot be themed by a host").toEqual([]);
+  });
+
+  it("names no token it does not declare", () => {
+    // The guard above reads the SHAPE `var(--exact-…)`, so a typo passes it
+    // and paints nothing at all — measured: `--exact-color-tooltip-surfaec`
+    // left the tooltip with no background and the whole suite green.
+    const declared = new Set([...css.matchAll(/(--exact-[\w-]+)\s*:/g)].map(([, name]) => name));
+    const used = new Set([...css.matchAll(/var\((--exact-[\w-]+)/g)].map(([, name]) => name));
+    expect([...used].filter((name) => !declared.has(name)), "used but never declared").toEqual([]);
+  });
+});
+
 describe("the palette, in the pairs the page paints", () => {
   it("reads the tiers as text on their own fills", () => {
     // `.exact-elig__cell.is-*`, and `TIER_TOKENS` in `bits.tsx` — the score
@@ -213,6 +338,14 @@ describe("the palette, in the pairs the page paints", () => {
     expect(
       contrast(token("--exact-color-primary"), token("--exact-color-primary-50")),
       "primary on primary-50",
+    ).toBeGreaterThanOrEqual(AA);
+  });
+
+  it("reads the tooltip on its own surface", () => {
+    // `.exact-tooltip__box` — 13px, and the only thing in it.
+    expect(
+      contrast(token("--exact-color-on-tooltip"), token("--exact-color-tooltip-surface")),
+      "on-tooltip on tooltip-surface",
     ).toBeGreaterThanOrEqual(AA);
   });
 
