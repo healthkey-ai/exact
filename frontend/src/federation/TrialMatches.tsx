@@ -145,6 +145,8 @@ function TrialMatchesInner({
   personId,
   initialFilters,
   onTrialSelect,
+  trialId: hostTrialId,
+  onTrialIdChange,
   onPatientRecordChanged,
   renderMap,
   state,
@@ -194,13 +196,35 @@ function TrialMatchesInner({
   const [filters, setFilters] = useState<FilterState>(() =>
     normalizeFilterState(initialFilters),
   );
-  // The id, and the list row when there is one. A trial can be opened from
-  // the graph, which draws up to fifty trials while the list holds one page —
-  // so "which trial" is always answerable and "which row" is not.
-  const [selectedTrial, setSelectedTrial] = useState<{
-    trialId: number;
-    row?: TrialMatch;
-  } | null>(null);
+  // Which trial is open, when the host is not the one saying. The row it was
+  // opened from is deliberately not kept: a trial can be opened from the
+  // graph, which draws up to fifty while the list holds one page, so "which
+  // trial" is always answerable and "which row" is not — and the detail page
+  // asks for everything it draws by id anyway, which is what makes a reload
+  // straight onto it possible at all.
+  const [ownTrial, setOwnTrial] = useState<number | null>(null);
+  // `undefined` is "the host has no route for a trial"; `null` is "the host
+  // has one and it is on the list". The first keeps today's behaviour, the
+  // second hands navigation over — see `trialId` in `types.ts`.
+  //
+  // BOTH props, because a host that supplies only the id has given us
+  // nowhere to send a change: every call would be an optional-chained
+  // no-op, so opening a trial would do nothing and — worse — the back
+  // button on a detail page would be dead, with the reader stuck on it.
+  // Half a contract reads as the uncontrolled one, which works.
+  const hostOwnsUrl = hostTrialId !== undefined && onTrialIdChange != null;
+  const warnedHalfWired = useRef(false);
+  useEffect(() => {
+    if (hostTrialId === undefined || onTrialIdChange != null) return;
+    if (warnedHalfWired.current) return;
+    warnedHalfWired.current = true;
+    console.warn(
+      "[exact] `trialId` was passed without `onTrialIdChange`, so there is " +
+        "nowhere to report a change to and the remote keeps its own " +
+        "selection instead. Pass both to put the open trial in your URL.",
+    );
+  }, [hostTrialId, onTrialIdChange]);
+  const selectedTrial = hostOwnsUrl ? hostTrialId : ownTrial;
   // Seeded from the host's `initialFilters.type` rather than defaulted: the
   // prop is public API, and a host that mounts the remote asking for the
   // potential subset must not silently get the default tab's result set.
@@ -246,6 +270,14 @@ function TrialMatchesInner({
   // us — see `patientHandleOf` for why it takes both props and why the rest
   // of the payload is deliberately left out of it.
   const patientHandle = patientHandleOf(patientInfo, personId);
+  // What NAMES the patient, one axis at a time. The payload's own id and the
+  // `personId` prop answer different questions — which patient the server
+  // matches, and which record a write is PATCHed into — so a move on either
+  // is a move. Kept apart rather than folded into one string, because the
+  // reset below has to tell "this axis moved" from "this axis went from
+  // saying nothing to saying something", and a single value cannot.
+  const inlineName = inlinePatientId(patientInfo);
+  const personName = personId != null ? String(personId) : null;
   // A payload that names nobody has no handle to give, so the whole payload
   // stands in and every refresh reads as a new patient. That is safe, and it
   // is also the case where `onPatientRecordChanged` does the host no good: a
@@ -464,11 +496,58 @@ function TrialMatchesInner({
   // reader lands on the list, one round trip after asking for the opposite.
   //
   // A payload with no id in it still falls back to the whole hash, so a host
-  // that names nobody keeps resetting on any change: safe direction.
+  // that names nobody keeps resetting on any change. That is the safe
+  // direction for what this key guards — a descriptor, a write queue, an
+  // open trial of our own — and NOT for the host's address bar, which is
+  // why the reset below asks a narrower question before touching it.
+  //
+  // Skipped on the first run, and that is load-bearing now rather than a
+  // micro-optimisation: with the host owning the URL, a reload onto
+  // `/trials/123` mounts this remote with the trial already open, and a
+  // reset that fired on mount would ask the host to clear the address it
+  // had just restored. Both resets were no-ops on mount anyway — the
+  // selection starts empty and the pager starts at 1.
+  const lastPatient = useRef(patientHandle);
+  const lastInline = useRef(inlineName);
+  const lastPerson = useRef(personName);
+  const lastHostTrial = useRef(hostTrialId);
   useEffect(() => {
-    setSelectedTrial(null);
+    const patientMoved = lastPatient.current !== patientHandle;
+    // An axis moved only if it named somebody on BOTH sides and named
+    // somebody different. Silence on either side is not a switch: it is an
+    // axis that has nothing to say, and a host filling one in is refining
+    // what it told us, not handing over another patient.
+    const moved = (before: string | null, after: string | null) =>
+      before != null && after != null && before !== after;
+    const namedMoved = moved(lastInline.current, inlineName) || moved(lastPerson.current, personName);
+    const hostMoved = lastHostTrial.current !== hostTrialId;
+    lastPatient.current = patientHandle;
+    lastInline.current = inlineName;
+    lastPerson.current = personName;
+    lastHostTrial.current = hostTrialId;
+    if (!patientMoved) return;
     setPage(1);
-  }, [patientHandle]);
+    if (!hostOwnsUrl) {
+      setOwnTrial(null);
+      return;
+    }
+    // Controlled, the bar is higher, because what is being dropped is the
+    // reader's ADDRESS and not a local selection.
+    //
+    // The handle moves for reasons that are not a change of patient: a host
+    // that renders this before its profile fetch lands goes from `personId`
+    // alone to `personId` plus a payload, and a host whose payload names
+    // nobody moves it on every re-read — which is every inline edit (#555).
+    // Either would have cleared the URL a reload had just restored, which is
+    // the failure this whole change exists to remove. So the URL is dropped
+    // only when something that NAMES the patient — the payload's id, or
+    // `personId` — said one thing and now says another.
+    //
+    // And not when the host moved both in one commit — a link from one
+    // patient's trial URL straight to another's. That id is not the stale
+    // one; clearing it would undo the navigation that brought us here.
+    if (namedMoved && !hostMoved) closeRef.current();
+  }, [patientHandle, inlineName, personName, hostTrialId, hostOwnsUrl]);
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -1289,7 +1368,8 @@ function TrialMatchesInner({
   const handleSelectFromGraph = (trialId: number) => {
     const row = (query.data?.results ?? []).find((t) => t.trialId === trialId);
     setGraphOpen(false);
-    setSelectedTrial({ trialId, row });
+    if (hostOwnsUrl) onTrialIdChange?.(trialId);
+    else setOwnTrial(trialId);
     if (row) onTrialSelect?.(row);
   };
 
@@ -1380,33 +1460,55 @@ function TrialMatchesInner({
   };
 
   const handleSelect = (trial: TrialMatch) => {
-    setSelectedTrial({ trialId: trial.trialId, row: trial });
+    if (hostOwnsUrl) onTrialIdChange?.(trial.trialId);
+    else setOwnTrial(trial.trialId);
     onTrialSelect?.(trial);
+  };
+
+  // Kept in a ref so the patient-switch effect — far above, where the reset
+  // lives — can call the host
+  // without listing it as a dependency — a host that rebuilds the callback
+  // every render would otherwise re-run that effect on every render.
+  const closeRef = useRef<() => void>(() => {});
+  closeRef.current = () => {
+    if (hostOwnsUrl) onTrialIdChange?.(null);
+    else setOwnTrial(null);
+  };
+
+  const handleBack = () => {
+    // The host pushed the entry, so the host takes it back; calling
+    // `history.back()` as well would consume an entry nobody added and walk
+    // the reader off the page. Uncontrolled, going back is what CONSUMES
+    // the synthetic entry, and the popstate listener does the closing.
+    if (hostOwnsUrl) closeRef.current();
+    else window.history.back();
   };
 
   // When the detail view opens, push a synthetic history entry so the
   // browser ← back button returns to the trial list instead of navigating
   // to the previous host page. The popstate listener tears itself down
-  // when the detail closes (effect cleanup) or when the patient context
-  // resets (selectedTrial becomes null via the reset effect above).
+  // when the detail closes (effect cleanup) or when the patient changes and
+  // the reset clears the selection. Neither runs while the host owns the
+  // URL: there is no synthetic entry then, and nothing here to clear.
   useEffect(() => {
-    if (!selectedTrial) return;
-    window.history.pushState({ exactTrialDetail: selectedTrial.trialId }, "");
-    const handler = () => setSelectedTrial(null);
+    if (hostOwnsUrl || ownTrial == null) return;
+    window.history.pushState({ exactTrialDetail: ownTrial }, "");
+    const handler = () => setOwnTrial(null);
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
-  }, [selectedTrial]);
+  }, [hostOwnsUrl, ownTrial]);
 
   // Selecting a trial swaps the whole view for the in-remote detail page
   // (CB navigates to its own `/t/:id`; the remote owns the detail itself).
-  // `onBack` calls history.back() so the synthetic entry is consumed and
-  // the popstate listener above fires setSelectedTrial(null).
-  if (selectedTrial) {
-    const selectedId = String(selectedTrial.trialId);
+  // Uncontrolled, `onBack` calls `history.back()`, which consumes the
+  // synthetic entry and lets the popstate listener clear the selection;
+  // controlled, it asks the host to change its URL and nothing here moves.
+  if (selectedTrial != null && selectedTrial !== "") {
+    const selectedId = String(selectedTrial);
     return (
       <TrialDetailPage
         apiClient={apiClient}
-        trialId={selectedTrial.trialId}
+        trialId={selectedTrial}
         patientInfo={patientInfo}
         personId={personId}
         // What actually withholds the controls is the descriptor itself:
@@ -1485,7 +1587,7 @@ function TrialMatchesInner({
         // is keyed on what it is handed — so a Save that changed nothing
         // would re-fetch the open trial and blank it back to loading.
         filters={detailFilters}
-        onBack={() => window.history.back()}
+        onBack={handleBack}
       />
     );
   }
