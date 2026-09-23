@@ -20,9 +20,10 @@ re-exports the private aliases for backward compat with existing tests.
 """
 import json
 import logging
+import math
 import re
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 
 from trials.services.therapy_match_profile import omop_therapy_enabled
@@ -258,6 +259,51 @@ OUTCOME_MAP = {
 }
 
 
+def lab_number(value):
+    """A lab value as something arithmetic, or None when it is not one.
+
+    CTOMOP serialises a DecimalField as a STRING — measured on the live
+    payload the host posts to `/normalize-ctomop-row/`, `anc_thousand_per_ul`
+    arrives as `'2.5'`, not `2.5`. In Python `'2.5' * 1000` is three thousand
+    characters of "2.52.52.5…", which `_coerce_numerics` then drops as
+    unparseable: the patient reaches the matcher with NO neutrophil count and
+    every trial naming one reads as "unknown" for them, silently.
+
+    None for everything that is not a finite number, and the two halves of
+    that are worth naming:
+
+    * `Decimal('NaN')`, `'Infinity'` and `'sNaN'` all CONSTRUCT. A NaN reaches
+      DRF's renderer, which refuses to emit it and answers 500; a signalling
+      NaN raises on the first arithmetic instead, outside whatever `try`
+      built it. And through the non-HTTP path a NaN is quieter and worse —
+      every threshold comparison against it is False, so the patient simply
+      fails criteria nobody can see them failing.
+    * anything that is not a number at all — a date, a dict, a list. A list
+      is the string bug again in another type: `[1] * 1000`.
+    """
+    if isinstance(value, bool):
+        # `True * 1000` is 1000, and a boolean in a lab column is not a count.
+        return None
+    if isinstance(value, str):
+        try:
+            value = Decimal(value)
+        except (InvalidOperation, ValueError):
+            # Blank included: `Decimal('')` raises, so a column left empty
+            # answers None here without a branch of its own.
+            return None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int):
+        # Not through `math.isfinite`, which converts to float first and
+        # raises `OverflowError` on an integer too big for one — and JSON
+        # will carry an integer of any length. An int is finite by
+        # construction, so there is nothing to ask.
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return None
+
+
 def normalize_ctomop_row(row: dict) -> dict:
     """Normalize a raw CTOMOP patient_info row to EXACT's internal value format.
 
@@ -377,17 +423,82 @@ def normalize_ctomop_row(row: dict) -> dict:
         row['genetic_mutations'] = normalized
 
     # ── Lab value fallbacks (CTOMOP uses renamed columns) ─────────────
-    if not row.get('hemoglobin_level') and row.get('hemoglobin_g_dl') is not None:
-        row['hemoglobin_level'] = row['hemoglobin_g_dl']
+    #
+    # Four labs live in TWO columns each: the name EXACT matches by, and the
+    # name CTOMOP's own record is written through. They are the same
+    # measurement under two names, and nothing guarantees they agree.
+    #
+    # Two of the four CTOMOP declares properly. Read from the running
+    # service — `GET /api/v1/patient-records/writable-fields/?person_id=…` —
+    # for `absolute_neutrophile_count` and `lactate_dehydrogenase_level`:
+    #
+    #     {"kind": "alias", "writable": false,
+    #      "canonical": "anc_thousand_per_ul",
+    #      "reason": "Mirrors anc_thousand_per_ul; edit that field instead."}
+    #
+    # while `hemoglobin_level` and `absolute_lymphocyte_count` both answer
+    # `{"kind": "direct", "writable": true}`. That split is the whole basis
+    # for treating the four differently; it is a fact about the deployment
+    # rather than about this repository, and the only thing in here that
+    # speaks to it disagrees — `writable.test.ts` has a FIXTURE calling
+    # `hemoglobin_level` an alias of `hemoglobin_g_dl`. Invented test data,
+    # but if CTOMOP ever declares it for real then the haemoglobin branch
+    # below becomes the bug the ANC branch above fixes. Check the descriptor
+    # before trusting this comment (healthkey-ai/promop#1567).
+    #
+    # So for those two the column EXACT reads is a read-only MIRROR, and the
+    # canonical column is the only one anybody — the portal, a lab import —
+    # can write. NOT this service's inline editor: for these two
+    # `upatientField` resolves to the MIRROR, which the descriptor answers
+    # `writable: false` for, so the detail page draws no control for ANC or
+    # LDH and writes neither column. Taking the mirror when it happens to be
+    # non-empty means matching on whatever stood there before the write,
+    # which is the bug this fixes (#557).
+    #
+    # And for ANC it is worse than stale. CTOMOP mirrors on write by COPYING,
+    # while the mirror's unit is cells/µL and the canonical's is 10³/µL —
+    # measured on a live record: PATCH `anc_thousand_per_ul: 2.5`, and
+    # `absolute_neutrophile_count` becomes 2.50, not 2500. Read as the mirror
+    # it claims to be, that patient has 2.5 neutrophils per microlitre and
+    # fails every ANC floor a trial can name, by three orders of magnitude.
+    # Filed as healthkey-ai/promop#1567; EXACT stops depending on it either
+    # way.
+    for mirror, canonical, per_unit in (
+        ('absolute_neutrophile_count', 'anc_thousand_per_ul', 1000),
+        ('lactate_dehydrogenase_level', 'ldh_u_l', 1),
+    ):
+        value = lab_number(row.get(canonical))
+        if value is not None:
+            row[mirror] = value * per_unit
+        # Nothing else to do when the canonical is empty: the mirror is then
+        # the only number there is, so it stands. That reads as "a value from
+        # before the split" and usually is, but this cannot check it — a
+        # mirror copied unscaled while the canonical was later cleared would
+        # keep the 1000×-wrong number, and nothing here can tell those apart.
 
-    if not row.get('absolute_neutrophile_count') and row.get('anc_thousand_per_ul') is not None:
-        row['absolute_neutrophile_count'] = row['anc_thousand_per_ul'] * 1000
-
-    if not row.get('absolute_lymphocyte_count') and row.get('alc_thousand_per_ul') is not None:
-        row['absolute_lymphocyte_count'] = row['alc_thousand_per_ul'] * 1000
-
-    if not row.get('lactate_dehydrogenase_level') and row.get('ldh_u_l') is not None:
-        row['lactate_dehydrogenase_level'] = row['ldh_u_l']
+    # The other two pairs are NOT declared that way — CTOMOP calls both
+    # columns `direct` and `writable`, nothing mirrors them, and EXACT's own
+    # inline editor DOES write the EXACT-named one here: `upatientField`
+    # answers `hemoglobin_level`, and that one the descriptor allows. So the
+    # first value that is a number stands; preferring the CTOMOP column would
+    # mask the edit the reader just made and saw confirmed, which is #555
+    # undone.
+    #
+    # "A number", where this used to say "non-empty", and two cases move with
+    # it. A stored `0` now counts as a value rather than as absence, which
+    # for a lymphocyte count is a real reading. And a column holding
+    # something unparseable — `'unknown'`, a censored `'<0.5'` — now gives
+    # way to the CTOMOP column, where before it stood and was dropped later
+    # anyway, leaving the patient with nothing.
+    for exact_name, ctomop_name, per_unit in (
+        ('hemoglobin_level', 'hemoglobin_g_dl', 1),
+        ('absolute_lymphocyte_count', 'alc_thousand_per_ul', 1000),
+    ):
+        if lab_number(row.get(exact_name)) is not None:
+            continue
+        value = lab_number(row.get(ctomop_name))
+        if value is not None:
+            row[exact_name] = value * per_unit
 
     # ── Therapy fields ─────────────────────────────────────────────────────────
     _EMPTY_CID = (None, '', 0, '0')
