@@ -375,20 +375,31 @@ class TestTrialQuerySet:
 
     @pytest.mark.django_db
     def test_eligible_for_inversed_bool_restriction_value(self):
+        """Which trials are eligible — as a set.
+
+        `Trial` declares no `Meta.ordering` and the method adds none, so the
+        rows come back in whatever order the plan produces. Comparing lists
+        made this pass on the ids it happened to be given: adding tests
+        ANYWHERE earlier in the suite shifts the sequence and the
+        `False` branch then came back `[t2, t1, t3]` against a literal
+        `[t1, t2, t3]` — a failure that says nothing about the method. Sets,
+        so the assertion is about membership, which is what the method
+        promises.
+        """
         t1 = TrialFactory(no_tobacco_use_required=True)
         t2 = TrialFactory(no_tobacco_use_required=False)
         t3 = TrialFactory(no_tobacco_use_required=None)
 
         assert Trial.objects.count() == 3
 
-        assert list(Trial.objects.eligible_for_inversed_bool_restriction_value(
-            'no_tobacco_use_required', True)) == [t2, t3]
+        assert set(Trial.objects.eligible_for_inversed_bool_restriction_value(
+            'no_tobacco_use_required', True)) == {t2, t3}
 
-        assert list(Trial.objects.eligible_for_inversed_bool_restriction_value(
-            'no_tobacco_use_required', False)) == [t1, t2, t3]
+        assert set(Trial.objects.eligible_for_inversed_bool_restriction_value(
+            'no_tobacco_use_required', False)) == {t1, t2, t3}
 
-        assert list(Trial.objects.eligible_for_inversed_bool_restriction_value(
-            'no_tobacco_use_required', None)) == [t1, t2, t3]
+        assert set(Trial.objects.eligible_for_inversed_bool_restriction_value(
+            'no_tobacco_use_required', None)) == {t1, t2, t3}
 
     @pytest.mark.django_db
     def test_eligible_for_bool_requirement_value(self):

@@ -402,7 +402,8 @@ class TrialQuerySet(models.QuerySet):
             query = query.filter(potential_attrs_count__gt=0)
         return query
 
-    def filtered_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None):
+    def filtered_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None,
+                        narrow_by_patient=True):
 
         # - USER attribute NOT NULL, TRIAL attribute NOT NULL - Trial is either
         #   ELIGIBLE or NOT ELIGIBLE based on values of this attribute
@@ -459,6 +460,21 @@ class TrialQuerySet(models.QuerySet):
 
         else:
             query, study_traces = query.filter_by_study_info(study_info, add_traces, user_geo_point=patient_info.geo_point if patient_info else None)
+
+            # `narrow_by_patient=False` keeps the reader's own filters and
+            # drops only the eligibility judgement — the one narrowing that
+            # answers "does this patient qualify". It exists for the saved-ids
+            # path, where a trial the patient bookmarked has to stay on the
+            # tab whose badge counts it even after they stop qualifying
+            # (#568); the caller labels those rows rather than hiding them.
+            #
+            # NOT `search_type='all'`, which reaches `filter_for_admin` — a
+            # deliberately different filter list that skips `by_location`,
+            # so a saved-ids search would silently stop honouring the
+            # country the reader is searching in.
+            if not narrow_by_patient:
+                return query, list(study_traces)
+
             query, patient_traces = query.filter_by_patient_info(patient_info, add_traces)
 
             return query, list(study_traces) + list(patient_traces)

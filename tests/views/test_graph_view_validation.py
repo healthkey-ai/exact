@@ -136,6 +136,12 @@ class TestGraphViewSetSurface:
     @pytest.mark.parametrize('path', [
         '/trials-graph/match/',
         '/trials-graph/search/match/',
+        # Joined the list with #568. The flag that keeps the graph from
+        # listing a saved trial the patient fails is a class attribute, so
+        # this inherited copy silenced the widening in its CSV too: the same
+        # body gave `/trials/export/` a file with that trial in it and this
+        # one a file without.
+        '/trials-graph/export/',
     ])
     def test_the_inherited_post_aliases_are_not_published_here(self, authed_client, path):
         # 404 where the router never registered the path, 405 where it falls

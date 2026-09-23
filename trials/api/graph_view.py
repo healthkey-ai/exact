@@ -116,14 +116,39 @@ class TrialsGraphViewSet(TrialsViewSet):
     # it was for the callers that already speak it.
     http_method_names = ["get", "post"]
 
+    # A saved trial the patient no longer qualifies for stays out of the graph
+    # (#568). A node has nowhere to put the mark: `GraphTrialNodeSerializer`
+    # is a flat ModelSerializer with no `matchingType` field and no
+    # `to_representation`, so it never sees `unmatched_trial_ids` and its
+    # `matchScore` reads whatever the SQL annotation says — 100 on a trial the
+    # patient conflicts with.
+    #
+    # The per-attribute buckets would in fact be right: `_bucket_by_matching_type`
+    # runs the Python matcher through `TrialTemplates`, and a widened node
+    # measured as `notMatched: ['ageMin']`. So the damage is narrower than
+    # "wrong bucket" and worse than "unlabelled" — a node whose headline
+    # number says 100 while its own attribute list says the patient fails.
+    # Hiding it is wrong on the list, where the card can say so, and right
+    # here: the graph is a shape of the matched corpus, not a list of
+    # bookmarks.
+    widens_saved_trials = False
+
     # The inherited POST aliases, removed. `TrialsViewSet` carries `match`,
-    # `search_match` and `match_detail`, and widening `http_method_names`
-    # published all three under `/trials-graph/` — an untested second copy of
-    # the trials API at a URL nothing asked for. Setting an inherited action to
-    # None is how DRF's router is told to skip it.
+    # `search_match`, `match_detail` and `export`, and widening
+    # `http_method_names` published all four under `/trials-graph/` — an
+    # untested second copy of the trials API at a URL nothing asked for.
+    # Setting an inherited action to None is how DRF's router is told to skip
+    # it.
+    #
+    # `export` joined them with #568: the seam that keeps the graph from
+    # widening is a class attribute, so the inherited copy silenced the
+    # widening in its CSV too. Measured on the same body, `/trials/export/`
+    # listed the saved trial and `/trials-graph/export/` did not — two export
+    # endpoints, one request, different files.
     match = None
     search_match = None
     match_detail = None
+    export = None
 
     @action(methods=["get"], detail=False, url_path="graph", url_name="graph")
     def graph(self, request, *args, **kwargs):
