@@ -5,6 +5,7 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import Case, F, IntegerField, Prefetch, QuerySet, Value, When
+from django.utils.functional import SimpleLazyObject, cached_property
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from rest_framework import viewsets, filters, permissions, status
@@ -692,6 +693,94 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             )
         )
 
+    @cached_property
+    def trials_counts(self):
+        """How many trials leave each of the patient's blank attributes
+        unanswered — what `attributesToFillIn` ranks by, and what decides
+        whether a row reads `eligible` or `potential`.
+
+        Reaching the serializer at all is #464: `get_serializer_context` set
+        `'counts': {}` as a literal, inherited from the initial port.
+        `potential_attrs_for_trial` loops over `counts.keys()`, so the loop
+        never ran — `attributesToFillIn` was `[]` on every row of every list
+        response and the verdict derived from it was the constant `eligible`.
+
+        Shaped after CB's `trials_counts` (`trials/api/trials_views.py:231`),
+        which this is a port of, down to the `type=all` widening. Three
+        things follow, none incidental.
+
+        `search_options={}` is copied from CB and is INERT in both repos —
+        `filtered_trials` declares the parameter and never reads it. Passing
+        the request's own query params would build a byte-identical scope. It
+        is written this way because CB writes it this way, not because it is
+        what drops the request's filters: the reader's filters DO reach this
+        scope, through `study_info`.
+
+        One more deviation, recorded rather than hidden: CB keeps the
+        else-branch scope construction inside `blank_attribute_records_count`,
+        reached by passing `user=`. EXACT's helper has no `user` (rule 5), so
+        the branch is built here. A closer shape would be to give the helper a
+        `study_info=` parameter so the construction stays in the file CB keeps
+        it in, and the next port of that helper lands clean; that is a change
+        to a shared helper and belongs in its own commit.
+
+        - **Its own scope, not the request's queryset.** The count on a chip
+          answers "fill this in and N more trials can be judged", so N is about
+          the patient's matched corpus, not about the page. Taken from
+          `get_queryset`'s queryset it moved with the tab — on Favorites,
+          narrowed to the saved ids, "unlocks 1 trial" — and `list` and
+          `search` reach that queryset at different points, so
+          `/trials/match/` and `/trials/search/match/` answered 2 and 1 for one
+          patient and one trial. Measured, before this took CB's shape.
+
+          It costs one aggregate rather than none: the tab counts are taken
+          over a different set, so there is nothing to reuse. Measured, +1
+          query on any list or search response that names a patient.
+        - **Once per request.** A `cached_property`, so the several contexts
+          built during one response share one aggregate. NOT lazy in the sense
+          that would be nice: `get_serializer_context` puts the value in a
+          dict, which forces it even where the serializer will not read it —
+          `?type=eligible` short-circuits to `attrs_to_fill_in = []` and still
+          pays. CB is eager in the same place, and rule 1 of the porting doc
+          says not to improve on it mid-port. The early return below does save
+          the patient-less request from building a scope to answer `{}`.
+        - **`user=` is not ported.** CB's helper takes the user and looks up
+          their saved `StudyInfo` and `PatientInfo` rows. EXACT is stateless by
+          rule 5, so the scope is built here from what the request carries.
+
+        What is NOT taken from here is the `counts` that
+        `with_potential_attrs_count` receives, which stays on the queryset the
+        tab counts are computed over. CB feeds both from this one property;
+        matching that moves `potential_profit_avg`, a different field with its
+        own reasons, and belongs in its own change.
+
+        So one response now carries two different corpora, and that is
+        deliberate on both sides. `_tab_counts` applies `filter_queryset`, so
+        the bar narrows with `?search=` and with a `trial_ids` list; this does
+        not, because "fill this in and N more trials can be judged" is not a
+        statement about the page. Measured: a `trial_ids`-narrowed search
+        answers `tabCounts {potential: 2}` beside a chip reading 5. Faithful
+        to CB, and asserted on purpose in
+        `TestWhatTheCountIsAbout` — but a UI that renders the two side by side
+        would be showing a reader two numbers that look comparable and are
+        not. Tracked in #577.
+        """
+        patient_info = self._resolve_patient_info()
+        if patient_info is None:
+            return {}
+
+        search_type = self.request.query_params.get('type', None)
+        if search_type == 'all':
+            scope = Trial.objects.all()
+        else:
+            scope, _ = Trial.objects.all().filtered_trials(
+                search_options={},
+                study_info=self._resolve_study_preferences(),
+                patient_info=patient_info,
+                add_traces=False,
+            )
+        return self._trials_counts(scope, patient_info)
+
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
@@ -709,7 +798,23 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             'patient_info': patient_info,
             'distance_units': study_prefs.distance_units,
             'recruitment_status': study_prefs.recruitment_status,
-            'counts': {},
+            # Lazily, which CB does not need to be. Its context is read by
+            # one serializer; ours is shared with `TrialDetailsSerializer`,
+            # which never looks at `counts` — so putting the VALUE here ran a
+            # corpus-wide aggregate on every detail request and threw it away
+            # (measured: 209 queries to 210, on the page a reader opens per
+            # trial). `SimpleLazyObject` keeps the line reading as CB's while
+            # charging the query to whoever actually reads it.
+            #
+            # Two edges it brings, neither reached today. The value is no
+            # longer a `dict`: the serializer forces it with `or {}` and the
+            # mapper only ever iterates it, but `isinstance(x, dict)`,
+            # `json.dumps` or a context copy would behave differently. And in
+            # `export` the aggregate now runs inside the streaming generator,
+            # after the 200 has gone out — so a failure there arrives as the
+            # file's `EXPORT INCOMPLETE` marker rather than as a 500, which is
+            # the better of the two but is not what a reader would assume.
+            'counts': SimpleLazyObject(lambda: self.trials_counts),
             'template': template,
             'search_type': search_type,
             'explain': self.request.query_params.get('explain', '').lower() == 'true',
