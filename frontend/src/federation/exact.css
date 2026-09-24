@@ -66,14 +66,24 @@
   --exact-color-error-200: hsl(5 86% 89%);
   --exact-color-error-700: hsl(5 79% 40%);
 
-  /* "View Trial" CTA — CB --brand-green-500, hover collapses to success-700.
-   * `on-brand` is the label color that sits on the green fill; tokenized so a
-   * host that themes the CTA to a light color can keep the text readable. */
-  --exact-color-brand-green: hsl(146 70% 45%);
-  /* Referenced, not copied: the comment above says the hover IS
-   * `success-700`, and it was a second literal of the same value that would
-   * have quietly stayed at 29% when that moved. */
-  --exact-color-brand-green-hover: var(--exact-color-success-700);
+  /* "View Trial" CTA. `on-brand` is the label color that sits on the green
+   * fill; tokenized so a host that themes the CTA to a light color can keep
+   * the text readable.
+   *
+   * 30% lightness, not CB's 45% (#561). White on the old fill measured
+   * 2.31:1 — below AA's 4.5 and below even the 3:1 a graphical mark is held
+   * to, on the most prominent control the page has. 30% reads 4.87:1. The
+   * hue and saturation are CB's, untouched; only the step moved. */
+  --exact-color-brand-green: hsl(146 70% 30%);
+  /* Its own value now, where it used to be `var(--exact-color-success-700)`.
+   * That reference was right while the fill was bright: the hover genuinely
+   * WAS success-700, and a copied literal would have drifted when the ramp
+   * moved. Darkening the fill ended that — success-700 is 26% of a
+   * neighbouring hue, which against a 30% fill measures 1.04:1 between the
+   * two fills, a hover nobody can see. What the hover actually is, and now
+   * says it is, is a step below the CTA: same hue, 1.59:1 apart, 7.75:1
+   * under white. `contrast.test.ts` holds both halves of that. */
+  --exact-color-brand-green-hover: hsl(146 70% 22%);
   --exact-color-on-brand: #ffffff;
   /* The label color on a `primary` fill (the bookmark when it is on). Its own
    * token: a host that darkens `on-brand` for a light CTA must not darken the
@@ -2233,11 +2243,45 @@
 
 /* Forced colors replaces the fill and the label alike, which would leave the
    one button that commits the change indistinguishable from the one beside
-   it. Same answer as the segmented control's chosen segment. */
+   it. Same answer as the segmented control's chosen segment.
+
+   The hover is named too, and has to be. `forced-color-adjust: none` is what
+   makes the two system colours above stick — and it hands EVERY author colour
+   on this element back at the same time. `.exact-root .exact-prefs__save:hover`
+   outranks the bare rule, so in this mode hovering repainted the button in the
+   CTA's green while the label stayed `HighlightText`. Against the black
+   `HighlightText` of Windows High Contrast Black that measured 4.13:1, and
+   2.71:1 once #561 darkened that green — a state nobody chose, getting worse
+   from a change made somewhere else entirely. In this mode the button is the
+   system pair in both states. */
 @media (forced-colors: active) {
-  .exact-root .exact-prefs__save {
+  .exact-root .exact-prefs__save,
+  .exact-root .exact-prefs__save:hover {
     background: Highlight;
     color: HighlightText;
     forced-color-adjust: none;
+  }
+
+  /* And the ring — but NOT the segmented control's answer, which is
+     `HighlightText` and would be wrong here. That control's ring is inset
+     (`outline-offset: -2px`, because its button fills the segment edge to
+     edge), so it is drawn ON the `Highlight` fill and `HighlightText` is the
+     colour guaranteed to read there. This one is OUTSET by 2px: the ring
+     lands on `Canvas`, where `HighlightText` is the same colour as the
+     surface in both standard High Contrast palettes — 1.00:1, a ring that
+     is not there. Measured, after copying it across and being caught.
+
+     Our fixed blue was in fact readable on both — 6.15:1 on High Contrast
+     White's canvas and 3.41:1 on Black's — so this is not a rescue. It is
+     the difference between working and being guaranteed to work: those two
+     numbers are properties of the two palettes Windows ships, not of the
+     user's, and nothing stops a palette whose `Canvas` sits near #0c5fc0.
+     What `CanvasText` guarantees is the PAIRING, not a number — it is the
+     foreground the user chose for this surface, whatever they chose. On the
+     two shipped palettes that happens to be 21:1; on a custom one it is
+     whatever they picked, which is the point. `outline-color` alone, so the
+     width and offset stay with the rule outside. */
+  .exact-root .exact-prefs__save:focus-visible {
+    outline-color: CanvasText;
   }
 }

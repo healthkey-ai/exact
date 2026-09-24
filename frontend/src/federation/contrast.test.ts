@@ -94,6 +94,28 @@ const contrast = (a: string, b: string) => {
 /** `4.4962:1` — for the failure message, not for the comparison. */
 const shown = (ratio: number) => `${ratio.toFixed(4)}:1`;
 
+/** CIE lightness, 0–100, from the same relative luminance.
+ *
+ *  For the one question a contrast ratio cannot answer well: how far apart two
+ *  FILLS are. A ratio is not a distance — 1.5:1 near black and 1.5:1 near
+ *  white are different amounts of visible difference — so a threshold written
+ *  in ratios means different things at different points on a ramp. L* is
+ *  perceptually uniform, so ten units is ten units wherever it sits, and a
+ *  number can be argued about.
+ *
+ *  It is NOT a fix for hue-blindness, whatever an earlier version of this
+ *  comment claimed. L* is a monotone function of the same luminance, so two
+ *  fills of equal luminance and different hue score ΔL* of zero exactly as
+ *  they score 1.00:1 — both call a plainly visible hover invisible. Telling
+ *  hues apart needs ΔE over Lab. That case does not arise here, where the
+ *  pair shares hue and saturation and differs only in lightness, and the day
+ *  it does this assertion needs replacing rather than retuning. */
+const lightness = (value: string) => {
+  const y = luminance(value);
+  const f = y > (6 / 29) ** 3 ? Math.cbrt(y) : y / (3 * (6 / 29) ** 2) + 4 / 29;
+  return 116 * f - 16;
+};
+
 /** AA for text that is neither 18.66px bold nor 24px. Everything measured
  *  here is 11-14px. */
 const AA = 4.5;
@@ -225,25 +247,44 @@ describe("the palette, in the pairs the page paints", () => {
 
   const cta = contrast(token("--exact-color-on-brand"), token("--exact-color-brand-green"));
 
-  it.fails("reads the CTA label on its own fill — #561", () => {
-    // Known and tracked, not accepted: white on `--exact-color-brand-green`
-    // is 2.31:1, which is below AA and below even the 3:1 a mark is held to.
-    // It is the "View Trial" and "Register interest" buttons, so it is the
-    // most prominent thing on the page and the worst pair in the palette.
-    //
-    // Left failing rather than fixed here because the fix is CancerBot's
-    // brand green itself, which is a decision about the product's signature
-    // colour and not one to take inside a contrast patch (#553 moved a ramp
-    // step; this moves a brand). `it.fails` so the day it is fixed, this
-    // test says so instead of going quietly green.
+  it("reads the CTA label on its own fill", () => {
+    // Was 2.31:1 and tracked as #561 — below AA, and below even the 3:1 a
+    // graphical mark is held to, on the "View Trial" and "Register interest"
+    // buttons. The fix moved CancerBot's brand green down its own scale
+    // rather than changing the hue: 45% to 30% lightness, 4.87:1.
     expect(cta, `on-brand on brand-green (${shown(cta)})`).toBeGreaterThanOrEqual(AA);
   });
 
   it("reads the CTA label on the hover fill", () => {
-    // The hover half of the same button, which `success-700` carries.
     expect(
       contrast(token("--exact-color-on-brand"), token("--exact-color-brand-green-hover")),
       "on-brand on brand-green-hover",
     ).toBeGreaterThanOrEqual(AA);
+  });
+
+  it("keeps the hover a fill the reader can tell from the resting one", () => {
+    // Not a legibility bound — a state one, and the failure the CTA fix very
+    // nearly shipped. The hover used to be `success-700`, a clear step down
+    // from a 45% fill; against the 30% fill it is barely a step at all. Both
+    // halves passing AA says nothing about that, so it is asserted separately.
+    //
+    // In ΔL*, not in a contrast ratio — see `lightness`. A ratio is not a
+    // distance, and the threshold this was first written with, 1.3, was
+    // fitted to the only other pair in sight rather than derived from
+    // anything.
+    //
+    // 10 is a judgement, and named as one: there is no standard for state
+    // distinguishability, but L* runs 0–100 perceptually evenly, so ten units
+    // is a step nobody has to look twice for. For scale: this pair is 12.6,
+    // the pre-#561 pair was 23.2, and the pair #561 nearly shipped — a 30%
+    // fill against `success-700` — is 1.2.
+    const gap = Math.abs(
+      lightness(token("--exact-color-brand-green")) -
+        lightness(token("--exact-color-brand-green-hover")),
+    );
+    expect(
+      gap,
+      `brand-green vs its hover (ΔL* ${gap.toFixed(1)})`,
+    ).toBeGreaterThanOrEqual(10);
   });
 });
