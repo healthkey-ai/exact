@@ -185,6 +185,18 @@
   font-weight: 400;
   color: var(--exact-color-text-tertiary);
 }
+/* A saved trial the matcher would now exclude still appears on the state
+ *  tabs, so the card has to say why it is there — otherwise a row on
+ *  Favorites reads as a match (#568). `warning-700`, not `error-700`:
+ *  nothing failed, and the claim is "may not", the same hedge the detail
+ *  page makes. It measures 5.05:1 on the card surface, so it clears the
+ *  4.5:1 this is held to as text — see `contrast.test.ts`. */
+.exact-root .exact-card__mismatch {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--exact-color-warning-700);
+}
 .exact-root .exact-card__fields {
   display: flex;
   align-items: center;

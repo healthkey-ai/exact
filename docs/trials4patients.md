@@ -77,7 +77,7 @@ For each patient, the JSON output contains a summary object with `eligible_trial
 | `disease` | string | Disease/condition under study |
 | `register` | string | Source registry, e.g. `ClinicalTrials.gov` |
 
-**`matchingType`** is derived from per-attribute eligibility checks: `eligible` means all required attributes match; `potential` means some attributes are unknown (patient could still qualify); `not_eligible` means at least one required attribute is unmet (excluded from results by default).
+**`matchingType`** is derived from per-attribute eligibility checks: `eligible` means all required attributes match; `potential` means some attributes are unknown (patient could still qualify); `not_eligible` means at least one required attribute is unmet. Excluded from results by default — the exception is a search narrowed by a `trial_ids` list with no `?type=`, where those rows are kept and marked so a saved trial stays visible on the tab that counts it (EXACT #568).
 
 **`goodnessScore`** is a weighted composite of four components (each defaulting to weight 25): trial benefit, patient burden (inversed), trial risk (inversed), and distance from patient to nearest site (inversed).
 

@@ -19,11 +19,15 @@ import type { TrialPreferenceStore, TrialStateAdapter } from "./state";
  *  See `trials/services/patient_info/patient_info.py`. */
 export type PatientInfo = Record<string, unknown>;
 
-/** Per-trial verdict from the matcher. The serializer only ever emits
- *  `'eligible'` or `'potential'` (the backend filters not-eligibles
- *  out of the queryset before serialization), but the type union
- *  includes `'not_eligible'` so a host that paints a manual
- *  not-eligible group via a separate call doesn't fight the types. */
+/** Per-trial verdict from the matcher.
+ *
+ *  A corpus search emits only `'eligible'` or `'potential'`: the backend
+ *  filters not-eligibles out of the queryset before serialization. One
+ *  request type does emit `'not_eligible'` — a saved-ids search (`trial_ids`
+ *  in the body, no `?type=`), where a bookmark the patient has stopped
+ *  qualifying for is kept and marked rather than dropped (#568). Its
+ *  `matchScore` is 0, the value that verdict means. Handle the third value;
+ *  a host on the Favorites or Registered tab will receive it. */
 export type MatchingType = "eligible" | "potential" | "not_eligible";
 
 export interface ClosestLocationGeoPoint {

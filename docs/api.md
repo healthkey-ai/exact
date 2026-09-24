@@ -129,6 +129,18 @@ trial-search request.
 > treating "not `eligible`" as potential reads a patient-less row as a weak
 > match rather than as no answer.
 >
+> A list response answers `not_eligible` in exactly one circumstance: the
+> request carried a `trial_ids` list and no `?type=`, and one of those ids is
+> a trial the eligibility filter would otherwise have removed. Those rows are
+> kept rather than dropped, because the ids are bookmarks a reader made by
+> hand and a tab that counts a trial has to be able to show it (#568). The
+> Its `matchScore` is `0` — the score `match_score_and_status` returns with
+> that verdict, and what the detail endpoint sends for the same trial.
+> `tabCounts` still describe only the rows that qualify. Every other list
+> response answers `eligible`, `potential` or `null`, with the known
+> exception of `?type=all`, which skips the eligibility filter and so
+> labels everything it returns `eligible` (see the note on that path).
+>
 > On the **list** endpoints (`/trials/`, `/trials/search/` and their POST
 > aliases) that is the behaviour today. The **detail** endpoint is written the
 > same way but does not reach it: a patient-less `GET /trials/{id}/` currently
