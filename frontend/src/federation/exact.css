@@ -1683,7 +1683,6 @@
   cursor: not-allowed;
 }
 
-
 .exact-root .exact-filters__footer {
   display: flex;
   justify-content: flex-end;
@@ -2248,6 +2247,184 @@
   justify-content: flex-end;
   gap: 0.75rem;
   margin-top: 0.25rem;
+}
+
+/* The weights wizard — the offer, and the three questions behind it.
+ *
+ *  Inside the shared `.exact-subform` panel, so the scrim, the width and the
+ *  focus trap are the dialog's; only the contents are new. */
+.exact-root .exact-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.exact-root .exact-wizard__step {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--exact-color-text-tertiary);
+}
+.exact-root .exact-wizard__title {
+  margin: 0;
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-wizard__hint {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-wizard__hint--small {
+  font-size: 0.8125rem;
+}
+.exact-root .exact-wizard__options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+/* A whole-card target rather than a radio and a label: the hint is part of
+ *  what is being chosen, so it has to be inside the hit area. */
+.exact-root .exact-wizard__option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.exact-root .exact-wizard__option:hover:not(:disabled) {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-wizard__option:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+.exact-root .exact-wizard__option-label {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-wizard__option-hint {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-wizard__saving {
+  margin: 0.25rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-wizard__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+.exact-root .exact-wizard__go {
+  padding: 0.5rem 1rem;
+  border: 1px solid transparent;
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-on-primary);
+  cursor: pointer;
+}
+/* Declining is a real answer here, not a dismissal, so it is a button beside
+ *  the other one rather than a link or a bare X. */
+.exact-root .exact-wizard__skip,
+.exact-root .exact-wizard__back {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+  cursor: pointer;
+}
+.exact-root .exact-wizard__back {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}
+.exact-root .exact-wizard__go:focus-visible,
+.exact-root .exact-wizard__skip:focus-visible,
+.exact-root .exact-wizard__back:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+
+.exact-root .exact-wizard__go:disabled,
+.exact-root .exact-wizard__skip:disabled,
+.exact-root .exact-wizard__back:disabled,
+.exact-root .exact-wizard__option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* AFTER the `:disabled` group above, and that is load-bearing rather than
+   tidy. `.exact-root .exact-wizard__go:disabled` inside this block and the
+   branch of the group above are both (0,3,0), so the later one wins outright
+   — and while this block came first, `opacity: 0.5` beat the `opacity: 1`
+   below and the system pair was still drawn at half alpha. The pin read as
+   present and lost. `forcedColors.test.ts` asks who WINS for exactly this
+   reason.
+
+   Forced colors repaints both buttons in the same ButtonFace/ButtonText pair,
+   which would leave "answer the questions" and "keep them equal" looking
+   identical — and one of them is the answer that cannot be taken back. The
+   affirmative takes the system's chosen-thing pair, exactly as the
+   preferences Save button does; the decline is left to the system, so the two
+   still differ. No `:hover` in the pin, unlike Save's, because these buttons
+   have no author hover rule to outrank — add one and it must be named here,
+   which `forcedColors.test.ts` asks about by weight rather than by presence.
+
+   The ring is CanvasText, not HighlightText: `outline-offset` is positive, so
+   it lands on `Canvas`, where HighlightText is the canvas colour itself in
+   both palettes Windows ships — a ring that is not there. The same trap, and
+   the same answer, as the Save button's. */
+@media (forced-colors: active) {
+  .exact-root .exact-wizard__go {
+    background: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
+  .exact-root .exact-wizard__go:focus-visible {
+    outline-color: CanvasText;
+  }
+  /* And the disabled state, which the opt-out above would otherwise keep as
+     `Highlight`/`HighlightText` at half opacity — the system's own
+     `GrayText` is what says "disabled" in this mode, and half-transparent
+     Highlight over Canvas says nothing at all. This control is disabled for
+     the whole of a write, so it is a state a reader actually sits in.
+     `.exact-prefs__save`, the precedent for the block above, has no
+     `:disabled` rule at all, which is why this has no precedent to copy. */
+  .exact-root .exact-wizard__go:disabled {
+    background: ButtonFace;
+    color: GrayText;
+    border-color: GrayText;
+    /* And full strength. `opacity` is outside this block and outside forced
+       colors' reach, so without this the system pair is drawn at half alpha —
+       the same "says nothing at all" the pin above exists to fix, in a
+       different hue. `GrayText` IS the statement; it does not need dimming. */
+    opacity: 1;
+  }
 }
 
 .exact-root .exact-prefs__save {

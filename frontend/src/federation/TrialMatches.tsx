@@ -3,7 +3,7 @@
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
 // CB contract) or `personId` (CTOMOP federation path added in #102).
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 /** Debounced, unless `immediate` — then the value passes straight through
  *  AND the held value is kept in step behind it.
@@ -42,6 +42,13 @@ import { TrialDetailPage } from "./TrialDetailPage";
 import { Pagination } from "./Pagination";
 import { SortControl } from "./SortControl";
 import { SuitabilityPreferences } from "./SuitabilityPreferences";
+import { WeightsWizard } from "./WeightsWizard";
+import {
+  initialWizard,
+  isOpen,
+  nextWizard,
+  shouldRead,
+} from "./weightsWizardState";
 import type { SegmentSource } from "./SegmentedControl";
 import { ViewModeControl } from "./ViewModeControl";
 import { TrialsGraph } from "./TrialsGraph";
@@ -138,6 +145,12 @@ function withWeights(
 ): FilterState {
   return { ...owned, ...ownedWeights(from, ownedKeys) };
 }
+
+/** How long the wizard holds itself open waiting for the answer to be
+ *  written, before letting the reader go. Long enough that a normal write and
+ *  one 412-retry fit inside it; short enough that a dead request is not a
+ *  modal nobody can dismiss. */
+export const WIZARD_WRITE_GRACE_MS = 8000;
 
 function TrialMatchesInner({
   apiClient,
@@ -1327,6 +1340,156 @@ function TrialMatchesInner({
     );
   };
 
+  // The weights wizard: offered once, to a reader who has never been asked.
+  //
+  // Gated on the host being able to REMEMBER the answer, not on it being able
+  // to store weights. A host with nowhere to record the offer would ask again
+  // every visit, which is worse than never asking — so the absence of
+  // `weightsWizard` is read as "this host does not do this", and nothing is
+  // shown.
+  //
+  // Held until the saved filters have arrived. Opening over a list that is
+  // still settling puts a modal in front of a reader who has not seen what it
+  // is about, and the answer would race the read that tells us whether they
+  // have already been asked.
+  const wizardStore = preferenceStore?.weightsWizard;
+  // The rules about whose answer this is, and when a read may be issued or
+  // believed, live in `weightsWizardState.ts` — written down once, after
+  // three review rounds had each closed a different spelling of the same one.
+  // What is left here is the wiring: when to fire an event, and what to draw.
+  const [wizard, dispatchWizard] = useReducer(nextWizard, patientHandle, initialWizard);
+  // Re-raised DURING the render that changes the patient, like `typed` above.
+  // An effect would be a render late, and the new patient's read would then
+  // land against a state still naming the old one and be thrown away — with
+  // no second read allowed, so they would never be asked at all.
+  if (wizard.patient !== patientHandle) {
+    dispatchWizard({ kind: "patient", patient: patientHandle });
+  }
+  // Both read off the model rather than recomputed: this render may still be
+  // holding the previous patient's state, one render before the line above
+  // takes effect, and `isOpen` says no for exactly that reason.
+  const wizardOpen = isOpen(wizard, patientHandle);
+  const wizardBusy = wizard.patient === patientHandle && wizard.at === "saving";
+
+  useEffect(() => {
+    if (!wizardStore || wizard.patient !== patientHandle) return;
+    // `shouldRead` owns the two reasons not to: an answer is already known,
+    // or a read is already out. The second is the one a state value cannot
+    // express — see the module.
+    if (!shouldRead(wizard, !savedFilters.pending)) return;
+    const patient = patientHandle;
+    dispatchWizard({ kind: "reading", patient });
+    // Every result is dispatched, none suppressed by a cleanup flag: the
+    // reducer decides whether a result still applies, which is the only place
+    // that can know. A failed read is treated as "already offered" — asking a
+    // question whose answer we have just failed to read is asking one we
+    // cannot record.
+    wizardStore
+      .wasOffered()
+      .then((offered) => dispatchWizard({ kind: "read", patient, offered }))
+      .catch(() => dispatchWizard({ kind: "readFailed", patient }));
+  }, [wizardStore, savedFilters.pending, patientHandle, wizard]);
+
+  /** Write the flag, and tell the filter writer its tag is stale.
+   *
+   *  The flag goes to the same ROW by a different route, so it moves
+   *  `updated_at` — the tag the writer quotes in `If-Match`. Left alone, every
+   *  save after the wizard costs a refusal and a re-read, and a second tab can
+   *  turn that retry into a dropped edit. See `PreferenceTransport.forget`. */
+  // Where focus goes when the wizard closes. See the heading itself.
+  const listTitleRef = useRef<HTMLHeadingElement>(null);
+  const wizardWasOpen = useRef(false);
+  useEffect(() => {
+    if (wizardWasOpen.current && !wizardOpen) listTitleRef.current?.focus();
+    wizardWasOpen.current = wizardOpen;
+  }, [wizardOpen]);
+
+  const recordOffer = () =>
+    Promise.resolve(wizardStore?.record())
+      .then(() => savedFilters.forget())
+      .catch(() => {});
+
+  /** Close when the write settles — or when it has had long enough.
+   *
+   *  Nothing in this package times a request out, and while the answer is on
+   *  the wire the dialog is sealed: every control disabled, Escape, Close and
+   *  the scrim all refusing, by design, so a dismissal cannot record a
+   *  decline over a ranking in flight. Those two together mean a request that
+   *  never settles leaves a modal the reader never opened, sitting over a
+   *  clinical trial list, with no way out but a reload.
+   *
+   *  So the seal has a deadline. The write is not cancelled — it may still
+   *  land, and the flag with it; the reader simply stops being held. If it
+   *  never lands they are asked once more, which is the cost this whole
+   *  feature is willing to pay everywhere else. */
+  const closeWhenSettled = (patient: string, work: Promise<unknown>) => {
+    let shut = false;
+    const deadline = setTimeout(() => close(), WIZARD_WRITE_GRACE_MS);
+    const close = () => {
+      if (shut) return;
+      shut = true;
+      // Cleared rather than left to fire into a no-op: one dangling eight-
+      // second timer per answer is not a leak anybody would notice in a
+      // browser, and is one per test in a suite that runs thousands.
+      clearTimeout(deadline);
+      answering.current = null;
+      dispatchWizard({ kind: "written", patient });
+    };
+    void work.then(close, close);
+  };
+
+  /** Which patient's answer is being written, if any.
+   *
+   *  The reducer refuses a second `answer`, but the WRITE belongs to the
+   *  callers below and they cannot see that refusal: `wizardOpen` and
+   *  `wizardBusy` are render-scoped, so two dismissals dispatched in one task
+   *  both read "open, not busy" and both send a PATCH. Unreachable through
+   *  the UI today — `Dialog` stops a panel click reaching the scrim, and
+   *  repeated Escapes measured as one write — but it is a trap for the next
+   *  control added to the panel, and the flag is the thing being written. */
+  const answering = useRef<string | null>(null);
+
+  const declineWizard = () => {
+    // `Dialog` dismisses on Escape, on its Close button and on the scrim, and
+    // all three arrive here. The guard is here as well as in the reducer, or
+    // a dismissal during a save would record a decline over a ranking still
+    // on the wire.
+    if (!wizardOpen || wizardBusy || answering.current !== null) return;
+    const patient = patientHandle;
+    answering.current = patient;
+    dispatchWizard({ kind: "answer", patient });
+    // A failure is not surfaced — there is nothing for the reader to do about
+    // it, and the cost is being asked once more.
+    closeWhenSettled(patient, recordOffer());
+  };
+
+  const finishWizard = (weights: FilterState) => {
+    // Same one-write rule as the decline. This one had no caller-side guard
+    // at all — only `disabled={busy}` in the view, which is a claim about
+    // pointers, not about calls.
+    if (!wizardOpen || wizardBusy || answering.current !== null) return;
+    const patient = patientHandle;
+    answering.current = patient;
+    dispatchWizard({ kind: "answer", patient });
+    // Weights first, through the same path the preferences dialog uses, so
+    // the store's belief of what is saved stays true. See
+    // `TrialPreferenceStore.weightsWizard`.
+    handleWeightsChange(weights as Record<WeightKey, number>);
+    // The flag second, and ONLY if the weights landed. Both write the same
+    // row, but by different routes: the weights go through the queue, which
+    // refuses a write it cannot base on a fresh read, while the flag is
+    // unconditional and so cannot be refused. Recording regardless marks a
+    // reader as answered while their answer is nowhere, and there is no
+    // second offer to correct it with.
+    closeWhenSettled(
+      patient,
+      savedFilters
+        .settle()
+        .then((saved) => (saved ? recordOffer() : undefined))
+        .catch(() => {}),
+    );
+  };
+
   // What anything keyed on these filters should see: the weights at their
   // default say nothing, and saying it differently from `queryFilters` is
   // what makes two keys for one question.
@@ -1594,6 +1757,17 @@ function TrialMatchesInner({
 
   return (
     <div className="exact-root exact-list" ref={exactRootRef} style={{ padding: "1rem" }}>
+      {/* Above the header, so the modal is the first thing in the tree a
+          screen reader reaches and the first thing `Dialog`'s focus trap can
+          hold. It paints over the page either way — the scrim is fixed. */}
+      {wizardStore && wizardOpen ? (
+        <WeightsWizard
+          onDecline={declineWizard}
+          onFinish={finishWizard}
+          busy={wizardBusy}
+        />
+      ) : null}
+
       {/* CB's header block: the title and the preferences button on one
           line, the tab strip on its own below. CB puts the button on the
           TAB row from lg up and beside the title below it, rendering it
@@ -1603,7 +1777,13 @@ function TrialMatchesInner({
           needs its whole line, and the strip keeps its rule across the row
           at every width. */}
       <div className="exact-list__head">
-        <h1 className="exact-list__title">Your Trials</h1>
+        {/* Focusable, for the wizard alone. `Dialog` returns focus to
+            whatever had it when the dialog mounted, which for a modal nobody
+            opened is `document.body` — so answering left focus nowhere and
+            the next Tab started again at the top of the host's page. */}
+        <h1 className="exact-list__title" tabIndex={-1} ref={listTitleRef}>
+          Your Trials
+        </h1>
         <SuitabilityPreferences
           filters={filters}
           patientKey={patientHandle}

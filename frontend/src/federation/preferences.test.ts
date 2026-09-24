@@ -27,6 +27,7 @@ function controllable() {
       resolvers.push(resolve);
     });
   const transport: PreferenceTransport = {
+    forget: () => {},
     get: async () => ({}),
     save: (value) => {
       calls.push({ kind: "save", value });
@@ -170,6 +171,7 @@ describe("PreferenceWriter", () => {
   it("reports a failed write instead of throwing", async () => {
     const onError = vi.fn();
     const transport: PreferenceTransport = {
+      forget: () => {},
       get: async () => ({}),
       save: async () => {
         throw new Error("503");
@@ -189,6 +191,7 @@ describe("PreferenceWriter", () => {
     const seen: FilterState[] = [];
     let fail = true;
     const transport: PreferenceTransport = {
+      forget: () => {},
       get: async () => ({}),
       save: async (filters) => {
         seen.push(filters);
@@ -530,6 +533,7 @@ describe("PreferenceWriter — a transport that throws synchronously", () => {
     const onSuccess = vi.fn();
     const w = new PreferenceWriter(
       {
+        forget: () => {},
         get: async () => ({}),
         save: () => {
           throw new Error("no client");
@@ -683,6 +687,7 @@ describe("PreferenceWriter — recovering from a failed write", () => {
     let fail = true;
     const w = new PreferenceWriter(
       {
+        forget: () => {},
         get: async () => ({}),
         save: async () => {
           if (fail) {
@@ -844,6 +849,32 @@ describe("adapterPreferences, conditionally", () => {
     await t.save({ distance: 50 });
 
     expect(a.writes[0].precondition).toEqual({ kind: "ifNoneMatch" });
+  });
+
+  it("re-reads once told the row was written by another route", async () => {
+    // The weights wizard records "this reader has been asked" as a COLUMN on
+    // this row, through `upsert`, not through this transport. That moves
+    // `updated_at` — which is the tag — so the cached one is stale from that
+    // moment and the next save here is refused.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+    await t.save({ distance: 50 });
+    a.elsewhere({ sponsor: "Acme", distance: 50 }, '"afterTheFlag"');
+
+    t.forget();
+    const writesBefore = a.writes.length;
+    await t.save({ distance: 60 });
+
+    // ONE attempt, not a refusal and a retry — which is the whole saving, and
+    // the only thing that distinguishes this from doing nothing: the recovery
+    // path reaches the same tag either way, just two round trips later, and
+    // in a second tab it can drop the edit instead.
+    expect(a.writes.length - writesBefore).toBe(1);
+    expect(a.writes.at(-1)!.precondition).toEqual({
+      kind: "ifMatch",
+      version: '"afterTheFlag"',
+    });
   });
 
   it("quotes the version it read on every later write", async () => {

@@ -817,6 +817,30 @@ export function useSavedFilters(
 ): {
   persist: (filters: FilterState) => void;
   reset: () => void;
+  /** Tell the transport that this row was written by another route, so the
+   *  next save re-reads instead of quoting a tag the server has moved past.
+   *  See `PreferenceTransport.forget`. */
+  forget: () => void;
+  /** Send whatever is queued, wait for the queue to DRAIN, and say whether
+   *  everything in that drain landed.
+   *
+   *  For a caller whose next step must not happen unless the filters were
+   *  stored — the weights wizard records "this reader has answered" only once
+   *  their answer is safe, because the two writes take different routes to
+   *  the same row and the queue's is the one that can be refused.
+   *
+   *  Read the scope exactly. It is "the writes this call waited for", not
+   *  "your write": verdicts from before the call are excluded, and a write
+   *  somebody else enqueues while it waits is included. The two come apart
+   *  only if a second writer is active behind a modal that blocks the page,
+   *  which nothing here does today — but a caller that cannot tolerate the
+   *  wider scope needs a per-write promise, which `PreferenceWriter.save`
+   *  deliberately does not return.
+   *
+   *  A write RETIRED by a Reset counts as landed. It travelled the success
+   *  path because Reset superseding it is an intent, not a failure, and the
+   *  content it carried is gone on purpose. */
+  settle: () => Promise<boolean>;
   /** The last write did not land. */
   failed: boolean;
   /** Which attempt this is. Changes whenever the reader behind the panel
@@ -876,6 +900,15 @@ export function useSavedFilters(
   // would be replacing, and without this the reader's edit simply vanishes —
   // they come back tomorrow and their filters are last week's.
   const [failed, setFailed] = useState(false);
+  // Whether anything has failed since the last `settle()`, readable without
+  // waiting for a render: `settle()` is awaited by a caller that decides on
+  // it, and by the time the state above reaches them the answer is a render
+  // old. Cleared by `settle()` before it waits and set by nothing but a
+  // failure, so what it returns is a conjunction over that wait rather than
+  // the last verdict in it. Written by every writer this hook builds, which
+  // is why the scope is "the drain", not "one write" — see `settle` in the
+  // return type. Starts true: nothing has failed before anything was sent.
+  const okRef = useRef(true);
   // Which writer's verdict the message belongs to. A patient switch builds a
   // new one while the old one's flush is still in the air, and that flush
   // lands afterwards — under the new patient, about the previous one's row.
@@ -892,6 +925,9 @@ export function useSavedFilters(
       // mean is that this hook is gone, and raising a flag on an unmounted
       // tree says nothing to anybody.
       onError: () => {
+        // Outside the ownership check, unlike `setFailed`: a verdict nobody
+        // is rendering is still the verdict `settle()` must return.
+        okRef.current = false;
         if (writerRef.current === built) setFailed(true);
       },
       // Cleared when a write LANDS, not when one is issued. Writes queue, so
@@ -899,6 +935,13 @@ export function useSavedFilters(
       // optimistically and then never restore it — or, the other way round,
       // leave it standing over filters that did in fact save.
       onSuccess: () => {
+        // Deliberately does NOT clear `okRef`. `settle()` asks whether
+        // EVERYTHING in its drain landed, and a drain is not one write: with
+        // a success clearing the flag, a second write succeeding after the
+        // first had failed answered `true`, and the caller acted on a write
+        // that was never stored. `settle()` clears it once, at the start.
+        // `failed` below is a different question — "is the panel's last word
+        // unsaved" — and a success genuinely answers that one.
         if (writerRef.current === built) setFailed(false);
       },
     });
@@ -1057,10 +1100,23 @@ export function useSavedFilters(
         editedRef.current = true;
         writer.reset();
       },
+      forget: () => transport.forget(),
+      settle: async () => {
+        // Cleared first, so the answer describes THIS drain. `okRef` is one
+        // boolean for the life of the hook, and a failure from ten minutes
+        // ago is not a reason to withhold the wizard's flag. Anything that
+        // fails during the wait below flips it back.
+        okRef.current = true;
+        // `flush()` before waiting: `settled()` waits on what is in FLIGHT,
+        // and a `persist` a moment ago is still sitting on the debounce.
+        writer.flush();
+        await writer.settled();
+        return okRef.current;
+      },
       failed,
       pending,
       epoch: writer,
     }),
-    [writer, failed, pending],
+    [writer, transport, failed, pending],
   );
 }
