@@ -2273,6 +2273,40 @@
   font-weight: 600;
   color: var(--exact-color-text);
 }
+/* No ring on the heading. It is `tabindex="-1"` — a focus DESTINATION, never
+   reachable by Tab — so the browser's default ring is drawn on a thing nobody
+   navigated to: the wizard opens by itself, focus moves to the question, and
+   because no input preceded it the browser treats that as keyboard focus and
+   paints a blue box around the heading. Measured on the stand: `outline:
+   rgb(0, 95, 204) auto 1px` on the offer, and none once a click has happened,
+   which is the tell.
+
+   Not free, and the first version of this comment said it was. Tab cannot
+   land here — three sites, no skip link, nothing else focuses either class —
+   but a keyboard user ARRIVES all the same, by pressing Enter on an option or
+   on "Keep them equal", and a sighted one then has focus somewhere unmarked.
+   Strictly not a 2.4.7 failure (a heading is not keyboard-operable UI and the
+   page keeps a visible focus mode), so this is a judgement, not a freebie:
+   both moves coincide with the whole screen changing — the dialog appears,
+   the question swaps, the dialog goes — and one Tab reveals the position. A
+   second reviewer argued the other way, for keeping a styled ring as every
+   other focusable thing in this sheet does; the cost of that is a box drawn
+   around a sentence, which is what sent us here.
+
+   `:focus`, not `:focus-visible`, and that is load-bearing: the ring appears
+   because the UA's focus-visible heuristic misfires on interaction-free
+   programmatic focus, so writing the suppression in terms of that same
+   heuristic would rest it on the thing misbehaving. It is the only `:focus`
+   selector in this sheet; leave it that way.
+
+   If the ring is ever restored here it needs a `CanvasText` pin under
+   `forced-colors`, like `.exact-prefs__save` — forced colors substitutes
+   colours, so it cannot bring back an outline whose style an author set to
+   `none`, but it would recolour one that exists. */
+.exact-root .exact-wizard__title:focus,
+.exact-root .exact-list__title:focus {
+  outline: none;
+}
 .exact-root .exact-wizard__hint {
   margin: 0;
   font-size: 0.875rem;

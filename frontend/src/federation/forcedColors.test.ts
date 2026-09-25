@@ -303,6 +303,40 @@ describe("the chosen segment in forced colors", () => {
   });
 });
 
+describe("the headings the wizard moves focus to", () => {
+  // Not a forced-colors question, but the same machinery answers it: who has
+  // the last word on `outline` for an element that is a focus DESTINATION
+  // rather than a control.
+  // Longhands too. `outline: none` sets `outline-style: none`, so a later
+  // rule restoring the ring as `outline-style: solid` slips past a pattern
+  // that only knows the shorthand — demonstrated, and green.
+  const OUTLINE = /outline(-color|-style|-width|-offset)?\s*:\s*[^;}]+/;
+
+  for (const cls of [".exact-wizard__title", ".exact-list__title"]) {
+    it(`draws no ring on ${cls}, which no one can tab to`, () => {
+      // `tabindex="-1"`: the wizard opens by itself and moves focus to the
+      // question, and on the way out hands it to the list heading. With no
+      // input preceding it the browser reads that as keyboard focus and
+      // paints its default ring — measured on the stand as
+      // `outline: rgb(0, 95, 204) auto 1px` around the heading, and absent
+      // once a click has happened, which is the tell. A keyboard user loses
+      // nothing: they cannot land here by tabbing.
+      // No `where` filter, deliberately. `decides` takes one to narrow a pin
+      // to a single STATE, which is the right question for a control whose
+      // states are painted by different rules. It is the wrong question
+      // here, and wrong in the dangerous direction: a state-blind rule —
+      // `outline` with no `:focus` in its selector — applies while focused
+      // too, and a filter looking for `:focus` drops it before the cascade
+      // is weighed. Demonstrated: a later `.exact-root .exact-list
+      // .exact-list__title { outline: 3px solid red }` at the same weight
+      // wins in a browser and left this green. Any writer of an outline on
+      // this element is a candidate.
+      const ring = decides(cls, OUTLINE);
+      expect(ring.value).toMatch(/outline:\s*none\b/);
+    });
+  }
+});
+
 describe("the list itself", () => {
   it("names every control that opts out", () => {
     // The one thing a list cannot do is notice a new member, so it says when
