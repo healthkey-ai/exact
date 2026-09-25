@@ -376,8 +376,10 @@ environment variables — never commit secret values to git.
 
 ## External trials database (production mode)
 
-In production, EXACT is a **stateless matching engine** that reads trial data
-from an external database. It does not own or manage the trial schema — the
+In production, EXACT is a **matching engine** that keeps no clinical record
+and reads trial data from an external database. (It does keep per-identity
+trials-page state — saved filters and score weights — in its `default`
+database; see below.) It does not own or manage the trial schema — the
 external database must already have the correct tables and data.
 
 EXACT's local `default` database is used **only** for authentication

@@ -32,8 +32,16 @@
 
    This rule used to read "EXACT is stateless and read-only. Never add patient persistence." It was
    narrowed deliberately on 2026-09-26, not eroded, and the difference is worth stating because the
-   old sentence was load-bearing: it is why EXACT can be re-seeded, re-scaled and replaced freely,
-   and why compromising EXACT exposes no patient data.
+   old sentence was load-bearing: it is why EXACT could be re-seeded, re-scaled and replaced freely,
+   and why compromising EXACT exposed no patient data.
+
+   **The second of those is no longer true, and pretending otherwise is the failure mode here.** A
+   saved filter set holds what somebody searched for: a disease, a treatment, a postcode, a
+   distance. Keyed to a verified identity, that is health-inferable data about a named person, and
+   a `SELECT` joining the table to `identity` is a diagnosis register. It arrives as "UI state"
+   because that is what the page calls it; it is not what it contains. The `default` database is
+   therefore sensitive from the first row, and its backups with it — which is a decision about how
+   that database is handled, not a sentence in a doc, and it is owed to whoever handles it.
 
    What may now be stored is state about a USER of the trials page that only the trials page gives
    meaning to — saved filters, score weights, bookmarks, and which trials they registered interest
@@ -46,8 +54,12 @@
      write into anyone's rows.
    - **On the `default` alias**, never the `trials` one. That database is routinely dropped and
      restored from CB dumps; anything user-scoped there is gone at the next restore.
-   - **Erasable before the first row is written.** Deleting a patient in PROMOP has to delete this
-     too, or EXACT ends up holding "this identity bookmarked these oncology trials" with no owner.
+   - **Erasable before the first row is written**, and erasable means a PATH, not a function. A
+     `forget_identity` nothing calls, nothing configures and nothing logs satisfies a code review
+     and no data subject: deleting a patient in PROMOP has to actually delete this too, or EXACT
+     ends up holding "this identity bookmarked these oncology trials" with no owner. The path needs
+     a caller, a credential that is configured rather than defaulted to empty, a log line, and a
+     way to run it by hand when the caller is broken.
 
    Clinical events are the edge of this. Registration interest is one, and it is moving here by an
    explicit decision that also accepted, in writing, that EXACT has no audit journal for it.

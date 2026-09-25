@@ -13,7 +13,7 @@ What diverges between CancerBot `ui.v2` and the federated EXACT remote — in la
 | Question | Decision | Consequence |
 |---|---|---|
 | **Target host** | Both; the remote is self-contained | HT PHR (`/curehub/trials`) and the CB-vendored widget. Page chrome (tabs, filters, pagination) lives inside the remote; the host supplies only auth and a container. |
-| **State owner** | PROMOP | Confirmed by codex. EXACT stays stateless; favorites and saved filters are person-scoped in PROMOP. |
+| **State owner** | PROMOP, moving to EXACT | Was: "EXACT stays stateless; favorites and saved filters are person-scoped in PROMOP." Reversed 2026-09-26 so EXACT stops needing another service to be useful. Preferences have moved (`user_state`), keyed on the token identity rather than `person_id`; favourites and registration interest follow. |
 | **Scope for v1** | Parity + Favorites | Core (tabs / sort / pagination / filters) plus favorites plus the extra widgets. Registered is deferred pending Adam. |
 | **Visual layer** | Scoped `exact.css` | Extend the hand-written CSS under `.exact-root` with CB tokens. No Tailwind inside the remote — the host-agnostic contract holds. |
 
