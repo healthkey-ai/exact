@@ -304,7 +304,19 @@ function EligibilityRow({
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
-      ? editabilityOf(field.upatientField, editing.fields)
+      ? editabilityOf(field.upatientField, editing.fields, {
+          // EXACT ships some value sets on the row itself; without this the
+          // editor asks PROMOP, gets nothing, and draws a text box over a
+          // column the matcher reads as a list of codes.
+          //
+          // `uoptions` alone, though the cell above displays through
+          // `uoptions ?? options`. The bare `options` is the TRIAL's
+          // vocabulary for its own requirement, and offering it as answers
+          // the PATIENT can give is how a trial's value ends up in a
+          // patient's record.
+          type: field.utype,
+          options: field.uoptions,
+        })
       : ({ can: "unknown" } as const);
 
   return (
@@ -410,6 +422,8 @@ function EligibilityRow({
             field={editable.field}
             label={field.label}
             entry={editable.entry}
+            options={editable.options}
+            joined={editable.joined}
             control={editable.control}
             // A refused value wins over the record's: the reader is about to
             // try again, and the thing they want in the box is what they
@@ -421,6 +435,8 @@ function EligibilityRow({
                   ? pendingValue
                   : field.uvalue
             }
+            // The record's own value, with neither of those in front of it.
+            recordValue={field.uvalue}
             units={field.uunits ?? field.units}
             onSave={(value) => editing.save(editable.field, value)}
             onOpenChange={setEditorOpen}

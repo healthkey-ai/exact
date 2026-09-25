@@ -13,7 +13,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { optionsOf, splitJoined } from "./writable";
+import { splitJoined } from "./writable";
+import type { FieldOption } from "./writable";
 import type { EditControl, WritableFieldEntry } from "./writable";
 
 export interface FieldEditProps {
@@ -23,8 +24,29 @@ export interface FieldEditProps {
   label: string;
   entry: WritableFieldEntry;
   control: EditControl;
-  /** The patient's current value, as the detail response reports it. */
+  /** What the control draws from. Handed in rather than read off `entry`:
+   *  some value sets live on the attribute row instead of the descriptor, and
+   *  resolving that belongs in one place (`editabilityOf`), not in every
+   *  control that needs a list. */
+  options: FieldOption[];
+  /** Save a multiselect as a comma-joined string rather than an array,
+   *  because the column behind it is text. Decided in `editabilityOf`, which
+   *  is the only place that knows where the option list came from. */
+  joined: boolean;
+  /** What the control SEEDS FROM — which is what the page is showing, not
+   *  always what the record holds. A refused value wins over the record's,
+   *  and an in-flight one wins over that, because the box should contain what
+   *  the reader is looking at. Use `recordValue` for the record. */
   value: unknown;
+  /** What the RECORD holds, straight from the detail response, with no
+   *  refused or in-flight value in front of it.
+   *
+   *  Kept apart from `value` because the two answer different questions and
+   *  three review rounds ran aground on treating them as one. "What should
+   *  the box show" is `value`. "Would saving change anything" is
+   *  `recordValue`, and only `recordValue`: a reader who takes back a refused
+   *  edit is back at the record, not at their own attempt. */
+  recordValue: unknown;
   /** Unit to show beside a number. The row's own unit wins over the
    *  descriptor's: it is the one the reader is looking at. */
   units?: string;
@@ -108,8 +130,58 @@ function draftFrom(value: unknown, control: EditControl): string | string[] {
  *  something unparseable is refused here rather than sent — the serializer
  *  would answer 400 and the reader would have learned nothing they could not
  *  have been told immediately. */
-function payloadFrom(draft: string | string[], control: EditControl): unknown {
-  if (Array.isArray(draft)) return draft;
+/** The record's value in the shape this column takes.
+ *
+ *  A list column wants a list and a comma-joined text column wants a string;
+ *  `joined` is the one place that knows which this is, so echoing goes
+ *  through it rather than through whatever shape the row happened to report.
+ *  `null` stays `null`: the record holding nothing is not the record holding
+ *  an empty answer, and for FLIPI those derive different scores. */
+function echoOf(recordValue: unknown, joined: boolean): unknown {
+  if (recordValue == null) return null;
+  // Already in the column's shape: hand it back byte for byte. Rebuilding it
+  // through `splitJoined` would be a change, small but real — the record
+  // holding `[""]` would come back as `[]`, on a Save nobody pressed.
+  if (Array.isArray(recordValue) === !joined) return recordValue;
+  if (!joined) return splitJoined(recordValue);
+  return splitJoined(recordValue).join(",");
+}
+
+/** Whether the reader has actually answered differently from the record. */
+function changedFrom(draft: string[], recordValue: unknown): boolean {
+  const held = splitJoined(recordValue);
+  if (held.length !== draft.length) return true;
+  return held.some((part, at) => part !== draft[at]);
+}
+
+export function payloadFrom(
+  draft: string | string[],
+  control: EditControl,
+  joined: boolean,
+  recordValue: unknown,
+): unknown {
+  if (Array.isArray(draft)) {
+    // ONE question, asked once, for both shapes of multiselect: has the
+    // reader answered differently from the record? If not, this is an
+    // untouched Save and it must not change anything — not the value, and
+    // not its shape either.
+    //
+    // Three review rounds each found a different spelling of the same bug
+    // here, because each fix asked a narrower question: "is the selection
+    // empty" (it can be empty and unchanged, or empty and cleared), and then
+    // "was the DISPLAYED value empty" (the display carries refused and
+    // in-flight values that the record does not). The question below is the
+    // one that has no such gap, and `payloadFrom.property.test.ts` holds it
+    // against generated inputs rather than against the cases we thought of.
+    if (!changedFrom(draft, recordValue)) return echoOf(recordValue, joined);
+    if (!joined) return draft;
+    // An emptied control means no answer, as it does for every other control
+    // in this editor. PROMOP could also record an assessment of zero factors
+    // as "", but EXACT cannot read that back — `scope_by_options` returns
+    // None for zero and `is_attr_blank` calls "" blank — so this page does
+    // not offer a distinction one side of the seam cannot see.
+    return draft.length > 0 ? draft.join(",") : null;
+  }
   const text = draft.trim();
   if (text === "") return null;
   if (control === "boolean") return text === "true";
@@ -152,7 +224,10 @@ export function FieldEdit({
   label,
   entry,
   control,
+  options,
+  joined,
   value,
+  recordValue,
   units,
   onSave,
   onOpenChange,
@@ -203,7 +278,6 @@ export function FieldEdit({
     );
   }
 
-  const options = optionsOf(entry);
   // Values the option list does not carry — a legacy spelling, a code retired
   // from the vocabulary — otherwise select nothing. In a single select the box
   // then reads "—" while an untouched Save sends the old value back: the
@@ -227,7 +301,7 @@ export function FieldEdit({
   const unit = units ?? entry.unit;
 
   const commit = () => {
-    const payload = payloadFrom(draft, control);
+    const payload = payloadFrom(draft, control, joined, recordValue);
     if (typeof payload === "number" && Number.isNaN(payload)) {
       setError("Enter a number.");
       return;
