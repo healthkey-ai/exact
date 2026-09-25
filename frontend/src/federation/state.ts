@@ -141,6 +141,39 @@ export interface TrialPreferenceStore {
    *  while `upsert` with `{}` is a partial update that leaves `preferences`
    *  untouched. */
   resetPreferences(): Promise<void>;
+  /** Whether this patient has been offered the suitability-weights wizard,
+   *  and how to record that they have.
+   *
+   *  Optional, and the offer is gated on it: a host with nowhere to remember
+   *  the answer would ask again on every visit, which is worse than not
+   *  asking. It is not part of `getPreferences` because the flag is not a
+   *  filter — `resetPreferences` clears those, and a reader who pressed Reset
+   *  has not un-answered this.
+   *
+   *  `record` carries no weights, though the endpoint behind it can take
+   *  them in the same write. Those go through `savePreferences` like every
+   *  other weight change, because this store keeps its own belief of what is
+   *  stored and writing round it would leave that belief wrong — the next
+   *  filter save would then be built from it and drop the weights.
+   *
+   *  So finishing is two writes, and the caller SEQUENCES them rather than
+   *  merely ordering them: the weights go first and the flag only if they
+   *  landed. An earlier version fired them together and called the weights
+   *  "first" — they are not, since `savePreferences` is debounced 400ms and
+   *  the flag's PATCH is unconditional and immediate, so the flag reached the
+   *  server first and would survive a weights write that never did. The
+   *  reader would then be marked answered with their answer nowhere, and
+   *  there is no second offer to put it right.
+   *
+   *  The flag is also written to the same ROW by a different route, so it
+   *  moves `updated_at` — the tag the filter writer quotes in `If-Match`.
+   *  `TrialMatches` tells the writer to forget it afterwards; see
+   *  `PreferenceTransport.forget`. */
+  weightsWizard?: {
+    wasOffered(): Promise<boolean>;
+    record(): Promise<void>;
+  };
+
   /** Conditional preference access, when this transport supports it.
    *
    *  Optional: absent means the caller writes unconditionally, exactly as
@@ -247,6 +280,13 @@ interface PromopStateArgs {
  *
  *  A host with a plain PROMOP client can use this directly; one that reaches
  *  the same data another way implements `TrialStateAdapter` instead. */
+/** The columns of `trial_search_preferences` this client reads. */
+interface PreferencesRow {
+  preferences?: FilterState;
+  updated_at?: string;
+  weights_wizard_offered?: boolean;
+}
+
 export function createPromopState({
   client,
   personId,
@@ -309,13 +349,30 @@ export function createPromopState({
     );
   };
 
-  const readPreferences = async (): Promise<VersionedPreferences> => {
+  /** The preferences row, or `undefined` when the patient has none.
+   *
+   *  The SHAPE of the GET, shared by the two readers below, which want
+   *  different columns off it — the filters, and whether the weights wizard
+   *  has been offered. Not the same request: each issues its own, so a
+   *  wizard-capable mount reads this row at least twice.
+   *
+   *  At least, not exactly: `TrialMatches` holds the wizard's read until the
+   *  filters have arrived, but that gate also opens on a timeout
+   *  (`SAVED_FILTERS_GRACE_MS`), so against a slow PROMOP the two reads do
+   *  overlap. They disagree about nothing that matters — one reads
+   *  `preferences`, the other one boolean column — and the second read is
+   *  what makes the flag current rather than as-of-mount, which is what a
+   *  second tab having just answered requires. */
+  const readRow = async () => {
     const response = await client.get<{
-      results?: { preferences?: FilterState; updated_at?: string }[];
+      results?: PreferencesRow[];
     }>(`${preferences}/`, { params: { person_id: person } });
-    const rows = response.data?.results ?? (response.data as unknown as
-      { preferences?: FilterState; updated_at?: string }[]);
-    const first = Array.isArray(rows) ? rows[0] : undefined;
+    const rows = response.data?.results ?? (response.data as unknown as PreferencesRow[]);
+    return Array.isArray(rows) ? rows[0] : undefined;
+  };
+
+  const readPreferences = async (): Promise<VersionedPreferences> => {
+    const first = await readRow();
     return {
       filters: first?.preferences ?? {},
       // `first` is what separates the two nulls: no row at all, versus a row
@@ -390,6 +447,46 @@ export function createPromopState({
       read: readPreferences,
       write: writePreferences,
       clear: clearPreferences,
+    },
+
+    weightsWizard: {
+      // Three answers, not two, and the third is the one that matters.
+      //
+      //  - no row: this patient has never been offered anything. Not an error
+      //    and not a reason to stay quiet — it is the commonest shape of the
+      //    reader this exists for.
+      //  - a row with the column: its value.
+      //  - a row WITHOUT the column: this PROMOP does not have the field, so
+      //    nothing we write will be remembered. Answered `true` — "do not
+      //    ask" — because the alternative is asking on every visit forever,
+      //    which is the outcome the whole gate exists to prevent.
+      //
+      // The gate in `TrialMatches` cannot catch this on its own: it tests
+      // whether the store has a `weightsWizard`, and this adapter always
+      // supplies one. Only the row can say whether the SERVER kept it. A
+      // deployment behind the column therefore asks a patient at most once —
+      // the visit on which their row is created — and never again, rather
+      // than every visit.
+      wasOffered: async () => {
+        const row = await readRow();
+        if (!row) return false;
+        return "weights_wizard_offered" in row
+          ? row.weights_wizard_offered === true
+          : true;
+      },
+      // Unconditional, like `savePreferences`. A precondition would make the
+      // answer to a question the reader has already given race a filter save
+      // and lose — and the column takes only one value, so there is nothing
+      // for a concurrent writer to disagree with. PROMOP refuses to unset it,
+      // so a stale client echoing `false` cannot undo this either.
+      record: () =>
+        client
+          .patch(
+            `${preferences}/upsert/`,
+            { weights_wizard_offered: true },
+            { params: { person_id: person } },
+          )
+          .then(() => undefined),
     },
 
     // `person_id` is not optional here even though the endpoint accepts its

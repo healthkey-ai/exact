@@ -138,9 +138,21 @@ const winnerOf = (writers: readonly Writer[]) =>
       : best,
   );
 
-/** The last word on `prop` for this control, and where it came from. */
-const decides = (cls: string, prop: RegExp) => {
-  const writers = writersOf(cls, prop);
+/** The last word on `prop` for this control, and where it came from.
+ *
+ *  State-blind by default, which is the right question for a control whose
+ *  states are all painted by the same pin. `where` narrows it to the rules
+ *  that apply in ONE state, for a control where they are not: the wizard's
+ *  primary button is `Highlight` while it can be pressed and the system's
+ *  `GrayText` while a write is on the wire, and without the filter the
+ *  disabled rule — later and heavier — would answer for the resting button
+ *  too and the pin would read as missing. */
+const decides = (
+  cls: string,
+  prop: RegExp,
+  where: (selector: string) => boolean = () => true,
+) => {
+  const writers = writersOf(cls, prop).filter((w) => where(w.selector));
   expect(writers.length, `nothing writes ${prop} on ${cls}`).toBeGreaterThan(0);
   const won = winnerOf(writers);
   return {
@@ -189,6 +201,75 @@ describe("the preferences Save button in forced colors", () => {
   });
 });
 
+describe("the weights wizard's primary button in forced colors", () => {
+  const CLS = ".exact-wizard__go";
+  /** The button as a reader can press it. Its disabled rule is a different
+   *  question, asked below. */
+  const pressable = (selector: string) => !selector.includes(":disabled");
+
+  it("has the block deciding its fill", () => {
+    // Without this the offer's two buttons are the same ButtonFace, and one
+    // of them declines permanently.
+    const fill = decides(CLS, BACKGROUND, pressable);
+    expect(fill.forced, `${fill.selector} has the last word on its fill`).toBe(true);
+    expect(fill.value).toMatch(/Highlight\b/);
+  });
+
+  it("has the block deciding its label", () => {
+    const label = decides(CLS, LABEL, pressable);
+    expect(label.forced, `${label.selector} has the last word on its label`).toBe(true);
+    expect(label.value).toMatch(/HighlightText\b/);
+  });
+
+  it("hands the disabled state back to the system, in the system's own words", () => {
+    // `forced-color-adjust: none` keeps the pin's colours through `:disabled`
+    // too, so without a rule of its own the button sits at `Highlight` under
+    // `opacity: 0.5` for the whole of a write — half-transparent
+    // chosen-thing, which is not how this mode says "disabled". `GrayText`
+    // is.
+    const disabled = (selector: string) => selector.includes(":disabled");
+    const fill = decides(CLS, BACKGROUND, disabled);
+    expect(fill.forced, `${fill.selector} has the last word on its fill`).toBe(true);
+    // The value too: `background: Highlight; color: GrayText` would satisfy a
+    // check that only asks who won, and GrayText on Highlight is worse than
+    // what it replaced.
+    expect(fill.value).toMatch(/ButtonFace\b/);
+    // And at full strength — asked as "who wins", not "is it written". The
+    // first version matched the text of `opacity: 1` inside this block while
+    // the plain `:disabled` group below it, same weight and later in source,
+    // actually decided: the system pair was still drawn at half alpha and the
+    // pin read as present.
+    const fade = decides(CLS, /opacity\s*:\s*[^;}]+/, disabled);
+    expect(fade.forced, `${fade.selector} has the last word on its opacity`).toBe(
+      true,
+    );
+    expect(fade.value).toMatch(/opacity:\s*1\b/);
+    const label = decides(CLS, LABEL, disabled);
+    expect(label.forced, `${label.selector} has the last word on its label`).toBe(true);
+    expect(label.value).toMatch(/GrayText\b/);
+  });
+
+  it("draws its focus ring in CanvasText, because the ring is OUTSET", () => {
+    // Same geometry as the Save button, so the same answer — and the same
+    // reason HighlightText would be wrong: at `outline-offset: 2px` the ring
+    // is on Canvas, not on the fill.
+    expect(css).toMatch(
+      /\.exact-root \.exact-wizard__go:focus-visible[^{]*\{[^}]*outline-offset:\s*2px/,
+    );
+    const ring = decides(CLS, RING);
+    expect(ring.forced, `${ring.selector} has the last word on its ring`).toBe(true);
+    expect(ring.value).toMatch(/CanvasText\b/);
+    expect(ring.value).not.toMatch(/HighlightText\b/);
+  });
+
+  it("leaves the decline to the system, so the two are still different", () => {
+    // Pinning both would put them back where they started. This asserts the
+    // absence deliberately: `Keep them equal` must NOT opt out.
+    const fill = decides(".exact-wizard__skip", BACKGROUND);
+    expect(fill.forced, "the decline is repainted by the system").toBe(false);
+  });
+});
+
 describe("the chosen segment in forced colors", () => {
   const CLS = ".exact-seg__btn";
 
@@ -222,6 +303,40 @@ describe("the chosen segment in forced colors", () => {
   });
 });
 
+describe("the headings the wizard moves focus to", () => {
+  // Not a forced-colors question, but the same machinery answers it: who has
+  // the last word on `outline` for an element that is a focus DESTINATION
+  // rather than a control.
+  // Longhands too. `outline: none` sets `outline-style: none`, so a later
+  // rule restoring the ring as `outline-style: solid` slips past a pattern
+  // that only knows the shorthand — demonstrated, and green.
+  const OUTLINE = /outline(-color|-style|-width|-offset)?\s*:\s*[^;}]+/;
+
+  for (const cls of [".exact-wizard__title", ".exact-list__title"]) {
+    it(`draws no ring on ${cls}, which no one can tab to`, () => {
+      // `tabindex="-1"`: the wizard opens by itself and moves focus to the
+      // question, and on the way out hands it to the list heading. With no
+      // input preceding it the browser reads that as keyboard focus and
+      // paints its default ring — measured on the stand as
+      // `outline: rgb(0, 95, 204) auto 1px` around the heading, and absent
+      // once a click has happened, which is the tell. A keyboard user loses
+      // nothing: they cannot land here by tabbing.
+      // No `where` filter, deliberately. `decides` takes one to narrow a pin
+      // to a single STATE, which is the right question for a control whose
+      // states are painted by different rules. It is the wrong question
+      // here, and wrong in the dangerous direction: a state-blind rule —
+      // `outline` with no `:focus` in its selector — applies while focused
+      // too, and a filter looking for `:focus` drops it before the cascade
+      // is weighed. Demonstrated: a later `.exact-root .exact-list
+      // .exact-list__title { outline: 3px solid red }` at the same weight
+      // wins in a browser and left this green. Any writer of an outline on
+      // this element is a candidate.
+      const ring = decides(cls, OUTLINE);
+      expect(ring.value).toMatch(/outline:\s*none\b/);
+    });
+  }
+});
+
 describe("the list itself", () => {
   it("names every control that opts out", () => {
     // The one thing a list cannot do is notice a new member, so it says when
@@ -250,7 +365,7 @@ describe("the list itself", () => {
       [...opted].sort(),
       "a control turned forced-colors adjustment off without being covered by " +
         "this file — add it, or see #575 for the general check",
-    ).toEqual([".exact-prefs__save", ".exact-seg__btn"]);
+    ).toEqual([".exact-prefs__save", ".exact-seg__btn", ".exact-wizard__go"]);
   });
 
   it("weighs a rule the way the cascade does", () => {

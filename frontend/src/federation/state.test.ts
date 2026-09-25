@@ -491,3 +491,84 @@ describe("the editing pair is all or nothing", () => {
     expect(canEditFields(undefined)).toBe(false);
   });
 });
+
+describe("the weights wizard flag", () => {
+  it("reads it off the same row the filters come from", async () => {
+    const client = fakeClient({
+      results: [{ preferences: { sort: "distance" }, weights_wizard_offered: true }],
+    });
+    expect(await adapter(client).weightsWizard!.wasOffered()).toBe(true);
+    expect(client.get).toHaveBeenCalledWith("/api/v1/trial-search-preferences/", {
+      params: { person_id: "9001" },
+    });
+  });
+
+  it("reads a patient with no row as never offered", async () => {
+    // The commonest shape of the reader the wizard exists for. Not an error,
+    // and not a reason to stay quiet.
+    expect(await adapter(fakeClient({ results: [] })).weightsWizard!.wasOffered()).toBe(
+      false,
+    );
+  });
+
+  it("reads a row WITHOUT the column as a server that cannot remember", async () => {
+    // The widget's gate asks whether the store has a `weightsWizard`, and
+    // `createPromopState` always supplies one — so it cannot tell a PROMOP
+    // that has shipped the column from one that has not. Behind it,
+    // `record()` PATCHes an unknown field, DRF answers 200, nothing is
+    // stored, and the reader is asked again on every visit for ever: the
+    // exact outcome the gate exists to prevent.
+    //
+    // The row is the only thing that can say. An existing row with the key
+    // ABSENT is therefore answered "already offered" — the deployment asks a
+    // patient at most once, on the visit that creates their row, instead of
+    // every time.
+    expect(
+      await adapter(fakeClient({ results: [{ preferences: {} }] })).weightsWizard!
+        .wasOffered(),
+    ).toBe(true);
+  });
+
+  it("still reads an explicit false as never offered", async () => {
+    // The distinction the line above turns on: absent is not false.
+    expect(
+      await adapter(
+        fakeClient({ results: [{ preferences: {}, weights_wizard_offered: false }] }),
+      ).weightsWizard!.wasOffered(),
+    ).toBe(false);
+  });
+
+  it("reads the row off an unpaginated list too", async () => {
+    // `readRow` accepts both shapes — `{results: [...]}` and a bare array —
+    // because pagination is a deployment setting, not an API contract. The
+    // bare branch had no test on either reader, and it now decides whether a
+    // patient is ever asked.
+    expect(
+      await adapter(
+        fakeClient([{ preferences: {}, weights_wizard_offered: true }]),
+      ).weightsWizard!.wasOffered(),
+    ).toBe(true);
+    expect(
+      await adapter(
+        fakeClient([{ preferences: {}, weights_wizard_offered: false }]),
+      ).weightsWizard!.wasOffered(),
+    ).toBe(false);
+    // And an empty one is a patient with no row, not a server without the
+    // column: nothing to find the key in.
+    expect(await adapter(fakeClient([])).weightsWizard!.wasOffered()).toBe(false);
+  });
+
+  it("writes it alone, and without a precondition", async () => {
+    // Alone: the weights go through `savePreferences`, which keeps this
+    // store's belief of what is saved true. Unconditional: an `If-Match`
+    // would let a filter save racing the answer refuse it, and the column
+    // takes one value, so there is nothing to disagree about.
+    const client = fakeClient({ results: [] });
+    await adapter(client).weightsWizard!.record();
+    expect(client.patch).toHaveBeenCalledWith(
+      "/api/v1/trial-search-preferences/upsert/",
+      { weights_wizard_offered: true },
+      { params: { person_id: "9001" } },
+    );
+  });
+});

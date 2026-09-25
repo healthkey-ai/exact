@@ -42,6 +42,21 @@ export interface PreferenceTransport {
   get(): Promise<FilterState>;
   save(filters: FilterState): Promise<void>;
   reset(): Promise<void>;
+  /** Forget the cached ETag, because somebody wrote this row by another
+   *  route.
+   *
+   *  The weights wizard records "this reader has been asked" as a column on
+   *  the same row, through `upsert`, not through this transport. That bumps
+   *  `updated_at` — which IS the tag — so the next save here quotes one the
+   *  server has moved past and is refused. The refusal is survivable (re-read,
+   *  re-apply, retry once) but it is two extra round trips on every save
+   *  afterwards, and a second tab on the same patient can turn the retry into
+   *  a dropped edit. Unknown is the truthful state and it costs one read.
+   *
+   *  Only the TAG. The row's `preferences` payload is untouched by that write,
+   *  so `stored` is still right and re-reading it would be the round trip
+   *  this is trying to make cheap. */
+  forget(): void;
 }
 
 /** PROMOP, through the host-supplied state adapter.
@@ -167,6 +182,9 @@ export function adapterPreferences(
   // cleared the host's value" would need a sentinel that survives reads, and
   // that is a product decision about whose scope wins, not a defect.
   return {
+    forget: () => {
+      version = undefined;
+    },
     get: async () => {
       const era = generation;
       const read = (async () => {
@@ -535,6 +553,9 @@ export function localStoragePreferences(key: string): PreferenceTransport {
     }
   };
   return {
+    // Nothing to forget: this transport has no precondition, because there is
+    // no other writer to lose a race with.
+    forget: () => {},
     get: async () => {
       const store = storage();
       if (!store) return {};
