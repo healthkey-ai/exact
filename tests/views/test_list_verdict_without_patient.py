@@ -18,10 +18,11 @@ here; it belongs to whichever of the two lands second.
 
 Two neighbouring defects are deliberately out of scope, both filed:
 
-* with a patient, the verdict is a constant `eligible` — `counts` never reaches
-  the serializer context, so `attributesToFillIn` is always empty, even for a
-  trial the same response's `tabCounts` calls potential (#464). The last test
-  here is the part of it this fix can already pin down.
+* with a patient, the verdict was a constant `eligible` — `counts` never
+  reached the serializer context, so `attributesToFillIn` was always empty,
+  even for a trial the same response's `tabCounts` called potential. Fixed
+  since, in #464; the last test here reaches that branch through the real
+  request now rather than through a monkeypatch.
 * a `patient_info` payload EXACT recognises no key of resolves to a blank
   PatientInfo rather than None, and is still answered `eligible` — by this
   endpoint and by the detail one. The fix belongs at the resolver and is
@@ -104,46 +105,16 @@ class TestWithAPatientNothingChanges:
         assert rows
         assert {r['matchingType'] for r in rows} == {'eligible'}
 
-    def test_and_the_potential_branch_still_answers_potential(
-        self, authed_client, monkeypatch,
-    ):
-        """The other arm of the ternary, which no request can reach today.
+    def test_and_the_potential_branch_still_answers_potential(self, authed_client):
+        """The other arm of the ternary.
 
-        The view computes the blank-attribute `counts` and then hands the
-        serializer a literal `{}` instead (#464), so `attrs_to_fill_in` comes
-        back empty for every trial and only the first branch is ever taken.
-        Supplying real counts — real view, real queryset, real matcher —
-        exercises the arm a request cannot, so a change that collapsed the
-        ternary is caught here rather than at whatever later point #464 makes
-        the API path reachable. It is a stand-in for counts ARRIVING, not a
-        reproduction of the view's own computation, and not the line #464
-        would add.
+        It used to be unreachable by any request — the view computed the
+        blank-attribute `counts` and handed the serializer a literal `{}`, so
+        `attrs_to_fill_in` came back empty for every trial and only the first
+        branch was ever taken. This test reached it by monkeypatching counts
+        into the context. #464 made the real path deliver them, so the
+        stand-in is gone: real view, real queryset, real counts.
         """
-        from trials.api.trials_views import TrialsViewSet
-        from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
-
-        from trials.models import Trial
-
-        original = TrialsViewSet.get_serializer_context
-
-        def with_counts_the_serializer_never_receives(view):
-            context = original(view)
-            # Over the whole table rather than by re-running `get_queryset()`:
-            # a second call re-assigns the view's `_tab_counts_source` and
-            # `_tab_counts_patient_info` mid-request, so the stand-in would
-            # be changing the thing under test. This is not a reproduction of
-            # the view's own counts — those are taken over the pre-narrowed
-            # queryset — only a supply of real ones.
-            context['counts'] = BlankAttributeRecordsCount().counts(
-                Trial.objects.all(), context['patient_info'],
-            )
-            return context
-
-        monkeypatch.setattr(
-            TrialsViewSet, 'get_serializer_context',
-            with_counts_the_serializer_never_receives,
-        )
-
         potential_trial()
         rows = authed_client.post(
             '/trials/search/match/',

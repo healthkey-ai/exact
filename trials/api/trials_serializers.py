@@ -143,16 +143,19 @@ class TrialSerializer(serializers.ModelSerializer):
         # merely less wrong while still disagreeing with the page the card
         # opens; this makes them say the same thing.
         #
-        # `attributesToFillIn` is NOT touched here, though it will need to be.
-        # It reads "supply these and you become eligible", which is not true
-        # of a patient whose supplied value IS the conflict. It is empty on
-        # this path today for a reason unrelated to any of that — `counts`
-        # reaches the serializer hardcoded to `{}` (#464), so the list emits
-        # `[]` for every row — and a guard that cannot be told from its
-        # absence is one nobody can check. Tracked instead, against the issue
-        # that makes it live.
+        # `attributesToFillIn` goes with it, and this is the change that makes
+        # that necessary. The field reads "supply these and you become
+        # eligible", which is not true of a patient whose supplied value IS
+        # the conflict — it would invite them to answer a question that cannot
+        # change the answer. #568 left the guard out on purpose, because
+        # `counts` reached the serializer hardcoded to `{}` back then, so the
+        # list emitted `[]` for every row and a guard nobody could tell from
+        # its absence is one nobody can check. #464 delivers the counts, so
+        # the hole opens and closes in the same commit. It was filed as #570
+        # against exactly this moment.
         if not_eligible:
             response['matchScore'] = 0
+            response['attributesToFillIn'] = []
 
         if self.context.get('explain') and patient_info:
             from trials.services.trial_match_explainer import TrialMatchExplainer

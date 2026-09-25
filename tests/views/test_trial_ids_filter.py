@@ -458,6 +458,29 @@ class TestSavedTrialsTheMatcherWouldDrop:
             detail['matchScore'], detail['matchingType']
         )
 
+    def test_nothing_is_offered_to_fill_in_on_a_marked_row(self, authed_client):
+        """`attributesToFillIn` reads "supply these and you become eligible",
+        which is not true of a patient whose supplied value IS the conflict.
+
+        #568 could not assert this: `counts` reached the serializer hardcoded
+        to `{}`, so the field was empty for every row and a guard would have
+        been indistinguishable from its absence. #464 delivers the counts —
+        which is what makes this row's fill-in list non-empty without the
+        guard, and makes the guard checkable. The fixture carries a second,
+        unanswered requirement so there is something to offer.
+        """
+        failing = TrialFactory(
+            disease='Multiple Myeloma', age_low_limit=65, ecog_performance_status_max=2,
+        )
+        ok = TrialFactory(disease='Multiple Myeloma', ecog_performance_status_max=2)
+        response = post(authed_client, [failing.id, ok.id], patient=YOUNG_MM)
+        rows = {t['trialId']: t for t in response.data['results']}
+        assert rows[failing.id]['matchingType'] == 'not_eligible'
+        assert rows[failing.id]['attributesToFillIn'] == []
+        # The unmarked row proves the fixture really does leave something
+        # unanswered, so the assertion above is not passing on an empty set.
+        assert rows[ok.id]['attributesToFillIn']
+
     def test_the_export_says_what_the_list_says(self, authed_client):
         """The file is the list, and this is the field the change is about.
         A CSV row reading `not_eligible,100` goes to an appointment."""
@@ -477,6 +500,23 @@ class TestSavedTrialsTheMatcherWouldDrop:
         row = next(r for r in rows if r['Trial ID'] == str(failing.id))
         assert row['Match'] == 'not_eligible'
         assert row['Matching score'] == '0'
+
+    def test_the_export_carries_the_real_verdict(self, authed_client):
+        """The `Match` column reads `matchingType`, which was the constant
+        `eligible` for every row until #464 delivered the counts. A file
+        someone takes to an appointment now says which trials could not be
+        judged rather than calling them all a match."""
+        unjudgeable = TrialFactory(
+            disease='Multiple Myeloma', ecog_performance_status_max=2,
+        )
+        response = authed_client.post(
+            '/trials/export/', {'patient_info': MM}, format='json',
+        )
+        assert response.status_code == 200
+        body = b''.join(response.streaming_content).decode('utf-8-sig')
+        rows_out = list(csv.DictReader(io.StringIO(body)))
+        row = next(r for r in rows_out if r['Trial ID'] == str(unjudgeable.id))
+        assert row['Match'] == 'potential'
 
     def test_the_graph_does_not_widen(self, authed_client):
         """A node cannot carry the mark — the graph buckets on `match_score`,
