@@ -359,6 +359,21 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
+        {/* Said out loud, not left to silence. This row had an editor a
+            release ago and EXACT took it away; a control that vanishes with
+            no word reads as a bug. Only where we withheld it — see
+            `announce` — because the rows the descriptor itself refuses never
+            offered one, and a sentence on each of those is noise.
+
+            No `!editorOpen` guard. `FieldEdit` only renders under
+            `can === "edit"`, so the editor cannot be open on a row that shows
+            this — except after a verdict flips edit→no while it is open, and
+            `FieldEdit` never clears the flag on unmount. In exactly that case
+            the value and units above are suppressed too, so guarding here
+            would leave the cell showing its column header and nothing else. */}
+        {editable.can === "no" && editable.announce ? (
+          <span className="exact-elig__note">{editable.why}</span>
+        ) : null}
         {writePending ? (
           <span className="exact-elig__saving">Saving…</span>
         ) : null}
