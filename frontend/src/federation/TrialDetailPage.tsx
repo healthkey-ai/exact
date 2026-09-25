@@ -304,7 +304,19 @@ function EligibilityRow({
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
-      ? editabilityOf(field.upatientField, editing.fields)
+      ? editabilityOf(field.upatientField, editing.fields, {
+          // EXACT ships some value sets on the row itself; without this the
+          // editor asks PROMOP, gets nothing, and draws a text box over a
+          // column the matcher reads as a list of codes.
+          //
+          // `uoptions` alone, though the cell above displays through
+          // `uoptions ?? options`. The bare `options` is the TRIAL's
+          // vocabulary for its own requirement, and offering it as answers
+          // the PATIENT can give is how a trial's value ends up in a
+          // patient's record.
+          type: field.utype,
+          options: field.uoptions,
+        })
       : ({ can: "unknown" } as const);
 
   return (
@@ -359,6 +371,21 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
+        {/* Said out loud, not left to silence. This row had an editor a
+            release ago and EXACT took it away; a control that vanishes with
+            no word reads as a bug. Only where we withheld it — see
+            `announce` — because the rows the descriptor itself refuses never
+            offered one, and a sentence on each of those is noise.
+
+            No `!editorOpen` guard. `FieldEdit` only renders under
+            `can === "edit"`, so the editor cannot be open on a row that shows
+            this — except after a verdict flips edit→no while it is open, and
+            `FieldEdit` never clears the flag on unmount. In exactly that case
+            the value and units above are suppressed too, so guarding here
+            would leave the cell showing its column header and nothing else. */}
+        {editable.can === "no" && editable.announce ? (
+          <span className="exact-elig__note">{editable.why}</span>
+        ) : null}
         {writePending ? (
           <span className="exact-elig__saving">Saving…</span>
         ) : null}
@@ -395,6 +422,8 @@ function EligibilityRow({
             field={editable.field}
             label={field.label}
             entry={editable.entry}
+            options={editable.options}
+            joined={editable.joined}
             control={editable.control}
             // A refused value wins over the record's: the reader is about to
             // try again, and the thing they want in the box is what they
@@ -406,6 +435,8 @@ function EligibilityRow({
                   ? pendingValue
                   : field.uvalue
             }
+            // The record's own value, with neither of those in front of it.
+            recordValue={field.uvalue}
             units={field.uunits ?? field.units}
             onSave={(value) => editing.save(editable.field, value)}
             onOpenChange={setEditorOpen}

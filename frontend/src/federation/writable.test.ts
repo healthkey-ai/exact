@@ -177,6 +177,11 @@ describe("deciding whether a row may be edited", () => {
     expect(answer.can).toBe("no");
     if (answer.can !== "no") return;
     expect(answer.why).toContain("Genomics tab");
+    // Silent on the page, deliberately: this row never offered a control, so
+    // nothing went missing for the reader. It is the case most worth
+    // revisiting — the reason names the tab to edit the value in, which is
+    // actionable — so the decision is pinned rather than left to prose.
+    expect(answer.announce).toBe(false);
   });
 
   it("still edits a field PROMOP routes onward from the record itself", () => {
@@ -198,6 +203,9 @@ describe("deciding whether a row may be edited", () => {
     expect(answer.can).toBe("no");
     if (answer.can !== "no") return;
     expect(answer.why).toContain("structured");
+    // Same reasoning as the genomics row above: refused by the descriptor's
+    // own shape, never offered a control, so it stays quiet.
+    expect(answer.announce).toBe(false);
   });
 
   it("does not treat a note on a writable field as a refusal", () => {
@@ -226,6 +234,288 @@ describe("deciding whether a row may be edited", () => {
       }),
     };
     const answer = editabilityOf("hemoglobin_g_dl", readOnly);
+    expect(answer.can).toBe("no");
+  });
+});
+
+describe("attributes whose vocabulary has not finished moving to PROMOP", () => {
+  // PROMOP describes these as writable strings with no options, so the editor
+  // would draw a free text box — and the matcher parses the value as a list
+  // of codes. A reader typing "English" stores something that matches
+  // nothing, silently, on an attribute that gates eligibility.
+  const unmappedEntry = entry({
+    value_kind: "string",
+    reason: "Written directly to PatientRecord. No OMOP mapping yet.",
+  });
+
+  it("offers no editor for one", () => {
+    const answer = editabilityOf("languages_skills", {
+      languages_skills: unmappedEntry,
+    } as WritableFields);
+
+    expect(answer.can).toBe("no");
+    expect(answer.can === "no" && answer.why).toMatch(/still moving between services/);
+  });
+
+  it("says why in its own words, not the descriptor's", () => {
+    // The descriptor's reason explains the OMOP mapping, not why the box a
+    // reader expected is missing. Asserted as the NEGATIVE: the positive
+    // duplicates the test above, since both strings are substrings of one
+    // constant and no mutation kills one without the other.
+    const answer = editabilityOf("languages_skills", {
+      languages_skills: entry({
+        value_kind: "string",
+        reason: "Written directly to PatientRecord. No OMOP mapping yet.",
+      }),
+    } as WritableFields);
+
+    expect(answer.can === "no" && answer.why).not.toMatch(/No OMOP mapping yet/);
+  });
+
+  it("marks its own refusals for announcement, and the descriptor's not", () => {
+    // The reader saw a box on this row before and is owed the reason it went.
+    // The 114 the descriptor itself refuses never offered one, so a sentence
+    // on each of those is noise rather than news.
+    const ours = editabilityOf("languages_skills", {
+      languages_skills: entry({ value_kind: "string" }),
+    } as WritableFields);
+    const theirs = editabilityOf("anc_thousand_per_ul_alias", {
+      anc_thousand_per_ul_alias: entry({
+        writable: false,
+        reason: "Mirrors anc_thousand_per_ul; edit that field instead.",
+      }),
+    } as WritableFields);
+
+    expect(ours.can === "no" && ours.announce).toBe(true);
+    expect(theirs.can === "no" && theirs.announce).toBe(false);
+  });
+
+  it("blocks FLIPI when no row vocabulary reaches it", () => {
+    // This one was taken off the list and put back, and is now lifted by
+    // `controlFor` instead — but only where the row actually carries the
+    // codes. Called without a row, the block is still what stands between the
+    // reader and a free text box over a column of codes. Asserting the
+    // CONTROL is what caught the original mistake: the first version of this
+    // test asserted only `can === "edit"`, which is exactly as true of a
+    // text box.
+    const answer = editabilityOf("flipi_score_options", {
+      flipi_score_options: entry({ value_kind: "string" }),
+    } as WritableFields);
+
+    expect(answer.can).toBe("no");
+  });
+
+  it("stays blocked when options arrive without `multiple`", () => {
+    // The safety net has to be narrower than "options exist". Both columns
+    // are read back as comma-separated lists, so a single `select` would save
+    // one value and silently drop the rest — a different way to store an
+    // answer nobody gave. Asked of the releasable field, or it would pass for
+    // the wrong reason.
+    const answer = editabilityOf("flipi_score_options", {
+      flipi_score_options: entry({
+        value_kind: "string",
+        options: [{ value: "age", label: "Age over 60" }],
+      }),
+    } as WritableFields);
+
+    expect(answer.can).toBe("no");
+  });
+
+  it("never releases the language field, however good the control", () => {
+    // A multiselect over this column would be a perfectly good control
+    // sending its answer down a path PROMOP says nothing should write. The
+    // block is about the far end, not about the widget, so a usable control
+    // is not enough to lift it.
+    const answer = editabilityOf("languages_skills", {
+      languages_skills: entry({
+        value_kind: "string",
+        multiple: true,
+        options: [{ value: "write__en", label: "Write/Read English" }],
+      }),
+    } as WritableFields);
+
+    expect(answer.can).toBe("no");
+  });
+
+  it("releases the field whose only problem was the missing picker", () => {
+    // A safety net, not a retirement plan: it covers somebody wiring the
+    // vocabulary properly and forgetting this file. Only for the field where
+    // a control is genuinely the whole of what was wrong.
+    const answer = editabilityOf("flipi_score_options", {
+      flipi_score_options: entry({
+        value_kind: "string",
+        multiple: true,
+        options: [{ value: "age", label: "Age over 60" }],
+      }),
+    } as WritableFields);
+
+    expect(answer.can).toBe("edit");
+    expect(answer.can === "edit" && answer.control).toBe("multiselect");
+  });
+
+  it("leaves every other optionless string alone", () => {
+    // The block is a named list, not a rule about optionless strings — most
+    // of them are ordinary free text and editing them works.
+    const answer = editabilityOf("some_other_note", {
+      some_other_note: entry({ value_kind: "string" }),
+    } as WritableFields);
+
+    expect(answer.can).toBe("edit");
+    expect(answer.can === "edit" && answer.control).toBe("text");
+  });
+});
+
+describe("the vocabulary the row carries", () => {
+  // EXACT builds some of these value sets itself (`value_options.py`) and
+  // ships them on the attribute row. They were reaching the page and being
+  // used for DISPLAY only, while the editor asked PROMOP's descriptor, got
+  // nothing, and drew a free text box over a column the matcher reads as a
+  // list of codes.
+  const FLIPI = [
+    { value: "age", label: "Age over 60" },
+    { value: "stage", label: "Ann Arbor III or IV" },
+  ];
+
+  it("falls back to it when the descriptor is silent", () => {
+    const control = controlFor(entry({ value_kind: "string" }), {
+      type: "multiselect",
+      options: FLIPI,
+    });
+
+    expect(control).toBe("multiselect");
+  });
+
+  it("gives a single select when the row does not say multiselect", () => {
+    const control = controlFor(entry({ value_kind: "string" }), {
+      type: "string",
+      options: FLIPI,
+    });
+
+    expect(control).toBe("select");
+  });
+
+  it("leaves a kind the descriptor named alone", () => {
+    // `ecog_performance_status` and four others are `value_kind: "number"`
+    // with an option list on the row. A select there would send "3" where the
+    // column had been getting 3, which is a change this one is not making.
+    const control = controlFor(entry({ value_kind: "number" }), {
+      type: "select",
+      options: [{ value: 0 }, { value: 2 }],
+    });
+
+    expect(control).toBe("number");
+  });
+
+  it("hands a picker no list it will not draw", () => {
+    const answer = editabilityOf(
+      "some_other_note",
+      { some_other_note: entry({ value_kind: "number" }) } as WritableFields,
+      { type: "select", options: [{ value: 0 }] },
+    );
+
+    expect(answer.can === "edit" && answer.options).toEqual([]);
+  });
+
+  it("lets the descriptor's `multiple` outrank the row's widget", () => {
+    // The row is the authority on the VOCABULARY, never on the column's
+    // shape. A single select over a list column would replace the whole list
+    // with one value, and nothing would report it.
+    const control = controlFor(entry({ value_kind: "string", multiple: true }), {
+      type: "select",
+      options: FLIPI,
+    });
+
+    expect(control).toBe("multiselect");
+  });
+
+  it("lets the descriptor win when it has a vocabulary of its own", () => {
+    // PROMOP is where these value sets are migrating TO. A row disagreeing
+    // with a descriptor that has an answer would be the old copy winning.
+    const control = controlFor(
+      entry({ value_kind: "string", options: [{ value: "Yes" }] }),
+      { type: "multiselect", options: FLIPI },
+    );
+
+    expect(control).toBe("select");
+  });
+
+  it("hands the resolved list to the caller, whichever source it came from", () => {
+    const answer = editabilityOf(
+      "some_other_note",
+      { some_other_note: entry({ value_kind: "string" }) } as WritableFields,
+      { type: "multiselect", options: FLIPI },
+    );
+
+    expect(answer.can).toBe("edit");
+    expect(answer.can === "edit" && answer.options.map((o) => o.value)).toEqual([
+      "age",
+      "stage",
+    ]);
+  });
+
+  it("retires the FLIPI block, which is what the block was waiting for", () => {
+    // The block existed because there was no picker. The row has always
+    // carried one; the editor just never looked. Now it does, and the entry
+    // in `UNMAPPED_VOCABULARY` lifts on its own.
+    const answer = editabilityOf(
+      "flipi_score_options",
+      { flipi_score_options: entry({ value_kind: "string" }) } as WritableFields,
+      { type: "multiselect", options: FLIPI },
+    );
+
+    expect(answer.can).toBe("edit");
+    expect(answer.can === "edit" && answer.control).toBe("multiselect");
+  });
+
+  it("marks a row-derived multiselect as joined, because its column is text", () => {
+    const answer = editabilityOf(
+      "some_other_note",
+      { some_other_note: entry({ value_kind: "string" }) } as WritableFields,
+      { type: "multiselect", options: FLIPI },
+    );
+
+    expect(answer.can === "edit" && answer.joined).toBe(true);
+  });
+
+  it("leaves a descriptor multiselect unjoined, because its column is a list", () => {
+    // `multiple` is the signal, and PROMOP declares it on exactly two
+    // attributes — the only two whose serializer field takes a JSON array.
+    const answer = editabilityOf(
+      "some_other_note",
+      {
+        some_other_note: entry({
+          value_kind: "string",
+          multiple: true,
+          options: [{ value: "autologous SCT" }],
+        }),
+      } as WritableFields,
+    );
+
+    expect(answer.can === "edit" && answer.control).toBe("multiselect");
+    expect(answer.can === "edit" && answer.joined).toBe(false);
+  });
+
+  it("does not retire the language block, which was never about the picker", () => {
+    // Its row carries a vocabulary too, and a perfectly good multiselect can
+    // be drawn from it — asserted here so this test notices if the fallback
+    // stops working, rather than passing for the wrong reason. It stays
+    // blocked anyway: PROMOP denormalizes that column from
+    // `PersonLanguageSkill`, so the control would be writing down a path
+    // nothing should write.
+    const descriptor = entry({ value_kind: "string" });
+    const languages = {
+      type: "multiselect",
+      options: [{ value: "write__en", label: "Write/Read English" }],
+    };
+
+    expect(controlFor(descriptor, languages)).toBe("multiselect");
+
+    const answer = editabilityOf(
+      "languages_skills",
+      { languages_skills: descriptor } as WritableFields,
+      languages,
+    );
+
     expect(answer.can).toBe("no");
   });
 });

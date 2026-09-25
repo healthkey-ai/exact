@@ -46,7 +46,17 @@ export interface SubformDialogProps {
  */
 function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
   if (entry.upatientRecomputed) return false;
-  const verdict = editabilityOf(entry.upatientField, editing.fields);
+  // The dialog passes the row's vocabulary for the same reason the detail
+  // page does, but the ROW branch can only ever produce a single select here:
+  // the server overwrites a subform entry's type with `select` whenever it
+  // attaches options at all (`trial_attributes.py:882-884`). A descriptor
+  // that carries its own options and `multiple` still yields a multiselect,
+  // as it does anywhere else. Passed rather than hard-coded, so the day the
+  // server stops overwriting this does not have to be found again.
+  const verdict = editabilityOf(entry.upatientField, editing.fields, {
+    type: entry.type,
+    options: entry.options,
+  });
   if (verdict.can !== "edit") return false;
   const projection = verdict.entry.projection_target;
   return projection !== "person" && projection !== "location";
@@ -81,7 +91,10 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
         <ul className="exact-subform__list">
           {entries.map((entry) => {
             const editable = entryIsOffered(entry, editing)
-              ? editabilityOf(entry.upatientField, editing.fields)
+              ? editabilityOf(entry.upatientField, editing.fields, {
+                  type: entry.type,
+                  options: entry.options,
+                })
               : ({ can: "unknown" } as const);
             const attribute = entry.upatientField;
             const pending =
@@ -122,6 +135,8 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
                     label={entry.label}
                     entry={editable.entry}
                     control={editable.control}
+                    options={editable.options}
+                    joined={editable.joined}
                     units={entry.uunits ?? entry.units}
                     value={
                       failed && attribute
@@ -130,6 +145,22 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
                           ? pending
                           : entry.value
                     }
+                    // A subform entry IS the patient attribute, so its
+                    // `value` is the record's — with four exceptions the
+                    // server rewrites for display (`get_value` in
+                    // `trial_attributes.py:235-248`: `tumorGrade*` to a
+                    // label, `supportiveTherapies`, `laterTherapies` and
+                    // `geneticMutations` to derived structures). None can
+                    // reach the comparison this feeds, which is read only
+                    // for a multiselect. Not because the server forces a
+                    // subform entry with options to `select` — that covers
+                    // only `controlFor`'s row branch, and two of the four
+                    // (`supportiveTherapies`, `laterTherapies`) really are
+                    // subform entries. It is because the descriptor branch
+                    // needs `multiple`, which PROMOP declares on two
+                    // attributes and neither is these. If PROMOP declares it
+                    // on one of them, this line has to change with it.
+                    recordValue={entry.value}
                     onSave={(value) => editing.save(editable.field, value)}
                   />
                 ) : null}

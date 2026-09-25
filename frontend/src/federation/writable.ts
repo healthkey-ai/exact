@@ -87,8 +87,10 @@ export interface FieldOption {
  *  (`_field_choice_options` returns `(display, code)` pairs, dict-ified by its
  *  only caller), so the order is worth pinning: display first.
  */
-export function optionsOf(entry: WritableFieldEntry | undefined): FieldOption[] {
-  const raw = entry?.options;
+export function optionsOf(
+  source: { options?: unknown } | undefined,
+): FieldOption[] {
+  const raw = source?.options;
   if (!Array.isArray(raw)) return [];
   const out: FieldOption[] = [];
   for (const item of raw) {
@@ -121,8 +123,62 @@ export function optionsOf(entry: WritableFieldEntry | undefined): FieldOption[] 
 export type EditControl =
   | "select" | "multiselect" | "number" | "boolean" | "date" | "datetime" | "text";
 
-export function controlFor(entry: WritableFieldEntry): EditControl {
-  if (optionsOf(entry).length > 0) return entry.multiple ? "multiselect" : "select";
+/** The vocabulary the ROW carries, for a field the descriptor knows nothing
+ *  about.
+ *
+ *  EXACT owns some of these value sets itself — `languagesSkills` and
+ *  `flipiScoreOptions` are built in `trials/services/value_options.py` — and
+ *  ships them on the attribute row as `uoptions`/`utype`. They were reaching
+ *  the page and going almost unused: `formatValue` matches the WHOLE stored
+ *  value against the list, so a joined "age,stage" matches nothing and the
+ *  cell shows the raw codes. Meanwhile the editor asked PROMOP's descriptor,
+ *  got nothing, and handed the reader a free text box over a column the
+ *  matcher reads as a list of codes. This fixes the editor; the cell beside
+ *  it still shows codes, and will until `formatValue` learns to split a
+ *  joined value before matching.
+ *
+ *  `type` is `utype` on a detail row and `type` on a subform entry. */
+export interface RowVocabulary {
+  type?: string | null;
+  options?: unknown;
+}
+
+export function controlFor(
+  entry: WritableFieldEntry,
+  row?: RowVocabulary,
+): EditControl {
+  if (optionsOf(entry).length > 0)
+    return entry.multiple === true ? "multiselect" : "select";
+  const fromKind = kindControl(entry);
+  // The row, and ONLY where the page would otherwise draw a free text box.
+  //
+  // Both halves of that are deliberate. A descriptor that HAS a vocabulary is
+  // the authority on it: PROMOP is where these value sets are migrating to,
+  // and a row disagreeing with it would be the old copy winning. And a
+  // descriptor that named a KIND has said something too — five attributes
+  // (`karnofsky_performance_score`, `ecog_performance_status`,
+  // `peripheral_neuropathy_grade`, `toxicity_grade`, `biopsy_grade`) are
+  // `value_kind: "number"` with a vocabulary on the row, and turning their
+  // number box into a select would start sending "3" where the column had
+  // been getting 3. A picker there may well be the better control; it is a
+  // different change from this one.
+  if (fromKind === "text" && optionsOf(row).length > 0) {
+    // `entry.multiple` is the descriptor's statement about the column's
+    // shape and outranks the row's guess at the widget. PROMOP cannot emit
+    // this shape today — `write_descriptor` only ever sets `multiple` in the
+    // same branches that set `options`, and non-empty options short-circuit
+    // above (`optionsOf` drops blank entries) — so this is a guard rather
+    // than a live path. It is here because the failure it prevents is
+    // silent: a single select over a list column replaces the whole list
+    // with one value and nothing reports it.
+    return row?.type === "multiselect" || entry.multiple === true
+      ? "multiselect"
+      : "select";
+  }
+  return fromKind;
+}
+
+function kindControl(entry: WritableFieldEntry): EditControl {
   switch (entry.value_kind) {
     // PROMOP maps every numeric model field to `number`; `integer` and
     // `float` are here so a future widening lands on a number box rather
@@ -153,12 +209,157 @@ export function controlFor(entry: WritableFieldEntry): EditControl {
  *  plumbing (#449) and should simply leave the row as it is today.
  */
 export type Editability =
-  | { can: "edit"; field: string; entry: WritableFieldEntry; control: EditControl }
-  | { can: "no"; field: string; entry: WritableFieldEntry; why: string }
+  | {
+      can: "edit";
+      field: string;
+      entry: WritableFieldEntry;
+      control: EditControl;
+      /** The list the control draws from: the descriptor's, or the row's where
+       *  the descriptor has none. Resolved here so the editor does not have to
+       *  know there are two sources. */
+      options: FieldOption[];
+      /** A multiselect whose column is comma-joined text, not a list.
+       *
+       *  Measured against PROMOP, not assumed. Its writable-fields descriptor
+       *  declares `multiple` on exactly two attributes, and only those two
+       *  take a JSON array: `PatientRecordSerializer` generates a plain
+       *  `CharField` for every other column, which answers a list with
+       *  "Not a valid string." before any `validate_` method runs. So a
+       *  multiselect the ROW asked for is over text, and saving it as an
+       *  array would 400 every time. The read side already knows this shape
+       *  — see `splitJoined`; this is its other half. */
+      joined: boolean;
+    }
+  | {
+      can: "no";
+      field: string;
+      entry: WritableFieldEntry;
+      why: string;
+      /** Whether to say `why` on screen.
+       *
+       *  True for one case: a row that HAD an editor in a previous release and
+       *  no longer does. A control that vanishes with no word reads as a bug,
+       *  so that one is explained.
+       *
+       *  Not "the descriptor allowed it and EXACT withheld it", which an
+       *  earlier version of this comment claimed — `elsewhere` and
+       *  `structured` fit that description too and are deliberately silent.
+       *  They never offered a control, so nothing went missing. Printing a
+       *  sentence on each of those, and on the 114 the descriptor itself
+       *  refuses, would bury the page in "Unit of albumin_level; selected
+       *  alongside that value" without answering a question anybody had.
+       *
+       *  `genetic_mutations` is the case worth revisiting: `elsewhere`, with a
+       *  reason naming the tab to edit it in, which is actionable in a way the
+       *  others are not. Left silent here rather than widened without a look
+       *  at how it reads on the page. */
+      announce: boolean;
+    }
   | { can: "unknown" };
 
 const NOT_IN_RECORD =
   "This attribute is not part of the patient record, so there is nowhere to save it.";
+
+/** Attributes PROMOP reports as writable whose value this page cannot collect.
+ *
+ *  Both are described as writable strings with NO options, so the editor drew a
+ *  free text box — and the matcher reads each value as a list of codes
+ *  (`trials/querysets/trial.py`), shaped `write__en` and `age,stage,ldh`. A
+ *  reader typing "English" stored something that matches nothing, silently, on
+ *  attributes that gate eligibility. A box that cannot produce a usable answer
+ *  is worse than no box.
+ *
+ *  `flipi_score_options` was taken off this list once, put back, and is now
+ *  lifted by the code rather than by an edit here. The argument for removing
+ *  it was that EXACT already ships the vocabulary on the row, in `uoptions`,
+ *  so the row wanted a multiselect rather than a block. That was true about
+ *  the vocabulary and false about the editor AT THE TIME: `controlFor` read
+ *  PROMOP's descriptor and nothing else, so a row carrying
+ *  `utype: "multiselect"` and a full option list still got a text box.
+ *  `controlFor` now reads the row where the descriptor left a text box, which
+ *  is the change that argument was really asking for, so the entry below is
+ *  inert wherever a row reaches it — see the note on it.
+ *
+ *  `gelf_criteria_options` was also on this list and is gone for a different
+ *  reason: EXACT never passes that field name. (`gelf_criteria_status` is a
+ *  real EXACT column with its own vocabulary — if PROMOP's inventory meant that
+ *  field under another spelling, the binding is misfiled and this list is one
+ *  entry short. Not chased.)
+ *
+ *  Before releasing either field, check how a multiselect's value round-trips.
+ *  Measured on the PROMOP side today: `validate_flipi_score_options` stores
+ *  `','.join(selected)` with no space, and EXACT strips anyway
+ *  (`PatientInfoFlipyScore.scope_by_options`); `languages_skills` has no
+ *  validator, and the matcher splits it with `_csv`, which does NOT strip
+ *  (`_csv_stripped` exists beside it and is not used). A writer that joined
+ *  with ", " would therefore produce `" write__fr"` and match nothing —
+ *  silently, which is this commit's whole subject. The one `', '.join` in that
+ *  serializer belongs to `cytogenetic_markers` and is read-only, so nothing
+ *  does it today.
+ *
+ *  `languages_skills` would stay here even with a working editor: PROMOP
+ *  denormalizes that column from `PersonLanguageSkill` and says of the eight
+ *  booleans beside it "derived, never written directly"; its migration 0186
+ *  gives the field no choices ON PURPOSE, pinned by a test. The write is wrong
+ *  on PROMOP's terms, not only uncollectable on ours.
+ *
+ *  WHERE THIS BELONGS: in PROMOP's descriptor, as `writable: false` with a
+ *  reason, beside the 114 fields already marked that way. It is here because
+ *  the same team owns both services and a change to EXACT ships without waiting
+ *  on a second approver in another repository.
+ *
+ *  THE TWO ENTRIES DO NOT RETIRE THE SAME WAY. `flipi_score_options` lifts on
+ *  its own as soon as a multiselect can be drawn for it, from either source of
+ *  options, because a picker was the only thing it lacked — which is why the
+ *  list is one entry shorter in practice than it reads.
+ *  `languages_skills` does not lift at all: a good control would still be
+ *  writing down a path PROMOP says nothing should write. Someone deletes that
+ *  entry by hand when the write path lands.
+ */
+interface Unaccepted {
+  why: string;
+  /** Whether a usable control is enough to lift the block.
+   *
+   *  It is for a field whose only problem is that this page cannot collect
+   *  the value. It is NOT for one whose write is wrong at the far end: a
+   *  multiselect over `languages_skills` would be a perfectly good control
+   *  sending its answer down a path PROMOP says nothing should write. The
+   *  first version of this had one condition for both and a comment saying
+   *  otherwise, which is how you end up shipping the comment's opposite. */
+  releasedByAControl: boolean;
+}
+
+const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
+  languages_skills: {
+    why:
+      "This answer cannot be recorded yet: the language vocabulary is still " +
+      "moving between services, so anything entered here could not be " +
+      "matched against trials.",
+    // PROMOP denormalizes this column from `PersonLanguageSkill`. A control
+    // appearing changes nothing about that, so this one is released by hand
+    // or not at all.
+    releasedByAControl: false,
+  },
+  flipi_score_options: {
+    why:
+      "This answer cannot be recorded yet: these criteria are stored as a " +
+      "list of codes and there is no picker for them here, so anything typed " +
+      "could not be matched against trials.",
+    // The only thing wrong here is the missing picker. Measured, not assumed:
+    // `PatientRecordSerializer` takes "age,stage" and normalizes it through
+    // `parse_factors`, and EXACT reads the same column back in
+    // `PatientInfoFlipyScore.scope_by_options`. `all_options` attaches the
+    // five codes to every FLIPI row (`trial_attributes.py:44`), and
+    // `ATTR_TYPE_MAPPING['uflipiScoreOptions']` makes it a multiselect
+    // (`trial_details/configs.py:183`). Both are needed: drop either and the
+    // row becomes a `select`, `controlFor` agrees, and this entry fires
+    // again — as it also does for a caller that passes no row at all, which
+    // a test pins. So it is inert where a row reaches it, not everywhere.
+    // Left as the record of why the block existed; delete it outright when
+    // the vocabulary lands in PROMOP.
+    releasedByAControl: true,
+  },
+};
 
 /** Decide whether the row named by `patientField` may be edited.
  *
@@ -170,6 +371,7 @@ const NOT_IN_RECORD =
 export function editabilityOf(
   patientField: string | null | undefined,
   fields: WritableFields | undefined,
+  row?: RowVocabulary,
 ): Editability {
   if (!patientField || !fields) return { can: "unknown" };
   const entry = fields[patientField];
@@ -189,9 +391,39 @@ export function editabilityOf(
   // A structured value has no control here. `value_kind: "json"` covers
   // findings blobs; offering a text box would let a reader type over one.
   const structured = entry.writable && entry.value_kind === "json";
-  if (!entry.writable || elsewhere || structured) {
-    const why =
-      typeof entry.reason === "string" && entry.reason !== ""
+  // Released only by a descriptor that can actually produce a usable control,
+  // which is exactly "`controlFor` would say multiselect". Asked by CALLING it
+  // rather than by restating its branch: the first version spelled out
+  // `optionsOf(entry).length > 0 && entry.multiple`, character for character
+  // the same condition, and a copy parts company the day `controlFor` grows a
+  // rule. Options alone are not enough — they give a single `select` over a
+  // column both matchers read as a comma-separated list, so saving one
+  // language would silently drop the others.
+  //
+  // `!elsewhere && !structured` because those two are refusals of their own
+  // with reasons of their own. Unreachable today (both fields are
+  // `target: patient_record`, `value_kind: string`), but without it a field
+  // that became genomics-targeted would be announced as a vocabulary problem
+  // and lose the descriptor's actionable "edit it in the Genomics tab".
+  const unaccepted = Object.prototype.hasOwnProperty.call(
+    UNMAPPED_VOCABULARY,
+    patientField,
+  )
+    ? UNMAPPED_VOCABULARY[patientField]
+    : undefined;
+  const unmapped =
+    entry.writable &&
+    !elsewhere &&
+    !structured &&
+    unaccepted !== undefined &&
+    !(unaccepted.releasedByAControl && controlFor(entry, row) === "multiselect");
+  if (!entry.writable || elsewhere || structured || unmapped) {
+    const why = unmapped
+      ? // Ahead of the descriptor's own reason, which for these fields says
+        // "Written directly to PatientRecord. No OMOP mapping yet." — true,
+        // and no use to a reader wondering why the box is gone.
+        unaccepted!.why
+      : typeof entry.reason === "string" && entry.reason !== ""
         ? entry.reason
         : entry.kind === "alias" && typeof entry.canonical === "string"
           ? `Mirrors ${entry.canonical}; edit that field instead.`
@@ -200,9 +432,23 @@ export function editabilityOf(
             : elsewhere
               ? "This field is edited elsewhere in the patient record."
               : NOT_IN_RECORD;
-    return { can: "no", field: patientField, entry, why };
+    return { can: "no", field: patientField, entry, why, announce: Boolean(unmapped) };
   }
-  return { can: "edit", field: patientField, entry, control: controlFor(entry) };
+  const control = controlFor(entry, row);
+  const fromDescriptor = optionsOf(entry);
+  // The row's list only where a picker is actually drawn: `controlFor` may
+  // have declined it in favour of the kind the descriptor named, and handing
+  // over a list nothing reads invites the next reader of this to use it.
+  const picker = control === "select" || control === "multiselect";
+  return {
+    can: "edit",
+    field: patientField,
+    entry,
+    control,
+    options:
+      fromDescriptor.length > 0 ? fromDescriptor : picker ? optionsOf(row) : [],
+    joined: control === "multiselect" && entry.multiple !== true,
+  };
 }
 
 /** Split a multi-valued text column back into its values.
