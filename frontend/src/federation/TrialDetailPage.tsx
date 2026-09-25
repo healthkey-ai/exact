@@ -293,11 +293,11 @@ function EligibilityRow({
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
-  // Only `edit` puts anything on screen. `no` carries a reason, but PROMOP's
-  // reasons are written for whoever is integrating — one of them points at
-  // `docs/omop_to_patientrecord.md` — so showing them raw to a patient would
-  // be worse than the silence. Surfacing them needs curated wording, and that
-  // is a decision, not an oversight.
+  // `edit` puts a control on screen; `no` may put a sentence there. PROMOP's
+  // own `reason` strings never reach it — they are written for whoever is
+  // integrating, and one points at `docs/omop_to_patientrecord.md`. What the
+  // reader sees is curated wording from two tables in `writable.ts`, and a
+  // refusal with no entry in either stays silent.
   const [editorOpen, setEditorOpen] = useState(false);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
@@ -371,11 +371,12 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
-        {/* Said out loud, not left to silence. This row had an editor a
-            release ago and EXACT took it away; a control that vanishes with
-            no word reads as a bug. Only where we withheld it — see
-            `announce` — because the rows the descriptor itself refuses never
-            offered one, and a sentence on each of those is noise.
+        {/* Said out loud, not left to silence, in the two cases `announce`
+            names: a control EXACT took away, and a write PROMOP routes to
+            another resource. Both sentences are EXACT's own. The rows the
+            descriptor merely refuses stay quiet — they never offered a
+            control, so nothing went missing, and a sentence on each of the
+            114 is noise.
 
             No `!editorOpen` guard. `FieldEdit` only renders under
             `can === "edit"`, so the editor cannot be open on a row that shows

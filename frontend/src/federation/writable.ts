@@ -242,17 +242,38 @@ export type Editability =
        *  so that one is explained.
        *
        *  Not "the descriptor allowed it and EXACT withheld it", which an
-       *  earlier version of this comment claimed — `elsewhere` and
-       *  `structured` fit that description too and are deliberately silent.
-       *  They never offered a control, so nothing went missing. Printing a
-       *  sentence on each of those, and on the 114 the descriptor itself
-       *  refuses, would bury the page in "Unit of albumin_level; selected
-       *  alongside that value" without answering a question anybody had.
+       *  earlier version of this comment claimed — `structured` fits that
+       *  description too and is deliberately silent. It never offered a
+       *  control, so nothing went missing.
        *
-       *  `genetic_mutations` is the case worth revisiting: `elsewhere`, with a
-       *  reason naming the tab to edit it in, which is actionable in a way the
-       *  others are not. Left silent here rather than widened without a look
-       *  at how it reads on the page. */
+       *  Two exceptions to the descriptor's default silence, each justified
+       *  on its own and NOT by a shared principle. An earlier version of this
+       *  comment claimed one ("a refusal worth printing is one that tells the
+       *  reader where to go") and the claim did not survive contact with the
+       *  data: it excludes the vocabulary blocks, which route nobody, and
+       *  includes the nineteen aliases, which route as concretely as anything
+       *  here and stay silent.
+       *
+       *  1. `unmapped` — EXACT took away a control the descriptor allowed. A
+       *     row that had an editor in a previous release and no longer does
+       *     owes the reader a sentence.
+       *  2. `elsewhere` with a target we have wording for — PROMOP will take
+       *     this write, through another resource, and `WRITTEN_ELSEWHERE`
+       *     says so in EXACT's words. Not PROMOP's: its `reason` is
+       *     documented above as carried and not rendered, and an unknown
+       *     target is silent rather than printing a string nobody reviewed.
+       *     The generic fallback ("This field is edited elsewhere in the
+       *     patient record") is never announced either — it tells the reader
+       *     there is somewhere to go and refuses to say where, which is worse
+       *     than silence.
+       *
+       *  The nineteen aliases stay silent even though "Mirrors ldh_u_l; edit
+       *  that field instead." looks actionable: it names a column in the
+       *  record's spelling, not a place in the interface, and this page is
+       *  built from EXACT's attributes, so there may be no row called
+       *  `ldh_u_l` on it. And the 114 the descriptor refuses stay silent
+       *  because "Unit of albumin_level; selected alongside that value"
+       *  answers a question nobody asked, 114 times over. */
       announce: boolean;
     }
   | { can: "unknown" };
@@ -328,6 +349,36 @@ interface Unaccepted {
    *  otherwise, which is how you end up shipping the comment's opposite. */
   releasedByAControl: boolean;
 }
+
+/** What to say about a write PROMOP routes to another resource.
+ *
+ *  EXACT's words, not PROMOP's, and that is the whole point. The descriptor's
+ *  `reason` is documented two hundred lines up as "not always fit to show a
+ *  reader… carried, not rendered": some of those strings are written for
+ *  whoever is integrating, and one of them points at a markdown file. Passing
+ *  one through to a patient because it happened to be actionable would cross
+ *  that rule quietly, and the next `target` PROMOP adds would arrive on the
+ *  page unreviewed.
+ *
+ *  Keyed on `target`, which is a small closed vocabulary PROMOP publishes,
+ *  rather than on the field — and an unknown target says nothing at all,
+ *  which is the safe direction.
+ *
+ *  These deliberately do NOT name a tab, though PROMOP's own reason does
+ *  ("Edit individual variants in the Genomics tab"). EXACT is a federated
+ *  remote: the host mounting it decides its own navigation, and this page
+ *  cannot know that a Genomics tab exists there. Naming one that does not
+ *  would route the reader into a different application — the same failure
+ *  that keeps the nineteen aliases silent.
+ */
+const WRITTEN_ELSEWHERE: Record<string, string> = {
+  genomics:
+    "This is recorded with each individual variant, in the genomics part " +
+    "of the record, rather than here.",
+  episode:
+    "This is recorded with the treatment episode it belongs to, rather " +
+    "than here.",
+};
 
 const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
   languages_skills: {
@@ -418,12 +469,15 @@ export function editabilityOf(
     unaccepted !== undefined &&
     !(unaccepted.releasedByAControl && controlFor(entry, row) === "multiselect");
   if (!entry.writable || elsewhere || structured || unmapped) {
+    const routedText = elsewhere ? WRITTEN_ELSEWHERE[String(entry.target)] : undefined;
     const why = unmapped
       ? // Ahead of the descriptor's own reason, which for these fields says
         // "Written directly to PatientRecord. No OMOP mapping yet." — true,
         // and no use to a reader wondering why the box is gone.
         unaccepted!.why
-      : typeof entry.reason === "string" && entry.reason !== ""
+      : routedText
+        ? routedText
+        : typeof entry.reason === "string" && entry.reason !== ""
         ? entry.reason
         : entry.kind === "alias" && typeof entry.canonical === "string"
           ? `Mirrors ${entry.canonical}; edit that field instead.`
@@ -432,7 +486,19 @@ export function editabilityOf(
             : elsewhere
               ? "This field is edited elsewhere in the patient record."
               : NOT_IN_RECORD;
-    return { can: "no", field: patientField, entry, why, announce: Boolean(unmapped) };
+    // Announce only text EXACT wrote. Both announced cases now come from a
+    // table in this file — `UNMAPPED_VOCABULARY` and `WRITTEN_ELSEWHERE` —
+    // so the page cannot start printing a sentence another service added
+    // without anyone reading it. An `elsewhere` whose target we have no
+    // wording for stays silent, which is the safe direction and the reason
+    // this is `routedText !== undefined` rather than `elsewhere`.
+    return {
+      can: "no",
+      field: patientField,
+      entry,
+      why,
+      announce: Boolean(unmapped || routedText),
+    };
   }
   const control = controlFor(entry, row);
   const fromDescriptor = optionsOf(entry);

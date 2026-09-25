@@ -161,6 +161,26 @@ describe("deciding whether a row may be edited", () => {
     expect(editabilityOf("no_such_field", fields)).toEqual({ can: "unknown" });
   });
 
+  it("stays quiet about a destination it has no wording for", () => {
+    // A target PROMOP adds tomorrow. The fallback sentence — "This field is
+    // edited elsewhere in the patient record" — is a reason in form and not
+    // in substance: it tells the reader there is a door and refuses to name
+    // it. And printing PROMOP's own string instead is the thing this avoids,
+    // since nobody here has read it. Silence until somebody writes a sentence.
+    const fields: WritableFields = {
+      some_relocated_field: entry({
+        kind: "editable",
+        writable: true,
+        target: "somewhere_new",
+        reason: "Written via the widgets resource; see docs/widgets.md.",
+      }),
+    };
+    const answer = editabilityOf("some_relocated_field", fields);
+
+    expect(answer.can).toBe("no");
+    expect(answer.can === "no" && answer.announce).toBe(false);
+  });
+
   it("refuses a control for a field written through another resource", () => {
     // `genetic_mutations` is `writable: true` with `target: "genomics"`.
     // PATCHing the record would write nothing at all, so the pencil must not
@@ -176,12 +196,16 @@ describe("deciding whether a row may be edited", () => {
     const answer = editabilityOf("genetic_mutations", fields);
     expect(answer.can).toBe("no");
     if (answer.can !== "no") return;
-    expect(answer.why).toContain("Genomics tab");
-    // Silent on the page, deliberately: this row never offered a control, so
-    // nothing went missing for the reader. It is the case most worth
-    // revisiting — the reason names the tab to edit the value in, which is
-    // actionable — so the decision is pinned rather than left to prose.
-    expect(answer.announce).toBe(false);
+    // EXACT's sentence, not PROMOP's. The descriptor's reason here is
+    // "Edit individual variants in the Genomics tab." — good prose, and not
+    // ours to print: `reason` is documented as carried and not rendered
+    // because some of those strings are written for integrators, and EXACT
+    // is a federated remote that cannot know the host has a Genomics tab.
+    expect(answer.why).toContain("genomics part of the record");
+    expect(answer.why).not.toContain("tab");
+    // Said out loud, though. Without it the honest conclusion from a row
+    // with no pencil is that the record cannot hold their variants.
+    expect(answer.announce).toBe(true);
   });
 
   it("still edits a field PROMOP routes onward from the record itself", () => {
