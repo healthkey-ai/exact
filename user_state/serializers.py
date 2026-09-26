@@ -25,6 +25,32 @@ MAX_PREFERENCE_BYTES = 16 * 1024
 MAX_PREFERENCE_DEPTH = 3
 
 
+def _unstorable(value):
+    """The first character in this payload that PostgreSQL `jsonb` refuses.
+
+    Valid JSON is not the same as storable text. A NUL (`\u0000`) and a lone
+    surrogate (`\ud800`) both parse, and both make `psycopg2` raise
+    `UntranslatableCharacter` on the way into the column — a 500 that any
+    reader with a token can repeat. A rolled-back 500 is still a 500; this
+    turns it into the 400 it is.
+    """
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            for char in item:
+                if char == '\x00':
+                    return 'a NUL character'
+                if '\ud800' <= char <= '\udfff':
+                    return 'an unpaired surrogate'
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple)):
+            stack.extend(item)
+    return None
+
+
 def _depth(value, limit):
     """How deep, stopping at `limit`. Iterative: a recursive depth check on a
     deeply nested value is the same crash it is meant to report."""
@@ -72,6 +98,11 @@ class TrialSearchPreferencesSerializer(serializers.ModelSerializer):
         # column that has to live with the size. `default=str` so a value the
         # JSON parser produced but `json.dumps` would refuse cannot turn a
         # 400 into a 500.
+        refused = _unstorable(value)
+        if refused is not None:
+            raise serializers.ValidationError(
+                f'Filters cannot contain {refused}.'
+            )
         if _depth(value, MAX_PREFERENCE_DEPTH) > MAX_PREFERENCE_DEPTH:
             raise serializers.ValidationError(
                 f'Filters may nest at most {MAX_PREFERENCE_DEPTH} deep.'

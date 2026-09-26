@@ -2,8 +2,11 @@
 
 `rest_framework.parsers.JSONParser` calls `json.loads`, which recurses once
 per level of nesting. Python's own recursion limit is reached at roughly
-10 000 levels, which a request body of about 20 KB carries comfortably —
-far under Django's 2.5 MB `DATA_UPLOAD_MAX_MEMORY_SIZE`. Unbounded, that is
+10 000 levels, which a request body of about 20 KB carries comfortably. No
+size setting stands in the way: DRF reads the WSGI stream directly here
+rather than `request.body`, so `DATA_UPLOAD_MAX_MEMORY_SIZE` never sees it —
+which an earlier version of this comment cited as the surrounding bound, in
+a file whose whole subject is an unmeasured claim. Unbounded, that is
 an uncaught `RecursionError` and an HTTP 500, repeatable at the throttle's
 300 requests a minute by anyone with a token.
 

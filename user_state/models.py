@@ -25,6 +25,7 @@ import logging
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from rest_framework.authtoken.models import Token
 
 logger = logging.getLogger(__name__)
@@ -45,12 +46,25 @@ logger = logging.getLogger(__name__)
 # disagreed with the page on both: the count made four weights read as four
 # filters, and the reset wiped them.
 NOT_FILTERS = frozenset({
-    'sort',
-    'type',
+    # Qualifies `distance` and cannot be set without it, so counting it makes
+    # one filter read as two — `filters.ts` says exactly that and the client
+    # already excludes it. It IS persisted (`userOwnedFilters`), unlike the
+    # two below, so it is the one key on this list the column really sees.
+    'distanceUnits',
+    # The four weights change the ORDER of the list and the percentage on
+    # each card, never which trials are in it. `weights.ts`: "the Filters
+    # badge does not count them and Reset does not clear them."
     'benefitWeight',
     'patientBurdenWeight',
     'riskWeight',
     'distancePenaltyWeight',
+    # The sort control and the tab. This page never persists them — every
+    # `savedFilters.persist` call site sends panel fields, `distanceUnits`
+    # and weights — but PROMOP's copy of this column, written by an older
+    # client, can hold them, and switching a host adapter must not change
+    # the badge.
+    'sort',
+    'type',
 })
 
 
@@ -99,10 +113,14 @@ class TrialSearchPreferences(models.Model):
     def non_default_filter_count(self) -> int:
         """How many filters this identity actually set.
 
-        Ported verbatim from PROMOP's `TrialSearchPreferences`, including the
-        exclusions, because the two stores answer the same question for the
-        same badge while both exist. A count that disagreed between them would
-        make the "Filters (N)" badge change when the host switched adapters.
+        Started as PROMOP's `TrialSearchPreferences` copy, verbatim, because
+        the two stores answer the same question for the same badge while both
+        exist and a count that disagreed would make the badge change when the
+        host switched adapters. It is no longer verbatim: `distanceUnits` and
+        the four weights are excluded here and not there, because measured
+        against THIS page's client they had to be — see `NOT_FILTERS`. That
+        is a divergence from PROMOP, deliberately, and it is the direction
+        that agrees with the page; PROMOP's copy is the one to change.
 
         Empty string, null and false are "unset" — a cleared text input hands
         back `""` before anything normalizes it, and an unticked checkbox is
@@ -125,6 +143,71 @@ class TrialSearchPreferences(models.Model):
             and value != []
             and value != {}
         )
+
+
+def erasure_paths(models, identity_model):
+    """For each model, every ORM lookup path from it to the identity.
+
+    Pure graph work, separated from the deleting so it can be tested on
+    shapes this app does not have yet — which is the point, since every
+    defect here so far has been about a shape nobody had built.
+
+    To a FIXED POINT, not in one pass. Reachability is a property of the
+    graph, and a single ordered walk decides it by SOURCE ORDER: a child
+    declared above its parent came out "unreachable" and stopped erasure for
+    every identity in the service until somebody reordered `models.py`. Three
+    findings in one review were spellings of the same premise — that one pass
+    over concrete forward FKs is enough — so this runs until it stops
+    learning and only then refuses what is left.
+
+    `get_fields()` rather than `fields`, so a many-to-many counts as a link:
+    `_meta.fields` omits them, and a model linked only that way was told
+    "nothing links it to Identity", which was untrue and fatal.
+
+    Every path, not the first: a model reaching the identity two ways is
+    erased by both, rather than by one and a cascade that the receipt cannot
+    account for. Which means a model is resolved only once EVERY one of its
+    links is — resolving it as soon as one parent is known loses the routes
+    through parents that are still pending, and loses them silently, since
+    those rows then die by cascade and never appear in the counts.
+    """
+    paths = {}
+    remaining = list(models)
+    while remaining:
+        progress = False
+        for model in list(remaining):
+            links = [
+                f for f in model._meta.get_fields()
+                if getattr(f, 'related_model', None) is not None
+                and getattr(f, 'concrete', False)
+            ]
+            direct = [f.name for f in links if f.related_model is identity_model]
+            if direct:
+                paths[model] = direct
+                remaining.remove(model)
+                progress = True
+                continue
+            # Only when every link is settled. A link to something still
+            # unresolved may yet become a second route; taking the first one
+            # known would drop it.
+            unsettled = [f for f in links if f.related_model not in paths]
+            hops = [f for f in links if f.related_model in paths]
+            if hops and not unsettled:
+                paths[model] = [
+                    f'{hop.name}__{onward}'
+                    for hop in hops
+                    for onward in paths[hop.related_model]
+                ]
+                remaining.remove(model)
+                progress = True
+        if not progress:
+            names = ', '.join(sorted(m.__name__ for m in remaining))
+            raise RuntimeError(
+                f'{names} in user_state, and nothing links them to Identity '
+                'directly or through another model in this app; '
+                'forget_identity cannot erase them. Nothing has been deleted.'
+            )
+    return paths
 
 
 def forget_identity(issuer: str, sub: str) -> dict:
@@ -154,6 +237,17 @@ def forget_identity(issuer: str, sub: str) -> dict:
     5. IT WRITES ITS OWN AUDIT LINE, here rather than at the HTTP boundary,
        so the by-hand path records an erasure too. That path exists for the
        day the endpoint is broken, and that is not a day to be silent on.
+
+    Points 4 and 5 look like they contradict each other and do not, but the
+    line between them is worth stating because the first draft of point 4
+    drew it wrongly. It said the distinction was refused because keeping it
+    "would mean keeping a record that this person was once here" — and then
+    point 5 writes issuer and sub to the application log, which is such a
+    record and outlives the row. The real reason is narrower and true: the
+    RECEIPT reports the state of the table, and the table is empty either
+    way. Whether an erasure is logged, and for how long, is an operational
+    decision with its own retention, taken deliberately here because an
+    erasure nobody can show happened is one nobody can show happened.
     """
     from django.apps import apps
     from django.db import transaction
@@ -163,27 +257,8 @@ def forget_identity(issuer: str, sub: str) -> dict:
     models = list(apps.get_app_config('user_state').get_models())
 
     # Resolved before the transaction, so an unreachable model is a refusal
-    # rather than a partial erasure. `Identity` may be reached through
-    # another model in this app, so the path is a lookup chain, not one FK.
-    paths = {}
-    for model in models:
-        direct = next(
-            (f.name for f in model._meta.fields if f.related_model is Identity), None,
-        )
-        if direct:
-            paths[model] = direct
-            continue
-        hop = next(
-            (f for f in model._meta.fields
-             if f.related_model is not None and f.related_model in paths), None,
-        )
-        if hop is None:
-            raise RuntimeError(
-                f'{model.__name__} is in user_state but nothing links it to '
-                'Identity, directly or through another model in this app; '
-                'forget_identity cannot erase it. Nothing has been deleted.'
-            )
-        paths[model] = f'{hop.name}__{paths[hop.related_model]}'
+    # rather than a partial erasure. See `erasure_paths`.
+    paths = erasure_paths(models, Identity)
 
     with transaction.atomic():
         identity = Identity.objects.filter(issuer=issuer, sub=sub).first()
@@ -193,9 +268,15 @@ def forget_identity(issuer: str, sub: str) -> dict:
 
         removed = {}
         # Children first: deleting a parent would cascade and leave the child
-        # counts unattributable.
-        for model in reversed(models):
-            _, per_label = model.objects.filter(**{paths[model]: identity}).delete()
+        # counts unattributable. Depth in the resolved graph, not source
+        # order — the order models happen to be declared in is exactly what
+        # the resolver above stopped depending on.
+        by_depth = sorted(models, key=lambda m: max(p.count('__') for p in paths[m]))
+        for model in reversed(by_depth):
+            query = Q()
+            for path in paths[model]:
+                query |= Q(**{path: identity})
+            _, per_label = model.objects.filter(query).delete()
             removed[model._meta.db_table] = per_label.get(model._meta.label, 0)
 
         Token.objects.filter(user=identity).delete()

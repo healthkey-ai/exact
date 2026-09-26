@@ -39,6 +39,10 @@ class _FakeProvider:
 def partner_client(db, monkeypatch, settings):
     # With the flag off, as staging and production run it: proves the routes
     # work on the partner token alone rather than falling through to DRF's.
+    #
+    # This only became true when `authentication_classes` stopped being a
+    # class attribute: evaluated at import, the override below changed
+    # nothing and this fixture was quietly testing the local configuration.
     settings.ENABLE_DRF_TOKEN_AUTH = False
     monkeypatch.setattr(
         'accounts.authentication.get_providers', lambda: [_FakeProvider()],
@@ -68,6 +72,21 @@ class TestOverAPartnerToken:
         )
         assert TrialSearchPreferences.objects.get().identity_id == identity.pk
 
+    def test_the_drf_token_is_not_accepted_where_it_is_gated_off(self, db, settings):
+        # The other half, and the one that proves the fixture above is doing
+        # what it says: the credential every other test in this app uses must
+        # NOT work in a deployed configuration. If this passes while the flag
+        # is honoured, the pinned list is real.
+        from rest_framework.authtoken.models import Token
+
+        settings.ENABLE_DRF_TOKEN_AUTH = False
+        identity, _ = Identity.objects.get_or_create(issuer='urn:local', sub='dev')
+        token, _ = Token.objects.get_or_create(user=identity)
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+
+        assert client.get(PREFS).status_code in (401, 403)
+
     def test_a_bad_partner_token_reaches_nothing(self, db, monkeypatch, settings):
         settings.ENABLE_DRF_TOKEN_AUTH = False
         monkeypatch.setattr('accounts.authentication.get_providers', lambda: [])
@@ -76,3 +95,44 @@ class TestOverAPartnerToken:
 
         assert client.get(PREFS).status_code in (401, 403)
         assert not TrialSearchPreferences.objects.exists()
+
+
+@pytest.mark.django_db
+class TestTheErasureWarning:
+    """`user_state.W001` — loud where it matters, quiet where it does not."""
+
+    def test_it_fires_where_promop_would_be_calling(self, settings, monkeypatch):
+        from user_state.apps import check_erasure_is_reachable
+
+        settings.SERVICE_AUTH_TOKEN = ''
+        settings.DEBUG = False
+        monkeypatch.setenv('ENVIRONMENT', 'staging')
+
+        assert [w.id for w in check_erasure_is_reachable(None)] == ['user_state.W001']
+
+    @pytest.mark.parametrize('debug,environment', [(True, 'staging'), (False, 'local')])
+    def test_it_is_quiet_on_a_laptop(self, settings, monkeypatch, debug, environment):
+        # `.env.example` ships the secret empty and nothing calls the endpoint
+        # locally, so firing here would put the warning in front of every
+        # developer and every CI run until nobody reads it.
+        #
+        # Both arms, separately. With one case the DEBUG arm was covered by
+        # accident of `ENVIRONMENT=local` in the test settings and reachable
+        # from no test — the same shape as the import-time authentication
+        # attribute this file exists to keep honest.
+        from user_state.apps import check_erasure_is_reachable
+
+        settings.SERVICE_AUTH_TOKEN = ''
+        settings.DEBUG = debug
+        monkeypatch.setenv('ENVIRONMENT', environment)
+
+        assert check_erasure_is_reachable(None) == []
+
+    def test_a_configured_secret_silences_it(self, settings, monkeypatch):
+        from user_state.apps import check_erasure_is_reachable
+
+        settings.SERVICE_AUTH_TOKEN = 'svc-secret'
+        settings.DEBUG = False
+        monkeypatch.setenv('ENVIRONMENT', 'staging')
+
+        assert check_erasure_is_reachable(None) == []

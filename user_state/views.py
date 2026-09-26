@@ -9,6 +9,7 @@ tab is a shrug. Registration interest is not a shrug, and when it lands here
 this decision is worth taking again rather than inheriting.
 """
 from django.conf import settings
+from django.db import transaction
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.authentication import TokenAuthentication
@@ -25,6 +26,16 @@ from user_state.serializers import TrialSearchPreferencesSerializer
 class TrialSearchPreferencesViewSet(viewsets.ViewSet):
     """`me` semantics: there is no id in any of these routes.
 
+    A REQUEST THAT DOES NOT SUCCEED LEAVES THE TABLE AS IT FOUND IT. Three
+    review rounds each found a different way to break that — a GET that
+    created a row, a 400 that created one, and a 500 from a string `jsonb`
+    cannot store, which created one and then failed the UPDATE. The first two
+    were fixed by moving one call; this is written here because the pattern
+    says the rule is the thing to hold, not the three inputs. Validation
+    cannot carry it alone: `_row()` is a write, and anything after it can
+    fail. So every handler that writes is atomic, and a refusal of any kind —
+    validation, database, or a bug — takes the row creation down with it.
+
     Not "a detail route with a permission check" — a route that cannot name
     another identity cannot be made to act on one, and that is a stronger
     guarantee than a check somebody has to remember to write. The row is
@@ -40,15 +51,21 @@ class TrialSearchPreferencesViewSet(viewsets.ViewSet):
     # never-expiring DRF token and an admin session reach these routes, which
     # is how the docstring above came to be false about where `request.user`
     # comes from. Token auth stays only where it is already gated to dev.
-    authentication_classes = (
-        [PartnerAuthentication, TokenAuthentication]
-        if getattr(settings, 'ENABLE_DRF_TOKEN_AUTH', False)
-        else [PartnerAuthentication]
-    )
     permission_classes = [IsAuthenticated]
     # See `parsers.py`: the depth cap in the serializer only sees bodies the
     # parser survived, which are not the ones that crash it.
     parser_classes = [BoundedJSONParser]
+
+    def get_authenticators(self):
+        # A method, not a class attribute. As an attribute this was evaluated
+        # at import, so the branch every deployed environment runs was not
+        # reachable from a test that set the flag — and the test written to
+        # prove the routes work on a partner token alone was in fact still
+        # running with the DRF token enabled.
+        classes = [PartnerAuthentication]
+        if getattr(settings, 'ENABLE_DRF_TOKEN_AUTH', False):
+            classes.append(TokenAuthentication)
+        return [cls() for cls in classes]
 
     def _row(self):
         row, _ = TrialSearchPreferences.objects.get_or_create(identity=self.request.user)
@@ -77,22 +94,31 @@ class TrialSearchPreferencesViewSet(viewsets.ViewSet):
         # for the check, then to the row for the save.
         serializer = TrialSearchPreferencesSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        row = serializer.update(self._row(), serializer.validated_data)
+        with transaction.atomic():
+            row = serializer.update(self._row(), serializer.validated_data)
         return Response(TrialSearchPreferencesSerializer(row).data)
 
     @action(detail=False, methods=['post'])
+    @transaction.atomic
     def reset(self, request):
         row = self._row()
-        # Filters, not the whole payload. The four score weights ride in the
-        # same column and are not filters — `weights.ts` says "Reset does not
-        # clear them" — and emptying the column wiped them: a reader who set
-        # their weights, then pressed Reset, silently went back to 25/25/25/25
-        # with no second offer of the wizard to put it right, because the flag
-        # below is preserved.
+        # Filters, not the whole payload. The weights ride in the same column
+        # and are not filters — `weights.ts`: "Reset does not clear them".
+        #
+        # Measured before claiming a user-visible bug, because the first
+        # version of this comment claimed one that does not happen:
+        # `TrialMatches.tsx` already re-persists the weights right after
+        # calling reset, so a reader clicking Reset in the UI keeps them
+        # today. What this closes is the endpoint promising something the
+        # page has to remember to undo — any other client, and the next
+        # refactor of that sequence, would wipe them.
+        # `or {}` is not enough: a row written from a shell can hold a list,
+        # which has no `.items`. The read path guards exactly this shape
+        # (`non_default_filter_count`) and this one did not — unreachable
+        # through the API, and a 500 for whoever met it.
+        held = row.preferences if isinstance(row.preferences, dict) else {}
         row.preferences = {
-            key: value
-            for key, value in (row.preferences or {}).items()
-            if key in NOT_FILTERS
+            key: value for key, value in held.items() if key in NOT_FILTERS
         }
         # The wizard flag is NOT reset either. "Reset my filters" is a sentence
         # about filters; being offered the wizard again because of it would be
@@ -122,6 +148,16 @@ class ForgetIdentityView(APIView):
     throttle_classes = []
 
     def post(self, request):
+        # A JSON body is not necessarily an object. `[1,2,3]`, `"x"`, `7` and
+        # `null` all parse, and `.get` on any of them is an AttributeError and
+        # a 500 — on the endpoint whose whole point is that PROMOP's erasure
+        # call must not fail silently, and which the parser guard was added to
+        # for exactly this class of body.
+        if not isinstance(request.data, dict):
+            return Response(
+                {'detail': 'Expected an object with `issuer` and `sub`.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         issuer = request.data.get('issuer')
         sub = request.data.get('sub')
         if not isinstance(issuer, str) or not isinstance(sub, str) or not issuer or not sub:

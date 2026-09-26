@@ -110,6 +110,27 @@ class TestWhatItStores:
         assert client.get(PREFS).status_code == 200
         assert not TrialSearchPreferences.objects.exists()
 
+    def test_a_write_that_fails_after_validation_leaves_no_row(self, authed, monkeypatch):
+        # The invariant, held against something validation cannot see. Three
+        # rounds each found a new way for a failed request to leave EXACT's
+        # first row about somebody behind — a GET, then a 400, then a 500 from
+        # a string `jsonb` refuses. The last of those is now a 400, but the
+        # rule has to survive the next unknown too, so the handler is atomic
+        # and this proves it rather than the one input we happen to know.
+        _, client = authed
+
+        def boom(self, instance, validated_data):
+            raise RuntimeError('the database went away')
+
+        monkeypatch.setattr(
+            'user_state.serializers.TrialSearchPreferencesSerializer.update', boom,
+        )
+
+        with pytest.raises(RuntimeError):
+            client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        assert not TrialSearchPreferences.objects.exists()
+
     def test_a_deeply_nested_payload_is_refused_rather_than_crashing(self, authed):
         # 100 KB, far under Django's 2.5 MB body limit, and `JSONParser`
         # recurses building it: unbounded, this is a 500 at 300 requests a
@@ -155,6 +176,19 @@ class TestWhatItStores:
 
         assert body['non_default_filter_count'] == 1
 
+    def test_the_count_reads_a_distance_and_its_unit_as_one_filter(self, authed):
+        # `distanceUnits` qualifies `distance` and cannot be set without it.
+        # The client says so and excludes it; counting it here made the
+        # commonest filter there is read as two — the badge disagreeing with
+        # the page it labels, which is the thing this count exists to avoid.
+        _, client = authed
+        body = client.post(
+            PREFS, {'preferences': {'distance': 50, 'distanceUnits': 'miles'}},
+            format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
     def test_the_count_ignores_the_score_weights(self, authed):
         # They change the ORDER of the list, never which trials are in it —
         # `weights.ts`: "the Filters badge does not count them". Four weights
@@ -165,6 +199,17 @@ class TestWhatItStores:
             {'preferences': {'phase': 'II', 'benefitWeight': 40, 'riskWeight': 30,
                              'patientBurdenWeight': 20, 'distancePenaltyWeight': 10}},
             format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_the_count_ignores_an_emptied_object_too(self, authed):
+        # Sibling of the list case below, and it had no test: `{} not in
+        # (None, '', False, 0)` is True, so without saying so an emptied
+        # object reads as a filter that is set.
+        _, client = authed
+        body = client.post(
+            PREFS, {'preferences': {'nested': {}, 'phase': 'II'}}, format='json',
         ).data
 
         assert body['non_default_filter_count'] == 1
@@ -279,10 +324,11 @@ class TestErasure:
         assert not Identity.objects.filter(pk=identity.pk).exists()
         assert not Token.objects.filter(user_id=identity.pk).exists()
 
-    def test_it_tells_never_existed_from_already_gone(self, db):
-        # A sweep re-running over identities PROMOP no longer knows should be
-        # able to say which of the two it found, rather than logging "deleted
-        # 0" for both.
+    def test_an_identity_that_was_never_here_reports_nothing_removed(self, db):
+        # Named for what it checks. Its previous name — "tells never existed
+        # from already gone" — described a promise an earlier version made
+        # and this one deliberately refuses; the test three below asserts the
+        # two are identical, and the pair read as a contradiction.
         assert forget_identity('urn:local', 'never-here') == {
             'found': False, 'removed': {},
         }
@@ -363,6 +409,16 @@ class TestErasure:
 
         assert resp.status_code in (401, 403)
         assert TrialSearchPreferences.objects.count() == 1
+
+    def test_the_endpoint_is_not_rate_limited(self, db, settings):
+        # Every caller here is the one shared `urn:service` identity, so the
+        # project default of 300/minute is 300 for the whole fleet: a sweep
+        # clearing a backlog of deleted patients would start getting 429s,
+        # and a fire-and-forget caller would not see them. The credential is
+        # the control on this endpoint.
+        from user_state.views import ForgetIdentityView
+
+        assert ForgetIdentityView.throttle_classes == []
 
     def test_the_endpoint_needs_both_halves_of_the_identity(self, db, settings):
         settings.SERVICE_AUTH_TOKEN = 'svc-secret'
