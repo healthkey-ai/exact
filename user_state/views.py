@@ -70,11 +70,15 @@ class TrialSearchPreferencesViewSet(viewsets.ViewSet):
         # PUT-shaped, POST-spelled: a viewset without a lookup has no `update`
         # route to bind to, and inventing an id to satisfy the router would
         # put back the parameter this app exists to avoid.
-        row = self._row()
-        serializer = TrialSearchPreferencesSerializer(row, data=request.data, partial=True)
+        # Validate BEFORE the row exists. `_row()` is a `get_or_create`, so
+        # calling it first meant a refused write still left EXACT's first row
+        # about somebody behind — a 400 that wrote, which is the same defect
+        # as the GET that wrote, in the other direction. Bound to no instance
+        # for the check, then to the row for the save.
+        serializer = TrialSearchPreferencesSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        row = serializer.update(self._row(), serializer.validated_data)
+        return Response(TrialSearchPreferencesSerializer(row).data)
 
     @action(detail=False, methods=['post'])
     def reset(self, request):

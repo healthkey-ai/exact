@@ -123,6 +123,7 @@ class TestWhatItStores:
     def test_a_non_object_payload_is_refused(self, authed):
         _, client = authed
         assert client.post(PREFS, {'preferences': ['phase']}, format='json').status_code == 400
+        assert not TrialSearchPreferences.objects.exists()
 
     def test_it_refuses_a_payload_that_is_not_a_filter_set(self, authed):
         # `StudyPreferences` has 20 fields and the page adds `sort` and
@@ -135,9 +136,11 @@ class TestWhatItStores:
 
         assert client.post(PREFS, {'preferences': too_many}, format='json').status_code == 400
         assert client.post(PREFS, {'preferences': too_big}, format='json').status_code == 400
-        assert not TrialSearchPreferences.objects.filter(
-            preferences__has_key='filter0'
-        ).exists()
+        # No row at all, not merely an empty one. The first version of this
+        # asserted the KEY was absent, which was true of the empty row a
+        # refused write used to leave behind — a test passing for the wrong
+        # reason, over the same defect as the GET that wrote.
+        assert not TrialSearchPreferences.objects.exists()
 
     def test_the_count_ignores_the_tab_and_the_sort(self, authed):
         # Ported verbatim from PROMOP's copy, which answers the same badge
