@@ -21,9 +21,37 @@ And it means these rows outlive the patient they describe, because EXACT is
 not told when a patient is deleted. `forget_identity` below is how it is told;
 it exists in the same commit as the table rather than after it.
 """
+import logging
+
 from django.conf import settings
 from django.db import models
 from rest_framework.authtoken.models import Token
+
+logger = logging.getLogger(__name__)
+
+
+# Keys that ride in the preferences payload but are not filters.
+#
+# `sort` is the sort control and `type` the tab: counting them would tick the
+# "Filters (N)" badge up when the reader switches tab. The four weights change
+# the ORDER of the list and the percentage on each card, never which trials
+# are in it — the page says so in `frontend/src/federation/weights.ts`: "the
+# Filters badge does not count them and Reset does not clear them". They ride
+# in the same payload because the query key, the saved row and the export then
+# need no second seam.
+#
+# So this list is what "not a filter" means, and both things that ask the
+# question use it — the count and the reset. They were written separately and
+# disagreed with the page on both: the count made four weights read as four
+# filters, and the reset wiped them.
+NOT_FILTERS = frozenset({
+    'sort',
+    'type',
+    'benefitWeight',
+    'patientBurdenWeight',
+    'riskWeight',
+    'distancePenaltyWeight',
+})
 
 
 class TrialSearchPreferences(models.Model):
@@ -89,60 +117,91 @@ class TrialSearchPreferences(models.Model):
         return sum(
             1
             for key, value in stored.items()
-            # `sort` and `type` are the sort control and the tab, not filters;
-            # counting them would tick the badge up when the reader switches
-            # tab.
-            if key not in ('sort', 'type')
+            if key not in NOT_FILTERS
+            # An empty list is an unset multi-select, not a filter that is
+            # set: clearing one must not leave the badge reading "Filters (1)".
+            # `[] not in (None, '', False, 0)` is True, so it needs saying.
             and value not in (None, '', False, 0)
+            and value != []
+            and value != {}
         )
 
 
 def forget_identity(issuer: str, sub: str) -> dict:
     """Delete everything EXACT holds for one identity.
 
-    Called by PROMOP when it deletes a patient. Written in the same commit as
-    the table it empties, because the alternative is a service holding "this
-    identity bookmarked these oncology trials" with nobody left to ask.
+    WHAT A RECEIPT FROM THIS FUNCTION GUARANTEES. Written down because the
+    first two versions of it each broke a promise the version before had
+    made, and a third guess would have broken a fourth:
 
-    EVERY MODEL IN THIS APP, enumerated rather than listed. Phase 2 adds
-    favourites and phase 3 registration interest; naming one model here would
-    mean each of those could land unwired, and the only signal would be a
-    receipt that was silently incomplete. A test asserts the enumeration
-    actually empties every table.
-
-    The identity row goes too, and its auth tokens with it. Leaving them is
-    not tidiness: `Identity` itself records that this person exists here, and
-    a live token lets an in-flight request write the row back moments after
-    it was erased.
-
-    Returns what it removed, per table. `found` says whether there was an
-    identity at all, so a sweep over identities PROMOP no longer knows can
-    tell "never existed" from "already gone" instead of logging zero for both.
+    1. ALL OR NOTHING. Either every table this app owns is empty for this
+       identity and the identity is gone, or nothing changed. Half an erasure
+       is worse than none: it destroys data and leaves the subject on file.
+    2. EVERY TABLE, found by enumeration rather than by a list somebody has
+       to maintain — including tables that reach `Identity` through another
+       model, which is the likely shape of phase 2 (a note on a favourite, a
+       status history on an interest record). A model this cannot reach is a
+       hard error BEFORE anything is deleted, never mid-way.
+    3. THE COUNTS ARE PER TABLE, taken from `delete()`'s own per-label
+       breakdown, not from its cascade total.
+    4. IT IS IDEMPOTENT, and the receipt describes STATE, NOT HISTORY.
+       "Nothing here" is the answer whether this identity was erased a minute
+       ago or never existed, and that is deliberate: telling those apart
+       would mean keeping a record that this person was once here, which is
+       the thing being deleted. An earlier docstring promised the
+       distinction, and the same commit made it impossible by deleting the
+       identity row. Callers that need history keep their own log.
+    5. IT WRITES ITS OWN AUDIT LINE, here rather than at the HTTP boundary,
+       so the by-hand path records an erasure too. That path exists for the
+       day the endpoint is broken, and that is not a day to be silent on.
     """
     from django.apps import apps
+    from django.db import transaction
 
     from accounts.models import Identity
 
-    identity = Identity.objects.filter(issuer=issuer, sub=sub).first()
-    if identity is None:
-        return {'found': False, 'removed': {}}
+    models = list(apps.get_app_config('user_state').get_models())
 
-    removed = {}
-    for model in apps.get_app_config('user_state').get_models():
-        # By the FK's own name rather than a hardcoded one, so a model added
-        # with a differently-named link is a failing test and not a silently
-        # skipped table.
-        field = next(
+    # Resolved before the transaction, so an unreachable model is a refusal
+    # rather than a partial erasure. `Identity` may be reached through
+    # another model in this app, so the path is a lookup chain, not one FK.
+    paths = {}
+    for model in models:
+        direct = next(
             (f.name for f in model._meta.fields if f.related_model is Identity), None,
         )
-        if field is None:
+        if direct:
+            paths[model] = direct
+            continue
+        hop = next(
+            (f for f in model._meta.fields
+             if f.related_model is not None and f.related_model in paths), None,
+        )
+        if hop is None:
             raise RuntimeError(
-                f'{model.__name__} is in user_state but has no link to Identity; '
-                'forget_identity cannot erase it.'
+                f'{model.__name__} is in user_state but nothing links it to '
+                'Identity, directly or through another model in this app; '
+                'forget_identity cannot erase it. Nothing has been deleted.'
             )
-        count, _ = model.objects.filter(**{field: identity}).delete()
-        removed[model._meta.db_table] = count
+        paths[model] = f'{hop.name}__{paths[hop.related_model]}'
 
-    Token.objects.filter(user=identity).delete()
-    identity.delete()
+    with transaction.atomic():
+        identity = Identity.objects.filter(issuer=issuer, sub=sub).first()
+        if identity is None:
+            logger.info('user_state.forget issuer=%s sub=%s nothing_here', issuer, sub)
+            return {'found': False, 'removed': {}}
+
+        removed = {}
+        # Children first: deleting a parent would cascade and leave the child
+        # counts unattributable.
+        for model in reversed(models):
+            _, per_label = model.objects.filter(**{paths[model]: identity}).delete()
+            removed[model._meta.db_table] = per_label.get(model._meta.label, 0)
+
+        Token.objects.filter(user=identity).delete()
+        identity.delete()
+
+    logger.info(
+        'user_state.forget issuer=%s sub=%s removed=%s', issuer, sub, removed,
+    )
     return {'found': True, 'removed': removed}

@@ -29,7 +29,7 @@ What diverges between CancerBot `ui.v2` and the federated EXACT remote — in la
 
 About 2.8k lines in `frontend/src/federation/` (2,569 excluding tests; `tooltips.ts` is 653 of them and `exact.css` 472): `TrialMatches` (list, Eligible/Potential groups, "Load more"), `TrialCard` and `TrialDetailPage` — both already copied from CB's layout, `FilterBar` (5 controls), `bits.tsx` (ScorePill/Field with CB's 80/60 thresholds), `exact.css` (472 lines, CB tokens), static field tooltips, plus `widget.tsx` on branch `2omop-federated-UI` — an isolated React 19 mount for a React 18 host.
 
-Data: `POST /trials/match/` with an inline payload, or `GET /trials/?person_id=`; details via `POST /trials/{id}/match/`. Filters live entirely in React state; nothing is persisted.
+Data: `POST /trials/match/` with an inline payload, or `GET /trials/?person_id=`; details via `POST /trials/{id}/match/`. Filters live in React state and are persisted per identity by EXACT's own `user_state` app (2026-09-26); the row this table's "State owner" line describes was reversed then.
 
 ---
 

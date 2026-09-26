@@ -14,13 +14,14 @@ from user_state.models import TrialSearchPreferences
 MAX_PREFERENCE_KEYS = 64
 MAX_PREFERENCE_BYTES = 16 * 1024
 # A filter value is a string, a number, a boolean or a list of those. Three
-# levels is already more than the vocabulary uses. The cap is here because the
-# other two run AFTER `JSONParser` has built the object, and the parser itself
-# recurses: a 100 KB body nested 50 000 deep — well under Django's 2.5 MB —
-# raises `RecursionError` and returns 500, at 300 requests a minute per
-# identity. This does not fix the parser, and cannot; every JSON endpoint in
-# the service shares that. It does stop this column being the place it is
-# aimed at.
+# levels is already more than the vocabulary uses.
+#
+# This cap is about SHAPE, not about the crash. It runs after `JSONParser`
+# has built the object, so it only ever sees bodies the parser survived —
+# which are not the ones that used to 500. That is `BoundedJSONParser`'s job
+# and it is wired on the view. An earlier comment here claimed the parser
+# "cannot" be fixed and used this cap as the answer; measured, a 20 KB body
+# still returned 500 with the cap in place.
 MAX_PREFERENCE_DEPTH = 3
 
 

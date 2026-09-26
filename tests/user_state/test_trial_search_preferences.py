@@ -155,17 +155,47 @@ class TestWhatItStores:
 
         assert body['non_default_filter_count'] == 1
 
-    def test_reset_clears_filters_and_leaves_the_wizard_answered(self, authed):
+    def test_the_count_ignores_the_score_weights(self, authed):
+        # They change the ORDER of the list, never which trials are in it —
+        # `weights.ts`: "the Filters badge does not count them". Four weights
+        # reading as four filters is the badge disagreeing with the page.
+        _, client = authed
+        body = client.post(
+            PREFS,
+            {'preferences': {'phase': 'II', 'benefitWeight': 40, 'riskWeight': 30,
+                             'patientBurdenWeight': 20, 'distancePenaltyWeight': 10}},
+            format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_the_count_ignores_a_cleared_multi_select(self, authed):
+        # `therapy_id` and `trialPurpose` are list-valued. Clearing one leaves
+        # `[]`, which is not None, '', False or 0 — so it needed saying, and
+        # without it the badge read "Filters (1)" for a filter set to nothing.
+        _, client = authed
+        body = client.post(
+            PREFS, {'preferences': {'therapy_id': [], 'phase': 'II'}}, format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_reset_keeps_the_weights_and_the_wizard_answer(self, authed):
+        # Reset is a sentence about filters. The weights ride in the same
+        # column and are not filters; emptying it sent a reader who had set
+        # them back to 25/25/25/25 silently, with no second offer of the
+        # wizard to put it right because the flag is deliberately kept.
         _, client = authed
         client.post(
             PREFS,
-            {'preferences': {'phase': 'II'}, 'weights_wizard_offered': True},
+            {'preferences': {'phase': 'II', 'benefitWeight': 40, 'sort': 'distance'},
+             'weights_wizard_offered': True},
             format='json',
         )
 
         body = client.post(PREFS + 'reset/', {}, format='json').data
 
-        assert body['preferences'] == {}
+        assert body['preferences'] == {'benefitWeight': 40, 'sort': 'distance'}
         # "Reset my filters" is a sentence about filters. Offering the wizard
         # again because of it would be a surprise, and the flag exists to make
         # that offer exactly once.
@@ -210,6 +240,33 @@ class TestErasure:
         for model in models:
             assert not model.objects.filter(identity=identity).exists()
 
+    def test_a_failure_part_way_through_changes_nothing(self, authed, monkeypatch):
+        # Guarantee 1 of the receipt contract, and the one the code cannot be
+        # trusted on without a test: half an erasure is worse than none —
+        # it destroys the data and leaves the subject on file. The first
+        # version of this function raised mid-loop by design, after deleting
+        # some tables and before deleting the identity.
+        identity, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        class Exploding:
+            # Only this module's handle on Token. Patching the manager CLASS
+            # would break every model's `.filter`, including the ones the
+            # assertions below use — which is how the first version of this
+            # test managed to fail on its own assertion.
+            class objects:
+                @staticmethod
+                def filter(*args, **kwargs):
+                    raise RuntimeError('the database went away')
+
+        monkeypatch.setattr('user_state.models.Token', Exploding)
+
+        with pytest.raises(RuntimeError):
+            forget_identity('urn:local', 'prefs-owner')
+
+        assert TrialSearchPreferences.objects.filter(identity=identity).exists()
+        assert Identity.objects.filter(pk=identity.pk).exists()
+
     def test_it_takes_the_identity_and_its_tokens_too(self, authed):
         # Leaving them is not tidiness. `Identity` itself records that this
         # person exists here, and a live token lets an in-flight request write
@@ -243,14 +300,34 @@ class TestErasure:
 
         assert not TrialSearchPreferences.objects.exists()
 
-    def test_the_offline_path_refuses_to_claim_it_deleted_nothing(self, db):
-        # An issuer typo must not read as success. This is the shape of
-        # mistake that leaves rows behind and a log line saying they are gone.
+    def test_the_offline_path_can_be_run_twice(self, authed):
+        # An erasure runbook loops over subjects and re-runs after a failure.
+        # "Nothing here" is the end state asked for, so it is success — and
+        # after an erasure there is deliberately nothing left that could tell
+        # a typo from a job already done. See the receipt contract in
+        # `forget_identity`; an earlier version raised here and promised a
+        # distinction the same commit had made impossible.
         from django.core.management import call_command
-        from django.core.management.base import CommandError
 
-        with pytest.raises(CommandError):
-            call_command('forget_identity', issuer='urn:typo', sub='nobody')
+        _, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        call_command('forget_identity', issuer='urn:local', sub='prefs-owner')
+        call_command('forget_identity', issuer='urn:local', sub='prefs-owner')
+
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_it_says_nothing_here_the_same_way_however_it_got_that_way(self, authed):
+        # State, not history. Telling "erased a minute ago" from "never here"
+        # would mean keeping a record that this person was once here, which is
+        # the thing being deleted.
+        _, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+        forget_identity('urn:local', 'prefs-owner')
+
+        assert forget_identity('urn:local', 'prefs-owner') == forget_identity(
+            'urn:local', 'never-here'
+        )
 
     def test_the_endpoint_erases_for_a_service_token(self, authed, settings):
         # The happy path PROMOP will actually call, over HTTP. Nothing tested

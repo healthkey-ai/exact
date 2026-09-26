@@ -1,9 +1,13 @@
 // The per-user state seam.
 //
-// EXACT holds no per-user trial state and is not going to: it is stateless
-// about patients by design. Bookmarks, registered interest and saved filters
-// live in PROMOP. But this remote runs in two hosts that reach PROMOP
-// differently — HealthTree PHR mints an OAuth token, CB runs the promop apps
+// EXACT held no per-user trial state when this was written, and the comment
+// said it never would. That was reversed on 2026-09-26: saved filters and
+// score weights now live in EXACT's own `user_state` app, keyed on the
+// identity in the token, and bookmarks and registered interest follow. The
+// seam below is what makes that a host decision rather than a rewrite — it
+// outlived the assumption it was built under, which is the point of a seam.
+// Bookmarks and registered interest still live in PROMOP today, and this
+// remote runs in two hosts that reach PROMOP differently — HealthTree PHR mints an OAuth token, CB runs the promop apps
 // in-process behind its own endpoint — so the component takes an interface
 // and the host supplies the transport.
 //

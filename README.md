@@ -1,7 +1,10 @@
 # EXACT — Clinical Trial Matching Engine
 
-EXACT (EXtracting Attributes from Clinical Trials) is a stateless search and
-matching engine for clinical trials. It connects to an external database that
+EXACT (EXtracting Attributes from Clinical Trials) is a search and matching
+engine for clinical trials. It keeps no clinical record — a patient's data is
+passed inline per request and never stored — but since 2026-09-26 it does keep
+per-identity trials-page state (saved filters, score weights) in its `default`
+database. See rule 5 in `docs/porting-from-cancerbot.md`. It connects to an external database that
 holds the trial catalog and reference data — EXACT does not own or manage that
 data. 
 

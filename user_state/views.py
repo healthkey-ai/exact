@@ -8,8 +8,6 @@ months. The thing being protected is a filter set, and losing one to a second
 tab is a shrug. Registration interest is not a shrug, and when it lands here
 this decision is worth taking again rather than inheriting.
 """
-import logging
-
 from django.conf import settings
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -19,10 +17,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.authentication import PartnerAuthentication, ServiceTokenAuthentication
-from user_state.models import TrialSearchPreferences, forget_identity
+from user_state.models import NOT_FILTERS, TrialSearchPreferences, forget_identity
+from user_state.parsers import BoundedJSONParser
 from user_state.serializers import TrialSearchPreferencesSerializer
-
-logger = logging.getLogger(__name__)
 
 
 class TrialSearchPreferencesViewSet(viewsets.ViewSet):
@@ -49,6 +46,9 @@ class TrialSearchPreferencesViewSet(viewsets.ViewSet):
         else [PartnerAuthentication]
     )
     permission_classes = [IsAuthenticated]
+    # See `parsers.py`: the depth cap in the serializer only sees bodies the
+    # parser survived, which are not the ones that crash it.
+    parser_classes = [BoundedJSONParser]
 
     def _row(self):
         row, _ = TrialSearchPreferences.objects.get_or_create(identity=self.request.user)
@@ -83,10 +83,20 @@ class TrialSearchPreferencesViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['post'])
     def reset(self, request):
         row = self._row()
-        row.preferences = {}
-        # The wizard flag is NOT reset. "Reset my filters" is a sentence about
-        # filters; being offered the wizard again because of it would be a
-        # surprise, and the flag exists to make that offer once.
+        # Filters, not the whole payload. The four score weights ride in the
+        # same column and are not filters — `weights.ts` says "Reset does not
+        # clear them" — and emptying the column wiped them: a reader who set
+        # their weights, then pressed Reset, silently went back to 25/25/25/25
+        # with no second offer of the wizard to put it right, because the flag
+        # below is preserved.
+        row.preferences = {
+            key: value
+            for key, value in (row.preferences or {}).items()
+            if key in NOT_FILTERS
+        }
+        # The wizard flag is NOT reset either. "Reset my filters" is a sentence
+        # about filters; being offered the wizard again because of it would be
+        # a surprise, and the flag exists to make that offer once.
         row.save(update_fields=['preferences', 'updated_at'])
         return Response(TrialSearchPreferencesSerializer(row).data)
 
@@ -101,6 +111,15 @@ class ForgetIdentityView(APIView):
 
     authentication_classes = [ServiceTokenAuthentication]
     permission_classes = [IsAuthenticated]
+    parser_classes = [BoundedJSONParser]
+    # Not throttled. The project default is 300/minute per user, and every
+    # caller here is the single shared `urn:service` identity — so a sweep
+    # erasing a backlog of deleted patients would start getting 429s at the
+    # 301st, and a fire-and-forget caller would not see them. The credential
+    # is the control on this endpoint; a rate limit on top of it only makes
+    # erasure fail quietly, which is the failure this whole path exists to
+    # avoid.
+    throttle_classes = []
 
     def post(self, request):
         issuer = request.data.get('issuer')
@@ -110,10 +129,7 @@ class ForgetIdentityView(APIView):
                 {'detail': 'Both `issuer` and `sub` are required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        result = forget_identity(issuer, sub)
-        # Logged because an erasure nobody can see happening is one nobody can
-        # show happened. No payload, only what was removed.
-        logger.info(
-            'user_state.forget issuer=%s sub=%s removed=%s', issuer, sub, result,
-        )
-        return Response(result)
+        # The audit line is written by `forget_identity` itself, not here, so
+        # the by-hand path records an erasure too — it exists for the day this
+        # endpoint is broken, and that is not a day to be silent on.
+        return Response(forget_identity(issuer, sub))
