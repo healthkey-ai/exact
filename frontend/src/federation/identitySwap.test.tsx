@@ -124,18 +124,31 @@ describe("a filter edit never crosses an account switch", () => {
     expect(leaked()).toEqual([]);
   });
 
-  // The third shape is NOT fixed, and saying so is the point of this test
-  // rather than leaving it to be rediscovered.
+  // WHAT IS STILL OPEN, written here rather than left to be rediscovered.
   //
-  // A host that swaps the credential in a global store and signals nothing —
-  // no new `sessionKey`, no new `getToken`, no re-render — is already outside
-  // the contract, and its documented consequence was "a mount reused across a
-  // logout/login keeps showing the previous user's matches". Since EXACT
-  // began keying rows on the token, the consequence is worse: the previous
-  // user's filters are written into the new user's row, and nothing on either
-  // side can tell. No key can catch it — React never learns anything changed
-  // — so closing it means either the host honouring the contract or EXACT
-  // verifying an asserted identity on the write and refusing a mismatch.
+  // Any host whose account change does not reach `resolveSessionSignal` as a
+  // NEW, USABLE signal. That is more than the obvious one, and the extra
+  // shapes were measured rather than guessed:
+  //
+  //   - nothing signalled at all: the credential swapped in a global store,
+  //     no new `sessionKey`, no new `getToken`, no re-render;
+  //   - a `sessionKey` that changes but is rejected — `false` to `true`,
+  //     `""` to `""`, `NaN` to `NaN`. `resolveSessionSignal` documents that
+  //     these "silently disable the guard";
+  //   - two hosts whose session keys collide.
+  //
+  // All were already outside the contract, and their documented consequence
+  // was stale reads — "a mount reused across a logout/login keeps showing
+  // the previous user's matches". Since EXACT began keying rows on the
+  // token it is a write into a stranger's row instead, which is the part
+  // worth recording.
+  //
+  // No React key can catch these: nothing in the tree learns anything
+  // changed. Three ways out, in increasing order of not needing the host's
+  // cooperation: the host honours the contract; the client captures
+  // `await getToken()` when a write is ENQUEUED and compares it at send
+  // time, which needs no host change and no server change; or EXACT accepts
+  // an asserted identity on the write and refuses a mismatch.
   it.skip("cannot yet be dropped when the host signals nothing at all", async () => {
     const view = await start({ sessionKey: "user-1" });
 

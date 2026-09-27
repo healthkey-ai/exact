@@ -240,6 +240,30 @@ export function stateKeyOf(
   return `${stateIdentity ?? ""}|${personId ?? ""}|${patientInfoKey ?? ""}`;
 }
 
+/** The same key with any NON-DURABLE identity taken out, for anywhere the
+ *  key is written to disk.
+ *
+ *  `identityKeyOf` mints `o:N` from a per-page-load counter when the signal
+ *  is an object — which it is for every host that has no `sessionKey` to
+ *  give. In memory that is exactly right: within one page load it
+ *  distinguishes accounts, which is all a cache or a writer needs. Persisted
+ *  it is a bug, and a measured one: every visit gets a fresh namespace, so
+ *  the reader's saved filters are forgotten on each load AND an orphaned
+ *  `exact.filters.*` entry accumulates that nothing can ever reclaim.
+ *
+ *  So a durable identity (`k:` — the host's own `sessionKey`) stays, and a
+ *  generated one is dropped, which puts such a host back on exactly the key
+ *  it had before any of this. Those hosts share one namespace between
+ *  accounts on a shared browser; that is the pre-existing behaviour, it is
+ *  local to the machine, and the fix for it is to pass a `sessionKey`.
+ */
+export function durableKey(key: string): string {
+  const cut = key.indexOf("|");
+  if (cut === -1) return key;
+  const identity = key.slice(0, cut);
+  return identity.startsWith("o:") ? key.slice(cut + 1) : key;
+}
+
 /** Whether `sessionKey` was usable, i.e. whether the signal above is a real
  *  session key or the `getToken` fallback. */
 export function hasUsableSessionKey(sessionKey: unknown): boolean {

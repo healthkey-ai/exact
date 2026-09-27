@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  durableKey,
   hasUsableSessionKey,
+  identityKeyOf,
   joinBaseUrl,
   nextSessionState,
   personIdOfRow,
   promopStateBasePath,
-  selectBridgeView,
   resolveSessionSignal,
+  selectBridgeView,
   selectPatientInfo,
   shouldResolvePatient,
   type PatientLoad,
@@ -313,5 +315,50 @@ describe("promopStateBasePath", () => {
 
   it("does not mistake a segment that merely ends in v1", () => {
     expect(promopStateBasePath("/apiv1")).toBe("/v1");
+  });
+});
+
+describe("identityKeyOf", () => {
+  it("tells two accounts apart whichever shape the signal takes", () => {
+    const a = async () => "a";
+    const b = async () => "b";
+
+    expect(identityKeyOf("user-1")).not.toBe(identityKeyOf("user-2"));
+    expect(identityKeyOf(a)).not.toBe(identityKeyOf(b));
+    expect(identityKeyOf(a)).toBe(identityKeyOf(a));
+  });
+
+  it("does not let a host's own key collide with a generated one", () => {
+    // A generated key looks like `o:1`. A host passing the literal string
+    // "o:1" must not be mistaken for whichever object happened to be first.
+    const fn = async () => "x";
+    const generated = identityKeyOf(fn);
+
+    expect(identityKeyOf("o:1")).not.toBe(generated);
+  });
+
+  it("answers the same for nothing", () => {
+    expect(identityKeyOf(null)).toBe("");
+    expect(identityKeyOf(undefined)).toBe("");
+  });
+});
+
+describe("durableKey", () => {
+  it("drops a generated identity, because the key goes to disk", () => {
+    // Measured before this existed: a fresh `o:N` per page load meant the
+    // reader's saved filters were forgotten on every visit and an orphaned
+    // `exact.filters.*` entry accumulated each time, unreclaimable.
+    expect(durableKey("o:3|42|host")).toBe("42|host");
+  });
+
+  it("keeps an identity the host actually gave", () => {
+    // `k:` is a real `sessionKey`: stable across page loads, so it can
+    // safely namespace what is written to disk.
+    expect(durableKey("k:user-1|42|host")).toBe("k:user-1|42|host");
+  });
+
+  it("leaves a key with no identity alone", () => {
+    expect(durableKey("|42|host")).toBe("|42|host");
+    expect(durableKey("nopipe")).toBe("nopipe");
   });
 });

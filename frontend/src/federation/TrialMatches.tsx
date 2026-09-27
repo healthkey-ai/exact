@@ -291,6 +291,17 @@ function TrialMatchesInner({
   // us — see `patientHandleOf` for why it takes both props and why the rest
   // of the payload is deliberately left out of it.
   const patientHandle = patientHandleOf(patientInfo, personId);
+  // WHO is looking, not only at whom. Everything that writes — and
+  // everything cached per reader — keys on this rather than on the patient
+  // alone: EXACT's own rows are keyed on the identity in the token, so a
+  // host that switches account while showing the same patient changes the
+  // owner of every row without changing the patient. See the invariant on
+  // `live()` in `hooks.ts` and what it cost to find.
+  //
+  // Built on `patientHandle` rather than `stateKey` on purpose: it must
+  // survive the host re-reading the same profile, or every refresh discards
+  // a draft for nothing.
+  const readerHandle = `${stateIdentity ?? ""}|${patientHandle}`;
   // What NAMES the patient, one axis at a time. The payload's own id and the
   // `personId` prop answer different questions — which patient the server
   // matches, and which record a write is PATCHed into — so a move on either
@@ -356,7 +367,7 @@ function TrialMatchesInner({
   // it to, #555) empties the descriptor, withdraws every edit control, and
   // closes any editor the reader has open. Measured together with the
   // detail's own `placeholderData`: either one alone still loses the editor.
-  const writableFields = useWritableFields(state, patientHandle);
+  const writableFields = useWritableFields(state, readerHandle);
   // The host owns the patient payload — ht-phr reads it, normalises it
   // through this service, and passes it in — and that payload wins
   // server-side over `personId`. So a field edited here is written, the
@@ -371,7 +382,7 @@ function TrialMatchesInner({
   // every open editor goes with them, half-typed value and all. That is the
   // failure `FieldEdit`'s "does not wipe what the reader is typing" exists
   // to catch, and it caught it.
-  const patientFields = useQueuedPatientFields(state, patientHandle, onPatientRecordChanged);
+  const patientFields = useQueuedPatientFields(state, readerHandle, onPatientRecordChanged);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -1376,32 +1387,32 @@ function TrialMatchesInner({
   // Same shape as the saved-filter key two hundred lines up, and found the
   // same way: something keyed on the patient while the data it guards moved
   // to the identity.
-  const wizardSubject = `${stateIdentity ?? ""}|${patientHandle}`;
+
   // The rules about whose answer this is, and when a read may be issued or
   // believed, live in `weightsWizardState.ts` — written down once, after
   // three review rounds had each closed a different spelling of the same one.
   // What is left here is the wiring: when to fire an event, and what to draw.
-  const [wizard, dispatchWizard] = useReducer(nextWizard, wizardSubject, initialWizard);
+  const [wizard, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
   // Re-raised DURING the render that changes the patient, like `typed` above.
   // An effect would be a render late, and the new patient's read would then
   // land against a state still naming the old one and be thrown away — with
   // no second read allowed, so they would never be asked at all.
-  if (wizard.patient !== wizardSubject) {
-    dispatchWizard({ kind: "patient", patient: wizardSubject });
+  if (wizard.patient !== readerHandle) {
+    dispatchWizard({ kind: "patient", patient: readerHandle });
   }
   // Both read off the model rather than recomputed: this render may still be
   // holding the previous patient's state, one render before the line above
   // takes effect, and `isOpen` says no for exactly that reason.
-  const wizardOpen = isOpen(wizard, wizardSubject);
-  const wizardBusy = wizard.patient === wizardSubject && wizard.at === "saving";
+  const wizardOpen = isOpen(wizard, readerHandle);
+  const wizardBusy = wizard.patient === readerHandle && wizard.at === "saving";
 
   useEffect(() => {
-    if (!wizardStore || wizard.patient !== wizardSubject) return;
+    if (!wizardStore || wizard.patient !== readerHandle) return;
     // `shouldRead` owns the two reasons not to: an answer is already known,
     // or a read is already out. The second is the one a state value cannot
     // express — see the module.
     if (!shouldRead(wizard, !savedFilters.pending)) return;
-    const patient = wizardSubject;
+    const patient = readerHandle;
     dispatchWizard({ kind: "reading", patient });
     // Every result is dispatched, none suppressed by a cleanup flag: the
     // reducer decides whether a result still applies, which is the only place
@@ -1412,7 +1423,7 @@ function TrialMatchesInner({
       .wasOffered()
       .then((offered) => dispatchWizard({ kind: "read", patient, offered }))
       .catch(() => dispatchWizard({ kind: "readFailed", patient }));
-  }, [wizardStore, savedFilters.pending, wizardSubject, wizard]);
+  }, [wizardStore, savedFilters.pending, readerHandle, wizard]);
 
   /** Write the flag, and tell the filter writer its tag is stale.
    *
@@ -1479,7 +1490,7 @@ function TrialMatchesInner({
     // a dismissal during a save would record a decline over a ranking still
     // on the wire.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = wizardSubject;
+    const patient = readerHandle;
     answering.current = patient;
     dispatchWizard({ kind: "answer", patient });
     // A failure is not surfaced — there is nothing for the reader to do about
@@ -1492,7 +1503,7 @@ function TrialMatchesInner({
     // at all — only `disabled={busy}` in the view, which is a claim about
     // pointers, not about calls.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = wizardSubject;
+    const patient = readerHandle;
     answering.current = patient;
     dispatchWizard({ kind: "answer", patient });
     // Weights first, through the same path the preferences dialog uses, so

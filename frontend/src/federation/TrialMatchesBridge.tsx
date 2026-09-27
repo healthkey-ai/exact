@@ -404,6 +404,24 @@ function TrialMatchesBridgeRoot({
   const statePersonId =
     personIdOfRow({ person_id: rest.personId }) ??
     (current.status === "ready" ? (current.personId ?? null) : null);
+  // A host may name the identity itself, but not with the spellings that
+  // mean "I have nothing" — `""` is what `user?.id ?? ""` produces, and
+  // taking it at face value pins every account to one key and silently
+  // reopens the cross-account write this prop exists to close. Same gauntlet
+  // `resolveSessionSignal` runs its own input through, and for the same
+  // reason.
+  const hostIdentity =
+    typeof rest.stateIdentity === "string" && rest.stateIdentity !== ""
+      ? rest.stateIdentity
+      : undefined;
+  if (rest.stateIdentity != null && hostIdentity === undefined) {
+    warnOnce(
+      "stateIdentity-unusable",
+      "[exact-remote] `stateIdentity` must be a non-empty string; ignoring it " +
+        "and using the session signal instead.",
+    );
+  }
+
   const bridgeState = useMemo(() => {
     if (!ctomopBaseUrl || statePersonId == null) return undefined;
     const builtFor = sessionSignal;
@@ -551,7 +569,7 @@ function TrialMatchesBridgeRoot({
       patientInfo={patientInfo}
       // Whose adapter this is. Not derivable downstream: the session signal
       // is `unknown` by design and may be the `getToken` function itself.
-      stateIdentity={rest.stateIdentity ?? identityKeyOf(sessionSignal)}
+      stateIdentity={hostIdentity ?? identityKeyOf(sessionSignal)}
       state={rest.state ?? bridgeState}
       // `null` is the bridge's spelling of "not given"; TrialMatches' own
       // contract only knows `undefined`.

@@ -1,0 +1,110 @@
+// The real bridge and the REAL TrialMatches, with the host owning the
+// patient — the only arrangement in which the defect this guards is
+// reachable, and the one every earlier attempt at this test mocked away.
+//
+// Three reviews found the same bug at three call sites, and each time the
+// regression test mocked `./TrialMatches` and re-implemented the one line
+// under test inside the mock. Measured: with the component mocked, reverting
+// the fix in `TrialMatches.tsx` left the entire suite green. So this file
+// drives the component. It costs about a second and a half.
+//
+// The rule, stated once in `hooks.ts` on `live()`: a queued payload belongs
+// to the reader who produced it, and must be dropped rather than re-routed
+// if that reader is no longer the one the write will be attributed to.
+import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import axios, { type AxiosAdapter, type InternalAxiosRequestConfig } from "axios";
+import { beforeEach, describe, expect, it } from "vitest";
+
+const requests: { url?: string; method?: string; authorization?: string; data?: unknown }[] = [];
+const respond = (config: InternalAxiosRequestConfig, data: unknown) => ({
+  data, status: 200, statusText: "OK", headers: {}, config,
+});
+const recordingAdapter: AxiosAdapter = async (config) => {
+  requests.push({
+    url: config.url, method: config.method,
+    authorization: config.headers?.Authorization as string | undefined,
+    data: typeof config.data === "string" ? JSON.parse(config.data) : config.data,
+  });
+  if (config.url === "/patient-info/me/") return respond(config, { patient_info: { person_id: 42 } });
+  if (config.url === "/normalize-ctomop-row/") return respond(config, { diseaseCode: "MM" });
+  if (config.url?.endsWith("/trial-enrollments/ids/")) return respond(config, { trial_ids: [], count: 0 });
+  if (config.url?.includes("trial-search-preferences")) return respond(config, { preferences: {} });
+  if (config.url?.includes("form-settings")) return respond(config, {});
+  return respond(config, { count: 0, results: [] });
+};
+axios.defaults.adapter = recordingAdapter;
+
+const { TrialMatchesBridgeRootForTests: Bridge } = await import("./TrialMatchesBridge");
+
+let user = "1";
+const fromStore = async () => `token-${user}`;
+const base = () => ({
+  baseUrl: "https://exact.example",
+  ctomopBaseUrl: "https://promop.example",
+  getToken: fromStore,
+  patientInfo: { diseaseCode: "MM" },
+  personId: 42,
+});
+const leaked = () => requests.filter((r) =>
+  r.url?.includes("trial-search-preferences") && r.method === "post" && r.authorization === "Bearer token-2");
+
+describe("a write never crosses an account switch, through the real tree", () => {
+  beforeEach(() => {
+    user = "1";
+    requests.length = 0;
+  });
+
+  const openFilters = async () => {
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByRole("button", { name: /Filter Results|Filters \(/ }),
+        ).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
+    );
+  };
+
+  it("does not post user 1's typed filter under user 2's token", async () => {
+    const view = render(<Bridge {...base()} sessionKey="user-1" />);
+    await openFilters();
+    const sponsor = await screen.findByLabelText("Sponsor");
+    await userEvent.type(sponsor, "USER1SPONSOR");
+    requests.length = 0;
+
+    user = "2";
+    await act(async () => {
+      view.rerender(<Bridge {...base()} sessionKey="user-2" />);
+    });
+    await act(() => new Promise((r) => setTimeout(r, 1500)));
+
+    expect(leaked()).toEqual([]);
+  });
+
+  it("does not read user 1's bookmarks for user 2", async () => {
+    // Not a write, and it was leaking too: `useStateIds` caches on the same
+    // key with a 30s staleTime, so before the identity was in it, user 2 saw
+    // user 1's bookmarked and registered trials for half a minute. Nothing
+    // guarded this; it was fixed as a side effect and is pinned here.
+    const view = render(<Bridge {...base()} sessionKey="user-1" />);
+    await waitFor(() =>
+      expect(
+        requests.filter((r) => r.url?.endsWith("/trial-enrollments/ids/")).length,
+      ).toBeGreaterThan(0),
+    );
+    requests.length = 0;
+
+    user = "2";
+    await act(async () => {
+      view.rerender(<Bridge {...base()} sessionKey="user-2" />);
+    });
+    await act(() => new Promise((r) => setTimeout(r, 200)));
+
+    const reread = requests.filter((r) => r.url?.endsWith("/trial-enrollments/ids/"));
+    expect(reread.length).toBeGreaterThan(0);
+    expect(reread.every((r) => r.authorization === "Bearer token-2")).toBe(true);
+  });
+});

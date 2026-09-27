@@ -14,6 +14,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { sanitizeStoredFilters } from "./filters";
+import { durableKey } from "./bridgeState";
 import {
   PreferenceWriter,
   adapterPreferences,
@@ -271,11 +272,25 @@ export function useQueuedPatientFields(
     //  - same patient, new adapter object (a host writing
     //    `state={createPromopState(...)}` inline, or a refreshed client): use
     //    the current one, or a write would go through an expired client.
-    //  - different patient: use the captured one. This writer belongs to the
-    //    previous patient and its flush carries values edited FOR them —
-    //    sent through the ref they would be written into the NEXT patient's
+    //  - a different READER: use the captured one. This writer belongs to
+    //    the previous one and its flush carries values edited FOR them —
+    //    sent through the ref they would be written into the NEXT reader's
     //    record. For a saved search that is an annoyance; for a haemoglobin
     //    it is one person's lab value in another person's chart.
+    //
+    // THE INVARIANT, and what `key` has to be for it to hold: a queued
+    // payload belongs to the reader who produced it, and must be DROPPED —
+    // not re-routed — if that reader is no longer the one the write will be
+    // attributed to. "Reader" is the IDENTITY and the patient, not either
+    // alone. Keyed on the patient only, a host that switches ACCOUNT while
+    // showing the same patient keeps the key still, and this returns the new
+    // account's adapter to a flush carrying the old account's values.
+    //
+    // Three call sites had that bug, found one at a time over three reviews
+    // — saved filters, the weights wizard, and this one. They are keyed on
+    // `readerHandle` now (`TrialMatches.tsx`). If you add a fourth caller,
+    // that is the key it wants; a patient handle is not enough for anything
+    // that writes.
     const captured = stateRef.current;
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
@@ -890,7 +905,10 @@ export function useSavedFilters(
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     return captured
       ? adapterPreferences(preferenceMethodsThrough(captured, live))
-      : localStoragePreferences(key);
+      // `durableKey`: a generated identity is a per-page-load counter, and
+      // this key goes to disk. With it in, the reader's filters are lost on
+      // every visit and an orphan is left behind each time.
+      : localStoragePreferences(durableKey(key));
     // `source` rather than `state`: see above, and `sourceId`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, key]);
