@@ -26,9 +26,43 @@
 4. **Enabling refactors are upstreamed to CB first.** If a change is needed to make the seam work,
    make it a *behavior-preserving* refactor in CB, merge it there, then port it down. Never create
    an EXACT-only abstraction that CB doesn't have — CB owns the stable extension point.
-5. **EXACT is stateless and read-only.** Never add patient persistence; never replicate OMOP vocab
-   tables or hierarchy expansion in EXACT (patient OMOP concepts are supplied by the API consumer;
-   trial OMOP columns are owned and filled by CB).
+5. **EXACT holds no clinical record.** Never replicate OMOP vocab tables or hierarchy expansion in
+   EXACT; patient OMOP concepts are supplied by the API consumer and trial OMOP columns are owned
+   and filled by CB. A patient's clinical facts arrive with the request and are never stored.
+
+   This rule used to read "EXACT is stateless and read-only. Never add patient persistence." It was
+   narrowed deliberately on 2026-09-26, not eroded, and the difference is worth stating because the
+   old sentence was load-bearing: it is why EXACT could be re-seeded, re-scaled and replaced freely,
+   and why compromising EXACT exposed no patient data.
+
+   **The second of those is no longer true, and pretending otherwise is the failure mode here.** A
+   saved filter set holds what somebody searched for: a disease, a treatment, a postcode, a
+   distance. Keyed to a verified identity, that is health-inferable data about a named person, and
+   a `SELECT` joining the table to `identity` is a diagnosis register. It arrives as "UI state"
+   because that is what the page calls it; it is not what it contains. The `default` database is
+   therefore sensitive from the first row, and its backups with it — which is a decision about how
+   that database is handled, not a sentence in a doc, and it is owed to whoever handles it.
+
+   What may now be stored is state about a USER of the trials page that only the trials page gives
+   meaning to — saved filters, score weights, bookmarks, and which trials they registered interest
+   in. Three conditions come with it, and a change that cannot meet all three does not belong here:
+
+   - **Keyed on the identity in the verified token**, never on a parameter. `PartnerAuthentication`
+     derives issuer+sub from a signature EXACT checks itself, and `AUTH_USER_MODEL` is that
+     identity. The `person_id` a host sends arrives in the request body and is not bound to the
+     caller (`?person_id=` is gated off for the same reason), so keying on it would let anyone
+     write into anyone's rows.
+   - **On the `default` alias**, never the `trials` one. That database is routinely dropped and
+     restored from CB dumps; anything user-scoped there is gone at the next restore.
+   - **Erasable before the first row is written**, and erasable means a PATH, not a function. A
+     `forget_identity` nothing calls, nothing configures and nothing logs satisfies a code review
+     and no data subject: deleting a patient in PROMOP has to actually delete this too, or EXACT
+     ends up holding "this identity bookmarked these oncology trials" with no owner. The path needs
+     a caller, a credential that is configured rather than defaulted to empty, a log line, and a
+     way to run it by hand when the caller is broken.
+
+   Clinical events are the edge of this. Registration interest is one, and it is moving here by an
+   explicit decision that also accepted, in writing, that EXACT has no audit journal for it.
 6. **Two-part self-review before EVERY PR / push — mandatory, no exceptions.** Before pushing a
    branch or opening a PR, run BOTH: (a) a **Claude fresh-context review in a separate subagent**
    (not inline — so the reviewer isn't anchored on the choices that produced the code), and

@@ -32,5 +32,6 @@ if getattr(settings, 'ENABLE_DRF_TOKEN_AUTH', False):
     )
 
 urlpatterns += [
+    path('user-state/', include('user_state.urls', namespace='user_state')),
     path('', include('trials.urls', namespace='trials')),
 ]

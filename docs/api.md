@@ -6,8 +6,11 @@ Interactive docs are available at runtime:
 - Swagger UI: `/swagger/`
 - ReDoc: `/redoc/`
 
-All endpoints require an `Authorization: Token <token>` header unless noted
-otherwise. To create a token for a user:
+All endpoints require an `Authorization` header unless noted otherwise:
+`Bearer <partner token>` in every deployed environment, or `Token <token>`
+where `ENABLE_DRF_TOKEN_AUTH` is on (local and DEBUG only, #153). The
+`/user-state/` routes take only the first of those, plus the service token on
+`/user-state/internal/forget/`. To create a token for a user:
 
 ```bash
 python manage.py drf_create_token <username>

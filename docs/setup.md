@@ -376,12 +376,18 @@ environment variables — never commit secret values to git.
 
 ## External trials database (production mode)
 
-In production, EXACT is a **stateless matching engine** that reads trial data
-from an external database. It does not own or manage the trial schema — the
+In production, EXACT is a **matching engine** that keeps no clinical record
+and reads trial data from an external database. (It does keep per-identity
+trials-page state — saved filters and score weights — in its `default`
+database; see below.) It does not own or manage the trial schema — the
 external database must already have the correct tables and data.
 
-EXACT's local `default` database is used **only** for authentication
-(users and tokens). All `trials` app model reads are routed to the external
+EXACT's local `default` database holds authentication (identities and
+tokens) and, since 2026-09-26, the `user_state` app: the filters and score
+weights each identity last chose on the trials page. Those rows carry clinical
+content — a saved filter set can hold a disease, a treatment and a postcode —
+so treat this database and its backups as sensitive. `manage.py
+forget_identity --issuer … --sub …` erases everything held for one identity. All `trials` app model reads are routed to the external
 database automatically by `exact.db_router.TrialsDatabaseRouter`.
 
 ### Setup

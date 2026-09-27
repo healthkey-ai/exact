@@ -1,9 +1,18 @@
 # EXACT — Architecture Overview
 
-EXACT (EXtracting Attributes from Clinical Trials) is a stateless search and
-matching engine for clinical trials. It reads trial data from an external
-database — it does not own or manage the trial catalog. Patient data is always
-passed inline per request; nothing is persisted.
+EXACT (EXtracting Attributes from Clinical Trials) is a search and matching
+engine for clinical trials. It reads trial data from an external database — it
+does not own or manage the trial catalog. A patient's clinical record is always
+passed inline per request and is never persisted.
+
+The matching path is stateless in that strict sense. What EXACT does keep, in
+its `default` database and since 2026-09-26, is state a USER of the trials page
+owns: the filters they last searched with, the weights they gave the score.
+Those rows are keyed on the identity in the verified token, never on a patient
+id, and **they carry clinical content** — a saved filter set can hold a disease,
+a treatment and a postcode, which together describe a person. Treat that table
+as sensitive; see rule 5 in `porting-from-cancerbot.md` for the conditions any
+such table has to meet.
 
 ---
 
@@ -162,7 +171,7 @@ markers, outcomes, staging options, ethnicity, etc.). Consumed by the API's
 
 ---
 
-## Patient-info lifecycle (stateless)
+## Patient-info lifecycle (nothing persisted)
 
 ```
 GET /trials/
