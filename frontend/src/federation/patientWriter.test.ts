@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 import { PatientFieldWriter } from "./patientWriter";
 import type { WriteOutcome } from "./state";
 
+/** A transport that refuses the batch, naming fields the way PROMOP does. */
+function refusing(byCall: Array<string[] | null>) {
+  const calls: Array<Record<string, unknown>> = [];
+  let call = 0;
+  const write = vi.fn(async (fields: Record<string, unknown>) => {
+    calls.push({ ...fields });
+    const named = byCall[call] ?? null;
+    call += 1;
+    if (named === null) return {} as Record<string, WriteOutcome>;
+    // The shape the adapter raises: `fields` is what the server objected to.
+    throw Object.assign(new Error("refused"), { fields: named });
+  });
+  return { write, calls };
+}
+
 /** A transport whose answers the test hands out one at a time. */
 function transport() {
   const calls: Array<Record<string, unknown>> = [];
@@ -324,5 +339,98 @@ describe("what is still owed", () => {
     await t.answer({ a: saved(1) });
     await tick();
     expect(w.outstanding).toEqual(["b"]);
+  });
+});
+
+
+describe("a batch the record refuses", () => {
+  // THE RULE: a rejected batch must not cost the reader an edit the server
+  // did not object to. DRF rejects the whole request, so nothing was
+  // written — reporting all of it unsaved was true. What it cost was the
+  // rest of the batch, with no way to tell which field poisoned it.
+
+  it("sends the rest again when the server names the one it refused", async () => {
+    const t = refusing([["flipi_score_options"], null]);
+    const failed: string[][] = [];
+    const w = new PatientFieldWriter(t.write, {
+      debounceMs: 1,
+      onError: (fields) => failed.push(fields),
+    });
+
+    w.save("flipi_score_options", "not a factor");
+    w.save("hemoglobin_g_dl", 12);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(failed).toEqual([["flipi_score_options"]]);
+    expect(t.calls).toEqual([
+      { flipi_score_options: "not a factor", hemoglobin_g_dl: 12 },
+      { hemoglobin_g_dl: 12 },
+    ]);
+  });
+
+  it("fails the whole batch when the server names nothing", async () => {
+    // A 500, or a `{"detail": …}` body. Nothing to retry and nothing to
+    // blame, so this is exactly the old behaviour — everything unsaved is
+    // reported unsaved, and nothing is left in "Saving…" for ever.
+    const t = refusing([[]]);
+    const failed: string[][] = [];
+    const w = new PatientFieldWriter(t.write, {
+      debounceMs: 1,
+      onError: (fields) => failed.push(fields),
+    });
+
+    w.save("hemoglobin_g_dl", 12);
+    w.save("platelet_count", 200);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(failed).toEqual([["hemoglobin_g_dl", "platelet_count"]]);
+    expect(t.calls).toHaveLength(1);
+  });
+
+  it("terminates when the retry is refused for a different field", async () => {
+    // Each refusal strictly shrinks the batch, so this cannot loop.
+    const t = refusing([["a"], ["b"], null]);
+    const failed: string[][] = [];
+    const w = new PatientFieldWriter(t.write, {
+      debounceMs: 1,
+      onError: (fields) => failed.push(fields),
+    });
+
+    w.save("a", 1);
+    w.save("b", 2);
+    w.save("c", 3);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(failed).toEqual([["a"], ["b"]]);
+    expect(t.calls).toEqual([{ a: 1, b: 2, c: 3 }, { b: 2, c: 3 }, { c: 3 }]);
+  });
+
+  it("does not undo an edit made while the refused batch was in flight", async () => {
+    // The re-queued value is OLDER than anything that arrived since, and
+    // putting it back must not overwrite the newer one.
+    const calls: Array<Record<string, unknown>> = [];
+    let refuse: (() => void) | null = null;
+    const write = vi.fn(
+      (fields: Record<string, unknown>) =>
+        new Promise<Record<string, WriteOutcome>>((resolve, reject) => {
+          calls.push({ ...fields });
+          if (calls.length === 1) {
+            refuse = () =>
+              reject(Object.assign(new Error("refused"), { fields: ["bad"] }));
+          } else {
+            resolve({});
+          }
+        }),
+    );
+    const w = new PatientFieldWriter(write, { debounceMs: 1 });
+
+    w.save("bad", "x");
+    w.save("hemoglobin_g_dl", 12);
+    await new Promise((r) => setTimeout(r, 10));
+    w.save("hemoglobin_g_dl", 13); // while the first is on the wire
+    refuse!();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(calls[1]).toEqual({ hemoglobin_g_dl: 13 });
   });
 });

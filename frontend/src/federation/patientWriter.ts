@@ -42,6 +42,20 @@ export interface PatientWriterOptions {
 
 type Writer = NonNullable<TrialStateAdapter["setPatientFields"]>;
 
+/** The fields an error names, when it names any.
+ *
+ *  Duck-typed rather than `instanceof`: the error crosses a module boundary
+ *  a host may have bundled twice, and a class identity check that fails
+ *  silently would put this back to losing the batch. A host adapter that
+ *  throws something else gets the old behaviour, which is the safe default
+ *  — everything unsaved is reported unsaved.
+ */
+function namedFields(error: unknown): string[] {
+  const fields = (error as { fields?: unknown })?.fields;
+  if (!Array.isArray(fields)) return [];
+  return fields.filter((field): field is string => typeof field === "string");
+}
+
 export class PatientFieldWriter {
   private readonly write: Writer;
   private readonly debounceMs: number;
@@ -152,8 +166,36 @@ export class PatientFieldWriter {
         }
       })
       .catch((error: unknown) => {
+        // A REJECTED BATCH MUST NOT COST THE READER AN EDIT THE SERVER DID
+        // NOT OBJECT TO. DRF rejects the whole request on a 400, so nothing
+        // was written and everything here is unsaved — that part was always
+        // reported correctly. What it cost was the rest of the batch: three
+        // edits made in one breath, one of them a value the vocabulary does
+        // not recognise, and all three gone with no way to tell which.
+        //
+        // So when the server NAMED the fields it objected to, only those are
+        // failed and the others go back on the queue to be sent again. The
+        // retry strictly shrinks the batch, so a second refusal naming
+        // something else still terminates.
+        //
+        // Reporting only the named ones without re-queueing the rest would
+        // be worse than today: `onError` is what retires a field from
+        // "Saving…", so anything left unreported stays there for ever.
+        const refused = namedFields(error);
+        const rest = refused.length > 0
+          ? Object.keys(batch).filter((field) => !refused.includes(field))
+          : [];
+        const failed = refused.length > 0 ? refused : Object.keys(batch);
+        if (rest.length > 0) {
+          // Behind whatever arrived while this was in flight: that is newer
+          // and must win the merge, exactly as it would have done anyway.
+          this.queued = {
+            ...Object.fromEntries(rest.map((field) => [field, batch[field]])),
+            ...this.queued,
+          };
+        }
         try {
-          this.onError(Object.keys(batch), error);
+          this.onError(failed, error);
         } catch (reportingError: unknown) {
           console.warn("[exact] a write failure could not be reported", reportingError);
         }
