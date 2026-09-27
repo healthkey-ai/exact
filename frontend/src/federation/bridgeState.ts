@@ -169,6 +169,77 @@ export function resolveSessionSignal(sessionKey: unknown, getToken: unknown): un
   return sessionKey;
 }
 
+/** A string that changes when the SIGNED-IN IDENTITY changes, for use in a
+ *  cache key.
+ *
+ *  THE INVARIANT THIS EXISTS FOR, written down because three fixes in a row
+ *  missed it by guarding the wrong thing: a saved-filter payload belongs to
+ *  the identity that produced it, and must be DROPPED — not re-routed — if
+ *  that identity is no longer the one the row will be keyed on.
+ *
+ *  `useSavedFilters` decides "same context, keep writing through the live
+ *  adapter" from `stateKey`, which named the PATIENT. That was right while
+ *  every row was keyed on `person_id`: a different patient is a different
+ *  row, and the server could see a credential that did not match. EXACT's
+ *  own store keys on the identity in the token, so with a host that supplies
+ *  the patient itself, an account switch changes neither the patient nor the
+ *  key — and the debounced write of user 1's filters goes out through user
+ *  2's adapter with user 2's token, into user 2's row, with nothing wrong
+ *  with it that any server can see. Removing `person_id` removed the only
+ *  cross-check; this puts one back on the side that still has the facts.
+ *
+ *  A COUNTER, not the signal itself, because the signal is `unknown` by
+ *  design: `resolveSessionSignal` hands back the host's `sessionKey` when it
+ *  is usable and the `getToken` FUNCTION when it is not, and a function has
+ *  no stable string form. Stringifying one would collapse every anonymous
+ *  arrow to the same text and quietly disable the guard, which is the failure
+ *  mode `resolveSessionSignal` itself is full of warnings about.
+ *
+ *  Erring towards CHANGING is safe and erring towards holding is not: a key
+ *  that changes when it need not sends the flush through the captured
+ *  adapter, which refuses — one lost draft. A key that holds when it should
+ *  not writes into a stranger's record.
+ */
+const identityKeys = new WeakMap<object, string>();
+let identityKeyCount = 0;
+
+export function identityKeyOf(signal: unknown): string {
+  if (signal == null) return "";
+  if (typeof signal === "string" || typeof signal === "number") {
+    return `k:${signal}`;
+  }
+  if (typeof signal !== "object" && typeof signal !== "function") {
+    return `k:${String(signal)}`;
+  }
+  const existing = identityKeys.get(signal as object);
+  if (existing) return existing;
+  identityKeyCount += 1;
+  const assigned = `o:${identityKeyCount}`;
+  identityKeys.set(signal as object, assigned);
+  return assigned;
+}
+
+/** The key `useSavedFilters` uses to decide "same context, keep writing
+ *  through the live adapter".
+ *
+ *  A named function rather than a template literal at the call site, because
+ *  a test that builds the key itself is testing its own arithmetic. Both the
+ *  component and the probe call this, so a change to the rule is a change
+ *  both of them see.
+ *
+ *  Maximum discrimination on purpose: every part that could distinguish two
+ *  readers is in it. Erring towards changing costs a discarded draft; erring
+ *  towards holding writes into a stranger's record. `identityKeyOf` above
+ *  says why the identity is in here at all.
+ */
+export function stateKeyOf(
+  stateIdentity: string | undefined,
+  personId: string | number | undefined,
+  patientInfoKey: string | null | undefined,
+): string {
+  return `${stateIdentity ?? ""}|${personId ?? ""}|${patientInfoKey ?? ""}`;
+}
+
 /** Whether `sessionKey` was usable, i.e. whether the signal above is a real
  *  session key or the `getToken` fallback. */
 export function hasUsableSessionKey(sessionKey: unknown): boolean {

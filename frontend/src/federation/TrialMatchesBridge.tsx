@@ -37,6 +37,7 @@ import {
   personIdOfRow,
   promopStateBasePath,
   selectBridgeView,
+  identityKeyOf,
   resolveSessionSignal,
   selectPatientInfo,
   shouldResolvePatient,
@@ -548,6 +549,9 @@ function TrialMatchesBridgeRoot({
       {...rest}
       apiClient={apiClient}
       patientInfo={patientInfo}
+      // Whose adapter this is. Not derivable downstream: the session signal
+      // is `unknown` by design and may be the `getToken` function itself.
+      stateIdentity={rest.stateIdentity ?? identityKeyOf(sessionSignal)}
       state={rest.state ?? bridgeState}
       // `null` is the bridge's spelling of "not given"; TrialMatches' own
       // contract only knows `undefined`.

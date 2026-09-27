@@ -36,6 +36,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ActionTooltip } from "./bits";
+import { stateKeyOf } from "./bridgeState";
 import { FilterPanel } from "./FilterPanel";
 import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
@@ -155,6 +156,7 @@ export const WIZARD_WRITE_GRACE_MS = 8000;
 function TrialMatchesInner({
   apiClient,
   patientInfo,
+  stateIdentity,
   personId,
   initialFilters,
   onTrialSelect,
@@ -271,7 +273,13 @@ function TrialMatchesInner({
   // is served the first one's bookmarks for as long as they stay fresh.
   // A cache key wants maximum discrimination: any difference in either prop
   // is a different key.
-  const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
+  // The identity FIRST, and not only for tidiness: it is the half that says
+  // whose row a write will land in. `useSavedFilters` reads this to decide
+  // whether the adapter it was built with is still the right one to write
+  // through, and with the patient alone that question had a wrong answer
+  // whenever the host owned the patient and the account changed underneath.
+  // See `identityKeyOf` for the invariant and what it cost to find.
+  const stateKey = stateKeyOf(stateIdentity, personId, patientInfoKey);
 
   // Who the reader is looking at, for anything that must survive the payload
   // being REFRESHED. `patientIdentity` and `stateKey` both hash the whole
