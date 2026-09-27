@@ -293,18 +293,30 @@ function EligibilityRow({
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
-  // Only `edit` puts anything on screen. `no` carries a reason, but PROMOP's
-  // reasons are written for whoever is integrating — one of them points at
-  // `docs/omop_to_patientrecord.md` — so showing them raw to a patient would
-  // be worse than the silence. Surfacing them needs curated wording, and that
-  // is a decision, not an oversight.
+  // `edit` puts a control on screen; `no` may put a sentence there. PROMOP's
+  // own `reason` strings never reach it — they are written for whoever is
+  // integrating, and one points at `docs/omop_to_patientrecord.md`. What the
+  // reader sees is curated wording from two tables in `writable.ts`, and a
+  // refusal with no entry in either stays silent.
   const [editorOpen, setEditorOpen] = useState(false);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
-      ? editabilityOf(field.upatientField, editing.fields)
+      ? editabilityOf(field.upatientField, editing.fields, {
+          // EXACT ships some value sets on the row itself; without this the
+          // editor asks PROMOP, gets nothing, and draws a text box over a
+          // column the matcher reads as a list of codes.
+          //
+          // `uoptions` alone, though the cell above displays through
+          // `uoptions ?? options`. The bare `options` is the TRIAL's
+          // vocabulary for its own requirement, and offering it as answers
+          // the PATIENT can give is how a trial's value ends up in a
+          // patient's record.
+          type: field.utype,
+          options: field.uoptions,
+        })
       : ({ can: "unknown" } as const);
 
   return (
@@ -359,6 +371,22 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
+        {/* Said out loud, not left to silence, in the two cases `announce`
+            names: a control EXACT took away, and a write PROMOP routes to
+            another resource. Both sentences are EXACT's own. The rows the
+            descriptor merely refuses stay quiet — they never offered a
+            control, so nothing went missing, and a sentence on each of the
+            114 is noise.
+
+            No `!editorOpen` guard. `FieldEdit` only renders under
+            `can === "edit"`, so the editor cannot be open on a row that shows
+            this — except after a verdict flips edit→no while it is open, and
+            `FieldEdit` never clears the flag on unmount. In exactly that case
+            the value and units above are suppressed too, so guarding here
+            would leave the cell showing its column header and nothing else. */}
+        {editable.can === "no" && editable.announce ? (
+          <span className="exact-elig__note">{editable.why}</span>
+        ) : null}
         {writePending ? (
           <span className="exact-elig__saving">Saving…</span>
         ) : null}
@@ -395,6 +423,8 @@ function EligibilityRow({
             field={editable.field}
             label={field.label}
             entry={editable.entry}
+            options={editable.options}
+            joined={editable.joined}
             control={editable.control}
             // A refused value wins over the record's: the reader is about to
             // try again, and the thing they want in the box is what they
@@ -406,6 +436,8 @@ function EligibilityRow({
                   ? pendingValue
                   : field.uvalue
             }
+            // The record's own value, with neither of those in front of it.
+            recordValue={field.uvalue}
             units={field.uunits ?? field.units}
             onSave={(value) => editing.save(editable.field, value)}
             onOpenChange={setEditorOpen}

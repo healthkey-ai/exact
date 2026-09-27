@@ -15,6 +15,7 @@
 import { Dialog } from "./Dialog";
 import { FieldEdit } from "./FieldEdit";
 import { editabilityOf } from "./writable";
+import type { Editability } from "./writable";
 import { formatValue } from "./TrialDetailPage";
 import type { RowEditing } from "./TrialDetailPage";
 import type { SubformEntry, TrialDetailField } from "./types";
@@ -44,12 +45,32 @@ export interface SubformDialogProps {
  *  patient's demographics, record-wide, from a threshold row. That is not a
  *  door onto a wall; it is a door into the wrong room.
  */
-function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
-  if (entry.upatientRecomputed) return false;
-  const verdict = editabilityOf(entry.upatientField, editing.fields);
-  if (verdict.can !== "edit") return false;
+function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
+  // Recomputed here means EXACT derives it, so there is nothing to say and
+  // nobody to say it to: the row upstairs already carries that story.
+  if (entry.upatientRecomputed) return { can: "unknown" };
+  // The dialog passes the row's vocabulary for the same reason the detail
+  // page does, but the ROW branch can only ever produce a single select here:
+  // the server overwrites a subform entry's type with `select` whenever it
+  // attaches options at all (`trial_attributes.py:882-884`). A descriptor
+  // that carries its own options and `multiple` still yields a multiselect,
+  // as it does anywhere else. Passed rather than hard-coded, so the day the
+  // server stops overwriting this does not have to be found again.
+  const verdict = editabilityOf(entry.upatientField, editing.fields, {
+    type: entry.type,
+    options: entry.options,
+  });
+  if (verdict.can !== "edit") return verdict;
+  // A demographic reached through a threshold row is a door into the wrong
+  // room, not a refusal worth explaining — see the note above.
   const projection = verdict.entry.projection_target;
-  return projection !== "person" && projection !== "location";
+  return projection === "person" || projection === "location"
+    ? { can: "unknown" }
+    : verdict;
+}
+
+function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
+  return verdictFor(entry, editing).can === "edit";
 }
 
 /** Whether a subform is worth opening at all.
@@ -80,9 +101,7 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
 
         <ul className="exact-subform__list">
           {entries.map((entry) => {
-            const editable = entryIsOffered(entry, editing)
-              ? editabilityOf(entry.upatientField, editing.fields)
-              : ({ can: "unknown" } as const);
+            const editable = verdictFor(entry, editing);
             const attribute = entry.upatientField;
             const pending =
               attribute && attribute in editing.outstanding
@@ -116,12 +135,23 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
                     Couldn't save that.
                   </span>
                 ) : null}
+                {/* The same rule as the detail page: a refusal that tells
+                    the reader where the edit belongs is worth a sentence, and
+                    one that only says the value is derived is not. Until now
+                    this dialog printed neither, so `genetic_mutations` —
+                    reachable here through the mutation subforms — read as a
+                    value the record simply cannot hold. */}
+                {editable.can === "no" && editable.announce ? (
+                  <span className="exact-elig__note">{editable.why}</span>
+                ) : null}
                 {editable.can === "edit" ? (
                   <FieldEdit
                     field={editable.field}
                     label={entry.label}
                     entry={editable.entry}
                     control={editable.control}
+                    options={editable.options}
+                    joined={editable.joined}
                     units={entry.uunits ?? entry.units}
                     value={
                       failed && attribute
@@ -130,6 +160,22 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
                           ? pending
                           : entry.value
                     }
+                    // A subform entry IS the patient attribute, so its
+                    // `value` is the record's — with four exceptions the
+                    // server rewrites for display (`get_value` in
+                    // `trial_attributes.py:235-248`: `tumorGrade*` to a
+                    // label, `supportiveTherapies`, `laterTherapies` and
+                    // `geneticMutations` to derived structures). None can
+                    // reach the comparison this feeds, which is read only
+                    // for a multiselect. Not because the server forces a
+                    // subform entry with options to `select` — that covers
+                    // only `controlFor`'s row branch, and two of the four
+                    // (`supportiveTherapies`, `laterTherapies`) really are
+                    // subform entries. It is because the descriptor branch
+                    // needs `multiple`, which PROMOP declares on two
+                    // attributes and neither is these. If PROMOP declares it
+                    // on one of them, this line has to change with it.
+                    recordValue={entry.value}
                     onSave={(value) => editing.save(editable.field, value)}
                   />
                 ) : null}

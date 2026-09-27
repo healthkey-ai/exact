@@ -483,6 +483,184 @@ describe("saving", () => {
     );
   });
 
+  it("draws a multiselect from the row when the descriptor has no list", async () => {
+    // FLIPI. PROMOP's descriptor says only "writable, string": the value set
+    // lives in EXACT (`trials/services/value_options.py`) and rides on the
+    // row. Asking the descriptor alone drew a free text box over a column the
+    // matcher reads as a list of codes.
+    const state = fakeState({
+      writable: {
+        flipi_score_options: { kind: "direct", writable: true, value_kind: "string" },
+      },
+    });
+    await startEditing(state, [
+      row({
+        label: "FLIPI",
+        upatientField: "flipi_score_options",
+        uvalue: "age",
+        utype: "multiselect",
+        uoptions: [
+          { value: "age", label: "Age over 60" },
+          { value: "stage", label: "Ann Arbor III or IV" },
+        ],
+        units: undefined,
+      }),
+    ]);
+
+    await userEvent.selectOptions(screen.getByRole("listbox", { name: "FLIPI" }), [
+      "age",
+      "stage",
+    ]);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Joined, not a list. Measured against PROMOP: `PatientRecordSerializer`
+    // generates a CharField here and answers a JSON array with "Not a valid
+    // string." before `validate_flipi_score_options` ever runs.
+    await waitFor(() => expect(state.record.flipi_score_options).toBe("age,stage"));
+  });
+
+  it("clears the field when every option is deselected", async () => {
+    // Not "": PROMOP can tell an assessment of zero factors from no
+    // assessment, but EXACT cannot — `scope_by_options` returns None for
+    // zero, `is_attr_blank` calls "" blank, and the row reads "—" either way.
+    // An emptied control means no answer here, as it does for every other
+    // control in this editor.
+    const state = fakeState({
+      writable: {
+        flipi_score_options: { kind: "direct", writable: true, value_kind: "string" },
+      },
+    });
+    await startEditing(state, [
+      row({
+        label: "FLIPI",
+        upatientField: "flipi_score_options",
+        uvalue: "age",
+        utype: "multiselect",
+        uoptions: [{ value: "age", label: "Age over 60" }],
+        units: undefined,
+      }),
+    ]);
+
+    await userEvent.deselectOptions(screen.getByRole("listbox", { name: "FLIPI" }), ["age"]);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(state.record.flipi_score_options).toBeNull());
+  });
+
+  it("leaves an already-empty selection exactly as the record holds it", async () => {
+    // "" is a real answer for FLIPI — an assessment that found no factors,
+    // `flipi_score` 0, category "Low". It renders as nothing selected, which
+    // is also what no assessment renders as. An untouched Save must not turn
+    // one into the other: nobody pressed anything.
+    const state = fakeState({
+      record: { flipi_score_options: "" },
+      writable: {
+        flipi_score_options: { kind: "direct", writable: true, value_kind: "string" },
+      },
+    });
+    await startEditing(state, [
+      row({
+        label: "FLIPI",
+        upatientField: "flipi_score_options",
+        uvalue: "",
+        utype: "multiselect",
+        uoptions: [{ value: "age", label: "Age over 60" }],
+        units: undefined,
+      }),
+    ]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Asserted on the payload, not on the record: a rule that wrongly sent
+    // null would leave the record reading "" for a while too, so a test that
+    // only looked there would pass without the rule.
+    await waitFor(() =>
+      expect(state.adapter.setPatientFields).toHaveBeenCalledWith({
+        flipi_score_options: "",
+      }),
+    );
+  });
+
+  it("takes back a refused edit without destroying what the record holds", async () => {
+    // The gesture: the reader's save was refused, they reopen and deselect
+    // their own attempt — "never mind". The record still holds "", a real
+    // FLIPI assessment of zero factors. Nothing about that changed, so
+    // nothing about it may be written.
+    //
+    // This is the one finding the property harness cannot see: it is about
+    // WHICH value the editor compares against, not about what `payloadFrom`
+    // does with it. The box shows the refused value on purpose; the decision
+    // to save must not.
+    const state = fakeState({
+      record: { flipi_score_options: "" },
+      writable: {
+        flipi_score_options: { kind: "direct", writable: true, value_kind: "string" },
+      },
+    });
+    const sent: unknown[] = [];
+    state.adapter.setPatientFields = vi.fn(async (fields: Record<string, unknown>) => {
+      sent.push(fields);
+      throw new Error("403");
+    });
+    await startEditing(state, [
+      row({
+        label: "FLIPI",
+        upatientField: "flipi_score_options",
+        uvalue: "",
+        utype: "multiselect",
+        uoptions: [
+          { value: "age", label: "Age over 60" },
+          { value: "stage", label: "Ann Arbor III or IV" },
+        ],
+        units: undefined,
+      }),
+    ]);
+
+    await userEvent.selectOptions(screen.getByRole("listbox", { name: "FLIPI" }), ["age"]);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save that");
+
+    // Reopen: the box carries their refused "age" back, by design.
+    await userEvent.click(screen.getByRole("button", { name: "Edit FLIPI" }));
+    await userEvent.deselectOptions(screen.getByRole("listbox", { name: "FLIPI" }), ["age"]);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1]).toEqual({ flipi_score_options: "" });
+  });
+
+  it("keeps the number box for a numeric column that has a row vocabulary", async () => {
+    // Five attributes are `value_kind: "number"` in the descriptor and carry
+    // an option list on the row (`ecog_performance_status` among them). The
+    // row's list does not get to turn those into a select: the box sends 3,
+    // a select would send "3", and that is a different change from this one.
+    const state = fakeState({
+      writable: {
+        ecog_performance_status: { kind: "direct", writable: true, value_kind: "number" },
+      },
+    });
+    await startEditing(state, [
+      row({
+        label: "ECOG",
+        upatientField: "ecog_performance_status",
+        uvalue: 1,
+        utype: "select",
+        uoptions: [
+          { value: 0, label: "0 — Fully active" },
+          { value: 2, label: "2 — Ambulatory" },
+        ],
+        units: undefined,
+      }),
+    ]);
+
+    const box = screen.getByRole("textbox", { name: "ECOG" });
+    await userEvent.clear(box);
+    await userEvent.type(box, "2");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(state.record.ecog_performance_status).toBe(2));
+  });
+
   it("offers a value the option list has never heard of, rather than showing it as blank", async () => {
     // A legacy spelling selects nothing, so the box reads "—" while an
     // untouched Save sends the old value straight back: the screen says

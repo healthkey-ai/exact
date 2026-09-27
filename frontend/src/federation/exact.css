@@ -569,6 +569,18 @@
   color: var(--exact-color-text-tertiary);
 }
 
+/* Both of the flex parents this can land in. `display: block` makes it a flex
+ * ITEM there, competing for width with the label and the value rather than
+ * taking a line, and an 80-character reason is not something to fit beside
+ * them. Its own line, for the same reason `.exact-elig__error` claims one in
+ * these same two places — and `margin-top` goes with it, since an item alone
+ * on a wrapped line does not need to be nudged off the one above. */
+.exact-root .exact-subform__row > .exact-elig__note,
+.exact-root .exact-elig__cell > .exact-elig__note {
+  flex: 1 0 100%;
+  margin-top: 0;
+}
+
 /* High-risk MCL criteria panel (#4408) */
 .exact-root .exact-mcl {
   margin-top: 16px;
