@@ -13,6 +13,7 @@ import {
   selectPatientInfo,
   shouldResolvePatient,
   type PatientLoad,
+  usableIdentity,
 } from "./bridgeState";
 
 describe("joinBaseUrl", () => {
@@ -358,5 +359,30 @@ describe("durableKey", () => {
   it("leaves a patient key that contains a pipe alone past the first", () => {
     // `patientInfoKey` is serialized JSON and can hold one.
     expect(durableKey("k:u|42|a|b")).toBe("42|a|b");
+  });
+});
+
+describe("usableIdentity", () => {
+  it("takes a number, because a person id is one", () => {
+    // The check this replaces was string-only, so `stateIdentity={user.id}`
+    // — the natural spelling, since PROMOP's `person_id` is an integer —
+    // was silently dropped and the guard fell back to a session signal that
+    // may not move at all. Zero included: it is a real id, not an absence.
+    expect(usableIdentity(42)).toBe("42");
+    expect(usableIdentity(0)).toBe("0");
+  });
+
+  it("refuses the spellings that mean nothing", () => {
+    // What `user?.id ?? ""`, `auth.ready && auth.userId` and `Number(sub)`
+    // produce when there is nothing to read. Taken at face value each pins
+    // every account to one key and silently disables the guard — the same
+    // list `resolveSessionSignal` refuses, for the same reason.
+    for (const nothing of ["", null, undefined, NaN, Infinity, true, false, {}]) {
+      expect(usableIdentity(nothing)).toBeUndefined();
+    }
+  });
+
+  it("keeps a string a host did give", () => {
+    expect(usableIdentity("user-1")).toBe("user-1");
   });
 });
