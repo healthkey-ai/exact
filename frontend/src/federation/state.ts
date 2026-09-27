@@ -608,3 +608,129 @@ function isNumeric(v: unknown): boolean {
   if (typeof v !== "string" || v.trim() === "") return false;
   return Number.isFinite(Number(v));
 }
+
+/** Preferences from EXACT's own store, keyed on the identity in the token.
+ *
+ *  Phase 1 of moving per-identity trials state out of PROMOP. Only the
+ *  preferences half: favourites and registration interest still come from
+ *  PROMOP, so `composeState` below joins the two rather than replacing the
+ *  adapter wholesale.
+ *
+ *  NO `personId`, and that is the point rather than a simplification. EXACT
+ *  derives the row's owner from the token it verified, so there is no id in
+ *  any of these URLs to point at somebody else. The `person_id` this file
+ *  passes to PROMOP everywhere else arrives from the host bound to nothing,
+ *  which is a read hazard there and would be a write hazard here.
+ *
+ *  NO `preferenceVersioning`, also deliberately: last writer wins. The
+ *  caller already handles a store without it and that path is exercised
+ *  (`hooks.preferenceSeam.test.ts`), so two tabs can overwrite each other's
+ *  filter set and nobody is told. It is not quite "what every client did
+ *  before promop#1312", though: the unconditional path is a seeded read
+ *  then a replace, and it refuses outright when it could not read the row. That is an accepted cost for a filter set and is worth
+ *  revisiting before registration interest moves here. The design it replaces
+ *  is not free either: promop#1602 is an `If-Match` whose headers never
+ *  reached the CORS allowlist, so no browser ever completed one.
+ */
+export function createExactPreferences(
+  /** A GETTER, not an instance, and not a union of the two.
+   *
+   *  The adapter has to survive a token refresh WITHOUT being rebuilt —
+   *  rebuilding it drops the writes already queued against it, which a test
+   *  pins — while the client it writes through IS rebuilt on exactly that
+   *  event. Resolving per call is how those two facts coexist; holding the
+   *  instance would send the previous credential for the rest of the
+   *  session.
+   *
+   *  A union accepting either would not have worked and would not have said
+   *  so: an `AxiosInstance` is itself callable, so `typeof client ===
+   *  "function"` narrows nothing. A caller with an instance writes
+   *  `() => client`, which is one word and unambiguous. */
+  now: () => AxiosInstance,
+  basePath = "/user-state",
+): TrialPreferenceStore {
+  const preferences = `${basePath}/trial-search-preferences`;
+
+  const read = async (): Promise<{
+    filters: FilterState;
+    offered: boolean | undefined;
+  }> => {
+    const response = await now().get<{
+      preferences?: unknown;
+      weights_wizard_offered?: unknown;
+    }>(`${preferences}/`);
+    const stored = response.data?.preferences;
+    return {
+      // An object or nothing. The column is opaque by design and a row
+      // written by another client — or by a shell — is not this page's
+      // problem to interpret, only its problem not to crash on.
+      filters: (stored && typeof stored === "object" && !Array.isArray(stored)
+        ? (stored as FilterState)
+        : {}),
+      offered:
+        typeof response.data?.weights_wizard_offered === "boolean"
+          ? response.data.weights_wizard_offered
+          : undefined,
+    };
+  };
+
+  return {
+    getPreferences: async () => (await read()).filters,
+    savePreferences: async (filters) => {
+      await now().post(`${preferences}/`, { preferences: filters });
+    },
+    // Its own call rather than `savePreferences({})`, for the same reason it
+    // is on PROMOP: the endpoint keeps what is not a filter — the score
+    // weights ride in the same column — and an empty partial write would
+    // leave the filters alone instead.
+    //
+    // One divergence from PROMOP's, worth knowing before it bites somebody:
+    // PROMOP's reset EMPTIES the row and EXACT's keeps `NOT_FILTERS`, while
+    // the caller's belief (`preferences.ts`) is cleared to `{}` either way.
+    // So after a reset the client thinks the row is empty and the row still
+    // holds the weights. Normally harmless — the page re-persists owned
+    // weights immediately, and a later load claims whatever the row carried
+    // — but a Reset pressed before the row was ever read leaves a belief
+    // that the next full save writes through, deleting them. Fixing it
+    // properly means the transport learning that a reset is partial, which
+    // is a change to the shared seam and not to this store.
+    resetPreferences: async () => {
+      await now().post(`${preferences}/reset/`, {});
+    },
+    weightsWizard: {
+      // The same three answers the PROMOP adapter distinguishes, and the
+      // third for the same reason. Here the column always exists, so a
+      // response without it means a server older than the store — answered
+      // "already offered", because the alternative is asking on every visit
+      // forever, which is what the gate exists to prevent.
+      wasOffered: async () => (await read()).offered ?? true,
+      record: async () => {
+        await now().post(`${preferences}/`, { weights_wizard_offered: true });
+      },
+    },
+  };
+}
+
+/** One adapter from two stores, for as long as the migration has two.
+ *
+ *  Phases 2 and 3 move favourites and registration interest, and each shrinks
+ *  this function until it is an identity. It exists so the switch is one
+ *  place and one line per phase, rather than a host-side decision repeated in
+ *  every host.
+ */
+export function composeState(
+  base: TrialStateAdapter,
+  preferences: TrialPreferenceStore,
+): TrialStateAdapter {
+  return {
+    ...base,
+    getPreferences: preferences.getPreferences,
+    savePreferences: preferences.savePreferences,
+    resetPreferences: preferences.resetPreferences,
+    weightsWizard: preferences.weightsWizard,
+    // Spread would carry PROMOP's over, and with it a conditional write
+    // against a tag EXACT's store never issues. Deleted explicitly rather
+    // than left to the reader to notice it is absent from the literal.
+    preferenceVersioning: preferences.preferenceVersioning,
+  };
+}
