@@ -143,7 +143,8 @@ describe("a filter edit never crosses an account switch", () => {
   // token it is a write into a stranger's row instead, which is the part
   // worth recording.
   //
-  // No React key can catch these: nothing in the tree learns anything
+  // Tracked as exact#583, with the measurements. No React key can catch
+  // these: nothing in the tree learns anything
   // changed. Three ways out, in increasing order of not needing the host's
   // cooperation: the host honours the contract; the client captures
   // `await getToken()` when a write is ENQUEUED and compares it at send

@@ -291,6 +291,13 @@ export function useQueuedPatientFields(
     // `readerHandle` now (`TrialMatches.tsx`). If you add a fourth caller,
     // that is the key it wants; a patient handle is not enough for anything
     // that writes.
+    //
+    // AND THE KEY IS NOT THE WHOLE GUARD, which is worth knowing before you
+    // trust this paragraph: a key chooses which adapter the flush goes
+    // through, it does not drop a payload. What refuses is the bridge's
+    // token reader, and only when the session signal moves. An identity
+    // that changes without moving that signal is re-routed, not dropped —
+    // exact#583, with the four measured shapes and the fix.
     const captured = stateRef.current;
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
