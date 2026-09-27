@@ -147,8 +147,34 @@ export function controlFor(
   entry: WritableFieldEntry,
   row?: RowVocabulary,
 ): EditControl {
-  if (optionsOf(entry).length > 0)
-    return entry.multiple === true ? "multiselect" : "select";
+  if (optionsOf(entry).length > 0) {
+    // The descriptor names the VALUES; it does not always name how many of
+    // them. `staging_modalities` is `writable: true, value_kind: "string"`
+    // with three options and `multiple: null`, while the column behind it
+    // is comma-joined and the matcher reads it as a list
+    // (`trials/querysets/trial.py`, `eligible_for_staging_modalities(_csv(v))`).
+    // A single select there replaces the whole list with one value, on an
+    // attribute that gates eligibility, and says nothing.
+    //
+    // So the row may UPGRADE the cardinality when the descriptor is silent
+    // on it — and only that. It does not get to name the values: PROMOP is
+    // where those are migrating to, and a row disagreeing with a descriptor
+    // that HAS an answer would be the old copy winning. Nor does it get to
+    // downgrade: `multiple: true` is a statement, and a row saying `select`
+    // over a list column would put the truncation back.
+    //
+    // Measured blast radius: of the five attributes EXACT declares as row
+    // multiselects, exactly one also has descriptor options, and it is
+    // `staging_modalities`. The other three reachable ones have no
+    // descriptor options and already take the row's word via the fallback
+    // below; the fifth is absent from the descriptor entirely.
+    //
+    // WHERE THIS BELONGS is PROMOP declaring `multiple` on the columns it
+    // stores comma-joined — that fixes every client, not just this one.
+    // Filed as #585; this is the half that ships without a second repo.
+    const listed = entry.multiple === true || row?.type === "multiselect";
+    return listed ? "multiselect" : "select";
+  }
   const fromKind = kindControl(entry);
   // The row, and ONLY where the page would otherwise draw a free text box.
   //
