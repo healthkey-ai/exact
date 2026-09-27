@@ -233,11 +233,13 @@ export function identityKeyOf(signal: unknown): string {
  *  says why the identity is in here at all.
  */
 export function stateKeyOf(
-  stateIdentity: string | undefined,
+  stateIdentity: string | number | undefined,
   personId: string | number | undefined,
   patientInfoKey: string | null | undefined,
 ): string {
-  return `${stateIdentity ?? ""}|${personId ?? ""}|${patientInfoKey ?? ""}`;
+  // Prefixed onto the persisted key rather than spelled out again: the two
+  // must stay in step, and a copy would not.
+  return `${stateIdentity ?? ""}|${persistedKeyOf(personId, patientInfoKey)}`;
 }
 
 /** A host-supplied `stateIdentity`, or `undefined` when it says nothing.
@@ -262,31 +264,34 @@ export function usableIdentity(value: unknown): string | undefined {
   return undefined;
 }
 
-/** The same key with the identity taken out, for anywhere it is written to
- *  disk.
+/** The key for anywhere it is written to DISK: the same one this page used
+ *  before an identity was ever part of a key.
  *
- *  In memory the identity belongs in the key: within one page load it is
- *  what tells two accounts apart, which is the whole point. Persisted it is
- *  wrong twice over, and both were measured rather than argued.
+ *  Built from the parts, never by taking a key apart again. The version that
+ *  did the latter sliced to the first `|` and so still let an identity
+ *  through whenever the identity contained one — and `auth0|5f3c9b` is the
+ *  mainstream spelling of `sub`, so "a host that names itself" and "an
+ *  identity with a pipe in it" are close to the same set. Measured: that
+ *  host's namespace moved anyway, which is the thing the split was added to
+ *  prevent.
  *
- *  A GENERATED identity (`o:N`, minted per page load for a host with no
- *  `sessionKey`) gives every visit a fresh namespace: the reader's saved
- *  filters are forgotten on each load AND an orphaned `exact.filters.*`
- *  entry accumulates that nothing can reclaim.
- *
- *  A HOST-SUPPLIED one is durable, so it does not rot — but adding it MOVES
- *  the namespace, once, for every host that names itself. Those readers
- *  lose their saved filters on the first load after the deploy, and the old
- *  entry becomes exactly the orphan above. An earlier version of this kept
- *  `k:` identities for that reason and shipped the move; keeping none is
- *  simpler, restores every host to the key it already had, and costs only
- *  that two accounts on one browser share a local namespace — which is
- *  where they were before any of this, is local to the machine, and does
- *  not touch a row on any server.
+ *  Why no identity at all on disk. In memory it belongs in the key: within
+ *  one page load it is what tells two accounts apart. Persisted it is wrong
+ *  twice. A GENERATED one (`o:N`, minted per page load for a host with no
+ *  `sessionKey`) gives every visit a fresh namespace, so the reader's
+ *  filters are forgotten each load and an orphaned `exact.filters.*` entry
+ *  accumulates that nothing can reclaim. A HOST-SUPPLIED one is durable but
+ *  MOVES the namespace once, so those readers lose their filters on the
+ *  first load after the deploy and leave the same orphan behind. Keeping
+ *  none costs only that two accounts on one browser share a local
+ *  namespace — where they already were, local to the machine, touching no
+ *  row on any server.
  */
-export function durableKey(key: string): string {
-  const cut = key.indexOf("|");
-  return cut === -1 ? key : key.slice(cut + 1);
+export function persistedKeyOf(
+  personId: string | number | undefined,
+  patientInfoKey: string | null | undefined,
+): string {
+  return `${personId ?? ""}|${patientInfoKey ?? ""}`;
 }
 
 /** Whether `sessionKey` was usable, i.e. whether the signal above is a real

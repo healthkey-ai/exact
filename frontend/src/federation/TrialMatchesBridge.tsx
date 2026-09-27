@@ -415,8 +415,8 @@ function TrialMatchesBridgeRoot({
   if (rest.stateIdentity != null && hostIdentity === undefined) {
     warnOnce(
       "stateIdentity-unusable",
-      "[exact-remote] `stateIdentity` must be a non-empty string; ignoring it " +
-        "and using the session signal instead.",
+      "[exact-remote] `stateIdentity` must be a non-empty string or a finite " +
+        "number; ignoring it and using the session signal instead.",
     );
   }
 

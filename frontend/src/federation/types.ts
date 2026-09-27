@@ -429,7 +429,7 @@ export interface TrialMatchesProps {
    *  patient itself can switch account without the patient changing — at
    *  which point a debounced filter write goes to the new account's row with
    *  a credential nothing can fault. See `identityKeyOf`. */
-  stateIdentity?: string;
+  stateIdentity?: string | number;
   /** CTOMOP person_id. Mutually exclusive with `patientInfo` — when
    *  both are provided, `patientInfo` wins (matches the server-side
    *  precedence in `resolve_patient_info`). */

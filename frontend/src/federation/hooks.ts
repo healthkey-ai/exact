@@ -14,7 +14,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { sanitizeStoredFilters } from "./filters";
-import { durableKey } from "./bridgeState";
 import {
   PreferenceWriter,
   adapterPreferences,
@@ -836,6 +835,14 @@ export function useSavedFilters(
    *  built for. `TrialMatches` passes `"state"` or `"preferences"`; a caller
    *  with one source can leave it out. */
   sourceId?: string,
+  /** The key for the localStorage fallback, when it must differ from the one
+   *  above. It must: `key` carries the signed-in identity so two accounts do
+   *  not share a writer, and an identity on disk either rots (a generated
+   *  one is per page load) or moves the namespace once (a host-supplied one).
+   *  Handed in already built rather than derived by taking `key` apart —
+   *  an identity can contain the separator, `auth0|5f3c9b` being the usual
+   *  spelling, and a parser got that wrong. Omitted, the key is used as-is. */
+  persistedKey?: string,
 ): {
   persist: (filters: FilterState) => void;
   reset: () => void;
@@ -912,10 +919,7 @@ export function useSavedFilters(
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     return captured
       ? adapterPreferences(preferenceMethodsThrough(captured, live))
-      // `durableKey`: a generated identity is a per-page-load counter, and
-      // this key goes to disk. With it in, the reader's filters are lost on
-      // every visit and an orphan is left behind each time.
-      : localStoragePreferences(durableKey(key));
+      : localStoragePreferences(persistedKey ?? key);
     // `source` rather than `state`: see above, and `sourceId`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, key]);

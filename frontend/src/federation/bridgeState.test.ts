@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  durableKey,
   hasUsableSessionKey,
   identityKeyOf,
   joinBaseUrl,
   nextSessionState,
+  persistedKeyOf,
   personIdOfRow,
   promopStateBasePath,
   resolveSessionSignal,
   selectBridgeView,
   selectPatientInfo,
   shouldResolvePatient,
+  stateKeyOf,
   type PatientLoad,
   usableIdentity,
 } from "./bridgeState";
@@ -344,21 +345,45 @@ describe("identityKeyOf", () => {
   });
 });
 
-describe("durableKey", () => {
-  it("drops the identity, whoever supplied it, because the key goes to disk", () => {
-    // Measured both ways. A generated `o:N` is a per-page-load counter, so
-    // persisted it forgot the reader's filters every visit and orphaned an
-    // entry each time. A host-supplied one is durable but MOVES the
-    // namespace once for everybody who names themselves, losing their
-    // filters on the first load after deploy.
-    expect(durableKey("o:3|42|host")).toBe("42|host");
-    expect(durableKey("k:user-1|42|host")).toBe("42|host");
-    expect(durableKey("|42|host")).toBe("42|host");
+describe("persistedKeyOf", () => {
+  it("is the key this page used before an identity was part of any of them", () => {
+    expect(persistedKeyOf(42, "host")).toBe("42|host");
+    expect(persistedKeyOf(undefined, undefined)).toBe("|");
   });
 
-  it("leaves a patient key that contains a pipe alone past the first", () => {
-    // `patientInfoKey` is serialized JSON and can hold one.
-    expect(durableKey("k:u|42|a|b")).toBe("42|a|b");
+  it("does not let an identity reach disk, whatever it contains", () => {
+    // THE property, over every identity shape a host can pass — including
+    // the one that broke the version this replaces. `auth0|5f3c9b` is the
+    // usual spelling of `sub`, and a persisted key derived by slicing to the
+    // first separator kept everything after the pipe, so that host's
+    // namespace moved anyway.
+    const identities = [
+      undefined,
+      "",
+      "k:user-1",
+      "o:7",
+      "auth0|5f3c9b",
+      "google-oauth2|1234",
+      "a|b|c",
+      42,
+      0,
+    ];
+    const withoutIdentity = persistedKeyOf(42, '{"disease":"MM"}');
+
+    for (const identity of identities) {
+      const full = stateKeyOf(identity, 42, '{"disease":"MM"}');
+
+      // The persisted key is unreachable from the full one by parsing, which
+      // is why it is built rather than carved — and it is the same for every
+      // identity, which is the property that matters.
+      expect(persistedKeyOf(42, '{"disease":"MM"}')).toBe(withoutIdentity);
+      expect(full.endsWith(withoutIdentity)).toBe(true);
+    }
+  });
+
+  it("keeps two patients apart, which is what it is for", () => {
+    expect(persistedKeyOf(42, "a")).not.toBe(persistedKeyOf(43, "a"));
+    expect(persistedKeyOf(42, "a")).not.toBe(persistedKeyOf(42, "b"));
   });
 });
 

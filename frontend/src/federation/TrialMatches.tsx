@@ -36,7 +36,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ActionTooltip } from "./bits";
-import { stateKeyOf } from "./bridgeState";
+import { persistedKeyOf, stateKeyOf } from "./bridgeState";
 import { FilterPanel } from "./FilterPanel";
 import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
@@ -418,6 +418,10 @@ function TrialMatchesInner({
     fields: new Set(),
     all: false,
   });
+  // The key for disk is built from the parts, not carved out of `stateKey`:
+  // see `persistedKeyOf`. It is the key this page used before an identity
+  // was part of any of them.
+  const persistedKey = persistedKeyOf(personId, patientInfoKey);
   const savedFilters = useSavedFilters(
     preferenceStore,
     stateKey,
@@ -502,6 +506,7 @@ function TrialMatchesInner({
       setFilters((current) => normalizeFilterState({ ...current, ...incoming }));
     },
     preferenceSource,
+    persistedKey,
   );
 
   // Whether the panel has been touched since the last time a saved set

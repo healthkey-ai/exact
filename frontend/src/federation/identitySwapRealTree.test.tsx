@@ -125,6 +125,97 @@ describe("a write never crosses an account switch, through the real tree", () =>
     }
   });
 
+  it("honours a numeric stateIdentity, which is how a person id arrives", async () => {
+    // WHAT THIS ASSERTS, and what it deliberately does not. A numeric
+    // identity was being dropped by a string-only check, so the key did not
+    // move at all and NOTHING re-keyed. Honoured, the key moves and every
+    // key-driven guard works: the bookmarks below are re-read under the new
+    // credential instead of being served from the previous account's cache.
+    //
+    // The WRITE is a different matter and is not asserted here, because it
+    // would fail: a key chooses which adapter a flush goes through, and the
+    // only thing that refuses is the token reader, which fires on the
+    // SESSION SIGNAL. An identity that moves without it is exact#583. The
+    // first draft of this test asserted the write and failed — which is the
+    // issue reproducing itself, not a defect in this fix.
+
+    // The guard was being disabled by a host doing the obvious thing:
+    // PROMOP's `person_id` is an integer, so `stateIdentity={user.id}` is
+    // the natural spelling, and a string-only check dropped it and fell
+    // back to a session signal that does not move for a host with a stable
+    // `getToken` and no `sessionKey`. Through the real tree, because the
+    // helper's own unit test cannot see whether the bridge asks it.
+    const props = () => ({
+      baseUrl: "https://exact.example",
+      ctomopBaseUrl: "https://promop.example",
+      getToken: fromStore,
+      patientInfo: { diseaseCode: "MM" },
+      personId: 42,
+    });
+    const view = render(<Bridge {...props()} stateIdentity={1} />);
+    await waitFor(() =>
+      expect(
+        requests.filter((r) => r.url?.endsWith("/trial-enrollments/ids/")).length,
+      ).toBeGreaterThan(0),
+    );
+    requests.length = 0;
+
+    user = "2";
+    await act(async () => {
+      view.rerender(<Bridge {...props()} stateIdentity={2} />);
+    });
+    await act(() => new Promise((r) => setTimeout(r, 200)));
+
+    const reread = requests.filter((r) => r.url?.endsWith("/trial-enrollments/ids/"));
+    expect(reread.length).toBeGreaterThan(0);
+    expect(reread.every((r) => r.authorization === "Bearer token-2")).toBe(true);
+  });
+
+  it("does not move the stored filter namespace, whatever the identity is", async () => {
+    // The localStorage path: no adapter at all, so filters live on disk.
+    // The namespace must not depend on the identity — a generated one is per
+    // page load and would forget the reader's filters every visit, and a
+    // host-supplied one would move the namespace once, losing them on the
+    // first load after deploy and orphaning the old entry.
+    //
+    // `auth0|5f3c9b` specifically. That is the usual spelling of `sub`, and
+    // a persisted key derived by slicing `stateKey` to its first separator
+    // kept everything after the pipe — so exactly the hosts that name
+    // themselves still had their namespace moved. Pinned here rather than
+    // only on the helper, because the helper was right and the CALLER was
+    // the bug.
+    const local = () => ({
+      baseUrl: "https://exact.example",
+      getToken: fromStore,
+      patientInfo: { diseaseCode: "MM" },
+      personId: 42,
+    });
+    const keysAfter = async (identity?: string) => {
+      localStorage.clear();
+      const view = render(
+        identity === undefined ? (
+          <Bridge {...local()} />
+        ) : (
+          <Bridge {...local()} stateIdentity={identity} />
+        ),
+      );
+      await openFilters();
+      await userEvent.type(await screen.findByLabelText("Sponsor"), "X");
+      await act(() => new Promise((r) => setTimeout(r, 800)));
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith("exact.filters."));
+      view.unmount();
+      return keys;
+    };
+
+    const plain = await keysAfter();
+    const auth0 = await keysAfter("auth0|5f3c9b");
+    const named = await keysAfter("k:user-1");
+
+    expect(plain.length).toBe(1);
+    expect(auth0).toEqual(plain);
+    expect(named).toEqual(plain);
+  });
+
   it("does not read user 1's bookmarks for user 2", async () => {
     // Not a write, and it was leaking too: `useStateIds` caches on the same
     // key with a 30s staleTime, so before the identity was in it, user 2 saw
