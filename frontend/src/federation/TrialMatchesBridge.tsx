@@ -456,7 +456,14 @@ function TrialMatchesBridgeRoot({
       // preference calls, and a token refresh within the session is still
       // picked up, because the reader is asked per request.
       createExactPreferences(() =>
-        buildClient(baseUrl, apiBasePath, readTokenForThisSession, SEARCH_TIMEOUT_MS),
+        // `RESOLVE_TIMEOUT_MS`, the same bound as the PROMOP state client
+        // built above, and NOT `SEARCH_TIMEOUT_MS` — which is `undefined`
+        // on purpose, because search is a matcher call over the whole
+        // corpus behind react-query's retries and any ceiling there is
+        // multiplied by four. This is a small write to EXACT's own API
+        // with no retry above it, and unbounded it can hang the saved-filter
+        // writer for as long as the connection stays open.
+        buildClient(baseUrl, apiBasePath, readTokenForThisSession, RESOLVE_TIMEOUT_MS),
       ),
     );
     // `apiClient` is deliberately NOT a dependency, and neither is
