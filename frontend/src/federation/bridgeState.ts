@@ -240,28 +240,53 @@ export function stateKeyOf(
   return `${stateIdentity ?? ""}|${personId ?? ""}|${patientInfoKey ?? ""}`;
 }
 
-/** The same key with any NON-DURABLE identity taken out, for anywhere the
- *  key is written to disk.
+/** A host-supplied `stateIdentity`, or `undefined` when it says nothing.
  *
- *  `identityKeyOf` mints `o:N` from a per-page-load counter when the signal
- *  is an object — which it is for every host that has no `sessionKey` to
- *  give. In memory that is exactly right: within one page load it
- *  distinguishes accounts, which is all a cache or a writer needs. Persisted
- *  it is a bug, and a measured one: every visit gets a fresh namespace, so
- *  the reader's saved filters are forgotten on each load AND an orphaned
- *  `exact.filters.*` entry accumulates that nothing can ever reclaim.
+ *  The same gauntlet `resolveSessionSignal` runs its own input through, and
+ *  for the same reason: `""` is what `user?.id ?? ""` produces, and taken at
+ *  face value it pins every account to one key and silently reopens the
+ *  cross-account write this prop exists to close.
  *
- *  So a durable identity (`k:` — the host's own `sessionKey`) stays, and a
- *  generated one is dropped, which puts such a host back on exactly the key
- *  it had before any of this. Those hosts share one namespace between
- *  accounts on a shared browser; that is the pre-existing behaviour, it is
- *  local to the machine, and the fix for it is to pass a `sessionKey`.
+ *  A NUMBER is usable, which the first version of this check got wrong in
+ *  the unsafe direction. PROMOP's own `person_id` is an integer, so
+ *  `stateIdentity={user.id}` is the natural spelling — and rejecting it fell
+ *  back to the session signal, which for a host with a stable `getToken` and
+ *  no `sessionKey` does not move at all. The guard was disabled by the host
+ *  doing something reasonable.
+ */
+export function usableIdentity(value: unknown): string | undefined {
+  if (typeof value === "string") return value === "" ? undefined : value;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : undefined;
+  }
+  return undefined;
+}
+
+/** The same key with the identity taken out, for anywhere it is written to
+ *  disk.
+ *
+ *  In memory the identity belongs in the key: within one page load it is
+ *  what tells two accounts apart, which is the whole point. Persisted it is
+ *  wrong twice over, and both were measured rather than argued.
+ *
+ *  A GENERATED identity (`o:N`, minted per page load for a host with no
+ *  `sessionKey`) gives every visit a fresh namespace: the reader's saved
+ *  filters are forgotten on each load AND an orphaned `exact.filters.*`
+ *  entry accumulates that nothing can reclaim.
+ *
+ *  A HOST-SUPPLIED one is durable, so it does not rot — but adding it MOVES
+ *  the namespace, once, for every host that names itself. Those readers
+ *  lose their saved filters on the first load after the deploy, and the old
+ *  entry becomes exactly the orphan above. An earlier version of this kept
+ *  `k:` identities for that reason and shipped the move; keeping none is
+ *  simpler, restores every host to the key it already had, and costs only
+ *  that two accounts on one browser share a local namespace — which is
+ *  where they were before any of this, is local to the machine, and does
+ *  not touch a row on any server.
  */
 export function durableKey(key: string): string {
   const cut = key.indexOf("|");
-  if (cut === -1) return key;
-  const identity = key.slice(0, cut);
-  return identity.startsWith("o:") ? key.slice(cut + 1) : key;
+  return cut === -1 ? key : key.slice(cut + 1);
 }
 
 /** Whether `sessionKey` was usable, i.e. whether the signal above is a real

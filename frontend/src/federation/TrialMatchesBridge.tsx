@@ -39,6 +39,7 @@ import {
   selectBridgeView,
   identityKeyOf,
   resolveSessionSignal,
+  usableIdentity,
   selectPatientInfo,
   shouldResolvePatient,
   type PatientLoad,
@@ -410,10 +411,7 @@ function TrialMatchesBridgeRoot({
   // reopens the cross-account write this prop exists to close. Same gauntlet
   // `resolveSessionSignal` runs its own input through, and for the same
   // reason.
-  const hostIdentity =
-    typeof rest.stateIdentity === "string" && rest.stateIdentity !== ""
-      ? rest.stateIdentity
-      : undefined;
+  const hostIdentity = usableIdentity(rest.stateIdentity);
   if (rest.stateIdentity != null && hostIdentity === undefined) {
     warnOnce(
       "stateIdentity-unusable",

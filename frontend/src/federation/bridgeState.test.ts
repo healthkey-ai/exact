@@ -344,21 +344,19 @@ describe("identityKeyOf", () => {
 });
 
 describe("durableKey", () => {
-  it("drops a generated identity, because the key goes to disk", () => {
-    // Measured before this existed: a fresh `o:N` per page load meant the
-    // reader's saved filters were forgotten on every visit and an orphaned
-    // `exact.filters.*` entry accumulated each time, unreclaimable.
+  it("drops the identity, whoever supplied it, because the key goes to disk", () => {
+    // Measured both ways. A generated `o:N` is a per-page-load counter, so
+    // persisted it forgot the reader's filters every visit and orphaned an
+    // entry each time. A host-supplied one is durable but MOVES the
+    // namespace once for everybody who names themselves, losing their
+    // filters on the first load after deploy.
     expect(durableKey("o:3|42|host")).toBe("42|host");
+    expect(durableKey("k:user-1|42|host")).toBe("42|host");
+    expect(durableKey("|42|host")).toBe("42|host");
   });
 
-  it("keeps an identity the host actually gave", () => {
-    // `k:` is a real `sessionKey`: stable across page loads, so it can
-    // safely namespace what is written to disk.
-    expect(durableKey("k:user-1|42|host")).toBe("k:user-1|42|host");
-  });
-
-  it("leaves a key with no identity alone", () => {
-    expect(durableKey("|42|host")).toBe("|42|host");
-    expect(durableKey("nopipe")).toBe("nopipe");
+  it("leaves a patient key that contains a pipe alone past the first", () => {
+    // `patientInfoKey` is serialized JSON and can hold one.
+    expect(durableKey("k:u|42|a|b")).toBe("42|a|b");
   });
 });

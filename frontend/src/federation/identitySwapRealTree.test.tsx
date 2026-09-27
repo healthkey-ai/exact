@@ -63,9 +63,13 @@ describe("a write never crosses an account switch, through the real tree", () =>
         ).not.toBeNull(),
       { timeout: 3000 },
     );
+    // Idempotent: the toggle closes an open panel, and after an account
+    // switch the panel is often still open.
+    if (screen.queryByLabelText("Sponsor")) return;
     await userEvent.click(
       screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
     );
+    await screen.findByLabelText("Sponsor");
   };
 
   it("does not post user 1's typed filter under user 2's token", async () => {
@@ -82,6 +86,43 @@ describe("a write never crosses an account switch, through the real tree", () =>
     await act(() => new Promise((r) => setTimeout(r, 1500)));
 
     expect(leaked()).toEqual([]);
+  });
+
+  it("does not carry user 1's weights into user 2's first save", async () => {
+    // Not a key: a RETENTION rule. `ownedFields` keeps the weights across a
+    // switch on purpose — they are the reader's, not the patient's — which
+    // is right for a patient change and exactly wrong for an account one.
+    // Measured before the fix: user 2's first keystroke sent user 1's four
+    // weights alongside their own filter.
+    const view = render(<Bridge {...base()} sessionKey="user-1" />);
+    await openFilters();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Suitability Preferences/ }),
+    );
+    const risk = await screen.findByLabelText("Risk Weight");
+    await userEvent.clear(risk);
+    await userEvent.type(risk, "90");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    user = "2";
+    await act(async () => {
+      view.rerender(<Bridge {...base()} sessionKey="user-2" />);
+    });
+    requests.length = 0;
+    await openFilters();
+    const sponsor = await screen.findByLabelText("Sponsor");
+    await userEvent.type(sponsor, "USER2SPONSOR");
+    await act(() => new Promise((r) => setTimeout(r, 1500)));
+
+    const sent = requests.filter(
+      (r) => r.url?.includes("trial-search-preferences") && r.method === "post",
+    );
+    for (const write of sent) {
+      const body = (write.data as { preferences?: Record<string, unknown> })
+        ?.preferences;
+      expect(body?.riskWeight).toBeUndefined();
+    }
   });
 
   it("does not read user 1's bookmarks for user 2", async () => {

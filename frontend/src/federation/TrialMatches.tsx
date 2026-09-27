@@ -678,17 +678,35 @@ function TrialMatchesInner({
   // load is keyed on, so the clear lands before that patient's answer does.
   // (The reader's session FILTERS are deliberately kept across the switch; it
   // is the claim about who owns them that does not carry over.)
+  const lastIdentity = useRef(stateIdentity);
   useEffect(() => {
-    // The weights are the exception, and for the same reason the session
-    // filters are kept across the switch: they are the reader's, not the
-    // patient's. Cleared here, they stayed live on the wire and on the
+    // The weights are the exception when the PATIENT changes, and for the
+    // same reason the session filters are kept: they are the reader's, not
+    // the patient's. Cleared there, they stayed live on the wire and on the
     // trigger while quietly ceasing to be owned — so the next Reset dropped
     // them from the page and wrote nothing back, which is exactly the
     // silent change this control is not allowed to make.
-    ownedFields.current = new Set(
-      WEIGHT_FIELDS.map(({ key }) => key).filter((key) => ownedFields.current.has(key)),
-    );
-  }, [stateKey]);
+    //
+    // They are NOT the exception when the READER changes, and that is the
+    // whole difference. Retained across an account switch they stay owned by
+    // somebody who is no longer here: measured, user 1 sets a weight, the
+    // host switches account, and user 2's first keystroke sends user 1's
+    // four weights into user 2's row alongside their own filter.
+    //
+    // This is a RETENTION rule, not a key, which is why an enumeration of
+    // keys did not find it. `stateKey` cannot answer it either — the
+    // identity is inside it now, so "the key moved" no longer says which
+    // half moved.
+    const readerChanged = lastIdentity.current !== stateIdentity;
+    lastIdentity.current = stateIdentity;
+    ownedFields.current = readerChanged
+      ? new Set()
+      : new Set(
+          WEIGHT_FIELDS.map(({ key }) => key).filter((key) =>
+            ownedFields.current.has(key),
+          ),
+        );
+  }, [stateKey, stateIdentity]);
   // Per READ, not per patient. A read that fails or is cancelled never calls
   // back, so without this its veto outlives it — and the next read, from a
   // store the host swapped in for the same patient, would find fields marked
