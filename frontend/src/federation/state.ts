@@ -329,7 +329,10 @@ export class PatientFieldsRefused extends Error {
  */
 function refusedFields(error: unknown, sent: Record<string, unknown>): string[] {
   const body = (error as { response?: { data?: unknown } })?.response?.data;
-  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
+  if (!body || typeof body !== "object") return [];
+  // No array guard: `Object.keys` of one gives indices, and `"0"` is not a
+  // field anybody sent, so the intersection already refuses it. A guard
+  // there would be a line no test can kill — which is how it was found.
   return Object.keys(body).filter((field) => field in sent);
 }
 

@@ -42,6 +42,19 @@ export interface PatientWriterOptions {
 
 type Writer = NonNullable<TrialStateAdapter["setPatientFields"]>;
 
+/** Own property, not `in`.
+ *
+ *  `in` walks the prototype chain, so `"constructor"` is a member of every
+ *  object literal. An error naming it would pass the intersection below,
+ *  leave the whole batch to re-queue, and `finally` re-drains — the
+ *  identical request for ever. Unreachable from a DRF field name, but the
+ *  point of that intersection is to make termination a property of the code
+ *  rather than of who is calling it.
+ */
+function has(bag: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(bag, field);
+}
+
 /** The fields an error names, when it names any.
  *
  *  Duck-typed rather than `instanceof`: the error crosses a module boundary
@@ -61,7 +74,7 @@ function namedFields(error: unknown, sent: Record<string, unknown>): string[] {
   // filters, but this accepts a duck-typed error from any host adapter, so
   // the guarantee has to live here.
   return fields.filter(
-    (field): field is string => typeof field === "string" && field in sent,
+    (field): field is string => typeof field === "string" && has(sent, field),
   );
 }
 
@@ -200,13 +213,27 @@ export class PatientFieldWriter {
           ? Object.keys(batch).filter((field) => !refused.includes(field))
           : [];
         const failed = refused.length > 0 ? refused : Object.keys(batch);
-        if (rest.length > 0) {
-          // Behind whatever arrived while this was in flight: that is newer
-          // and must win the merge, exactly as it would have done anyway.
-          this.queued = {
-            ...Object.fromEntries(rest.map((field) => [field, batch[field]])),
-            ...this.queued,
-          };
+        for (const field of rest) {
+          if (has(this.queued, field)) {
+            // SUPERSEDED. The reader edited this field again while the batch
+            // was on the wire, so the newer value is already queued and the
+            // one being carried back is stale. Re-queueing would MERGE the
+            // two — and the caller counts SAVES, not batches, so two saves
+            // collapsing into one answer leaves its counter above zero for
+            // ever and the row stuck on "Saving…" over a value the record
+            // does hold. That is the failure this whole change exists to
+            // prevent, one level up, and it is why the attempt that just
+            // ended is reported rather than silently dropped: `onSettled`
+            // decrements the count and returns early when a newer edit is
+            // still owed, which is exactly this case.
+            try {
+              this.onSettled(field, { status: "unconfirmed" });
+            } catch (reportingError: unknown) {
+              console.warn("[exact] a superseded write could not be reported", reportingError);
+            }
+            continue;
+          }
+          this.queued[field] = batch[field];
         }
         try {
           this.onError(failed, error);

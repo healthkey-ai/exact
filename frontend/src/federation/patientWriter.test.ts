@@ -408,6 +408,26 @@ describe("a batch the record refuses", () => {
     expect(failed).toEqual([["hemoglobin_g_dl"]]);
   });
 
+  it("is not fooled by an inherited property name", async () => {
+    // `"constructor" in {}` is true, so a membership test that walks the
+    // prototype chain accepts it, leaves the whole batch to re-queue, and
+    // `finally` re-drains — the identical request for ever. Unreachable
+    // from a DRF field name; reachable from any host adapter, which is what
+    // the intersection is there to be safe against.
+    const t = refusing([["constructor"], null]);
+    const failed: string[][] = [];
+    const w = new PatientFieldWriter(t.write, {
+      debounceMs: 1,
+      onError: (fields) => failed.push(fields),
+    });
+
+    w.save("hemoglobin_g_dl", 12);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(t.calls).toEqual([{ hemoglobin_g_dl: 12 }]);
+    expect(failed).toEqual([["hemoglobin_g_dl"]]);
+  });
+
   it("terminates when the retry is refused for a different field", async () => {
     // Each refusal strictly shrinks the batch, so this cannot loop.
     const t = refusing([["a"], ["b"], null]);

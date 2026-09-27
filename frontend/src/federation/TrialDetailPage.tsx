@@ -145,6 +145,16 @@ export function formatValue(value: unknown, options?: TrialDetailField["options"
   // `splitJoined`, so the split here and the split the editor seeds from are
   // the same one. Two different splits of the same string is how
   // `inv(3)(q21,q26)` becomes two markers nobody has heard of.
+  //
+  // THERE IS A THIRD RULE, and it is the one that decides eligibility:
+  // EXACT's matcher uses a bare `value.split(",")` with no trimming and no
+  // bracket awareness (`trials/querysets/trial.py`). PROMOP reads
+  // `cytogenetic_markers` back `", "`-joined, so the matcher already drops
+  // every marker after the first — before this change and independently of
+  // it. What this DOES do is remove the last on-screen hint: the cell used
+  // to show raw text and now shows recognised labels for values the match
+  // is not using. Filed as #588, which is where the three rules are made
+  // one; this is not the place to paper over it.
   if (typeof value === "string" && options?.length) {
     const parts = splitJoined(value);
     const known = parts.length > 1
