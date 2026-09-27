@@ -387,6 +387,27 @@ describe("a batch the record refuses", () => {
     expect(t.calls).toHaveLength(1);
   });
 
+  it("fails the batch when the error names something that was not sent", async () => {
+    // A host adapter is free to throw whatever it likes, and this duck-types
+    // `fields` off it. An error naming a field outside the batch leaves the
+    // whole batch to re-queue, and `finally` re-drains — so without the
+    // intersection this sends the identical request for ever while the
+    // fields it carries sit in "Saving…". Counted, not just observed: an
+    // infinite loop shows up as a growing call log, not a failing assert.
+    const t = refusing([["a_field_from_another_request"], null]);
+    const failed: string[][] = [];
+    const w = new PatientFieldWriter(t.write, {
+      debounceMs: 1,
+      onError: (fields) => failed.push(fields),
+    });
+
+    w.save("hemoglobin_g_dl", 12);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(t.calls).toEqual([{ hemoglobin_g_dl: 12 }]);
+    expect(failed).toEqual([["hemoglobin_g_dl"]]);
+  });
+
   it("terminates when the retry is refused for a different field", async () => {
     // Each refusal strictly shrinks the batch, so this cannot loop.
     const t = refusing([["a"], ["b"], null]);

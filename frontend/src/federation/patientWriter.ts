@@ -50,10 +50,19 @@ type Writer = NonNullable<TrialStateAdapter["setPatientFields"]>;
  *  throws something else gets the old behaviour, which is the safe default
  *  — everything unsaved is reported unsaved.
  */
-function namedFields(error: unknown): string[] {
+function namedFields(error: unknown, sent: Record<string, unknown>): string[] {
   const fields = (error as { fields?: unknown })?.fields;
   if (!Array.isArray(fields)) return [];
-  return fields.filter((field): field is string => typeof field === "string");
+  // Intersected with what was actually sent, and that is what makes the
+  // retry terminate rather than a promise that it will. An error naming
+  // something outside the batch leaves `rest` equal to the whole batch, and
+  // `finally` re-drains, so the identical request goes out for ever while
+  // the fields it carries sit in "Saving…". The PROMOP adapter already
+  // filters, but this accepts a duck-typed error from any host adapter, so
+  // the guarantee has to live here.
+  return fields.filter(
+    (field): field is string => typeof field === "string" && field in sent,
+  );
 }
 
 export class PatientFieldWriter {
@@ -181,7 +190,12 @@ export class PatientFieldWriter {
         // Reporting only the named ones without re-queueing the rest would
         // be worse than today: `onError` is what retires a field from
         // "Saving…", so anything left unreported stays there for ever.
-        const refused = namedFields(error);
+        //
+        // "Strictly shrinks" holds because `namedFields` intersects with the
+        // batch, so a non-empty answer always removes at least one field.
+        // Without that it is not a guarantee but a hope, and the failure is
+        // an infinite retry of the identical request.
+        const refused = namedFields(error, batch);
         const rest = refused.length > 0
           ? Object.keys(batch).filter((field) => !refused.includes(field))
           : [];
