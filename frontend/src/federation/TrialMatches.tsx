@@ -1821,7 +1821,7 @@ function TrialMatchesInner({
         </h1>
         <SuitabilityPreferences
           filters={filters}
-          patientKey={patientHandle}
+          readerKey={readerHandle}
           onChange={handleWeightsChange}
         />
       </div>

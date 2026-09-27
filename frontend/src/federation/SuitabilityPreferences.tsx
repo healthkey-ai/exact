@@ -97,9 +97,16 @@ function readDraft(draft: Draft): {
 export interface SuitabilityPreferencesProps {
   filters: FilterState;
   /** Who the weights would be saved for. The dialog closes when it changes:
-   *  a host can switch patients with this open, and the draft in hand is the
-   *  PREVIOUS reader's — saved then, it lands in the new patient's row. */
-  patientKey: string;
+   *  a host can switch READERS with this open, and the draft in hand is the
+   *  previous one's — saved then, it lands in the new reader's row.
+   *
+   *  The reader, not the patient: the weights live in a row EXACT keys on
+   *  the identity in the token, so a host switching ACCOUNT while showing
+   *  the same patient changes whose row this writes to without changing the
+   *  patient. This prop was `patientKey` and the mismatch was invisible
+   *  because the docstring already said "reader". See the invariant on
+   *  `live()` in `hooks.ts`. */
+  readerKey: string;
   /** Apply and persist. The four always travel together — a partial set
    *  would be merged by the store into whatever it held before, which is
    *  how a reader ends up with a pair of weights they never chose. */
@@ -108,7 +115,7 @@ export interface SuitabilityPreferencesProps {
 
 export function SuitabilityPreferences({
   filters,
-  patientKey,
+  readerKey,
   onChange,
 }: SuitabilityPreferencesProps) {
   // Per instance, because two mounts on one page would otherwise emit the
@@ -123,7 +130,7 @@ export function SuitabilityPreferences({
   // and there is no answer to "which of these numbers did you mean for whom".
   useEffect(() => {
     setOpen(false);
-  }, [patientKey]);
+  }, [readerKey]);
 
   const openDialog = () => {
     // Seeded on open, not held in step with `filters`: the dialog is the only
