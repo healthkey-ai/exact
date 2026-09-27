@@ -539,6 +539,10 @@ export interface RenderTrialMatchesResult extends RenderResult {
 export interface TrialMatchesProps {
   patientInfo?: PatientInfo | null;
   personId?: string | number;
+  /** Which signed-in identity the `state` belongs to. Separate from the
+   *  patient on purpose: EXACT's own rows are keyed on it, so a test can
+   *  switch account while holding the patient still. */
+  stateIdentity?: string;
   // Typed, not `Record<string, unknown>` + `as never`: that turned off
   // checking for every test, so a typo'd filter name compiled and the
   // test asserted nothing.
@@ -597,6 +601,7 @@ export function renderTrialMatches(
             : next.patientInfo
         }
         personId={next.personId}
+        stateIdentity={next.stateIdentity}
         initialFilters={next.initialFilters}
         renderMap={next.renderMap}
         state={next.state}

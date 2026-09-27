@@ -456,6 +456,49 @@ describe("when the answer cannot be stored", () => {
     expect(await screen.findByText(OFFER)).toBeTruthy();
   });
 
+  it("offers it to the next ACCOUNT, looking at the same patient", async () => {
+    // The flag moved. It used to live in a row keyed on `person_id`, so
+    // "same patient" was a fair answer to "same reader"; EXACT keys its own
+    // row on the identity in the token, and a host that switches account
+    // while showing the same patient changes neither `personId` nor the
+    // payload. Keyed on the patient alone the previous account's `hide`
+    // carried over, `shouldRead` refused a second read, and the new reader
+    // was never asked at all.
+    const { state } = withWizard(true);
+    const asked = state.weightsWizard.wasOffered as ReturnType<typeof vi.fn>;
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state,
+      personId: 11,
+      stateIdentity: "k:user-1",
+    });
+    await screen.findByText("Trial 1");
+    expect(screen.queryByText(OFFER)).toBeNull();
+
+    asked.mockResolvedValue(false);
+    setProps({ stateIdentity: "k:user-2" });
+
+    expect(await screen.findByText(OFFER)).toBeTruthy();
+  });
+
+  it("does not carry one account's open wizard over to the next", async () => {
+    // The other direction, and the worse one: the previous reader's
+    // half-filled form still on screen in front of somebody else.
+    const { state } = withWizard(false);
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state,
+      personId: 11,
+      stateIdentity: "k:user-1",
+    });
+    await screen.findByText(OFFER);
+
+    (state.weightsWizard.wasOffered as ReturnType<typeof vi.fn>).mockResolvedValue(
+      true,
+    );
+    setProps({ stateIdentity: "k:user-2" });
+
+    expect(screen.queryByText(OFFER)).toBeNull();
+  });
+
   it("does not carry one patient's offer over to the next", async () => {
     // The host can switch patients without unmounting. Until the new
     // reader's flag has been read, there is no question to put to them —

@@ -1361,31 +1361,47 @@ function TrialMatchesInner({
   // is about, and the answer would race the read that tells us whether they
   // have already been asked.
   const wizardStore = preferenceStore?.weightsWizard;
+  // WHOSE answer this is, and it is not the patient's. The flag lives in the
+  // row EXACT keys on the identity in the token, so "has this reader been
+  // offered the wizard" is a question about the account, not about who they
+  // are looking at. Keyed on the patient alone, a host that switches account
+  // while showing the same patient carried the previous account's answer
+  // over: theirs had reached `hide`, `shouldRead` therefore refused a second
+  // read, and the new reader was never offered the wizard at all — or worse,
+  // found the previous one's half-filled form still open.
+  //
+  // The patient stays in the subject as well. Two readers of one account can
+  // be looking at different patients, and the weights are per row.
+  //
+  // Same shape as the saved-filter key two hundred lines up, and found the
+  // same way: something keyed on the patient while the data it guards moved
+  // to the identity.
+  const wizardSubject = `${stateIdentity ?? ""}|${patientHandle}`;
   // The rules about whose answer this is, and when a read may be issued or
   // believed, live in `weightsWizardState.ts` — written down once, after
   // three review rounds had each closed a different spelling of the same one.
   // What is left here is the wiring: when to fire an event, and what to draw.
-  const [wizard, dispatchWizard] = useReducer(nextWizard, patientHandle, initialWizard);
+  const [wizard, dispatchWizard] = useReducer(nextWizard, wizardSubject, initialWizard);
   // Re-raised DURING the render that changes the patient, like `typed` above.
   // An effect would be a render late, and the new patient's read would then
   // land against a state still naming the old one and be thrown away — with
   // no second read allowed, so they would never be asked at all.
-  if (wizard.patient !== patientHandle) {
-    dispatchWizard({ kind: "patient", patient: patientHandle });
+  if (wizard.patient !== wizardSubject) {
+    dispatchWizard({ kind: "patient", patient: wizardSubject });
   }
   // Both read off the model rather than recomputed: this render may still be
   // holding the previous patient's state, one render before the line above
   // takes effect, and `isOpen` says no for exactly that reason.
-  const wizardOpen = isOpen(wizard, patientHandle);
-  const wizardBusy = wizard.patient === patientHandle && wizard.at === "saving";
+  const wizardOpen = isOpen(wizard, wizardSubject);
+  const wizardBusy = wizard.patient === wizardSubject && wizard.at === "saving";
 
   useEffect(() => {
-    if (!wizardStore || wizard.patient !== patientHandle) return;
+    if (!wizardStore || wizard.patient !== wizardSubject) return;
     // `shouldRead` owns the two reasons not to: an answer is already known,
     // or a read is already out. The second is the one a state value cannot
     // express — see the module.
     if (!shouldRead(wizard, !savedFilters.pending)) return;
-    const patient = patientHandle;
+    const patient = wizardSubject;
     dispatchWizard({ kind: "reading", patient });
     // Every result is dispatched, none suppressed by a cleanup flag: the
     // reducer decides whether a result still applies, which is the only place
@@ -1396,7 +1412,7 @@ function TrialMatchesInner({
       .wasOffered()
       .then((offered) => dispatchWizard({ kind: "read", patient, offered }))
       .catch(() => dispatchWizard({ kind: "readFailed", patient }));
-  }, [wizardStore, savedFilters.pending, patientHandle, wizard]);
+  }, [wizardStore, savedFilters.pending, wizardSubject, wizard]);
 
   /** Write the flag, and tell the filter writer its tag is stale.
    *
@@ -1463,7 +1479,7 @@ function TrialMatchesInner({
     // a dismissal during a save would record a decline over a ranking still
     // on the wire.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = patientHandle;
+    const patient = wizardSubject;
     answering.current = patient;
     dispatchWizard({ kind: "answer", patient });
     // A failure is not surfaced — there is nothing for the reader to do about
@@ -1476,7 +1492,7 @@ function TrialMatchesInner({
     // at all — only `disabled={busy}` in the view, which is a claim about
     // pointers, not about calls.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = patientHandle;
+    const patient = wizardSubject;
     answering.current = patient;
     dispatchWizard({ kind: "answer", patient });
     // Weights first, through the same path the preferences dialog uses, so
