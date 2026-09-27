@@ -21,7 +21,6 @@ from trials.querysets.trial import (
     TrialQuerySet,
     _CUSTOM_SEARCH_DISPATCH,
     _csv,
-    _csv_stripped,
     _filter_therapy_lines_once,
 )
 
@@ -114,11 +113,12 @@ class TestCsvHelpers:
         assert _csv('') == []
         assert _csv(None) == []
 
-    def test_csv_stripped_strips_whitespace(self):
-        assert _csv_stripped(' a , b , c ') == ['a', 'b', 'c']
-
-    def test_csv_stripped_empty_returns_empty_list(self):
-        assert _csv_stripped('') == []
+    def test_csv_strips_whitespace(self):
+        # There used to be a second helper for this, used by 11 of the 27
+        # fields while the other 16 kept the spaces — and PROMOP joins with
+        # ", ", so those 16 lost every value after the first (#588). One
+        # rule now; see `tests/querysets/test_value_splitting.py`.
+        assert _csv(' a , b , c ') == ['a', 'b', 'c']
 
 
 class TestTherapyLinesOnceFlag:

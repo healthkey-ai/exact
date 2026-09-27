@@ -311,12 +311,16 @@ const NOT_IN_RECORD =
  *  Measured on the PROMOP side today: `validate_flipi_score_options` stores
  *  `','.join(selected)` with no space, and EXACT strips anyway
  *  (`PatientInfoFlipyScore.scope_by_options`); `languages_skills` has no
- *  validator, and the matcher splits it with `_csv`, which does NOT strip
- *  (`_csv_stripped` exists beside it and is not used). A writer that joined
- *  with ", " would therefore produce `" write__fr"` and match nothing —
- *  silently, which is this commit's whole subject. The one `', '.join` in that
- *  serializer belongs to `cytogenetic_markers` and is read-only, so nothing
- *  does it today.
+ *  validator. The whitespace half of that gate is closed: #588 made `_csv`
+ *  strip, `_csv_stripped` is gone, and a writer that joined with ", " no
+ *  longer produces `" write__fr"`.
+ *
+ *  It is not the reason `languages_skills` is blocked, and #588 did not
+ *  unblock it. PROMOP serves that column `"; "`-joined BETWEEN languages
+ *  and `", "`-joined INSIDE each one (`omop_core/models.py:955`), so `_csv`
+ *  splits on the inner separator and the matcher reads garbage on both
+ *  sides of it, whatever a writer sends (#591). Read the paragraph below
+ *  for the standing reason.
  *
  *  `languages_skills` would stay here even with a working editor: PROMOP
  *  denormalizes that column from `PersonLanguageSkill` and says of the eight

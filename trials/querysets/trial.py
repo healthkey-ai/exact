@@ -1,5 +1,6 @@
 import itertools
 import re
+from collections.abc import Mapping, Set as AbstractSet
 from typing import TYPE_CHECKING
 
 from django.contrib.gis.db.models.functions import Distance
@@ -188,12 +189,101 @@ def get_recruitment_status_filter_values(recruitment_status):
 # ---------------------------------------------------------------------------
 
 
+# One value, split the same way everywhere it is read.
+#
+# There used to be two rules behind the dispatch table below: `_csv`, a bare
+# `value.split(",")`, for 16 fields, and `_csv_stripped` for 11 more. Two
+# rules over one table, and whichever you read first looks deliberate (#588).
+#
+# What the single rule fixes, measured against the producer rather than
+# assumed: PROMOP `", ".join(...)`s exactly two of those 16 —
+# `staging_modalities` (ctomop `patient_record_service.py:2840`) and
+# `protein_expressions` (`:3748`). A bare split keeps the space, so
+# `"ct, mri"` arrived as `["ct", " mri"]` and every value after the first
+# matched nothing. Live today for any patient who answered twice on either.
+#
+# What it does NOT fix, so nobody reads more into it than is there:
+#   - `cytogenic_markers`, the field this rule looks like it is for, never
+#     reaches this module. PROMOP renamed the column `cytogenetic_markers`
+#     and aliases the old spelling on writes only, so `resolve.py:357` drops
+#     it (#590). That is the bigger bug and it is filed separately.
+#   - `molecular_markers` is `"; "`-joined by the producer
+#     (`patient_record_service.py:2733`), so it is one token either way.
+#   - `languages_skills` is worse, not safer: `"; "` BETWEEN languages and
+#     `", "` INSIDE each one (`omop_core/models.py:955`), so `_csv` splits
+#     it on the inner separator and returns garbage on both sides of it.
+#     Its editor is already suppressed for an unrelated reason (#591).
+#   - the remaining fields are scalar columns in PROMOP with no join at all.
+#
+# Brackets are the other half of the rule. `inv(3)(q21,q26)` is ONE marker
+# and a plain split tears it into two tokens no vocabulary has heard of.
+#
+# Be honest about how far that gets: the lookahead only holds a comma that
+# is INSIDE the parens, and no value any of these 29 fields reads has one
+# there. What they do have is a comma in prose. `'M0(i+): No metastasis on
+# scans, but cancer cells found'` is a real `distant_metastasis_stage`
+# choice (ctomop `0217_seed_dropdown_field_choices.py:71`) and the parens
+# do not help, because the comma is outside them; two `tumor_stage` choices
+# are torn the same way with no parens involved at all. This rule tears all
+# three exactly as the old one did.
+#
+# Nothing regresses: old and new were compared over every seeded choice of
+# all 29 fields and TOKENIZE identically — three of them differ only by the
+# leading space this change removes. But that makes the bracket half a
+# shape guard that does not cover the shape actually present (#591).
+#
+# The lookahead is PROMOP's own, character for character
+# (`omop_core/services/cytogenetics.py:50`). The editor's `splitJoined`
+# shares the regex and nothing else: it drops empty parts, and this does
+# not (see below).
+_VALUE_SEPARATOR = re.compile(r",\s*(?![^()]*\))")
+
+
+def _one_value(part):
+    """One value, as a string. A container is not one value.
+
+    Used at both levels on purpose. Guarding only the top level left
+    `[{'a': 1}]` rendering as `["{'a': 1}"]`, which is the same defect one
+    level down.
+    """
+    if isinstance(part, (Mapping, AbstractSet, list, tuple)):
+        raise TypeError(f'a {type(part).__name__} is not a patient value')
+    return str(part).strip()
+
+
 def _csv(value):
-    return value.split(",") if value else []
+    """The values in a multi-valued column, as everything else reads them.
 
+    A list stays a list. PROMOP's reader and the editor both special-case
+    one, and `str()`ing it here would turn `['del17p13', 't414']` into two
+    garbage tokens that match nothing and say nothing — worse than the
+    `AttributeError` this used to raise.
 
-def _csv_stripped(value):
-    return [x.strip() for x in _csv(value)]
+    A non-string SCALAR is still `str()`ed, because both of those references
+    do that too and two call sites below used to. Dropping it turned
+    `{"concomitantMedications": 5}` from a 200 with a no-op filter into a
+    TypeError from `re.split`.
+
+    A container is neither, at either level: `str()` would render it as
+    two or more tokens that look like values and match nothing — the same
+    silent failure a list used to give. `PatientInfo.__init__` is bare
+    `setattr` and `resolve.py:357` filters the payload by field name only,
+    so both `{"richterTransformation": {"a": 1}}` and
+    `{"tumorStage": [{"a": 1}]}` do reach here. Both stay loud, which for
+    the two call sites below is a 500 where a dict used to be a 200 with a
+    garbage filter. That is the trade and it is deliberate; if a 400 is
+    wanted instead, it belongs in `resolve.py` beside the other shape
+    checks, not in a re-render here.
+
+    Empty parts are kept, deliberately. `eligible_for_required_lists` reads
+    `[]` as "apply no filter", so dropping them would turn a whitespace-only
+    answer from "only trials that require nothing" into "every trial".
+    """
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [_one_value(part) for part in value]
+    return [part.strip() for part in _VALUE_SEPARATOR.split(_one_value(value))]
 
 
 def _has_location(**location_lookups):
@@ -292,7 +382,7 @@ _CUSTOM_SEARCH_DISPATCH = {
     'bcl2_inhibitor_refractory': lambda s, v, _c: s.eligible_for_bcl2_inhibitor_refractory(v),
     'btk_inhibitor_refractory': lambda s, v, _c: s.eligible_for_btk_inhibitor_refractory(v),
     'tp53_disruption': lambda s, v, _c: s.eligible_for_tp53_disruption(v),
-    # Comma-separated.
+    # Multi-valued: one `_csv` for all of them (#588).
     'ethnicity': lambda s, v, _c: s.eligible_for_ethnicity(_csv(v)),
     'languages_skills': lambda s, v, _c: s.eligible_for_languages_skills(_csv(v)),
     'planned_therapies': lambda s, v, _c: s.eligible_for_planned_therapies(_csv(v)),
@@ -309,24 +399,26 @@ _CUSTOM_SEARCH_DISPATCH = {
     'distant_metastasis_stage': lambda s, v, _c: s.eligible_for_distant_metastasis_stages(_csv(v)),
     'staging_modalities': lambda s, v, _c: s.eligible_for_staging_modalities(_csv(v)),
     'protein_expressions': lambda s, v, _c: s.eligible_for_protein_expressions(_csv(v)),
-    # Comma-separated + per-value strip.
-    'richter_transformation': lambda s, v, _c: s.eligible_for_richter_transformations(_csv_stripped(v)),
-    'tumor_burden': lambda s, v, _c: s.eligible_for_tumor_burdens(_csv_stripped(v)),
-    'disease_activity': lambda s, v, _c: s.eligible_for_disease_activities(_csv_stripped(v)),
-    'binet_stage': lambda s, v, _c: s.eligible_for_binet_stages(_csv_stripped(v)),
+    'richter_transformation': lambda s, v, _c: s.eligible_for_richter_transformations(_csv(v)),
+    'tumor_burden': lambda s, v, _c: s.eligible_for_tumor_burdens(_csv(v)),
+    'disease_activity': lambda s, v, _c: s.eligible_for_disease_activities(_csv(v)),
+    'binet_stage': lambda s, v, _c: s.eligible_for_binet_stages(_csv(v)),
     # MCL (#94). Single-string patient attrs are CSV-split for parity with
-    # the matcher's COMPUTED branch at user_to_trial_attr_matcher.py:592-594
+    # the matcher's COMPUTED branch at user_to_trial_attr_matcher.py:938-963
+    # — parity on whitespace, which is what this was about; that branch is
+    # still bracket-naive and now disagrees with `_csv` on a bracketed
+    # value (#591 §2)
     # — without that, a `'classic,leukemic'` value would matcher-overlap as
     # two codes but queryset-filter on the literal joined string, silently
     # dropping every trial. Patient list attrs flow through unchanged.
-    'morphologic_variant': lambda s, v, _c: s.eligible_for_morphologic_variants(_csv_stripped(v)),
-    'disease_behavior': lambda s, v, _c: s.eligible_for_disease_behaviors(_csv_stripped(v)),
-    'disease_subtype': lambda s, v, _c: s.eligible_for_disease_subtypes(_csv_stripped(v)),
-    'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv_stripped(v)),
-    'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv_stripped(v)),
+    'morphologic_variant': lambda s, v, _c: s.eligible_for_morphologic_variants(_csv(v)),
+    'disease_behavior': lambda s, v, _c: s.eligible_for_disease_behaviors(_csv(v)),
+    'disease_subtype': lambda s, v, _c: s.eligible_for_disease_subtypes(_csv(v)),
+    'mipi_risk': lambda s, v, _c: s.eligible_for_mipi_risks(_csv(v)),
+    'mipi_c_risk': lambda s, v, _c: s.eligible_for_mipi_c_risks(_csv(v)),
     'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(v),
-    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv_stripped(v)),
-    'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv_stripped(v)),
+    'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv(v)),
+    'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv(v)),
 }
 
 
@@ -1536,7 +1628,7 @@ class TrialQuerySet(models.QuerySet):
             return self.exclude(stem_cell_transplant_history_required=True)
 
         if not isinstance(stem_cell_transplant_history, (list, tuple)):
-            stem_cell_transplant_history = [x.strip() for x in str(stem_cell_transplant_history).split(',')]
+            stem_cell_transplant_history = _csv(stem_cell_transplant_history)
 
         mapped_items = []
         for item in stem_cell_transplant_history:
@@ -1555,7 +1647,7 @@ class TrialQuerySet(models.QuerySet):
             return self
 
         if not isinstance(concomitant_medications, (list, tuple)):
-            concomitant_medications = [x.strip() for x in str(concomitant_medications).split(',')]
+            concomitant_medications = _csv(concomitant_medications)
 
         if concomitant_medication_date:
             current_washout_period_in_days = (dt.date.today() - concomitant_medication_date).days
@@ -1737,7 +1829,7 @@ class TrialQuerySet(models.QuerySet):
     # MCL filters (#94). The patient-side attrs land here as a single
     # string (variant / risk / behavior / subtype), a comma-string of
     # derived codes (bulky_disease_criteria / high_risk_mcl_criteria,
-    # split via _csv_stripped in dispatch), or a list (extranodal_sites).
+    # split via _csv in dispatch), or a list (extranodal_sites).
     # All map to JSON-list trial columns checked via the shared helpers.
     # ------------------------------------------------------------------
 
