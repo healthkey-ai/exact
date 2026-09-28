@@ -335,6 +335,7 @@ class TestRecognisedMeansWeWillActuallyReadIt:
 
         from trials.services.patient_info.patient_info import PatientInfo
         from trials.services.patient_info.resolve import (
+            _INBOUND_ALIASES,
             M2M_PAYLOAD_KEYS,
             _build_in_memory,
             _known_attribute_names,
@@ -364,7 +365,13 @@ class TestRecognisedMeansWeWillActuallyReadIt:
                 continue
             if name in RECOMPUTED_ATTRIBUTES:
                 continue
-            field = fields.get(name)
+            # An alias is recognised under the name the PRODUCER sends and
+            # arrives under the one EXACT stores, so the arrival is checked
+            # there. Recognising it without that redirection is the defect
+            # this covers: the key would pass the gate and the value would
+            # still be dropped at the filter.
+            stored = _INBOUND_ALIASES.get(name, name)
+            field = fields.get(stored)
             if field is None:
                 lost.append(f'{name} (not a field at all)')
                 continue
@@ -374,7 +381,7 @@ class TestRecognisedMeansWeWillActuallyReadIt:
             except Exception as exc:
                 raise AssertionError(f'{name}: {type(exc).__name__}: {exc}') from exc
             checked += 1
-            if getattr(patient, name, None) != value:
+            if getattr(patient, stored, None) != value:
                 lost.append(name)
 
         assert checked > 50, checked

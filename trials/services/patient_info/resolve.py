@@ -199,8 +199,44 @@ _QUOTED_KEY_LENGTH = 64
 M2M_PAYLOAD_KEYS = ('pre_existing_condition_categories',)
 
 
+#: Names the producer sends for a field EXACT stores under a different one.
+#:
+#: Same shape of defect as `patientInfo` (#375) and
+#: `preExistingConditionCategories` above: a key the caller sends, means, and
+#: never learns was ignored. It is not in `model_fields`, so `_build_in_memory`
+#: drops it at the filter and answers 200.
+#:
+#: `pd_l1_tumor_cels` is EXACT's own spelling and it is missing an `l`
+#: (`patient_info.py`, and the trial bounds `pd_l1_tumor_cels_min` / `_max`).
+#: PROMOP spells it correctly — `omop_core/models.py:3232`, written at
+#: `patient_record_service.py:2440` — so the value never arrives (#593).
+#:
+#: Aliased inbound rather than renamed. The misspelling is EXACT's column name
+#: and the stem of two TRIAL columns; correcting all of them is a migration
+#: plus a data move for no difference any caller can observe. This costs one
+#: line and is reversible.
+_INBOUND_ALIASES = {
+    'pd_l1_tumor_cells': 'pd_l1_tumor_cels',
+}
+
+#: A second entry is coming (#590), and this table has four ways to go wrong
+#: with nothing failing: chaining one entry's target into another's source,
+#: two sources onto one target, a source that shadows a real field, and a
+#: source that is not snake_case — both readers snake-case before they look
+#: one up, so such an entry never matches anything. `TestTheTableItself`
+#: checks all four. Kept there rather than as module-level `assert`s: those
+#: vanish under `python -O`, and a typo in a literal should not stop the
+#: service booting.
+
+
 def _known_attribute_names():
-    """Every name `_build_in_memory` will actually read off a payload.
+    """Every name whose value `_build_in_memory` will actually use.
+
+    Not "every name it reads": an alias source is recognised here and never
+    reaches the instance under that spelling, because `_normalise_inbound_keys`
+    moves its value onto the field first. The distinction matters because the
+    argument below is about what a payload naming ONLY a given name produces,
+    and for an alias source that is a real patient, not a blank one.
 
     The set has to be exactly that, and getting it wrong in either direction
     puts back the defect this module is fixing:
@@ -226,6 +262,14 @@ def _known_attribute_names():
         if hasattr(field, 'column')
     }
     names.update(M2M_PAYLOAD_KEYS)
+    # Third case: a name that is not a field and is not dropped either,
+    # because `_normalise_inbound_keys` moves its value onto one that is.
+    # Leaving it out made the two spellings of the SAME field disagree about
+    # the empty state — `{"pd_l1_tumor_cells": null}` fell into "something we
+    # could not read" and answered 400, while `{"pd_l1_tumor_cels": null}`
+    # answered None. The form-backed client this empty state exists for is
+    # exactly the one serialising every field, so it would have met that.
+    names.update(_INBOUND_ALIASES)
     return names
 
 
@@ -347,7 +391,7 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     # value vanished, with a 200: measured, `{"preExistingConditionCategories":
     # [1]}` produced a patient with no categories while the snake_case form
     # produced the real one.
-    snake_data = _to_snake_case(data)
+    snake_data = _normalise_inbound_keys(data)
 
     # Extract the M2M field, which cannot be set on an unsaved instance
     pre_existing_ids = snake_data.pop(M2M_PAYLOAD_KEYS[0], None) or []
@@ -703,11 +747,53 @@ def _coerce_json_fields(data: dict, model_cls):
                 data[key] = None
 
 
+def _normalise_inbound_keys(data: dict) -> dict:
+    """Snake-case the payload's keys, then apply the aliases.
+
+    The gate does NOT call this, and that is deliberate rather than an
+    omission. `_patient_from_inline` only has to decide whether EXACT
+    understands a name, and `_known_attribute_names` answers that from the
+    same `_INBOUND_ALIASES` — so the two cannot drift, and moving values there
+    as well changed no decision I could construct or test.
+
+    What they must not do is disagree, which is this module's recurring
+    defect: `preExistingConditionCategories` was neither recognised nor
+    popped, and the first draft of this change recognised the alias nowhere,
+    so `{"pd_l1_tumor_cells": null}` answered 400 while the same field under
+    EXACT's own spelling answered "no patient". One constant, read by both.
+
+    An alias never overwrites a value the caller put under EXACT's own name.
+    Same tie-break as `PATIENT_INFO_KEYS`: between two usable spellings the
+    existing contract decides, and the alias only fills a gap.
+
+    Both sides of that are guarded, and the SOURCE side is the one with teeth.
+    Copying an empty string onto a typed column put it somewhere the old
+    drop-at-the-filter path never let it reach: `_coerce_numerics` skips `''`,
+    `is_attr_blank` only blanks on `== 0`, and `eligible_for_min_max_value`
+    then hands it to Django, which raises `ValueError: expected a number but
+    got ''`. A 500 through the spelling every client sends, where EXACT's own
+    misspelling — which no client sends — was the only way in before.
+    """
+    snake = _to_snake_case(data)
+    for sent, stored in _INBOUND_ALIASES.items():
+        if _says_something(snake.get(sent)) and not _says_something(snake.get(stored)):
+            snake[stored] = snake[sent]
+    return snake
+
+
+def camel_to_snake(name: str) -> str:
+    """One key's camelCase spelling, snake_cased.
+
+    Module level so `_INBOUND_ALIASES` can be checked against it: both
+    readers of that table snake-case before they look a source up, so a
+    source that is not already snake_case matches nothing and says nothing.
+    """
+    import re
+
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+
+
 def _to_snake_case(data: dict) -> dict:
     """Convert camelCase dict keys to snake_case."""
-    import re
-    def camel_to_snake(name):
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
-
     return {camel_to_snake(k): v for k, v in data.items()}
