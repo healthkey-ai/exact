@@ -31,12 +31,57 @@
 //  5. Every event names the patient it is about, completions included. A
 //     write settling for the patient the reader has just left must not close
 //     the dialog of the one they are looking at now.
+//  6. THE OFFER IS SPENT ONLY BY AN ANSWER. Spending it means writing the
+//     server flag, after which the question never returns for that patient,
+//     and exactly two gestures do it: finishing the three questions, and
+//     "Keep them equal". Close, Escape and a click on the scrim DISMISS —
+//     they take the question off the screen for this visit and state
+//     nothing, so nothing is written and the next read asks again. Before
+//     #596 those three and "Keep them equal" all went to ONE handler — four
+//     of the five, the completed ranking having its own — so a stray click
+//     outside the panel was indistinguishable from "keep them equal" and
+//     silently spent the one offer the reader was ever going to get. Mechanically, here: `answer` is the
+//     only event that reaches `saving`.
+//
+//     That is HALF of the rule, and the half this file can hold. The write
+//     lives in the caller and is gated on its own render-scoped reading of
+//     "open and not busy", not on this machine having entered `saving` —
+//     dispatch a dismissal and an answer in one task and the flag is written
+//     while `saving` is never seen. Measured. So the property over this
+//     reducer constrains the MACHINE; what constrains the write is that the
+//     only two callbacks reaching `record()` are the two answer handlers,
+//     and that is pinned in `weightsWizard.test.tsx` rather than here. A
+//     future gesture wired straight to a writing handler would satisfy
+//     everything in this file and still be wrong.
+//
+//     "The next visit" is loose, and the precise statement is "the next
+//     READ". A dismissal lasts until `readerHandle` moves, because nothing
+//     outside the server remembers it and a move resets this machine. On a
+//     payload that NAMES the patient the handle survives a profile refresh
+//     (`patientHandleOf` keys on the id), so the reader is not re-asked
+//     after an inline edit. On one that names nobody, it moves on every
+//     refresh and they are. Remembering a dismissal for a patient who
+//     cannot be named would mean remembering it for whoever came next, so
+//     that gap stays open on purpose. #600.
 
 /** Where the dialog is for the patient named in the same state.
  *
- *  `hide` is terminal for that patient and covers three different reasons —
- *  already offered, just answered, nothing to ask with. The wizard does not
- *  need to tell them apart; the reader sees the same nothing. */
+ *  `hide` is terminal for that patient and covers four different reasons —
+ *  already offered, just answered, dismissed without answering, nothing to
+ *  ask with. The wizard does not need to tell them apart; the reader sees the
+ *  same nothing.
+ *
+ *  What separates them is not here but on the server, and it is two and two,
+ *  not three and one. `already offered` and `just answered` have the flag
+ *  written and never come back. A dismissal has not, and comes back on the
+ *  next read. Neither has `nothing to ask with` — that is `readFailed`, which
+ *  writes nothing at all and is treated as offered only so a question whose
+ *  answer we could not read is not asked; a blip on that read retires the
+ *  question for this visit and for no longer. Measured.
+ *
+ *  Do not build on "hide implies the flag is written". Skipping a re-read
+ *  after a failed one would spend the offer of a reader who suffered a
+ *  network hiccup. */
 export type WizardAt = "unknown" | "show" | "saving" | "hide";
 
 export interface WizardState {
@@ -61,8 +106,13 @@ export type WizardEvent =
   /** …or did not. Treated as "already offered": asking a question whose
    *  answer we have just failed to read is asking one we cannot record. */
   | { kind: "readFailed"; patient: string }
-  /** The reader answered — declined, or finished the three questions. */
+  /** The reader answered — chose "Keep them equal", or finished the three
+   *  questions. An answer is written; see rule 6. */
   | { kind: "answer"; patient: string }
+  /** The reader took the dialog off the screen without answering it — Close,
+   *  Escape, a click on the scrim. Nothing is written, so the offer survives
+   *  to the next visit; see rule 6. */
+  | { kind: "dismissed"; patient: string }
   /** The write that answer produced has settled, landed or not. */
   | { kind: "written"; patient: string };
 
@@ -112,11 +162,28 @@ export function nextWizard(state: WizardState, event: WizardEvent): WizardState 
     }
 
     case "answer":
-      // Only from `show`. Anything else is a second answer — Escape while the
-      // first is on the wire, a double click — and there is only one flag to
-      // write.
+      // Only from `show`. Anything else is a second answer — a double click,
+      // a click arriving behind one already sent — and there is only one flag
+      // to write. This is also the ONLY case that reaches `saving`, which is
+      // rule 6 stated where it is enforced rather than only in the header:
+      // the caller writes from `saving` and from nowhere else, so a gesture
+      // that cannot produce this event cannot spend the offer.
       return event.patient === state.patient && state.at === "show"
         ? { ...state, at: "saving" }
+        : state;
+
+    case "dismissed":
+      // Straight to `hide`, never through `saving`: nothing is written, so
+      // there is nothing to wait for. Only from `show`, for the same reason
+      // `answer` is — while a write is in the air the dialog is sealed, and
+      // a dismissal arriving behind an answer must not be read as undoing it.
+      //
+      // Deliberately NOT merged with `answer` plus a flag on the caller's
+      // side. The difference between the two is the whole of #596, and a
+      // shared event would put it back in the caller's hands, where it was
+      // when a scrim click spent the offer.
+      return event.patient === state.patient && state.at === "show"
+        ? { ...state, at: "hide" }
         : state;
 
     case "written":
