@@ -11,8 +11,9 @@ answered twice.
 
 Not `cytogenic_markers` — that one never reaches this module at all (#590).
 Not `molecular_markers`, which the producer joins with `"; "`, and least of
-all `languages_skills`, which is `"; "` between languages and `", "` inside
-each one, so `_csv` splits it on the inner separator (#591).
+all `languages_skills`, which PROMOP serves as `"; "` between languages and
+`", "` inside each one; when PROMOP sends its language booleans, `resolve.py`
+rebuilds it as codes, or drops it when they are all null, before `_csv` (#591).
 
 The tests below assert the rule, not the story, and that includes the two
 inputs the rule gets wrong.
