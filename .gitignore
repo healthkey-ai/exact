@@ -52,6 +52,7 @@ scripts/cache/
 *.csv
 !scripts/evaluator/ground_truth.csv
 !docs/omop/mapping/therapy_omop_mapping.csv
+!docs/omop/mapping/language_omop_mapping.csv
 
 # Local-only management commands and tests
 trials/management/commands/evaluate_ethalon_live.py

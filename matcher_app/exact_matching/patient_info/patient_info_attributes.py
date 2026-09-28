@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils.functional import cached_property
 
+from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
 from exact_matching.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from exact_matching.patient_info.convertors.base_convertor import BaseConvertor
 from exact_matching.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
@@ -187,7 +188,10 @@ class PatientInfoAttributes:
                 return list(codes)
             return []
 
-        user_attr_value = getattr(self.patient_info, attr_name)
+        if attr_name == 'languages_skills':
+            user_attr_value = self._languages_skills_value()
+        else:
+            user_attr_value = getattr(self.patient_info, attr_name)
 
         if attr_name not in self.mapping:
             return user_attr_value
@@ -217,6 +221,20 @@ class PatientInfoAttributes:
                 user_attr_value = trial_attr_meta["value_overrides"]["new_value"]
 
         return user_attr_value
+
+    def _languages_skills_value(self):
+        """The patient's language skills, read through LANGUAGES_MATCH_PROFILE.
+
+        Legacy: the ``languages_skills`` string, unchanged. OMOP
+        (``EXACT_OMOP_LANGUAGES``): the consumer's ``language_skill_concept_ids``
+        pair list, joined with "," so every reader downstream (the blank check,
+        the queryset's ``_csv`` split, the matcher's string split) treats it
+        exactly like the legacy value. ``[]`` becomes ``''``, i.e. blank.
+        """
+        value = getattr(self.patient_info, LANGUAGES_MATCH_PROFILE.patient_languages_skills)
+        if omop_languages_enabled() and isinstance(value, (list, tuple)):
+            return ','.join(str(v) for v in value)
+        return value
 
     def get_uln_value(self, attr_name):
         trial_attr_meta = self.mapping[attr_name]

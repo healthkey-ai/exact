@@ -384,6 +384,11 @@ class Trial(TimeStampMixin):
     participation_criteria = models.TextField(blank=True, null=True)
 
     languages_skills_required = models.JSONField(blank=True, null=False, default=list)
+    # OMOP migration (CB #5350): the same requirements as (language, skill) concept
+    # pairs, one '<language_concept_id>:<skill_concept_id>' string each (see
+    # trials/services/omop/languages.py). Read by matching only under
+    # EXACT_OMOP_LANGUAGES (LanguagesMatchProfile).
+    omop_languages_skills_required = models.JSONField(blank=True, null=False, default=list)
 
     age_low_limit = models.IntegerField(blank=True, null=True)
     age_high_limit = models.IntegerField(blank=True, null=True)
@@ -711,6 +716,7 @@ class Trial(TimeStampMixin):
             GinIndex(fields=['languages_skills_required'], name='idx_lang_skills_required_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['ethnicity_required'], name='idx_ethnicity_required_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['omop_ethnicity_required'], name='idx_omop_ethnicity_req_gin', opclasses=['jsonb_ops']),
+            GinIndex(fields=['omop_languages_skills_required'], name='idx_omop_lang_skills_req_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['concomitant_medications_excluded'], name='idx_conc_med_excluded_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['stages'], name='idx_stages_gin', opclasses=['jsonb_ops']),
             GinIndex(fields=['pre_existing_conditions_excluded'], name='idx_pre_ex_cond_excluded_gin', opclasses=['jsonb_ops']),
@@ -1205,11 +1211,16 @@ class TrialTypeDiseaseConnection(TimeStampMixin):
 
 
 class Language(OptionsListMixin):
-    pass
+    # OMOP migration (CB #5350): SNOMED Language-domain concept_id, loaded from
+    # docs/omop/mapping/language_omop_mapping.csv by load_language_omop_concept_ids;
+    # null when unmapped (e.g. 'other'). Source for trial omop_languages_skills_required.
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP (SNOMED Language) concept_id for this language; null when unmapped.")
 
 
 class LanguageSkillLevel(OptionsListMixin):
-    pass
+    # OMOP migration (CB #5350): PROMOP's HK-Language capability concept_id, loaded
+    # the same way; null when unmapped.
+    omop_concept_id = models.BigIntegerField(blank=True, null=True, db_index=True, help_text="OMOP (HK-Language) concept_id for this capability; null when unmapped.")
 
 
 class BinetStage(OptionsListMixin):

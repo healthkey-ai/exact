@@ -28,6 +28,7 @@ from exact_matching.patient_info.configs import (
 from exact_matching.receptor_hierarchy import expand_values as expand_receptor_values
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled
 from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PROFILE
+from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from exact_matching.trial_details.configs import PHASE_CODE_MAPPING
@@ -1441,7 +1442,7 @@ class TrialQuerySet(models.QuerySet):
     def eligible_for_languages_skills(self, languages_skills: list[str]) -> models.QuerySet:
         return self.eligible_for_required_lists(
             values=languages_skills,
-            required_attr_name='languages_skills_required'
+            required_attr_name=LANGUAGES_MATCH_PROFILE.languages_skills_required
         )
 
     # Receptor parent-code expansion lives in exact_matching.receptor_hierarchy
