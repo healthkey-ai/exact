@@ -36,6 +36,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ActionTooltip } from "./bits";
+import { persistedKeyOf, stateKeyOf } from "./bridgeState";
 import { FilterPanel } from "./FilterPanel";
 import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
@@ -155,6 +156,7 @@ export const WIZARD_WRITE_GRACE_MS = 8000;
 function TrialMatchesInner({
   apiClient,
   patientInfo,
+  stateIdentity,
   personId,
   initialFilters,
   onTrialSelect,
@@ -271,7 +273,13 @@ function TrialMatchesInner({
   // is served the first one's bookmarks for as long as they stay fresh.
   // A cache key wants maximum discrimination: any difference in either prop
   // is a different key.
-  const stateKey = `${personId ?? ""}|${patientInfoKey ?? ""}`;
+  // The identity FIRST, and not only for tidiness: it is the half that says
+  // whose row a write will land in. `useSavedFilters` reads this to decide
+  // whether the adapter it was built with is still the right one to write
+  // through, and with the patient alone that question had a wrong answer
+  // whenever the host owned the patient and the account changed underneath.
+  // See `identityKeyOf` for the invariant and what it cost to find.
+  const stateKey = stateKeyOf(stateIdentity, personId, patientInfoKey);
 
   // Who the reader is looking at, for anything that must survive the payload
   // being REFRESHED. `patientIdentity` and `stateKey` both hash the whole
@@ -283,6 +291,17 @@ function TrialMatchesInner({
   // us — see `patientHandleOf` for why it takes both props and why the rest
   // of the payload is deliberately left out of it.
   const patientHandle = patientHandleOf(patientInfo, personId);
+  // WHO is looking, not only at whom. Everything that writes — and
+  // everything cached per reader — keys on this rather than on the patient
+  // alone: EXACT's own rows are keyed on the identity in the token, so a
+  // host that switches account while showing the same patient changes the
+  // owner of every row without changing the patient. See the invariant on
+  // `live()` in `hooks.ts` and what it cost to find.
+  //
+  // Built on `patientHandle` rather than `stateKey` on purpose: it must
+  // survive the host re-reading the same profile, or every refresh discards
+  // a draft for nothing.
+  const readerHandle = `${stateIdentity ?? ""}|${patientHandle}`;
   // What NAMES the patient, one axis at a time. The payload's own id and the
   // `personId` prop answer different questions — which patient the server
   // matches, and which record a write is PATCHed into — so a move on either
@@ -348,7 +367,7 @@ function TrialMatchesInner({
   // it to, #555) empties the descriptor, withdraws every edit control, and
   // closes any editor the reader has open. Measured together with the
   // detail's own `placeholderData`: either one alone still loses the editor.
-  const writableFields = useWritableFields(state, patientHandle);
+  const writableFields = useWritableFields(state, readerHandle);
   // The host owns the patient payload — ht-phr reads it, normalises it
   // through this service, and passes it in — and that payload wins
   // server-side over `personId`. So a field edited here is written, the
@@ -363,7 +382,7 @@ function TrialMatchesInner({
   // every open editor goes with them, half-typed value and all. That is the
   // failure `FieldEdit`'s "does not wipe what the reader is typing" exists
   // to catch, and it caught it.
-  const patientFields = useQueuedPatientFields(state, patientHandle, onPatientRecordChanged);
+  const patientFields = useQueuedPatientFields(state, readerHandle, onPatientRecordChanged);
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -399,6 +418,10 @@ function TrialMatchesInner({
     fields: new Set(),
     all: false,
   });
+  // The key for disk is built from the parts, not carved out of `stateKey`:
+  // see `persistedKeyOf`. It is the key this page used before an identity
+  // was part of any of them.
+  const persistedKey = persistedKeyOf(personId, patientInfoKey);
   const savedFilters = useSavedFilters(
     preferenceStore,
     stateKey,
@@ -483,6 +506,7 @@ function TrialMatchesInner({
       setFilters((current) => normalizeFilterState({ ...current, ...incoming }));
     },
     preferenceSource,
+    persistedKey,
   );
 
   // Whether the panel has been touched since the last time a saved set
@@ -659,17 +683,35 @@ function TrialMatchesInner({
   // load is keyed on, so the clear lands before that patient's answer does.
   // (The reader's session FILTERS are deliberately kept across the switch; it
   // is the claim about who owns them that does not carry over.)
+  const lastIdentity = useRef(stateIdentity);
   useEffect(() => {
-    // The weights are the exception, and for the same reason the session
-    // filters are kept across the switch: they are the reader's, not the
-    // patient's. Cleared here, they stayed live on the wire and on the
+    // The weights are the exception when the PATIENT changes, and for the
+    // same reason the session filters are kept: they are the reader's, not
+    // the patient's. Cleared there, they stayed live on the wire and on the
     // trigger while quietly ceasing to be owned — so the next Reset dropped
     // them from the page and wrote nothing back, which is exactly the
     // silent change this control is not allowed to make.
-    ownedFields.current = new Set(
-      WEIGHT_FIELDS.map(({ key }) => key).filter((key) => ownedFields.current.has(key)),
-    );
-  }, [stateKey]);
+    //
+    // They are NOT the exception when the READER changes, and that is the
+    // whole difference. Retained across an account switch they stay owned by
+    // somebody who is no longer here: measured, user 1 sets a weight, the
+    // host switches account, and user 2's first keystroke sends user 1's
+    // four weights into user 2's row alongside their own filter.
+    //
+    // This is a RETENTION rule, not a key, which is why an enumeration of
+    // keys did not find it. `stateKey` cannot answer it either — the
+    // identity is inside it now, so "the key moved" no longer says which
+    // half moved.
+    const readerChanged = lastIdentity.current !== stateIdentity;
+    lastIdentity.current = stateIdentity;
+    ownedFields.current = readerChanged
+      ? new Set()
+      : new Set(
+          WEIGHT_FIELDS.map(({ key }) => key).filter((key) =>
+            ownedFields.current.has(key),
+          ),
+        );
+  }, [stateKey, stateIdentity]);
   // Per READ, not per patient. A read that fails or is cancelled never calls
   // back, so without this its veto outlives it — and the next read, from a
   // store the host swapped in for the same patient, would find fields marked
@@ -1353,31 +1395,47 @@ function TrialMatchesInner({
   // is about, and the answer would race the read that tells us whether they
   // have already been asked.
   const wizardStore = preferenceStore?.weightsWizard;
+  // WHOSE answer this is, and it is not the patient's. The flag lives in the
+  // row EXACT keys on the identity in the token, so "has this reader been
+  // offered the wizard" is a question about the account, not about who they
+  // are looking at. Keyed on the patient alone, a host that switches account
+  // while showing the same patient carried the previous account's answer
+  // over: theirs had reached `hide`, `shouldRead` therefore refused a second
+  // read, and the new reader was never offered the wizard at all — or worse,
+  // found the previous one's half-filled form still open.
+  //
+  // The patient stays in the subject as well. Two readers of one account can
+  // be looking at different patients, and the weights are per row.
+  //
+  // Same shape as the saved-filter key two hundred lines up, and found the
+  // same way: something keyed on the patient while the data it guards moved
+  // to the identity.
+
   // The rules about whose answer this is, and when a read may be issued or
   // believed, live in `weightsWizardState.ts` — written down once, after
   // three review rounds had each closed a different spelling of the same one.
   // What is left here is the wiring: when to fire an event, and what to draw.
-  const [wizard, dispatchWizard] = useReducer(nextWizard, patientHandle, initialWizard);
+  const [wizard, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
   // Re-raised DURING the render that changes the patient, like `typed` above.
   // An effect would be a render late, and the new patient's read would then
   // land against a state still naming the old one and be thrown away — with
   // no second read allowed, so they would never be asked at all.
-  if (wizard.patient !== patientHandle) {
-    dispatchWizard({ kind: "patient", patient: patientHandle });
+  if (wizard.patient !== readerHandle) {
+    dispatchWizard({ kind: "patient", patient: readerHandle });
   }
   // Both read off the model rather than recomputed: this render may still be
   // holding the previous patient's state, one render before the line above
   // takes effect, and `isOpen` says no for exactly that reason.
-  const wizardOpen = isOpen(wizard, patientHandle);
-  const wizardBusy = wizard.patient === patientHandle && wizard.at === "saving";
+  const wizardOpen = isOpen(wizard, readerHandle);
+  const wizardBusy = wizard.patient === readerHandle && wizard.at === "saving";
 
   useEffect(() => {
-    if (!wizardStore || wizard.patient !== patientHandle) return;
+    if (!wizardStore || wizard.patient !== readerHandle) return;
     // `shouldRead` owns the two reasons not to: an answer is already known,
     // or a read is already out. The second is the one a state value cannot
     // express — see the module.
     if (!shouldRead(wizard, !savedFilters.pending)) return;
-    const patient = patientHandle;
+    const patient = readerHandle;
     dispatchWizard({ kind: "reading", patient });
     // Every result is dispatched, none suppressed by a cleanup flag: the
     // reducer decides whether a result still applies, which is the only place
@@ -1388,7 +1446,7 @@ function TrialMatchesInner({
       .wasOffered()
       .then((offered) => dispatchWizard({ kind: "read", patient, offered }))
       .catch(() => dispatchWizard({ kind: "readFailed", patient }));
-  }, [wizardStore, savedFilters.pending, patientHandle, wizard]);
+  }, [wizardStore, savedFilters.pending, readerHandle, wizard]);
 
   /** Write the flag, and tell the filter writer its tag is stale.
    *
@@ -1455,7 +1513,7 @@ function TrialMatchesInner({
     // a dismissal during a save would record a decline over a ranking still
     // on the wire.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = patientHandle;
+    const patient = readerHandle;
     answering.current = patient;
     dispatchWizard({ kind: "answer", patient });
     // A failure is not surfaced — there is nothing for the reader to do about
@@ -1468,7 +1526,7 @@ function TrialMatchesInner({
     // at all — only `disabled={busy}` in the view, which is a claim about
     // pointers, not about calls.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = patientHandle;
+    const patient = readerHandle;
     answering.current = patient;
     dispatchWizard({ kind: "answer", patient });
     // Weights first, through the same path the preferences dialog uses, so
@@ -1786,7 +1844,7 @@ function TrialMatchesInner({
         </h1>
         <SuitabilityPreferences
           filters={filters}
-          patientKey={patientHandle}
+          readerKey={readerHandle}
           onChange={handleWeightsChange}
         />
       </div>

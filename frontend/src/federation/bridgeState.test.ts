@@ -2,15 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import {
   hasUsableSessionKey,
+  identityKeyOf,
   joinBaseUrl,
   nextSessionState,
+  persistedKeyOf,
   personIdOfRow,
   promopStateBasePath,
-  selectBridgeView,
   resolveSessionSignal,
+  selectBridgeView,
   selectPatientInfo,
   shouldResolvePatient,
+  stateKeyOf,
   type PatientLoad,
+  usableIdentity,
 } from "./bridgeState";
 
 describe("joinBaseUrl", () => {
@@ -313,5 +317,97 @@ describe("promopStateBasePath", () => {
 
   it("does not mistake a segment that merely ends in v1", () => {
     expect(promopStateBasePath("/apiv1")).toBe("/v1");
+  });
+});
+
+describe("identityKeyOf", () => {
+  it("tells two accounts apart whichever shape the signal takes", () => {
+    const a = async () => "a";
+    const b = async () => "b";
+
+    expect(identityKeyOf("user-1")).not.toBe(identityKeyOf("user-2"));
+    expect(identityKeyOf(a)).not.toBe(identityKeyOf(b));
+    expect(identityKeyOf(a)).toBe(identityKeyOf(a));
+  });
+
+  it("does not let a host's own key collide with a generated one", () => {
+    // A generated key looks like `o:1`. A host passing the literal string
+    // "o:1" must not be mistaken for whichever object happened to be first.
+    const fn = async () => "x";
+    const generated = identityKeyOf(fn);
+
+    expect(identityKeyOf("o:1")).not.toBe(generated);
+  });
+
+  it("answers the same for nothing", () => {
+    expect(identityKeyOf(null)).toBe("");
+    expect(identityKeyOf(undefined)).toBe("");
+  });
+});
+
+describe("persistedKeyOf", () => {
+  it("is the key this page used before an identity was part of any of them", () => {
+    expect(persistedKeyOf(42, "host")).toBe("42|host");
+    expect(persistedKeyOf(undefined, undefined)).toBe("|");
+  });
+
+  it("does not let an identity reach disk, whatever it contains", () => {
+    // THE property, over every identity shape a host can pass — including
+    // the one that broke the version this replaces. `auth0|5f3c9b` is the
+    // usual spelling of `sub`, and a persisted key derived by slicing to the
+    // first separator kept everything after the pipe, so that host's
+    // namespace moved anyway.
+    const identities = [
+      undefined,
+      "",
+      "k:user-1",
+      "o:7",
+      "auth0|5f3c9b",
+      "google-oauth2|1234",
+      "a|b|c",
+      42,
+      0,
+    ];
+    const withoutIdentity = persistedKeyOf(42, '{"disease":"MM"}');
+
+    for (const identity of identities) {
+      const full = stateKeyOf(identity, 42, '{"disease":"MM"}');
+
+      // The persisted key is unreachable from the full one by parsing, which
+      // is why it is built rather than carved — and it is the same for every
+      // identity, which is the property that matters.
+      expect(persistedKeyOf(42, '{"disease":"MM"}')).toBe(withoutIdentity);
+      expect(full.endsWith(withoutIdentity)).toBe(true);
+    }
+  });
+
+  it("keeps two patients apart, which is what it is for", () => {
+    expect(persistedKeyOf(42, "a")).not.toBe(persistedKeyOf(43, "a"));
+    expect(persistedKeyOf(42, "a")).not.toBe(persistedKeyOf(42, "b"));
+  });
+});
+
+describe("usableIdentity", () => {
+  it("takes a number, because a person id is one", () => {
+    // The check this replaces was string-only, so `stateIdentity={user.id}`
+    // — the natural spelling, since PROMOP's `person_id` is an integer —
+    // was silently dropped and the guard fell back to a session signal that
+    // may not move at all. Zero included: it is a real id, not an absence.
+    expect(usableIdentity(42)).toBe("42");
+    expect(usableIdentity(0)).toBe("0");
+  });
+
+  it("refuses the spellings that mean nothing", () => {
+    // What `user?.id ?? ""`, `auth.ready && auth.userId` and `Number(sub)`
+    // produce when there is nothing to read. Taken at face value each pins
+    // every account to one key and silently disables the guard — the same
+    // list `resolveSessionSignal` refuses, for the same reason.
+    for (const nothing of ["", null, undefined, NaN, Infinity, true, false, {}]) {
+      expect(usableIdentity(nothing)).toBeUndefined();
+    }
+  });
+
+  it("keeps a string a host did give", () => {
+    expect(usableIdentity("user-1")).toBe("user-1");
   });
 });

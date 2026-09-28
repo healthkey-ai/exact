@@ -417,6 +417,19 @@ export interface TrialMatchesProps {
   /** Optional shared TanStack QueryClient — when omitted, the component
    *  spins up its own. Set when the host wants to share the cache. */
   queryClient?: QueryClient;
+  /** Which SIGNED-IN IDENTITY the `state` adapter belongs to, as an opaque
+   *  string. Supplied by the bridge from its session signal; a host wiring
+   *  `state` itself supplies its own, or omits it and keeps today's
+   *  behaviour.
+   *
+   *  It exists because the patient and the account are not the same thing.
+   *  Per-user rows used to be keyed on `person_id` everywhere, so "same
+   *  patient" was a safe answer to "same context, keep writing". EXACT's own
+   *  store keys on the identity in the token, and a host that supplies the
+   *  patient itself can switch account without the patient changing — at
+   *  which point a debounced filter write goes to the new account's row with
+   *  a credential nothing can fault. See `identityKeyOf`. */
+  stateIdentity?: string | number;
   /** CTOMOP person_id. Mutually exclusive with `patientInfo` — when
    *  both are provided, `patientInfo` wins (matches the server-side
    *  precedence in `resolve_patient_info`). */

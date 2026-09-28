@@ -271,11 +271,32 @@ export function useQueuedPatientFields(
     //  - same patient, new adapter object (a host writing
     //    `state={createPromopState(...)}` inline, or a refreshed client): use
     //    the current one, or a write would go through an expired client.
-    //  - different patient: use the captured one. This writer belongs to the
-    //    previous patient and its flush carries values edited FOR them —
-    //    sent through the ref they would be written into the NEXT patient's
+    //  - a different READER: use the captured one. This writer belongs to
+    //    the previous one and its flush carries values edited FOR them —
+    //    sent through the ref they would be written into the NEXT reader's
     //    record. For a saved search that is an annoyance; for a haemoglobin
     //    it is one person's lab value in another person's chart.
+    //
+    // THE INVARIANT, and what `key` has to be for it to hold: a queued
+    // payload belongs to the reader who produced it, and must be DROPPED —
+    // not re-routed — if that reader is no longer the one the write will be
+    // attributed to. "Reader" is the IDENTITY and the patient, not either
+    // alone. Keyed on the patient only, a host that switches ACCOUNT while
+    // showing the same patient keeps the key still, and this returns the new
+    // account's adapter to a flush carrying the old account's values.
+    //
+    // Three call sites had that bug, found one at a time over three reviews
+    // — saved filters, the weights wizard, and this one. They are keyed on
+    // `readerHandle` now (`TrialMatches.tsx`). If you add a fourth caller,
+    // that is the key it wants; a patient handle is not enough for anything
+    // that writes.
+    //
+    // AND THE KEY IS NOT THE WHOLE GUARD, which is worth knowing before you
+    // trust this paragraph: a key chooses which adapter the flush goes
+    // through, it does not drop a payload. What refuses is the bridge's
+    // token reader, and only when the session signal moves. An identity
+    // that changes without moving that signal is re-routed, not dropped —
+    // exact#583, with the four measured shapes and the fix.
     const captured = stateRef.current;
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
@@ -814,6 +835,14 @@ export function useSavedFilters(
    *  built for. `TrialMatches` passes `"state"` or `"preferences"`; a caller
    *  with one source can leave it out. */
   sourceId?: string,
+  /** The key for the localStorage fallback, when it must differ from the one
+   *  above. It must: `key` carries the signed-in identity so two accounts do
+   *  not share a writer, and an identity on disk either rots (a generated
+   *  one is per page load) or moves the namespace once (a host-supplied one).
+   *  Handed in already built rather than derived by taking `key` apart —
+   *  an identity can contain the separator, `auth0|5f3c9b` being the usual
+   *  spelling, and a parser got that wrong. Omitted, the key is used as-is. */
+  persistedKey?: string,
 ): {
   persist: (filters: FilterState) => void;
   reset: () => void;
@@ -890,7 +919,7 @@ export function useSavedFilters(
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     return captured
       ? adapterPreferences(preferenceMethodsThrough(captured, live))
-      : localStoragePreferences(key);
+      : localStoragePreferences(persistedKey ?? key);
     // `source` rather than `state`: see above, and `sourceId`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, key]);
