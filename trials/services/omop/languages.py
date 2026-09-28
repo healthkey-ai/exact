@@ -15,7 +15,8 @@ speak, and so pass a "speaks Spanish" requirement.
 The concept_ids live on the vocab rows (``Language.omop_concept_id``,
 ``LanguageSkillLevel.omop_concept_id``), loaded from
 ``docs/omop/mapping/language_omop_mapping.csv`` by
-``load_language_omop_concept_ids`` (therapy CSV format; see LOAD_RUNBOOK.md).
+``load_language_omop_concept_ids`` (therapy CSV format). Order: the loader,
+then ``backfill_omop_languages_skills_column``; see both commands' docstrings.
 A code whose language or skill has no concept_id has no pair. That covers
 ``other`` (``no_omop``) and the time before the loader has run. The loader is
 the only intended writer: a concept_id typed into a vocab row in admin is used

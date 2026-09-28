@@ -27,8 +27,13 @@ through this one profile rather than literals:
    ``USER_TO_TRIAL_ATTRS_MAPPING['languages_skills']`` entry (``attr`` +
    ``uvalue_function``) keeps driving legacy matching unchanged.
 
-Other readers of ``languages_skills_required`` (trial-detail / display configs) are
-not covered and keep showing the legacy codes.
+The count / blank-check SQL (``UserToTrialAttrsMapper``: potential counts, eligible
+vs potential status, attrs-to-fill-in) reads the same column via ``_trial_column``.
+
+Not covered, and a cutover must flip them too: trial-detail / display configs that
+read ``languages_skills_required``, and the match-reason output, which under the
+flag pairs the patient value (joined concept pairs) with the legacy trial
+requirement, i.e. two vocabularies side by side.
 """
 from dataclasses import dataclass
 

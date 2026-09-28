@@ -57,8 +57,16 @@ class TestProfile:
         with pytest.raises(AttributeError):
             LANGUAGES_MATCH_PROFILE.languages_skills_required = 'x'
 
-    def test_two_profiles_differ_only_in_names(self):
-        assert LEGACY_LANGUAGES_MATCH_PROFILE != OMOP_LANGUAGES_MATCH_PROFILE
+    def test_the_two_profiles_field_by_field(self):
+        from dataclasses import asdict
+        assert asdict(LEGACY_LANGUAGES_MATCH_PROFILE) == {
+            'languages_skills_required': 'languages_skills_required',
+            'patient_languages_skills': 'languages_skills',
+        }
+        assert asdict(OMOP_LANGUAGES_MATCH_PROFILE) == {
+            'languages_skills_required': 'omop_languages_skills_required',
+            'patient_languages_skills': 'language_skill_concept_ids',
+        }
 
 
 class TestQuerysetColumn:
@@ -128,3 +136,58 @@ def test_queryset_and_matcher_agree(flag):
         kept = _search(patient, trials)
         for trial in trials:
             assert (trial.id in kept) == (_status(trial, patient) != 'not_matched'), trial
+
+
+# ── count / blank-check SQL flips with the flag ───────────────────────
+
+def _potential_count(trial, patient):
+    return (Trial.objects.filter(id=trial.id).with_potential_attrs_count(patient)
+            .values('potential_attrs_count').first()['potential_attrs_count'])
+
+
+@override_settings(EXACT_OMOP_LANGUAGES=True)
+def test_count_reads_the_omop_column_under_the_flag():
+    from trials.services.matching import status_equivalence as se
+    # legacy requirement present, OMOP column empty (e.g. only speak__other): under the
+    # flag the trial imposes no language requirement, and the count must agree
+    trial = TrialFactory(disease='multiple myeloma',
+                         languages_skills_required=['speak__other'], omop_languages_skills_required=[])
+    blank = PatientInfo(disease='multiple myeloma', patient_age=65)
+    assert _potential_count(trial, blank) == 0
+    assert se.compare(Trial.objects.filter(id=trial.id), blank) == []
+
+
+@override_settings(EXACT_OMOP_LANGUAGES=True)
+def test_count_still_potential_on_a_real_omop_requirement():
+    from trials.services.matching import status_equivalence as se
+    trial = TrialFactory(disease='multiple myeloma',
+                         languages_skills_required=[], omop_languages_skills_required=[EN_SPEAK])
+    blank = PatientInfo(disease='multiple myeloma', patient_age=65)
+    assert _potential_count(trial, blank) >= 1
+    assert se.compare(Trial.objects.filter(id=trial.id), blank) == []
+
+
+@override_settings(EXACT_OMOP_LANGUAGES=False)
+def test_count_reads_the_legacy_column_when_off():
+    trial = TrialFactory(disease='multiple myeloma',
+                         languages_skills_required=['speak__en'], omop_languages_skills_required=[])
+    blank = PatientInfo(disease='multiple myeloma', patient_age=65)
+    assert _potential_count(trial, blank) >= 1
+
+
+# ── the consumer field reaches PatientInfo on both resolve paths ─────
+
+def test_inline_camelcase_payload_keeps_the_pairs():
+    from trials.services.patient_info.resolve import _build_in_memory
+    patient = _build_in_memory({'disease': 'multiple myeloma', 'languageSkillConceptIds': [EN_SPEAK, ES_WRITE]})
+    assert patient.language_skill_concept_ids == [EN_SPEAK, ES_WRITE]
+
+
+def test_promop_row_keeps_the_pairs():
+    from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
+    patient = build_patient_info_from_promop_row({
+        'disease': 'Multiple Myeloma',
+        'languages_skills': 'English language: speak',
+        'language_skill_concept_ids': [EN_SPEAK],
+    })
+    assert patient.language_skill_concept_ids == [EN_SPEAK]

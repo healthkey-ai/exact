@@ -441,6 +441,13 @@ PROMOP_VOCAB_OAUTH_TOKEN_URL = os.environ.get('PROMOP_VOCAB_OAUTH_TOKEN_URL', ''
 # ---------------------------------------------------------------------------
 EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', 'true', 'yes', 'on')
 
+# Language-skill matching on the OMOP (language, skill) pair column and the
+# consumer's language_skill_concept_ids (CB #5350;
+# exact_matching.omop.languages_match_profile). OFF by default: flip only after
+# the language vocab concept_ids are loaded and the trial column is backfilled,
+# and once the consumer sends the pairs.
+EXACT_OMOP_LANGUAGES = os.environ.get('EXACT_OMOP_LANGUAGES', '').lower() in ('1', 'true', 'yes', 'on')
+
 
 # ---------------------------------------------------------------------------
 # Firebase Admin SDK — backs FirebaseTokenProvider (verify_id_token).

@@ -116,6 +116,7 @@ TRIAL_ATTRS_JSON_AS_A_LIST = (
     "mutation_interpretations_required",
     "concomitant_medications_excluded",
     "languages_skills_required",
+    "omop_languages_skills_required",  # read under EXACT_OMOP_LANGUAGES (CB #5350)
     "stages",
     "binet_stages_required",
     "protein_expressions_required",
