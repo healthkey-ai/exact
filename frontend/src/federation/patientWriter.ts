@@ -42,6 +42,42 @@ export interface PatientWriterOptions {
 
 type Writer = NonNullable<TrialStateAdapter["setPatientFields"]>;
 
+/** Own property, not `in`.
+ *
+ *  `in` walks the prototype chain, so `"constructor"` is a member of every
+ *  object literal. An error naming it would pass the intersection below,
+ *  leave the whole batch to re-queue, and `finally` re-drains — the
+ *  identical request for ever. Unreachable from a DRF field name, but the
+ *  point of that intersection is to make termination a property of the code
+ *  rather than of who is calling it.
+ */
+function has(bag: Record<string, unknown>, field: string): boolean {
+  return Object.prototype.hasOwnProperty.call(bag, field);
+}
+
+/** The fields an error names, when it names any.
+ *
+ *  Duck-typed rather than `instanceof`: the error crosses a module boundary
+ *  a host may have bundled twice, and a class identity check that fails
+ *  silently would put this back to losing the batch. A host adapter that
+ *  throws something else gets the old behaviour, which is the safe default
+ *  — everything unsaved is reported unsaved.
+ */
+function namedFields(error: unknown, sent: Record<string, unknown>): string[] {
+  const fields = (error as { fields?: unknown })?.fields;
+  if (!Array.isArray(fields)) return [];
+  // Intersected with what was actually sent, and that is what makes the
+  // retry terminate rather than a promise that it will. An error naming
+  // something outside the batch leaves `rest` equal to the whole batch, and
+  // `finally` re-drains, so the identical request goes out for ever while
+  // the fields it carries sit in "Saving…". The PROMOP adapter already
+  // filters, but this accepts a duck-typed error from any host adapter, so
+  // the guarantee has to live here.
+  return fields.filter(
+    (field): field is string => typeof field === "string" && has(sent, field),
+  );
+}
+
 export class PatientFieldWriter {
   private readonly write: Writer;
   private readonly debounceMs: number;
@@ -152,8 +188,55 @@ export class PatientFieldWriter {
         }
       })
       .catch((error: unknown) => {
+        // A REJECTED BATCH MUST NOT COST THE READER AN EDIT THE SERVER DID
+        // NOT OBJECT TO. DRF rejects the whole request on a 400, so nothing
+        // was written and everything here is unsaved — that part was always
+        // reported correctly. What it cost was the rest of the batch: three
+        // edits made in one breath, one of them a value the vocabulary does
+        // not recognise, and all three gone with no way to tell which.
+        //
+        // So when the server NAMED the fields it objected to, only those are
+        // failed and the others go back on the queue to be sent again. The
+        // retry strictly shrinks the batch, so a second refusal naming
+        // something else still terminates.
+        //
+        // Reporting only the named ones without re-queueing the rest would
+        // be worse than today: `onError` is what retires a field from
+        // "Saving…", so anything left unreported stays there for ever.
+        //
+        // "Strictly shrinks" holds because `namedFields` intersects with the
+        // batch, so a non-empty answer always removes at least one field.
+        // Without that it is not a guarantee but a hope, and the failure is
+        // an infinite retry of the identical request.
+        const refused = namedFields(error, batch);
+        const rest = refused.length > 0
+          ? Object.keys(batch).filter((field) => !refused.includes(field))
+          : [];
+        const failed = refused.length > 0 ? refused : Object.keys(batch);
+        for (const field of rest) {
+          if (has(this.queued, field)) {
+            // SUPERSEDED. The reader edited this field again while the batch
+            // was on the wire, so the newer value is already queued and the
+            // one being carried back is stale. Re-queueing would MERGE the
+            // two — and the caller counts SAVES, not batches, so two saves
+            // collapsing into one answer leaves its counter above zero for
+            // ever and the row stuck on "Saving…" over a value the record
+            // does hold. That is the failure this whole change exists to
+            // prevent, one level up, and it is why the attempt that just
+            // ended is reported rather than silently dropped: `onSettled`
+            // decrements the count and returns early when a newer edit is
+            // still owed, which is exactly this case.
+            try {
+              this.onSettled(field, { status: "unconfirmed" });
+            } catch (reportingError: unknown) {
+              console.warn("[exact] a superseded write could not be reported", reportingError);
+            }
+            continue;
+          }
+          this.queued[field] = batch[field];
+        }
         try {
-          this.onError(Object.keys(batch), error);
+          this.onError(failed, error);
         } catch (reportingError: unknown) {
           console.warn("[exact] a write failure could not be reported", reportingError);
         }

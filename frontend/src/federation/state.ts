@@ -291,6 +291,51 @@ interface PreferencesRow {
   weights_wizard_offered?: boolean;
 }
 
+/** A write PROMOP refused, naming the fields it objected to.
+ *
+ *  DRF rejects the WHOLE request on a 400, so nothing in the batch was
+ *  written — but its body says which field it objected to, and that is the
+ *  difference between "your three edits are gone" and "two of them are
+ *  saved and this one needs another look". The queue uses it to send the
+ *  rest again; see `PatientFieldWriter`.
+ *
+ *  Raised here rather than sniffed there, so knowledge of what an axios
+ *  error looks like stays in the adapter that made the request. A host with
+ *  its own adapter throws whatever it likes and the queue falls back to
+ *  failing the batch, which is where it was before.
+ */
+export class PatientFieldsRefused extends Error {
+  /** The fields the server named, intersected with what was sent. */
+  readonly fields: string[];
+
+  /** The transport error underneath. Its own property rather than
+   *  `Error.cause`, which needs a lib target this project does not set. */
+  readonly reason: unknown;
+
+  constructor(fields: string[], reason: unknown) {
+    super(`[exact-remote] the record refused ${fields.join(", ")}`);
+    this.name = "PatientFieldsRefused";
+    this.fields = fields;
+    this.reason = reason;
+  }
+}
+
+/** The fields a DRF error body names, restricted to the ones we sent.
+ *
+ *  A 400 body is `{field: ["message"]}`. It can also be `{"detail": "..."}`
+ *  or carry `non_field_errors`, and a 500 carries nothing useful at all —
+ *  in every one of those the answer is an empty list, which the caller
+ *  reads as "blame the whole batch", i.e. exactly today's behaviour.
+ */
+function refusedFields(error: unknown, sent: Record<string, unknown>): string[] {
+  const body = (error as { response?: { data?: unknown } })?.response?.data;
+  if (!body || typeof body !== "object") return [];
+  // No array guard: `Object.keys` of one gives indices, and `"0"` is not a
+  // field anybody sent, so the intersection already refuses it. A guard
+  // there would be a line no test can kill — which is how it was found.
+  return Object.keys(body).filter((field) => field in sent);
+}
+
 export function createPromopState({
   client,
   personId,
@@ -510,10 +555,14 @@ export function createPromopState({
     // sending it would encode the same id twice with only one of them
     // consulted.
     setPatientFields: async (fields) => {
-      const response = await client.patch<Record<string, unknown>>(
-        `${records}/${person}/`,
-        fields,
-      );
+      const response = await client
+        .patch<Record<string, unknown>>(`${records}/${person}/`, fields)
+        .catch((error: unknown) => {
+          // Named, when the server named them. The queue can then send the
+          // rest again instead of losing them alongside.
+          const refused = refusedFields(error, fields);
+          throw refused.length > 0 ? new PatientFieldsRefused(refused, error) : error;
+        });
       const body = response.data;
       const outcomes: Record<string, WriteOutcome> = {};
       for (const [field, value] of Object.entries(fields)) {

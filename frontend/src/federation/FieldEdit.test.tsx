@@ -629,6 +629,48 @@ describe("saving", () => {
     expect(sent[1]).toEqual({ flipi_score_options: "" });
   });
 
+  it("saves every staging modality, not just the last one picked", async () => {
+    // #585, end to end. The descriptor names the three values and says
+    // nothing about how many; the column is comma-joined and the matcher
+    // reads it as a list, so the single select this used to draw replaced
+    // the whole list with one value — on an attribute that gates
+    // eligibility, with no error and nothing on screen to notice.
+    const state = fakeState({
+      writable: {
+        staging_modalities: {
+          kind: "direct",
+          writable: true,
+          value_kind: "string",
+          options: [{ value: "CT" }, { value: "PET" }, { value: "MRI" }],
+        },
+      },
+    });
+    await startEditing(state, [
+      row({
+        label: "Staging",
+        upatientField: "staging_modalities",
+        uvalue: "CT",
+        utype: "multiselect",
+        uoptions: [
+          { value: "CT", label: "CT" },
+          { value: "PET", label: "PET" },
+          { value: "MRI", label: "MRI" },
+        ],
+        units: undefined,
+      }),
+    ]);
+
+    await userEvent.selectOptions(screen.getByRole("listbox", { name: "Staging" }), [
+      "CT",
+      "PET",
+    ]);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Joined, because the column is a CharField: PROMOP answers a JSON list
+    // here with "Not a valid string." before any validator runs.
+    await waitFor(() => expect(state.record.staging_modalities).toBe("CT,PET"));
+  });
+
   it("keeps the number box for a numeric column that has a row vocabulary", async () => {
     // Five attributes are `value_kind: "number"` in the descriptor and carry
     // an option list on the row (`ecog_performance_status` among them). The

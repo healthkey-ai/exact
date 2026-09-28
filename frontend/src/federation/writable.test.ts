@@ -452,15 +452,50 @@ describe("the vocabulary the row carries", () => {
     expect(control).toBe("multiselect");
   });
 
-  it("lets the descriptor win when it has a vocabulary of its own", () => {
+  it("keeps the descriptor's VALUES even when the row offers its own", () => {
     // PROMOP is where these value sets are migrating TO. A row disagreeing
     // with a descriptor that has an answer would be the old copy winning.
-    const control = controlFor(
-      entry({ value_kind: "string", options: [{ value: "Yes" }] }),
+    const answer = editabilityOf(
+      "some_other_note",
+      {
+        some_other_note: entry({
+          value_kind: "string",
+          options: [{ value: "Yes" }],
+        }),
+      } as WritableFields,
       { type: "multiselect", options: FLIPI },
     );
 
-    expect(control).toBe("select");
+    expect(answer.can === "edit" && answer.options.map((o) => o.value)).toEqual([
+      "Yes",
+    ]);
+  });
+
+  it("lets the row say HOW MANY when the descriptor only says which", () => {
+    // The other half, and the one that was wrong. `staging_modalities` is
+    // `value_kind: "string"` with three descriptor options and `multiple:
+    // null`, over a comma-joined column the matcher reads as a list — so a
+    // single select replaced the whole list with one value, silently, on an
+    // attribute that gates eligibility (#585).
+    //
+    // Cardinality only. The values above still come from the descriptor.
+    const control = controlFor(
+      entry({ value_kind: "string", options: [{ value: "CT" }, { value: "PET" }] }),
+      { type: "multiselect", options: [{ value: "CT" }] },
+    );
+
+    expect(control).toBe("multiselect");
+  });
+
+  it("does not let the row DOWNGRADE a declared list", () => {
+    // `multiple: true` is a statement, and a row saying `select` over a list
+    // column would put the truncation back.
+    const control = controlFor(
+      entry({ value_kind: "string", multiple: true, options: [{ value: "CT" }] }),
+      { type: "select", options: [{ value: "CT" }] },
+    );
+
+    expect(control).toBe("multiselect");
   });
 
   it("hands the resolved list to the caller, whichever source it came from", () => {

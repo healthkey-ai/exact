@@ -36,6 +36,7 @@ import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit } from "./FieldEdit";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
+import { splitJoined } from "./writable";
 import { editabilityOf } from "./writable";
 import type { WritableFields } from "./writable";
 
@@ -126,6 +127,39 @@ export function formatValue(value: unknown, options?: TrialDetailField["options"
   if (Array.isArray(value)) {
     const parts = value.filter((v) => v != null && v !== "").map((v) => labelOf(v, options));
     return parts.length ? parts.join(", ") : "—";
+  }
+  // A COMMA-JOINED value is a list the column happens to store as text, and
+  // it used to read as raw codes here: `labelOf` matches the WHOLE string,
+  // so "age,stage" matched nothing and fell through to itself — while the
+  // editor opened on the same row showed "Age: Greater than 60 years". The
+  // cell is where a reader checks their record, and codes there make a
+  // correctly stored value look wrong (#586).
+  //
+  // Only when EVERY part is a known value. Not every string with a comma is
+  // a list — a free-text field can hold "Smith, John" — and labelling one
+  // part of somebody's prose because it happened to collide with an option
+  // would be worse than the codes. All-or-nothing keeps the fallback exactly
+  // where it was: a value the vocabulary does not recognise still reads
+  // verbatim, which is what a legacy spelling needs.
+  //
+  // `splitJoined`, so the split here and the split the editor seeds from are
+  // the same one. Two different splits of the same string is how
+  // `inv(3)(q21,q26)` becomes two markers nobody has heard of.
+  //
+  // THERE IS A THIRD RULE, and it is the one that decides eligibility:
+  // EXACT's matcher uses a bare `value.split(",")` with no trimming and no
+  // bracket awareness (`trials/querysets/trial.py`). PROMOP reads
+  // `cytogenetic_markers` back `", "`-joined, so the matcher already drops
+  // every marker after the first — before this change and independently of
+  // it. What this DOES do is remove the last on-screen hint: the cell used
+  // to show raw text and now shows recognised labels for values the match
+  // is not using. Filed as #588, which is where the three rules are made
+  // one; this is not the place to paper over it.
+  if (typeof value === "string" && options?.length) {
+    const parts = splitJoined(value);
+    const known = parts.length > 1
+      && parts.every((part) => options.some((o) => String(o.value) === part));
+    if (known) return parts.map((part) => labelOf(part, options)).join(", ");
   }
   return labelOf(value, options);
 }

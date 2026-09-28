@@ -572,3 +572,61 @@ describe("the weights wizard flag", () => {
     );
   });
 });
+
+
+describe("naming the fields the record refused", () => {
+  // The queue can only send the rest of a batch again if it is told WHICH
+  // field was objected to, and turning an axios error into that answer is
+  // this adapter's job — knowledge of what an axios error looks like does
+  // not belong in a transport-agnostic queue. None of this was exercised:
+  // three separate mutations of it survived the whole suite.
+
+  const refusing = (data: unknown, status = 400) => {
+    const patch = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Request failed"), { response: { status, data } }),
+    );
+    return { get: vi.fn(), patch } as unknown as AxiosInstance;
+  };
+
+  const refusalFrom = async (client: AxiosInstance, fields: Record<string, unknown>) => {
+    try {
+      await adapter(client).setPatientFields!(fields);
+    } catch (error: unknown) {
+      return error as { name?: string; fields?: string[] };
+    }
+    throw new Error("expected the write to be refused");
+  };
+
+  it("names the field DRF objected to", async () => {
+    const client = refusing({ flipi_score_options: ["Select recognized FLIPI risk factors."] });
+
+    const error = await refusalFrom(client, { flipi_score_options: "x", hemoglobin_g_dl: 12 });
+
+    expect(error.name).toBe("PatientFieldsRefused");
+    expect(error.fields).toEqual(["flipi_score_options"]);
+  });
+
+  it("ignores a name that was not in this request", async () => {
+    // Intersected here as well as in the queue. A body naming something
+    // else leaves nothing to retry, and a queue that believed it would
+    // re-send the identical batch for ever.
+    const client = refusing({ some_other_field: ["nope"] });
+
+    const error = await refusalFrom(client, { hemoglobin_g_dl: 12 });
+
+    expect(error.name).not.toBe("PatientFieldsRefused");
+  });
+
+  it("passes a body with no field names through untouched", async () => {
+    // `{"detail": …}` from a permission error, and a 500 with nothing at
+    // all. There is no field to blame, so the raw error reaches the queue
+    // and the whole batch is failed — which is the old behaviour and the
+    // safe one. Mutated to always wrap, this swallowed every 500 and
+    // nothing noticed.
+    for (const body of [{ detail: "Not found." }, "", null, ["a"]]) {
+      const error = await refusalFrom(refusing(body, 500), { hemoglobin_g_dl: 12 });
+
+      expect(error.name).not.toBe("PatientFieldsRefused");
+    }
+  });
+});
