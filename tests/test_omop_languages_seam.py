@@ -163,7 +163,7 @@ def test_count_still_potential_on_a_real_omop_requirement():
     trial = TrialFactory(disease='multiple myeloma',
                          languages_skills_required=[], omop_languages_skills_required=[EN_SPEAK])
     blank = PatientInfo(disease='multiple myeloma', patient_age=65)
-    assert _potential_count(trial, blank) >= 1
+    assert _potential_count(trial, blank) == 1
     assert se.compare(Trial.objects.filter(id=trial.id), blank) == []
 
 
@@ -172,7 +172,25 @@ def test_count_reads_the_legacy_column_when_off():
     trial = TrialFactory(disease='multiple myeloma',
                          languages_skills_required=['speak__en'], omop_languages_skills_required=[])
     blank = PatientInfo(disease='multiple myeloma', patient_age=65)
-    assert _potential_count(trial, blank) >= 1
+    assert _potential_count(trial, blank) == 1
+
+
+def _asks_for_languages(trial):
+    return any(item['userAttributeName'] == 'languagesSkills'
+               for item in trial.attrs_to_fill_in({'languages_skills': 1}))
+
+
+@pytest.mark.parametrize('flag, legacy, omop, asked', [
+    (True, ['speak__other'], [], False),   # flag on: OMOP column decides
+    (True, [], [EN_SPEAK], True),
+    (False, ['speak__en'], [], True),      # flag off: legacy column decides
+    (False, [], [EN_SPEAK], False),
+])
+def test_attrs_to_fill_in_follows_the_same_column(flag, legacy, omop, asked):
+    with override_settings(EXACT_OMOP_LANGUAGES=flag):
+        trial = TrialFactory(disease='multiple myeloma',
+                             languages_skills_required=legacy, omop_languages_skills_required=omop)
+        assert _asks_for_languages(trial) is asked
 
 
 # ── the consumer field reaches PatientInfo on both resolve paths ─────
