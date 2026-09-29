@@ -65,17 +65,19 @@ class TestBuilder:
         assert out['language_skill_concept_ids'] == []
 
     @pytest.mark.parametrize('value, expected', [
-        ('true', [EN_SPEAK]), (' TRUE ', [EN_SPEAK]),
-        ('false', []), ('yes', []), (1, []), ('1', []), (False, []),
+        (True, [EN_SPEAK]), ('true', [EN_SPEAK]), (' TRUE ', [EN_SPEAK]), ('t', [EN_SPEAK]),
+        ('Yes', [EN_SPEAK]), (1, [EN_SPEAK]), ('1', [EN_SPEAK]), (' 1 ', [EN_SPEAK]),
+        (False, []), (0, []), ('false', []), ('f', []), ('no', []), ('0', []), (None, []),
+        (2, []), ('on', []), ('', []), (1.0, []),
     ])
     def test_true_is_true_or_the_string_true_never_truthiness(self, lang_vocab, value, expected):
         assert language_skill_concept_ids_from_capabilities(
             {'english_speak': value})['language_skill_concept_ids'] == expected
 
-    def test_before_the_loader_runs_everything_is_empty(self, db):
-        LoadLangOptions().load_all()  # vocab rows, but no concept ids yet
-        assert language_skill_concept_ids_from_capabilities(
-            {'english_speak': True})['language_skill_concept_ids'] == []
+    def test_before_the_loader_runs_the_gate_leaves_the_payload_alone(self, db):
+        LoadLangOptions().load_all()  # vocab rows, but no concept ids yet: not ready
+        data = {'english_speak': True}
+        assert language_skill_concept_ids_from_capabilities(data) is data
 
     def test_booleans_override_a_directly_sent_list(self, lang_vocab):
         out = language_skill_concept_ids_from_capabilities(
@@ -88,7 +90,11 @@ class TestBuilder:
         out = language_skill_concept_ids_from_capabilities({**row, 'language_skill_concept_ids': ['1:2']})
         assert out['language_skill_concept_ids'] == []
 
-    def test_unloaded_vocab_warns(self, db, caplog):
+    def test_unloaded_vocab_warns(self, db, caplog, monkeypatch):
+        # Only reachable if the gate says ready while the vocab is not (a race);
+        # force the gate open to exercise the builder's own warning.
+        from trials.services.omop import languages_readiness
+        monkeypatch.setattr(languages_readiness, 'languages_ready', lambda: True)
         out = language_skill_concept_ids_from_capabilities({'english_speak': True})
         assert out['language_skill_concept_ids'] == []
         assert 'speak__en' in caplog.text
@@ -98,6 +104,8 @@ class TestBuilder:
         assert language_skill_concept_ids_from_capabilities(data) is data
 
     def test_vocab_read_once(self, lang_vocab, django_assert_max_num_queries):
+        from exact_matching.omop.languages_match_profile import omop_languages_enabled
+        assert omop_languages_enabled()  # readiness computed and cached first
         with django_assert_max_num_queries(2):
             language_skill_concept_ids_from_capabilities(
                 {name: True for name in LANGUAGE_CAPABILITY_FIELDS})

@@ -1,8 +1,9 @@
 """Language-skill column/field names used by matching — OMOP cutover seam (CB #5350).
 
-Same pattern as ``therapy_match_profile``: two profiles, picked by a setting
-(``EXACT_OMOP_LANGUAGES``, off by default) on every attribute access, so tests can
-toggle it with ``override_settings``. Nothing else changes between them.
+Same pattern as ``therapy_match_profile``: two profiles, picked on every attribute
+access by ``omop_languages_enabled()``, which is the ``EXACT_OMOP_LANGUAGES`` setting
+(off by default) AND a data-readiness check, decided once per request. Nothing else
+changes between the profiles.
 
 The profile names two things, one per side:
 
@@ -15,8 +16,9 @@ The profile names two things, one per side:
   same pair strings. EXACT builds it at resolve time from PROMOP's
   ``english_*`` / ``spanish_*`` capability booleans
   (``trials.services.omop.patient_languages``), a deliberate exception to "EXACT owns
-  no patient crosswalk": the ids come from EXACT's own mapping CSV, the same rows the
-  trial column is built from, and trials use only en/es. Only speak/write produce
+  no patient crosswalk": the ids come from the ``Language`` / ``LanguageSkillLevel``
+  vocab rows EXACT reads (in split-DB mode those live in the CB trials DB, the same
+  rows CB's backfill used), and trials use only en/es. Only speak/write produce
   pairs (interim; see that module).
 
 Surfaces that read it — a cutover flips all three together, which is why they go
@@ -38,6 +40,7 @@ read ``languages_skills_required``, and the match-reason output, which under the
 flag pairs the patient value (joined concept pairs) with the legacy trial
 requirement, i.e. two vocabularies side by side.
 """
+from contextvars import ContextVar
 from dataclasses import dataclass
 
 from django.conf import settings
@@ -57,9 +60,38 @@ OMOP_LANGUAGES_MATCH_PROFILE = LanguagesMatchProfile(
 )
 
 
+#: The readiness decision for the current unit of work. Every surface consults the
+#: gate separately, and the readiness cache can expire between two of those calls,
+#: so without a snapshot one request could read the OMOP column against a legacy
+#: patient value. Reset at each request's start and end (``trials/signals.py``);
+#: outside a request (a management command) the first decision holds for the run.
+_decision = ContextVar('exact_omop_languages_decision', default=None)
+
+
 def omop_languages_enabled() -> bool:
-    """Whether language-skill matching reads the OMOP pair column / patient field."""
-    return bool(getattr(settings, 'EXACT_OMOP_LANGUAGES', False))
+    """Whether language-skill matching reads the OMOP pair column / patient field.
+
+    ``EXACT_OMOP_LANGUAGES`` AND the data is ready
+    (``trials.services.omop.languages_readiness``: vocab loaded, trials backfilled
+    and in step with the vocab). Not ready -> the legacy path, with an ERROR log.
+    Decided once per request (``_decision``). The readiness module is imported only
+    when the setting is on, so the legacy path stays import-free (as the therapy
+    release gates do). Every surface (queryset, matcher, count SQL,
+    attrs-to-fill-in, patient builder) reads the flag here.
+    """
+    if not getattr(settings, 'EXACT_OMOP_LANGUAGES', False):
+        return False
+    decided = _decision.get()
+    if decided is None:
+        from trials.services.omop.languages_readiness import languages_ready
+        decided = languages_ready()
+        _decision.set(decided)
+    return decided
+
+
+def reset_languages_decision(**_signal_kwargs):
+    """Forget this unit of work's decision (request start/end; tests)."""
+    _decision.set(None)
 
 
 def get_languages_match_profile() -> LanguagesMatchProfile:

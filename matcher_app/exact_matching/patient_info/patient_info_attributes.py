@@ -5,7 +5,9 @@ from django.db import models
 from django.db.models import Q
 from django.utils.functional import cached_property
 
-from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_match_profile import (
+    LEGACY_LANGUAGES_MATCH_PROFILE, OMOP_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
+)
 from exact_matching.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from exact_matching.patient_info.convertors.base_convertor import BaseConvertor
 from exact_matching.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
@@ -227,12 +229,16 @@ class PatientInfoAttributes:
 
         Legacy: the ``languages_skills`` string, unchanged. OMOP
         (``EXACT_OMOP_LANGUAGES``): the ``language_skill_concept_ids`` pair list
-        (built at resolve time from PROMOP's capability booleans), joined with "," so every reader downstream (the blank check,
-        the queryset's ``_csv`` split, the matcher's string split) treats it
-        exactly like the legacy value. ``[]`` becomes ``''``, i.e. blank.
+        (built at resolve time from PROMOP's capability booleans), joined with ","
+        so every reader downstream (the blank check, the queryset's ``_csv`` split,
+        the matcher's string split) treats it exactly like the legacy value. ``[]``
+        becomes ``''``, i.e. blank. The gate is read once, so the field and its
+        shape always come from the same decision.
         """
-        value = getattr(self.patient_info, LANGUAGES_MATCH_PROFILE.patient_languages_skills)
-        if omop_languages_enabled() and isinstance(value, (list, tuple)):
+        omop = omop_languages_enabled()
+        profile = OMOP_LANGUAGES_MATCH_PROFILE if omop else LEGACY_LANGUAGES_MATCH_PROFILE
+        value = getattr(self.patient_info, profile.patient_languages_skills)
+        if omop and isinstance(value, (list, tuple)):
             return ','.join(str(v) for v in value)
         return value
 

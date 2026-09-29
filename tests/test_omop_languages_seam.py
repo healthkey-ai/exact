@@ -21,6 +21,16 @@ from tests.factories import TrialFactory
 
 pytestmark = pytest.mark.django_db
 
+
+@pytest.fixture(autouse=True)
+def lang_vocab(db):
+    # The readiness gate needs the vocab loaded before the flag takes effect.
+    from io import StringIO
+    from django.core.management import call_command
+    from trials.services.loaders.load_lang_options import LoadLangOptions
+    LoadLangOptions().load_all()
+    call_command('load_language_omop_concept_ids', stdout=StringIO())
+
 EN_SPEAK = '4180186:2100007853'
 ES_WRITE = '4182511:2100007855'
 
@@ -146,11 +156,19 @@ def _potential_count(trial, patient):
             .values('potential_attrs_count').first()['potential_attrs_count'])
 
 
+@pytest.fixture
+def gate_open(monkeypatch):
+    # Column-choice tests need legacy and OMOP columns that disagree, which the
+    # readiness gate (check d) would refuse; force it open to see which one is read.
+    from trials.services.omop import languages_readiness
+    monkeypatch.setattr(languages_readiness, 'languages_ready', lambda: True)
+
+
 @override_settings(EXACT_OMOP_LANGUAGES=True)
-def test_count_reads_the_omop_column_under_the_flag():
+def test_count_reads_the_omop_column_under_the_flag(gate_open):
     from trials.services.matching import status_equivalence as se
-    # legacy requirement present, OMOP column empty (e.g. only speak__other): under the
-    # flag the trial imposes no language requirement, and the count must agree
+    # legacy requirement present, OMOP column empty: with the gate open the trial
+    # imposes no language requirement, and the count must agree
     trial = TrialFactory(disease='multiple myeloma',
                          languages_skills_required=['speak__other'], omop_languages_skills_required=[])
     blank = PatientInfo(disease='multiple myeloma', patient_age=65)
@@ -161,8 +179,9 @@ def test_count_reads_the_omop_column_under_the_flag():
 @override_settings(EXACT_OMOP_LANGUAGES=True)
 def test_count_still_potential_on_a_real_omop_requirement():
     from trials.services.matching import status_equivalence as se
+    # consistent backfill (the readiness gate refuses a pair without its code)
     trial = TrialFactory(disease='multiple myeloma',
-                         languages_skills_required=[], omop_languages_skills_required=[EN_SPEAK])
+                         languages_skills_required=['speak__en'], omop_languages_skills_required=[EN_SPEAK])
     blank = PatientInfo(disease='multiple myeloma', patient_age=65)
     assert _potential_count(trial, blank) == 1
     assert se.compare(Trial.objects.filter(id=trial.id), blank) == []
@@ -183,11 +202,11 @@ def _asks_for_languages(trial):
 
 @pytest.mark.parametrize('flag, legacy, omop, asked', [
     (True, ['speak__other'], [], False),   # flag on: OMOP column decides
-    (True, [], [EN_SPEAK], True),
+    (True, ['speak__en'], [EN_SPEAK], True),
     (False, ['speak__en'], [], True),      # flag off: legacy column decides
     (False, [], [EN_SPEAK], False),
 ])
-def test_attrs_to_fill_in_follows_the_same_column(flag, legacy, omop, asked):
+def test_attrs_to_fill_in_follows_the_same_column(gate_open, flag, legacy, omop, asked):
     with override_settings(EXACT_OMOP_LANGUAGES=flag):
         trial = TrialFactory(disease='multiple myeloma',
                              languages_skills_required=legacy, omop_languages_skills_required=omop)

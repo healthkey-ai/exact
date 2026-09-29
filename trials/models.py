@@ -386,8 +386,10 @@ class Trial(TimeStampMixin):
     languages_skills_required = models.JSONField(blank=True, null=False, default=list)
     # OMOP migration (CB #5350): the same requirements as (language, skill) concept
     # pairs, one '<language_concept_id>:<skill_concept_id>' string each (see
-    # trials/services/omop/languages.py). Read by matching only under
-    # EXACT_OMOP_LANGUAGES (LanguagesMatchProfile).
+    # trials/services/omop/languages.py). Matching logic uses it only under
+    # EXACT_OMOP_LANGUAGES (LanguagesMatchProfile), but as a concrete field it is in
+    # every Trial SELECT, so the trials DB must have it before this build deploys:
+    # CB migration 0421 (see docs/porting-from-cancerbot.md, "Deploy order").
     omop_languages_skills_required = models.JSONField(blank=True, null=False, default=list)
 
     age_low_limit = models.IntegerField(blank=True, null=True)

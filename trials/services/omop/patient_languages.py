@@ -8,16 +8,24 @@ turns the True ones into the pair strings the OMOP trial column holds,
 them on ``language_skill_concept_ids``, which ``LANGUAGES_MATCH_PROFILE`` reads
 under ``EXACT_OMOP_LANGUAGES``.
 
-This is a deliberate exception to "EXACT owns no patient crosswalk": the concept
-ids come from EXACT's own mapping CSV (``load_language_omop_concept_ids``), the
-same rows the trial column is built from, and trials use only en/es. So both
-sides are guaranteed the same ids without a PROMOP-side field.
+This is a deliberate exception to "EXACT owns no patient crosswalk" (the PROMOP
+field was dropped for it, promop#1635; this module has no CB counterpart): the
+concept ids come from the ``Language`` / ``LanguageSkillLevel`` rows EXACT reads
+(loaded by ``load_language_omop_concept_ids``; in split-DB mode they are the CB
+trials DB's rows, the same ones CB's backfill used), and trials use only en/es.
+
+Because the patient side takes its ids from those vocab rows, a renumbering of
+PROMOP's HK-Language mint no longer reaches matching through the patient. What
+can still split the sides is the trial column falling behind the vocab rows (ids
+re-curated, column not re-backfilled); the readiness gate's check (c) in
+``languages_readiness`` refuses the OMOP path then.
 
 Interim limitation: only capabilities that have a ``LanguageSkillLevel`` row with a
 concept id produce a pair, i.e. speak and write (CB's vocab has no read/understand
 rows, and EXACT does not add any, to stay identical to CB). A patient who only
 reads, or only understands, gets ``[]`` and reads as unknown, not as failing a
-requirement. Before the loader has run every patient gets ``[]``.
+requirement. Before the loader has run the readiness gate keeps the flag
+effectively off, so the payload is left untouched.
 """
 import logging
 
@@ -37,10 +45,19 @@ LANGUAGE_CAPABILITY_FIELDS = {
 }
 
 
+_TRUE_STRINGS = frozenset({'true', 't', 'yes', '1'})
+
+
 def _is_true(value):
-    # A JSON boolean from PROMOP, or the string a form-encoded client sends.
-    # Never truthiness: the string "false" is truthy.
-    return value is True or (isinstance(value, str) and value.strip().lower() == 'true')
+    # A JSON boolean from PROMOP, an int 1, or a string a form-encoded client sends
+    # ('true'/'t'/'yes'/'1', any case, stripped). Never truthiness: the string
+    # "false" is truthy. bool is checked first because True == 1 but isinstance
+    # (True, int) is also True; only the literal True and int 1 count.
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    return isinstance(value, str) and value.strip().lower() in _TRUE_STRINGS
 
 
 def language_skill_concept_ids_from_capabilities(data):
