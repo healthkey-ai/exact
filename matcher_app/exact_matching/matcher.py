@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE
+from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ _CUSTOM_SEARCH_NAMED_HANDLERS = {
     'prior_therapy': '_match_prior_therapy',
     'genetic_mutations': '_match_genetic_mutations',
     'supportive_therapies': '_match_supportive_therapies',
+    'languages_skills': '_match_languages_skills',
 }
 
 # Therapy-line attrs fall back to a single handler after the named
@@ -876,6 +878,23 @@ class UserToTrialAttrMatcher:
         if len(supportive_excluded) > 0 and len(get_overlap(codes, supportive_excluded)) > 0:
             return 'not_matched'
         return 'matched'
+
+    def _match_languages_skills(self, ctx):
+        """Language skills, read through LANGUAGES_MATCH_PROFILE.
+
+        Flag off: exactly the generic computed handler this entry always used
+        (config ``attr`` + ``uvalue_function``). Flag on: the same required-list
+        rule against the OMOP pair column, with the patient value from
+        ``PatientInfoAttributes`` (the patient's pair list, built from PROMOP's
+        capability booleans, comma-joined).
+        """
+        if not omop_languages_enabled():
+            return self._match_computed_attr(ctx)
+        return self._match_computed_subattr(
+            LANGUAGES_MATCH_PROFILE.languages_skills_required,
+            lambda _patient_info: ctx.value,
+            ctx.is_blank,
+        )
 
     def _match_therapy_lines_attr(self, ctx):
         if ctx.name == 'first_line_therapy':  # calc things for just one line of therapy

@@ -5,6 +5,7 @@ from django.db import models
 from django.db.models import Q
 
 from exact_matching.attribute_names import AttributeNames
+from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE
 from exact_matching.patient_info.configs import (
     THERAPY_LINES_ATTRS_UNDERSCORED,
     TRIAL_ATTRS_JSON_AS_A_LIST,
@@ -24,14 +25,29 @@ _COMPONENT_AND_TYPE_ATTRS = (
 )
 
 
+def _trial_column(user_attr, trial_attr_name):
+    """The trial column the count SQL reads for ``user_attr``.
+
+    Every attr reads its config ``attr``, except ``languages_skills``, whose column
+    comes from LANGUAGES_MATCH_PROFILE so the count flips with EXACT_OMOP_LANGUAGES
+    together with the queryset and the matcher.
+    """
+    if user_attr == 'languages_skills':
+        return LANGUAGES_MATCH_PROFILE.languages_skills_required
+    return trial_attr_name
+
+
 class UserToTrialAttrsMapper:
     def potential_attrs_for_trial(self, trial, counts):
         def item(trial_attribute_name, user_attribute_name, trial_obj, cnt):
-            if getattr(trial_obj, trial_attribute_name) is None:
+            # Emptiness is judged on the column matching reads; the label keeps the
+            # config name (only languages_skills differs, see _trial_column).
+            value_attribute_name = _trial_column(user_attribute_name, trial_attribute_name)
+            if getattr(trial_obj, value_attribute_name) is None:
                 return
 
-            if trial_attribute_name in TRIAL_ATTRS_JSON_AS_A_LIST:
-                if getattr(trial_obj, trial_attribute_name) == []:
+            if value_attribute_name in TRIAL_ATTRS_JSON_AS_A_LIST:
+                if getattr(trial_obj, value_attribute_name) == []:
                     return
 
             return {
@@ -371,7 +387,7 @@ class UserToTrialAttrsMapper:
                     then_value = '0 ELSE 1'
 
             # compare with Trial
-            trial_attr_name = trial_attr_meta["attr"]
+            trial_attr_name = _trial_column(user_attr, trial_attr_meta["attr"])
 
             if trial_attr_meta["type"] == "min_value":
                 if 'attr_min' in trial_attr_meta:

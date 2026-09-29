@@ -441,6 +441,15 @@ PROMOP_VOCAB_OAUTH_TOKEN_URL = os.environ.get('PROMOP_VOCAB_OAUTH_TOKEN_URL', ''
 # ---------------------------------------------------------------------------
 EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', 'true', 'yes', 'on')
 
+# Language-skill matching on the OMOP (language, skill) pair column and the
+# patient's language_skill_concept_ids, which EXACT builds from PROMOP's
+# capability booleans (CB #5350; exact_matching.omop.languages_match_profile).
+# OFF by default: flip only after the language vocab concept_ids are loaded
+# (load_language_omop_concept_ids) and the trial column is backfilled. Under the
+# flag a patient's languages come only from those booleans: a payload carrying
+# just a CB-code languages_skills reads as unknown.
+EXACT_OMOP_LANGUAGES = os.environ.get('EXACT_OMOP_LANGUAGES', '').lower() in ('1', 'true', 'yes', 'on')
+
 
 # ---------------------------------------------------------------------------
 # Firebase Admin SDK — backs FirebaseTokenProvider (verify_id_token).

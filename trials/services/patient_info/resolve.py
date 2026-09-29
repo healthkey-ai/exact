@@ -58,6 +58,7 @@ from django.db.models import DateField, DateTimeField, DecimalField, FloatField,
 from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
+from trials.services.omop.patient_languages import language_skill_concept_ids_from_capabilities
 
 # Distinguishes "no person_id supplied" from a supplied-but-falsy one.
 _MISSING = object()
@@ -236,6 +237,9 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
 
     # Convert camelCase keys to snake_case if needed
     snake_data = _to_snake_case(data)
+    # PROMOP's language booleans -> language_skill_concept_ids, before the field
+    # filter below drops them (CB #5350; only under EXACT_OMOP_LANGUAGES).
+    snake_data = language_skill_concept_ids_from_capabilities(snake_data)
 
     # Filter to known model fields only
     model_fields = {f.name for f in PatientInfo._meta.get_fields() if hasattr(f, 'column')}

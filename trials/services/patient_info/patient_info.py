@@ -98,6 +98,11 @@ _FIELDS = [
     # match-values once OMOP therapy is on (#285 folded types into the base flag). Inert
     # until then.
     _f(JSONField, 'therapy_type_ids', default=None),
+    # (language, skill) concept pairs ("<language_concept_id>:<skill_concept_id>";
+    # CB #5350), built by resolve from PROMOP's english_*/spanish_* capability
+    # booleans (trials.services.omop.patient_languages). None when the payload
+    # carries neither the booleans nor the list; read only under EXACT_OMOP_LANGUAGES.
+    _f(JSONField, 'language_skill_concept_ids', default=None),
     # Aggregate therapy-vocab release the patient's therapy_type_ids were derived
     # against (promop VocabularyRelease pk as a decimal string; promop#394). One
     # value for the whole class set (unanimous-of-lines else null). #286 Gate 1
