@@ -174,6 +174,16 @@ export function useQueuedPatientFields(
    *  response did not mention the field, so there is nothing to report about
    *  it. */
   onConfirmed?: (fields: Record<string, unknown>) => void,
+  /** Who the credential names, right now. Passed to the queue, which
+   *  captures it per field at enqueue and compares it at send — see
+   *  `patientWriter.ts` and the invariant note on `live()` below for why the
+   *  key cannot do this job. Omitted means no guard. */
+  credentialIdentity?: () => string | undefined,
+  /** The same, asked afresh immediately before a request rather than
+   *  remembered. The pair is explained on `credentialIdentityNow` in
+   *  `types.ts`; in short, the cached one only moves when somebody fetches a
+   *  token and a whole debounce window can pass with no request in it. */
+  credentialIdentityNow?: () => Promise<string | undefined> | string | undefined,
 ): {
   save: (field: string, value: unknown) => void;
   outstanding: Record<string, unknown>;
@@ -235,6 +245,15 @@ export function useQueuedPatientFields(
   const settledValues = useRef<Record<string, unknown>>({});
   const onConfirmedRef = useRef(onConfirmed);
   onConfirmedRef.current = onConfirmed;
+  // Through a ref like every other callback here: the writer is built once
+  // per key and would otherwise hold the reader it was built with for the
+  // life of that key, which is the bug this is here to prevent, one level
+  // up. The bridge hands over a stable function, but nothing in this
+  // signature says it has to.
+  const identityRef = useRef(credentialIdentity);
+  identityRef.current = credentialIdentity;
+  const identityNowRef = useRef(credentialIdentityNow);
+  identityNowRef.current = credentialIdentityNow;
   settledRef.current = () => {
     queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
     queryClient.invalidateQueries({ queryKey: ["exact-writable-fields", key] });
@@ -291,18 +310,35 @@ export function useQueuedPatientFields(
     // that is the key it wants; a patient handle is not enough for anything
     // that writes.
     //
-    // AND THE KEY IS NOT THE WHOLE GUARD, which is worth knowing before you
-    // trust this paragraph: a key chooses which adapter the flush goes
-    // through, it does not drop a payload. What refuses is the bridge's
-    // token reader, and only when the session signal moves. An identity
-    // that changes without moving that signal is re-routed, not dropped —
-    // exact#583, with the four measured shapes and the fix.
+    // AND THE KEY IS NOT THE WHOLE GUARD. A key chooses which adapter the
+    // flush goes through; it does not drop a payload. So an identity that
+    // changes without moving the session signal used to be RE-ROUTED, not
+    // dropped — #583, four measured shapes, none of them derivable from
+    // anything in the React tree.
+    //
+    // What drops one now is the queue itself: it captures the credential's
+    // fingerprint when an edit is enqueued and compares it when the batch
+    // goes out (`identity` below, `patientWriter.ts`, and
+    // `identityFingerprint.ts` for why a rotated token is not a new
+    // identity). The key still decides WHICH adapter; the fingerprint
+    // decides WHETHER. Keep both — a stale adapter and a stranger's
+    // credential are different failures and neither guard catches the
+    // other.
     const captured = stateRef.current;
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     const built: PatientFieldWriter = new PatientFieldWriter(
       (fields) => live().setPatientFields!(fields),
       {
+        identity: () => identityRef.current?.(),
+        // Falls back to the CACHED reader when no fresh one was given, the
+        // way the writer's own default does. Passing a function that always
+        // answers `undefined` would override that default and switch the
+        // guard off entirely — `sameIdentity` reads unknown as a match — so a
+        // caller supplying only the cached reader would get no protection
+        // and no sign of it. The two props are independently optional, so
+        // that combination is reachable.
+        identityNow: () => (identityNowRef.current ?? identityRef.current)?.(),
         onSettled: (field, outcome) => {
           if (writerRef.current && writerRef.current !== built) return;
           owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
@@ -843,6 +879,14 @@ export function useSavedFilters(
    *  an identity can contain the separator, `auth0|5f3c9b` being the usual
    *  spelling, and a parser got that wrong. Omitted, the key is used as-is. */
   persistedKey?: string,
+  /** Who the credential names, right now. Captured when the reader asks for
+   *  a save or a reset and compared when the write goes out — see
+   *  `preferences.ts` and the invariant note on `live()` above. Omitted
+   *  means no guard. */
+  credentialIdentity?: () => string | undefined,
+  /** The same, asked afresh immediately before a request. See
+   *  `credentialIdentityNow` in `types.ts`. */
+  credentialIdentityNow?: () => Promise<string | undefined> | string | undefined,
 ): {
   persist: (filters: FilterState) => void;
   reset: () => void;
@@ -941,9 +985,22 @@ export function useSavedFilters(
   // Which writer's verdict the message belongs to. A patient switch builds a
   // new one while the old one's flush is still in the air, and that flush
   // lands afterwards — under the new patient, about the previous one's row.
+  // Read through a ref so the writer, which is built once per key, does not
+  // hold the reader it was built with for the life of that key — which is
+  // the very failure this guard exists to prevent.
+  const filterIdentityRef = useRef(credentialIdentity);
+  filterIdentityRef.current = credentialIdentity;
+  const filterIdentityNowRef = useRef(credentialIdentityNow);
+  filterIdentityNowRef.current = credentialIdentityNow;
+
   const writerRef = useRef<PreferenceWriter | null>(null);
   const writer = useMemo(() => {
     const built: PreferenceWriter = new PreferenceWriter(transport, {
+      // Through the ref, like every other callback here — see the note where
+      // it is declared.
+      identity: () => filterIdentityRef.current?.(),
+      // Same fallback as the patient queue, for the same reason.
+      identityNow: () => (filterIdentityNowRef.current ?? filterIdentityRef.current)?.(),
       // `=== built`, so a NULL ref means "not mine" and this stays quiet.
       // `useQueuedPatientFields` writes the same guard as
       // `current && current !== built`, where null means "nobody has claimed

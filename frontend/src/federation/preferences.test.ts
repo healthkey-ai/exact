@@ -1716,3 +1716,75 @@ describe("PreferenceWriter — a write that outlived the reader who made it (#58
     expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
   });
 });
+
+describe("PreferenceWriter — the credential is read afresh at send (#583)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("does not trust a cache that nothing refreshed", async () => {
+    // The cached reading only changes when somebody fetches a token, and
+    // between an edit and its flush there may be no request at all. Against
+    // the cache alone the swap below is invisible and the write goes out
+    // under the new credential — which was the state of the first version of
+    // this guard, measured.
+    const t = controllable();
+    const onError = vi.fn();
+    const cached = "sub:iss|one"; // never updated, as in the failing shape
+    let current = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => cached,
+      identityNow: async () => current,
+      onError,
+    });
+
+    w.save({ country: "US" });
+    current = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(t.calls).toEqual([]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("still sends in the same task when the reader answers synchronously", async () => {
+    // A contract this queue already had: `reset` jumps the debounce, and a
+    // caller that advances its timers and reads `calls` is entitled to see
+    // the request. Awaiting unconditionally moved every send a microtask
+    // later and broke nine tests in this file.
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport, { identity: () => "sub:iss|one" });
+
+    w.reset();
+    expect(t.calls).toEqual([{ kind: "reset" }]);
+  });
+});
+
+describe("PreferenceWriter — only the cached reader (#583)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("falls back to it rather than to nothing", async () => {
+    // Same reachable combination as the patient queue, same reason: a reader
+    // that always answers `undefined` reads as "unknown", which is a match,
+    // so the guard would be silently off.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(t.calls).toEqual([]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+});

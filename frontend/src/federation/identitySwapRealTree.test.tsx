@@ -132,12 +132,19 @@ describe("a write never crosses an account switch, through the real tree", () =>
     // key-driven guard works: the bookmarks below are re-read under the new
     // credential instead of being served from the previous account's cache.
     //
-    // The WRITE is a different matter and is not asserted here, because it
-    // would fail: a key chooses which adapter a flush goes through, and the
-    // only thing that refuses is the token reader, which fires on the
-    // SESSION SIGNAL. An identity that moves without it is exact#583. The
-    // first draft of this test asserted the write and failed — which is the
-    // issue reproducing itself, not a defect in this fix.
+    // The WRITE is a different matter and is still not asserted here, but
+    // the reason has changed. It used to be that it WOULD fail: a key
+    // chooses which adapter a flush goes through, and the only thing that
+    // refused was the token reader, which fires on the SESSION SIGNAL — so
+    // an identity moving without one was re-routed (exact#583, and the
+    // first draft of this test asserted the write and failed, which was
+    // the issue reproducing itself rather than a defect in the fix).
+    //
+    // #583 closed that in the write queues, by comparing the credential
+    // rather than a key, and `identitySwap.test.tsx` asserts the write for
+    // all three shapes including this one. This test stays about the READ,
+    // which is what it was built to pin and what the key is genuinely
+    // responsible for.
 
     // The guard was being disabled by a host doing the obvious thing:
     // PROMOP's `person_id` is an integer, so `stateIdentity={user.id}` is

@@ -430,6 +430,33 @@ export interface TrialMatchesProps {
    *  which point a debounced filter write goes to the new account's row with
    *  a credential nothing can fault. See `identityKeyOf`. */
   stateIdentity?: string | number;
+  /** Who the CREDENTIAL names, right now, as a fingerprint.
+   *
+   *  Supplied by the bridge, not by a host — it is read off the tokens the
+   *  bridge hands to its own clients, so there is nothing for a host to pass
+   *  and nothing it can get wrong.
+   *
+   *  It exists because `stateIdentity` above cannot close the hole its own
+   *  docstring describes. That value is what the HOST says; this one is what
+   *  the credential says, and #583 measured four shapes where they disagree
+   *  — an identity that changes with no new `sessionKey`, no new `getToken`
+   *  and no re-render. Nothing in the React tree learns about those, so no
+   *  key can be derived from them; the write queues compare this instead,
+   *  capturing it when an edit is enqueued and again when it is sent.
+   *
+   *  Synchronous, because it is consulted on a keystroke. See
+   *  `identityFingerprint.ts`. */
+  credentialIdentity?: () => string | undefined;
+  /** The same thing, read AFRESH rather than remembered.
+   *
+   *  A pair, because the two readings happen at moments with different
+   *  budgets. The cached one above is consulted on a keystroke and must not
+   *  await anything; this one is consulted immediately before a request,
+   *  where awaiting is free — and it has to be asked rather than remembered,
+   *  because the cache only moves when somebody fetches a token and a whole
+   *  debounce window can pass with no request in it. See
+   *  `patientWriter.ts`. */
+  credentialIdentityNow?: () => Promise<string | undefined> | string | undefined;
   /** CTOMOP person_id. Mutually exclusive with `patientInfo` — when
    *  both are provided, `patientInfo` wins (matches the server-side
    *  precedence in `resolve_patient_info`). */

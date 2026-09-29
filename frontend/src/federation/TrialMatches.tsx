@@ -157,6 +157,8 @@ function TrialMatchesInner({
   apiClient,
   patientInfo,
   stateIdentity,
+  credentialIdentity,
+  credentialIdentityNow,
   personId,
   initialFilters,
   onTrialSelect,
@@ -382,7 +384,13 @@ function TrialMatchesInner({
   // every open editor goes with them, half-typed value and all. That is the
   // failure `FieldEdit`'s "does not wipe what the reader is typing" exists
   // to catch, and it caught it.
-  const patientFields = useQueuedPatientFields(state, readerHandle, onPatientRecordChanged);
+  const patientFields = useQueuedPatientFields(
+    state,
+    readerHandle,
+    onPatientRecordChanged,
+    credentialIdentity,
+    credentialIdentityNow,
+  );
   // Saved filters. Applied over the host's `initialFilters` rather than in
   // place of them: the seeded country is the baseline the reader never chose,
   // and a saved set that omits it must not silently widen the search to every
@@ -507,6 +515,8 @@ function TrialMatchesInner({
     },
     preferenceSource,
     persistedKey,
+    credentialIdentity,
+    credentialIdentityNow,
   );
 
   // Whether the panel has been touched since the last time a saved set

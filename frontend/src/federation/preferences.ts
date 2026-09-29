@@ -653,6 +653,16 @@ export interface PreferenceWriterOptions {
    *
    *  Omitted means no guard, and the caller behaves exactly as it did. */
   identity?: () => string | undefined;
+  /** Who the credential names AT SEND TIME, read afresh.
+   *
+   *  The cached `identity` above is right for the capture — it is read on a
+   *  keystroke — but it only changes when somebody fetches a token, and
+   *  between an edit and its flush there may be no request at all. Compared
+   *  against the cache, a swap inside the debounce window is invisible: the
+   *  write passes and the transport then sends it under the new credential.
+   *  See `patientWriter.ts`, which carries the same pair and the same note
+   *  about the microsecond race that remains. */
+  identityNow?: () => Promise<string | undefined> | string | undefined;
 }
 
 /**
@@ -670,6 +680,7 @@ export class PreferenceWriter {
   private readonly onError: (error: unknown) => void;
   private readonly onSuccess: () => void;
   private readonly identity: () => string | undefined;
+  private readonly identityNow: () => Promise<string | undefined> | string | undefined;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private debounced: FilterState | null = null;
@@ -688,6 +699,7 @@ export class PreferenceWriter {
     this.debounceMs = opts.debounceMs ?? FILTER_DEBOUNCE_MS;
     this.onSuccess = opts.onSuccess ?? (() => {});
     this.identity = opts.identity ?? (() => undefined);
+    this.identityNow = opts.identityNow ?? (() => this.identity());
     this.onError =
       opts.onError ??
       ((error: unknown) => {
@@ -708,6 +720,10 @@ export class PreferenceWriter {
       const value = this.debounced;
       const by = this.debouncedBy;
       this.debounced = null;
+      // Cleared with it. Nothing live reads the stale one — `flush` bails on
+      // a null value first, and `save` overwrites both — but the two are one
+      // fact and leaving half of it behind invites a reader to trust it.
+      this.debouncedBy = undefined;
       if (value !== null) this.enqueue({ kind: "save", value, by });
     }, this.debounceMs);
   }
@@ -768,37 +784,46 @@ export class PreferenceWriter {
 
   private async run(write: Write): Promise<void> {
     const generation = this.generation;
+    // WHOSE WRITE THIS IS, decided before the transport is touched and
+    // against the credential as it is NOW, not as it was cached. A rotated
+    // token and an unknown identity pass; a known stranger does not —
+    // `identityFingerprint.ts` has why those differ.
+    //
+    // Thrown into the chain rather than given a path of its own: `onError`
+    // reports it, `onSuccess` does not fire, and the tail still drains,
+    // which is every behaviour a stranded write wants and none of them
+    // newly written.
+    //
+    // The async wrapper also subsumes what the old try/catch here was for —
+    // a host adapter that throws SYNCHRONOUSLY rather than rejecting. Left
+    // outside a chain that bypassed `onError`, never assigned `inFlight`,
+    // and surfaced only as an unhandled rejection, while this class promises
+    // that a failed write is reported and not thrown. A rejection rather
+    // than a reported-and-resolved substitute, because a resolved one
+    // travels the SUCCESS path below and the failure would be announced as
+    // a success.
+    const send = (now: string | undefined): Promise<void> => {
+      if (!sameIdentity(write.by, now)) throw new IdentityChanged();
+      return write.kind === "reset"
+        ? this.transport.reset()
+        : this.transport.save(write.value);
+    };
     let request: Promise<void>;
-    // WHOSE WRITE THIS IS, decided before the transport is touched. A
-    // rotated token and an unknown identity pass; a known stranger does not
-    // — `identityFingerprint.ts` has why those differ. Routed into the same
-    // rejection the rest of this method uses rather than given a path of its
-    // own: `onError` reports it, `onSuccess` does not fire, and whatever is
-    // queued behind it still drains, which is every behaviour a stranded
-    // write wants and none of them newly written.
-    if (!sameIdentity(write.by, this.identity())) {
-      this.inFlight = Promise.reject(new IdentityChanged())
-        .catch((error: unknown) => {
-          this.onError(error);
-        })
-        .then(() => this.next(generation));
-      return;
-    }
     try {
+      const now = this.identityNow();
+      // Awaited only when there is something to await. A reader that answers
+      // synchronously — the default, and every caller that supplies none —
+      // keeps the transport call in the SAME task, which is a contract this
+      // queue already had: a reset "jumps the debounce", and a caller that
+      // advances its timers and then reads `calls` is entitled to see the
+      // request. Wrapping unconditionally in an async function moved every
+      // send a microtask later and broke nine existing tests, which is the
+      // cheap version of breaking a caller.
       request =
-        write.kind === "reset"
-          ? this.transport.reset()
-          : this.transport.save(write.value);
+        typeof (now as { then?: unknown })?.then === "function"
+          ? (now as Promise<string | undefined>).then(send)
+          : send(now as string | undefined);
     } catch (error: unknown) {
-      // A host adapter that throws synchronously rather than rejecting. Left
-      // outside the chain it bypassed `onError`, never assigned `inFlight`,
-      // and surfaced only as an unhandled rejection — while the class
-      // promises that a failed write is reported, not thrown.
-      //
-      // Rejected rather than reported here and resolved: a resolved
-      // substitute travels the SUCCESS path below, so the failure would be
-      // reported and then immediately announced as a success. One error path,
-      // and it is the chain's.
       request = Promise.reject(error);
     }
 

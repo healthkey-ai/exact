@@ -41,20 +41,46 @@ export function fingerprintOf(token: string | undefined | null): string | undefi
   return `sub:${iss ?? "-"}|${sub}`;
 }
 
+/** Asked for a credential, and there wasn't one.
+ *
+ *  NOT the same as `undefined`, and the difference is the whole of the hole
+ *  this closes. `undefined` means "nothing known" — nobody has looked yet,
+ *  or this host has no credentials at all — and `sameIdentity` waves it
+ *  through so a no-auth host keeps working. A reader that HAS a credential
+ *  and is between two of them produces the same empty answer from
+ *  `getToken`, and that interval is exactly a sign-out followed by a
+ *  sign-in: the middle of the account switch this whole mechanism exists to
+ *  catch. Recorded as `undefined`, the guard switched itself off precisely
+ *  there, and a write enqueued in that window went out under the next
+ *  account. Measured through the real bridge.
+ *
+ *  So a caller that ASKED records this instead. It compares unequal to any
+ *  real identity, and equal to itself — so a host that never has a
+ *  credential sees it on every read and is unaffected, which is the carve-out
+ *  `sameIdentity` documents. */
+export const NO_CREDENTIAL = "none";
+
 /** Whether a payload queued under `queued` may be sent under `current`.
  *
- *  UNKNOWN IS NOT A MISMATCH. Either side being `undefined` answers yes, and
- *  that is a decision rather than an oversight: a host with no credential at
- *  all — the local no-auth stand, a deployment behind a gateway that injects
- *  the header — would otherwise have every edit dropped by a guard meant to
- *  protect it. This guard exists to stop a write reaching a KNOWN stranger,
- *  not to require a credential of hosts that never had one.
+ *  UNKNOWN IS NOT A MISMATCH. Either side being nullish answers yes, and
+ *  that is a decision rather than an oversight: before anything has looked
+ *  there is nothing to compare, and a guard that dropped writes on that
+ *  would break every host at its first edit.
+ *
+ *  IT IS NOT THE SAME AS "NO CREDENTIAL". A caller that asked and got
+ *  nothing records `NO_CREDENTIAL`, which compares unequal to a real
+ *  identity — see the note there for the window that distinction closes.
+ *  The no-auth host is still fine: it records `NO_CREDENTIAL` every time,
+ *  and `NO_CREDENTIAL === NO_CREDENTIAL`.
  */
 export function sameIdentity(
-  queued: string | undefined,
-  current: string | undefined,
+  queued: string | undefined | null,
+  current: string | undefined | null,
 ): boolean {
-  if (queued === undefined || current === undefined) return true;
+  // `== null`, not `=== undefined`: a plain-JS host reader answering `null`
+  // means the same thing and must not be read as a mismatch, which would
+  // drop every one of its writes silently.
+  if (queued == null || current == null) return true;
   return queued === current;
 }
 
