@@ -58,7 +58,12 @@ from django.db.models import DateField, DateTimeField, DecimalField, FloatField,
 from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
-from trials.services.omop.patient_languages import language_skill_concept_ids_from_capabilities
+from trials.services.omop.patient_languages import (
+    LANGUAGE_CAPABILITY_FIELDS,
+    _is_false,
+    _is_true,
+    language_skill_concept_ids_from_capabilities,
+)
 
 # Distinguishes "no person_id supplied" from a supplied-but-falsy one.
 _MISSING = object()
@@ -226,6 +231,72 @@ def _resolve_from_promop(person_id: Any) -> 'PatientInfo':
     return build_patient_info_from_promop_row(row)
 
 
+#: PROMOP's machine-readable language capability (promop #827), for the LEGACY path
+#: (#605, porting cb-like-trials #597/#607; fixes #591 on 2omop).
+#:
+#: PROMOP's ``languages_skills`` is a DISPLAY string, "English language: read,
+#: speak; Spanish language: speak", which can never equal a trial code like
+#: ``speak__en``. So a PROMOP patient who recorded any language failed every trial
+#: with a language requirement. The same record carries eight three-valued
+#: booleans; see ``exact_matching.patient_info.language_capability`` for the state
+#: model built from them (H = held codes, A = asked languages).
+_LEGACY_SKILLS = ('speak', 'write')   # the only capabilities trials are written in
+
+
+def _has_value(value):
+    return _is_true(value) or _is_false(value)
+
+
+def languages_skills_from_capabilities(data):
+    """Legacy H and A from PROMOP's eight capability booleans. Keeps the booleans.
+
+    Returns ``data`` unchanged when none of the eight names is present, so a
+    caller that sends CB codes and no booleans is unaffected. Otherwise returns a
+    copy in which:
+
+    * if any boolean has a value (parses as true or false), ``languages_skills``
+      is rebuilt from the True speak/write ones as ``<skill>__<lang>`` codes
+      (``None`` when there are none), and ``languages_asked`` lists the languages
+      with at least one valued boolean. The booleans win over codes sent beside
+      them;
+    * if all of them are NULL or blank, ``languages_skills`` is dropped only when
+      it is PROMOP's display string (it contains ':', which no CB code does), so
+      codes a caller sent alongside a form's empty fields survive.
+
+    The eight booleans are left in place for the OMOP builder
+    (``language_skill_concept_ids_from_capabilities``), which reads the same
+    values; the model-field filter drops them afterwards.
+    """
+    present = [name for name in LANGUAGE_CAPABILITY_FIELDS if name in data]
+    if not present:
+        return data
+    out = dict(data)
+    if not any(_has_value(data[name]) for name in present):
+        current = out.get('languages_skills')
+        if isinstance(current, str) and ':' in current:
+            out['languages_skills'] = None
+        return out
+    held = sorted({
+        f'{skill}__{code}' for name in present
+        for code, skill in [LANGUAGE_CAPABILITY_FIELDS[name]]
+        if skill in _LEGACY_SKILLS and _is_true(data[name])
+    })
+    asked = sorted({LANGUAGE_CAPABILITY_FIELDS[name][0] for name in present if _has_value(data[name])})
+    out['languages_skills'] = ','.join(held) if held else None
+    out['languages_asked'] = ','.join(asked) if asked else None
+    return out
+
+
+def translate_language_capabilities(data):
+    """Both language translations from one read of the booleans (#605, CB #5350).
+
+    The legacy H/A first, which keeps the booleans, then the OMOP pairs, which
+    consume them under ``EXACT_OMOP_LANGUAGES`` + readiness. Each path reads its own
+    fields, so whichever path the readiness snapshot picks has its values.
+    """
+    return language_skill_concept_ids_from_capabilities(languages_skills_from_capabilities(data))
+
+
 def _build_in_memory(data: dict) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields."""
     from trials.services.patient_info.patient_info import PatientInfo
@@ -237,9 +308,9 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
 
     # Convert camelCase keys to snake_case if needed
     snake_data = _to_snake_case(data)
-    # PROMOP's language booleans -> language_skill_concept_ids, before the field
-    # filter below drops them (CB #5350; only under EXACT_OMOP_LANGUAGES).
-    snake_data = language_skill_concept_ids_from_capabilities(snake_data)
+    # PROMOP's language booleans -> legacy codes/asked languages and, on the OMOP
+    # path, concept pairs, before the field filter below drops them (#605, CB #5350).
+    snake_data = translate_language_capabilities(snake_data)
 
     # Filter to known model fields only
     model_fields = {f.name for f in PatientInfo._meta.get_fields() if hasattr(f, 'column')}

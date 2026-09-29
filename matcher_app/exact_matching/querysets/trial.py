@@ -28,7 +28,10 @@ from exact_matching.patient_info.configs import (
 from exact_matching.receptor_hierarchy import expand_values as expand_receptor_values
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled
 from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PROFILE
-from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_match_profile import (
+    LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
+)
+from exact_matching.patient_info.language_capability import LanguagesKept, asked_languages
 from exact_matching.omop.languages_verdict import language_verdict_sql
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
@@ -102,13 +105,14 @@ def _csv_stripped(value):
 
 
 def _filter_languages_skills(scope, value, ctx):
-    # OMOP path (flag on and ready): the asked-state verdict (held pairs AND asked
-    # languages; see exact_matching.omop.languages_verdict). Otherwise unchanged.
+    # OMOP path (flag on and ready): the asked-state verdict over concept pairs
+    # (exact_matching.omop.languages_verdict). Legacy path: the same verdict over
+    # codes when PROMOP's asked set is known, else the plain overlap (#605).
     if omop_languages_enabled():
         attr = ctx['patient_info_attr']
         return scope.eligible_for_languages_skills_omop(
             attr.get_language_held_ids(), attr.get_language_asked_ids())
-    return scope.eligible_for_languages_skills(_csv(value))
+    return scope.eligible_for_languages_skills(_csv(value), asked=asked_languages(ctx['patient_info']))
 
 
 def _as_list_stripped(value):
@@ -1450,11 +1454,22 @@ class TrialQuerySet(models.QuerySet):
             required_attr_name=DEMOGRAPHICS_MATCH_PROFILE.ethnicity_required
         )
 
-    def eligible_for_languages_skills(self, languages_skills: list[str]) -> models.QuerySet:
-        return self.eligible_for_required_lists(
-            values=languages_skills,
-            required_attr_name=LANGUAGES_MATCH_PROFILE.languages_skills_required
-        )
+    def eligible_for_languages_skills(self, languages_skills: list[str], asked=None) -> models.QuerySet:
+        """Language requirement filter.
+
+        Without ``asked`` (no PROMOP capability booleans arrived) this is the
+        any-of overlap it always was. With it, the three-state verdict in
+        ``exact_matching.patient_info.language_capability``: a trial is excluded
+        only when every language it requires was asked about and none of the
+        required codes is held. ``asked`` is only passed off the OMOP path.
+        """
+        if not asked:
+            return self.eligible_for_required_lists(
+                values=languages_skills,
+                required_attr_name=LANGUAGES_MATCH_PROFILE.languages_skills_required
+            )
+        held = [str(x).strip() for x in (languages_skills or []) if str(x).strip()]
+        return self.filter(LanguagesKept(LEGACY_LANGUAGES_MATCH_PROFILE.languages_skills_required, held, asked))
 
     def eligible_for_languages_skills_omop(self, held: list[str], asked: list[str]) -> models.QuerySet:
         """Drop only definite failures (state-model case 5), in SQL.

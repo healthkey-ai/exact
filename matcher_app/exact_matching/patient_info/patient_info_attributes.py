@@ -9,6 +9,7 @@ from exact_matching.omop.languages_match_profile import (
     LEGACY_LANGUAGES_MATCH_PROFILE, OMOP_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
 from exact_matching.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
+from exact_matching.patient_info.language_capability import asked_languages
 from exact_matching.patient_info.convertors.base_convertor import BaseConvertor
 from exact_matching.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
 from exact_matching.patient_info.convertors.serum_creatinine_convertor import SerumCreatinineConvertor
@@ -111,6 +112,10 @@ class PatientInfoAttributes:
             # trials/services/omop/patient_languages.py, case 2). A patient asked
             # about a language who holds no pair is answered, not blank.
             return not (self.get_language_asked_ids() or self.get_language_held_ids())
+        if attr_name == 'languages_skills' and asked_languages(self.patient_info):
+            # Legacy path with PROMOP's asked set known (#605): a patient asked about a
+            # language has answered, even when the answer holds no speak/write code.
+            return False
         is_blank = False
         user_attr_value = self.get_value(attr_name)
         if attr_name in ('genetic_mutations', 'supportive_therapies', 'later_therapies') and user_attr_value == []:

@@ -37,9 +37,11 @@ through this one profile rather than literals:
    (``get_language_held_ids`` / ``get_language_asked_ids``), and get_value only
    supplies the joined pairs that dispatch skips;
 3. the per-trial matcher, ``UserToTrialAttrMatcher._match_languages_skills`` (trial
-   column). With the flag off it delegates to the generic computed handler, so the
+   column). Off the OMOP path it applies the legacy asked-state verdict when the
+   patient came with PROMOP's booleans (``exact_matching.patient_info.language_capability``,
+   #605), and otherwise delegates to the generic computed handler, so the
    ``USER_TO_TRIAL_ATTRS_MAPPING['languages_skills']`` entry (``attr`` +
-   ``uvalue_function``) keeps driving legacy matching unchanged.
+   ``uvalue_function``) still drives matching for callers that send codes only.
 
 The count / blank-check SQL (``UserToTrialAttrsMapper``: potential counts, eligible
 vs potential status, attrs-to-fill-in) reads the same column via ``_trial_column``.

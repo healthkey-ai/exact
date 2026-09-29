@@ -5,7 +5,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE
-from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_match_profile import (
+    LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
+)
+from exact_matching.patient_info.language_capability import (
+    asked_languages as legacy_asked_languages,
+    held_codes as legacy_held_codes,
+    verdict as legacy_language_verdict,
+)
 from exact_matching.omop.languages_verdict import language_verdict
 
 logger = logging.getLogger(__name__)
@@ -883,13 +890,19 @@ class UserToTrialAttrMatcher:
     def _match_languages_skills(self, ctx):
         """Language skills, read through LANGUAGES_MATCH_PROFILE.
 
-        Flag off (or not ready): exactly the generic computed handler this entry
-        always used (config ``attr`` + ``uvalue_function``). OMOP path: the
-        asked-state verdict over the OMOP pair column, the held pairs and the
-        asked languages.
+        Flag off (or not ready): the asked-state verdict over legacy codes when
+        the patient's asked languages are known (#605), otherwise the generic
+        computed handler this entry always used. OMOP path: the asked-state
+        verdict over the OMOP pair column, the held pairs and the asked languages.
         """
         if not omop_languages_enabled():
-            return self._match_computed_attr(ctx)
+            # Legacy path: the same state model over codes when PROMOP's asked set
+            # is known (#605); otherwise the computed-attr overlap it always was.
+            asked = legacy_asked_languages(self.patient_info)
+            if not asked:
+                return self._match_computed_attr(ctx)
+            required = getattr(self.trial, LEGACY_LANGUAGES_MATCH_PROFILE.languages_skills_required)
+            return legacy_language_verdict(required, legacy_held_codes(self.patient_info), asked)
         # OMOP path: the asked-state verdict (exact_matching.omop.languages_verdict;
         # state model in trials/services/omop/patient_languages.py).
         required = getattr(self.trial, LANGUAGES_MATCH_PROFILE.languages_skills_required) or []
