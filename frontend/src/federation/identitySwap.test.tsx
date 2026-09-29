@@ -33,7 +33,12 @@ axios.defaults.adapter = recordingAdapter;
 let persist: ((f: Record<string, unknown>) => void) | null = null;
 
 vi.mock("./TrialMatches", () => ({
-  default: (props: { state?: TrialStateAdapter; stateIdentity?: string }) => {
+  default: (props: {
+    state?: TrialStateAdapter;
+    stateIdentity?: string;
+    credentialIdentity?: () => string | undefined;
+    credentialIdentityNow?: () => Promise<string | undefined> | string | undefined;
+  }) => {
     // The key the REAL component builds: identity first, then the patient.
     // A probe that hardcodes a patient-only key models the component as it
     // was before the identity was part of it, and cannot see a fix that
@@ -47,6 +52,12 @@ vi.mock("./TrialMatches", () => ({
       stateKeyOf(props.stateIdentity, 42, "host"),
       () => undefined,
       "state",
+      undefined,
+      // Threaded because the real component threads it, and the shapes below
+      // exist precisely because the KEY above cannot see them. A probe that
+      // dropped this would test the key alone and go on reporting the leak.
+      props.credentialIdentity,
+      props.credentialIdentityNow,
     );
     useEffect(() => { persist = saved.persist as never; }, [saved]);
     return <div data-testid="matches" />;
@@ -64,8 +75,11 @@ describe("a filter edit never crosses an account switch", () => {
     return view;
   };
 
-  let user = "1";
-  const fromStore = async () => `token-${user}`;
+  // `null` is a real state, not a test contrivance: `getToken: () =>
+  // auth.currentUser?.getIdToken()` answers nothing for the whole interval
+  // between a sign-out and the next sign-in.
+  let user: string | null = "1";
+  const fromStore = async () => (user === null ? undefined : `token-${user}`);
   const base = () => ({
     baseUrl: "https://exact.example",
     ctomopBaseUrl: "https://promop.example",
@@ -124,33 +138,39 @@ describe("a filter edit never crosses an account switch", () => {
     expect(leaked()).toEqual([]);
   });
 
-  // WHAT IS STILL OPEN, written here rather than left to be rediscovered.
+  // THE SHAPES NO KEY COULD CATCH, and what closed them.
   //
-  // Any host whose account change does not reach `resolveSessionSignal` as a
-  // NEW, USABLE signal. That is more than the obvious one, and the extra
-  // shapes were measured rather than guessed:
+  // Everything above is a host signalling an account change the way
+  // `types.ts` asks — a new `sessionKey`, or a new `getToken` — and a KEY is
+  // enough for those: it selects which adapter the flush goes through.
   //
-  //   - nothing signalled at all: the credential swapped in a global store,
-  //     no new `sessionKey`, no new `getToken`, no re-render;
-  //   - a `sessionKey` that changes but is rejected — `false` to `true`,
-  //     `""` to `""`, `NaN` to `NaN`. `resolveSessionSignal` documents that
-  //     these "silently disable the guard";
-  //   - two hosts whose session keys collide.
+  // Below are hosts whose account change never reaches
+  // `resolveSessionSignal` as a new, usable signal. Nothing in the React
+  // tree learns anything changed, so there is nothing for a key to be
+  // derived from, and five key-shaped fixes each closed a real case and
+  // none of them could close these. They were measured, not guessed
+  // (#583), and their consequence stopped being a stale read when EXACT
+  // began keying rows on the token: it is a write into a stranger's row.
   //
-  // All were already outside the contract, and their documented consequence
-  // was stale reads — "a mount reused across a logout/login keeps showing
-  // the previous user's matches". Since EXACT began keying rows on the
-  // token it is a write into a stranger's row instead, which is the part
-  // worth recording.
+  // What closes them is not a key. The queues capture the credential's
+  // fingerprint when a write is ENQUEUED and read it afresh when the write
+  // is SENT, and drop the payload if the two disagree
+  // (`identityFingerprint.ts`, `patientWriter.ts`, `preferences.ts`). It
+  // needs no host cooperation and no server change.
   //
-  // Tracked as exact#583, with the measurements. No React key can catch
-  // these: nothing in the tree learns anything
-  // changed. Three ways out, in increasing order of not needing the host's
-  // cooperation: the host honours the contract; the client captures
-  // `await getToken()` when a write is ENQUEUED and compares it at send
-  // time, which needs no host change and no server change; or EXACT accepts
-  // an asserted identity on the write and refuses a mismatch.
-  it.skip("cannot yet be dropped when the host signals nothing at all", async () => {
+  // BOTH READINGS MATTER. The cached one alone leaves the hole wide open:
+  // it only moves when somebody fetches a token, and a whole debounce
+  // window can pass with no request in it — so the swap is invisible, the
+  // batch passes, and the transport's interceptor then sends it under the
+  // new credential. Ablating the fresh read fails the first test below,
+  // measured. The remaining race is microseconds between the check and the
+  // interceptor's own fetch, against a debounce of a quarter of a second.
+  //
+  // Not covered here: two hosts whose session keys collide. That one is
+  // closed by the same mechanism — the credentials differ — but it needs a
+  // second bridge to model and the shapes below already exercise the
+  // mechanism.
+  it("is dropped when the host signals nothing at all", async () => {
     const view = await start({ sessionKey: "user-1" });
 
     act(() => {
@@ -160,6 +180,118 @@ describe("a filter edit never crosses an account switch", () => {
     await act(() => new Promise((r) => setTimeout(r, 800)));
 
     expect(leaked()).toEqual([]);
+    view.unmount();
+  });
+
+  it("is dropped when only the host's stateIdentity moves", async () => {
+    // Shape 1, and the only one of these a reasonable host does: it names
+    // the identity but has no `sessionKey` and a stable `getToken`. The READ
+    // side re-keys correctly, which is what made this so easy to miss — the
+    // bookmarks come back under the new account while the queued write is
+    // still the old one's.
+    const view = await start({ stateIdentity: "user-1" });
+
+    act(() => {
+      persist!({ phase: "USER-1-FILTERS" });
+    });
+    user = "2";
+    await act(async () => {
+      view.rerender(<Bridge {...base()} stateIdentity="user-2" />);
+    });
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    expect(leaked()).toEqual([]);
+    view.unmount();
+  });
+
+  it("is dropped under a sessionKey the resolver refuses", async () => {
+    // Shape 3. `resolveSessionSignal` refuses `""` and `NaN` and falls back
+    // to `getToken`, documenting that these "silently disable the guard" —
+    // so a host passing an empty string has no session signal at all, for
+    // the whole mount, however many times it re-renders with a new one.
+    //
+    // `""` rather than the ticket's `false` to `true`: `sessionKey` is typed
+    // `string | number | null | undefined`, so a boolean cannot reach here
+    // from a typed host, and a test that cast one would be measuring a
+    // shape the contract already prevents.
+    const view = await start({ sessionKey: "" });
+
+    act(() => {
+      persist!({ phase: "USER-1-FILTERS" });
+    });
+    user = "2";
+    await act(async () => {
+      view.rerender(<Bridge {...base()} sessionKey="" />);
+    });
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    expect(leaked()).toEqual([]);
+    view.unmount();
+  });
+
+  it("is dropped when the edit was made while nobody was signed in", async () => {
+    // The hole the FIRST version of this guard left, and the reason a
+    // "no credential" answer is not recorded as "unknown". Signed out, every
+    // token read answers nothing; recorded as unknown that downgraded the
+    // cache, `sameIdentity` waved the next capture through, and the edit went
+    // out under whoever signed in during the debounce. Measured through this
+    // same bridge before the fix: the POST carried `Bearer token-2`.
+    const view = await start({ sessionKey: "user-1" });
+
+    user = null; // the host signs A out
+    // A write that actually GOES, so a token is read while signed out and
+    // the cache records that answer. Without letting this one flush there is
+    // no read, the cache still holds A, and the test passes for the wrong
+    // reason — measured: it survived the ablation until this wait was added.
+    act(() => {
+      persist!({ phase: "WARM" });
+    });
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    // Now the edit that matters, captured against whatever that read left
+    // behind.
+    act(() => {
+      persist!({ phase: "USER-1-FILTERS" });
+    });
+    user = "2"; // B signs in during the debounce
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    expect(leaked()).toEqual([]);
+    view.unmount();
+  });
+
+  it("still lets the same reader save across a token REFRESH", async () => {
+    // The cost of getting this wrong in the other direction. Tokens rotate —
+    // Firebase roughly hourly — and a guard comparing credentials as strings
+    // would drop every edit made across the hour.
+    //
+    // Real JWTs with the same `sub` and different `iat`, because the opaque
+    // `token-1` this file uses elsewhere never changes and a rotation test
+    // over it tests nothing: measured, with `fingerprintOf` reduced to
+    // comparing whole strings, the earlier version of this test still
+    // passed.
+    const jwtFor = (iat: number) => {
+      const seg = (value: unknown) =>
+        btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return `${seg({ alg: "RS256" })}.${seg({ iss: "https://issuer.example", sub: "one", iat })}.sig`;
+    };
+    let issued = 1000;
+    const rotating = async () => jwtFor(issued);
+    const view = render(<Bridge {...base()} getToken={rotating} sessionKey="user-1" />);
+    await view.findByTestId("matches");
+    await act(() => new Promise((r) => setTimeout(r, 400)));
+    requests.length = 0;
+
+    act(() => {
+      persist!({ phase: "USER-1-FILTERS" });
+    });
+    issued = 9000; // the same person, an hour later
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    const writes = requests.filter(
+      (r) => r.url?.includes("user-state") && r.method === "post",
+    );
+    expect(writes.length).toBeGreaterThan(0);
     view.unmount();
   });
 });

@@ -12,6 +12,7 @@
 // which is a merge, and merging is the one thing it must not do to filters —
 // a cleared filter would come back.
 
+import { IdentityChanged, sameIdentity } from "./identityFingerprint";
 import type { TrialStateAdapter, WriteOutcome } from "./state";
 
 /** How long an edit waits for company.
@@ -32,12 +33,59 @@ export interface PatientWriterOptions {
   onSettled?: (field: string, outcome: WriteOutcome) => void;
   /** The batch was refused — 403, 404, a 400 from the serializer. Reported
    *  with every field in it, because the caller cannot tell from a rejection
-   *  which of them the server objected to. */
+   *  which of them the server objected to.
+   *
+   *  Also how a STRANDED write is reported: one that was never sent because
+   *  the signed-in account changed while it waited. The error is an
+   *  `IdentityChanged`, so a caller that wants to word it differently can;
+   *  one that does not gets "could not be written", which is true. This is
+   *  not optional politeness — `onError` is what retires a field from
+   *  "Saving…", and a stranded field that went unreported would sit there
+   *  for the life of the page. */
   onError?: (fields: string[], error: unknown) => void;
   /** Once per batch, after its fields have been reported. Separate from
    *  `onSettled` because what hangs off it is the re-read: the match moves
    *  when a REQUEST lands, so one re-read per request, not one per value. */
   onBatchSettled?: () => void;
+  /** Who is signed in, RIGHT NOW, as a fingerprint (`identityFingerprint.ts`).
+   *
+   *  Read twice: when an edit is enqueued, and again when a batch goes out.
+   *  A payload whose two readings disagree is not sent — EXACT keys the row
+   *  on the token, so sending it would write one reader's value into
+   *  another's record, which is the whole of #583.
+   *
+   *  Synchronous on purpose. `getToken` is async, and awaiting it inside
+   *  `save()` would let the reader's keystroke land after the batch it
+   *  belongs to. The bridge records the fingerprint of each token it hands
+   *  out and this reads the last one.
+   *
+   *  Omitted means no guard, and every caller behaves exactly as it did.
+   *  That is what lets this be wired one call site at a time, and it is also
+   *  the honest default: a queue with no way to learn who is signed in
+   *  cannot tell a stranger from a refresh. */
+  identity?: () => string | undefined;
+  /** Who the credential names AT SEND TIME, read afresh.
+   *
+   *  Separate from `identity` above, and not an over-engineering of it. The
+   *  cached value is right for the capture — it is read on a keystroke and
+   *  must not await anything — but it is only refreshed when somebody
+   *  fetches a token, and between an edit and its flush there may be no
+   *  request at all. Compared against the cache, a swap inside the debounce
+   *  window is invisible: the batch passes, and then the transport's
+   *  interceptor fetches the NEW token and sends under it. Which is the
+   *  whole bug.
+   *
+   *  So the send-time reading asks for the credential rather than
+   *  remembering one. The send is already asynchronous, so awaiting costs
+   *  nothing there.
+   *
+   *  A race remains, and it is worth naming: the interceptor fetches its own
+   *  token after this check, so a swap in that gap is still missed. It
+   *  cannot be closed from here without the transport handing the decision
+   *  back, and it is microseconds against a debounce of a quarter of a
+   *  second. Defaults to the cached reader, which is what a caller with only
+   *  one of the two should get. */
+  identityNow?: () => Promise<string | undefined> | string | undefined;
 }
 
 type Writer = NonNullable<TrialStateAdapter["setPatientFields"]>;
@@ -84,12 +132,18 @@ export class PatientFieldWriter {
   private readonly onSettled: (field: string, outcome: WriteOutcome) => void;
   private readonly onError: (fields: string[], error: unknown) => void;
   private readonly onBatchSettled: () => void;
+  private readonly identity: () => string | undefined;
+  private readonly identityNow: () => Promise<string | undefined> | string | undefined;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** Edits waiting for the timer, and edits waiting for the wire to clear.
    *  One map, because an edit that arrives during a flight simply joins the
    *  next batch — there is no third state for it to be in. */
   private queued: Record<string, unknown> = {};
+  /** Who was signed in when each queued edit was made. Keyed per FIELD, not
+   *  per batch: a batch can carry an edit from before an account change and
+   *  one from after it, and only the first is a stranger's. */
+  private queuedBy: Record<string, string | undefined> = {};
   private inFlight: Promise<void> | null = null;
 
   constructor(write: Writer, opts: PatientWriterOptions = {}) {
@@ -97,6 +151,8 @@ export class PatientFieldWriter {
     this.debounceMs = opts.debounceMs ?? PATIENT_WRITE_DEBOUNCE_MS;
     this.onSettled = opts.onSettled ?? (() => {});
     this.onBatchSettled = opts.onBatchSettled ?? (() => {});
+    this.identity = opts.identity ?? (() => undefined);
+    this.identityNow = opts.identityNow ?? (() => this.identity());
     this.onError =
       opts.onError ??
       ((fields, error) => {
@@ -114,6 +170,11 @@ export class PatientFieldWriter {
    *  the record hold a value they had already moved on from. */
   save(field: string, value: unknown): void {
     this.queued[field] = value;
+    // Captured HERE, not at flush: this is the moment the reader made the
+    // edit, and it is the only moment at which who they are is not in doubt.
+    // Replaced along with the value, because a second edit to the same field
+    // is a new statement by whoever is signed in now.
+    this.queuedBy[field] = this.identity();
     this.arm();
   }
 
@@ -138,6 +199,18 @@ export class PatientFieldWriter {
 
   private sent: Record<string, unknown> = {};
 
+  /** Say a set of fields could not be written, without letting the saying of
+   *  it break the queue. Shared by every path that reports a failure, because
+   *  every one of them is also the thing that retires "Saving…". */
+  private report(fields: string[], error: unknown): void {
+    if (fields.length === 0) return;
+    try {
+      this.onError(fields, error);
+    } catch (reportingError: unknown) {
+      console.warn("[exact] a write failure could not be reported", fields, reportingError);
+    }
+  }
+
   private arm(): void {
     if (this.timer !== null) return;
     this.timer = setTimeout(() => {
@@ -158,10 +231,19 @@ export class PatientFieldWriter {
     // the facts it just wrote, so the loser's derivation can land last and
     // describe a record that no longer exists.
     if (this.inFlight) return;
-    const batch = this.queued;
-    if (Object.keys(batch).length === 0) return;
+    const taken = this.queued;
+    if (Object.keys(taken).length === 0) return;
     this.queued = {};
-    this.sent = batch;
+    // Everything taken is still outstanding until it is either sent or
+    // reported, so the row keeps saying "Saving…" across the await below
+    // rather than blinking back to the record's value and forward again.
+    this.sent = taken;
+    const batchBy: Record<string, string | undefined> = {};
+    for (const field of Object.keys(taken)) {
+      batchBy[field] = this.queuedBy[field];
+      delete this.queuedBy[field];
+    }
+    const batch: Record<string, unknown> = {};
 
     // `Promise.resolve().then` rather than calling `write` bare: a transport
     // that throws SYNCHRONOUSLY would otherwise escape before `inFlight` is
@@ -169,7 +251,50 @@ export class PatientFieldWriter {
     // is on the wire. Reachable — a host that drops its adapter while an edit
     // is queued leaves the call dereferencing a method that is gone.
     this.inFlight = Promise.resolve()
-      .then(() => this.write(batch))
+      .then(async () => {
+        // WHO THIS BATCH IS FOR, decided one field at a time and against the
+        // credential as it is NOW — see `identityNow`. `sameIdentity` lets a
+        // rotated token and an unknown identity through and stops a known
+        // stranger (`identityFingerprint.ts` for why those differ). A field
+        // that fails is STRANDED: never sent, reported, and gone. Not
+        // re-queued — the credential that could have carried it is the thing
+        // that went away.
+        let now: string | undefined;
+        try {
+          now = await this.identityNow();
+        } catch (error: unknown) {
+          // WE DO NOT KNOW WHO IS SIGNED IN, so we cannot send and we cannot
+          // keep quiet. These fields have already left `queued`, and
+          // `onError` is the only thing that retires them from "Saving…" —
+          // left unreported they sit there for the life of the page over
+          // values the record does not hold. Reported against `taken`,
+          // because `batch` is still empty at this point and the failure
+          // path below would name nothing.
+          //
+          // Dropped rather than re-queued, and that is the terminating
+          // choice: `finally` re-drains, so a reader that keeps failing
+          // would retry the same batch against the same failure for ever.
+          // `sent` first, then report — the same order as the stranded
+          // path below. `outstanding` is read by whatever is painting
+          // "Saving…", and a callback that consults it should not see one
+          // answer here and the other there.
+          this.sent = {};
+          this.report(Object.keys(taken), error);
+          return undefined;
+        }
+        const stranded: string[] = [];
+        for (const field of Object.keys(taken)) {
+          if (sameIdentity(batchBy[field], now)) batch[field] = taken[field];
+          else stranded.push(field);
+        }
+        this.sent = batch;
+        this.report(stranded, new IdentityChanged(stranded));
+        // Nothing survived, so nothing reaches the server. `finally` still
+        // runs — it is what unlocks the queue — and reads `batch` to decide
+        // whether a re-read is owed.
+        if (Object.keys(batch).length === 0) return undefined;
+        return this.write(batch);
+      })
       .then((outcomes) => {
         for (const field of Object.keys(batch)) {
           // A field the answer does not mention is `unconfirmed` rather than
@@ -234,22 +359,33 @@ export class PatientFieldWriter {
             continue;
           }
           this.queued[field] = batch[field];
+          // AND WHO IT WAS FOR. Without this the re-queued field comes back
+          // with no owner, `sameIdentity` reads "unknown" and waves it
+          // through — so the one write that escapes the guard is the retry,
+          // which is the path a reader never sees. Restored to the value the
+          // batch carried, not to `this.identity()`, which is whoever is
+          // signed in NOW and may be the stranger.
+          this.queuedBy[field] = batchBy[field];
         }
-        try {
-          this.onError(failed, error);
-        } catch (reportingError: unknown) {
-          console.warn("[exact] a write failure could not be reported", reportingError);
-        }
+        this.report(failed, error);
       })
       .finally(() => {
         // Guarded for a harder reason than the others: this runs BEFORE the
         // queue is unlocked, so a throw here would leave `inFlight` set for
         // ever — every later edit silently dropped and "Saving…" never
         // retired. In this codebase it is three `invalidateQueries` calls.
-        try {
-          this.onBatchSettled();
-        } catch (error: unknown) {
-          console.warn("[exact] the post-write re-read could not be started", error);
+        // Only when something was actually SENT. `onBatchSettled` is the
+        // re-read, and an all-stranded batch never left, so the match has
+        // not moved. Not quite "a request landed" — a transport throwing
+        // synchronously also gets here with a non-empty batch — but that
+        // was true before this change too, and re-reading after a failed
+        // send costs a query, not a wrong answer.
+        if (Object.keys(batch).length > 0) {
+          try {
+            this.onBatchSettled();
+          } catch (error: unknown) {
+            console.warn("[exact] the post-write re-read could not be started", error);
+          }
         }
         this.sent = {};
         this.inFlight = null;

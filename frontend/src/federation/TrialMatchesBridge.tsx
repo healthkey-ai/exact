@@ -23,12 +23,13 @@
  * ownership of how it calls its own API.
  * See ht-phr/docs/mf-bridge-proposal.md §6.2.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios, { type AxiosInstance } from "axios";
 import { createBridgeComponent } from "@module-federation/bridge-react/v19";
 
 import TrialMatches from "./TrialMatches";
 import { normalizeCtomopRow } from "./api";
+import { NO_CREDENTIAL, fingerprintOf } from "./identityFingerprint";
 import { composeState, createExactPreferences, createPromopState } from "./state";
 import {
   hasUsableSessionKey,
@@ -138,7 +139,7 @@ function TrialMatchesBridgeRoot({
       buildClient(
         baseUrl,
         apiBasePath,
-        async () => getToken?.(),
+        async () => noteIdentity(await getToken?.()),
         SEARCH_TIMEOUT_MS,
       ),
     [baseUrl, apiBasePath, getToken],
@@ -160,6 +161,48 @@ function TrialMatchesBridgeRoot({
   useEffect(() => {
     getTokenRef.current = getToken;
   });
+
+  /** Who the last credential this component handed out names.
+   *
+   *  Every token that leaves here for a client passes through `noteIdentity`,
+   *  so this is always the identity the NEXT request would be attributed to.
+   *  The write queues capture it when an edit is enqueued and compare it when
+   *  the edit is sent — #583, and `identityFingerprint.ts` for why a token
+   *  that changed is not an identity that changed.
+   *
+   *  Recorded here rather than asked for at the keystroke because `getToken`
+   *  is async: awaiting it inside a debounced `save` would let the reader's
+   *  keystroke land after the batch it belongs to. A ref rather than state
+   *  because nothing renders from it, and a render per token refresh would
+   *  be a render per hour for nothing.
+   *
+   *  Undefined until the first token is read, which disables the guard for
+   *  an edit made before any request — `sameIdentity` treats unknown as a
+   *  match. In practice the list has already been fetched by the time a row
+   *  is editable, and guessing an identity we have not seen would be the
+   *  worse failure. */
+  const identityRef = useRef<string | undefined>(undefined);
+  const noteIdentity = useCallback(<T extends string | null | undefined>(token: T): T => {
+    // `?? NO_CREDENTIAL`, and this is the line the whole guard turns on. A
+    // read that answered NOTHING is not "we have not looked" — it is "there
+    // is no credential right now", which for a host with accounts is the
+    // interval between a sign-out and a sign-in. Stored as `undefined` it
+    // read as unknown, `sameIdentity` waved everything through, and a write
+    // enqueued in that window went out under the next account: the leak this
+    // branch exists to close, reopened by its own cache. Measured through
+    // the real bridge.
+    identityRef.current = fingerprintOf(token) ?? NO_CREDENTIAL;
+    return token;
+  }, []);
+  const credentialIdentity = useCallback(() => identityRef.current, []);
+  /** Asked, not remembered — the reading the queues make just before a
+   *  request. Reads the ref-held getter so a token refresh is picked up
+   *  without rebuilding anything, and notes what it saw so the cached
+   *  reading above is current too. */
+  const credentialIdentityNow = useCallback(async () => {
+    noteIdentity(await getTokenRef.current?.());
+    return identityRef.current;
+  }, [noteIdentity]);
 
   const hasToken = getToken != null;
   // A resolution can fail for reasons that go away: a token that had not
@@ -295,7 +338,7 @@ function TrialMatchesBridgeRoot({
       // Aborting beats sending: a row fetched as one user must never leave
       // under another's credentials, even into a response we would discard.
       if (cancelled) throw new Error("[exact-remote] session changed");
-      return getTokenRef.current?.();
+      return noteIdentity(await getTokenRef.current?.());
     };
 
     (async () => {
@@ -427,7 +470,9 @@ function TrialMatchesBridgeRoot({
       if (!Object.is(sessionRef.current, builtFor)) {
         throw new Error("[exact-remote] session changed");
       }
-      return getTokenRef.current?.();
+      // The adapters' own reader, and the one every WRITE goes out under, so
+      // the fingerprint recorded here is the one the queues compare against.
+      return noteIdentity(await getTokenRef.current?.());
     };
     // Two stores while the migration has two. Favourites and registration
     // interest still live in PROMOP, keyed on `person_id`; preferences have
@@ -568,6 +613,8 @@ function TrialMatchesBridgeRoot({
       // Whose adapter this is. Not derivable downstream: the session signal
       // is `unknown` by design and may be the `getToken` function itself.
       stateIdentity={hostIdentity ?? identityKeyOf(sessionSignal)}
+      credentialIdentity={credentialIdentity}
+      credentialIdentityNow={credentialIdentityNow}
       state={rest.state ?? bridgeState}
       // `null` is the bridge's spelling of "not given"; TrialMatches' own
       // contract only knows `undefined`.

@@ -1584,3 +1584,207 @@ describe("adapterPreferences, conditionally", () => {
     expect(saved[0]).toEqual({ sponsor: "Acme", distance: 50 });
   });
 });
+
+describe("PreferenceWriter — a write that outlived the reader who made it (#583)", () => {
+  // Same fact as `patientWriter`: EXACT keys the row on the bearer token, so
+  // a payload sent under somebody else's credential lands in their row. The
+  // saved-filters queue is simpler — one whole value, last-write-wins — so
+  // there is nothing to partition; a write either belongs to whoever is
+  // signed in at send time or it does not go.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const settleAll = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it("does not save a filter chosen by somebody else", async () => {
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two"; // the credential swaps during the debounce
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+
+    expect(t.calls).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0][0] as { name: string }).name).toBe("IdentityChanged");
+  });
+
+  it("does not clear somebody else's row when a Reset outlives its reader", async () => {
+    // A reset is not a lesser write: it EMPTIES the row. Landing in the wrong
+    // one destroys a saved search rather than merely adding to it, so the
+    // click captures the identity exactly as a keystroke does.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    // Held behind an in-flight save so the reset waits in `pending` and is
+    // run later, which is where the captured value has to survive to.
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+
+    w.reset();
+    who = "sub:iss|two";
+    await t.settle();
+    await settleAll();
+
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("does not wedge the queue behind a stranded write", async () => {
+    // The stranded write must not take the queue with it: the new reader is
+    // entitled to save their own filters immediately afterwards. This is why
+    // the refusal goes through the same tail as every other failure.
+    const t = controllable();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError: () => {} });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+    expect(t.calls).toEqual([]);
+
+    // The new reader's own edit goes out normally.
+    w.save({ country: "CA" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "CA" } }]);
+  });
+
+  it("keeps a queued save under the reader who made it, not the one who flushes", async () => {
+    // A save that waits in `pending` behind an in-flight request is sent from
+    // the tail, and it must still be compared against the identity it was
+    // MADE under. Storing only the value would let the queue re-attribute it
+    // to whoever happens to be signed in when the wire clears.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    expect(t.calls).toHaveLength(1); // on the wire
+
+    w.save({ country: "US", distance: 50 }); // queued behind it, by user one
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    who = "sub:iss|two";
+    await t.settle();
+    await settleAll();
+
+    expect(t.calls).toHaveLength(1); // the queued one never left
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("lets a rotated credential through", async () => {
+    const t = controllable();
+    const onError = vi.fn();
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => "sub:iss|one",
+      onError,
+    });
+
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("does nothing at all when nobody told it who is signed in", async () => {
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport);
+
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+  });
+});
+
+describe("PreferenceWriter — the credential is read afresh at send (#583)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("does not trust a cache that nothing refreshed", async () => {
+    // The cached reading only changes when somebody fetches a token, and
+    // between an edit and its flush there may be no request at all. Against
+    // the cache alone the swap below is invisible and the write goes out
+    // under the new credential — which was the state of the first version of
+    // this guard, measured.
+    const t = controllable();
+    const onError = vi.fn();
+    const cached = "sub:iss|one"; // never updated, as in the failing shape
+    let current = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => cached,
+      identityNow: async () => current,
+      onError,
+    });
+
+    w.save({ country: "US" });
+    current = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(t.calls).toEqual([]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("still sends in the same task when the reader answers synchronously", async () => {
+    // A contract this queue already had: `reset` jumps the debounce, and a
+    // caller that advances its timers and reads `calls` is entitled to see
+    // the request. Awaiting unconditionally moved every send a microtask
+    // later and broke nine tests in this file.
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport, { identity: () => "sub:iss|one" });
+
+    w.reset();
+    expect(t.calls).toEqual([{ kind: "reset" }]);
+  });
+});
+
+describe("PreferenceWriter — only the cached reader (#583)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("falls back to it rather than to nothing", async () => {
+    // Same reachable combination as the patient queue, same reason: a reader
+    // that always answers `undefined` reads as "unknown", which is a match,
+    // so the guard would be silently off.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(t.calls).toEqual([]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+});
