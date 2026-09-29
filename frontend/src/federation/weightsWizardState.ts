@@ -43,16 +43,34 @@
 //     silently spent the one offer the reader was ever going to get. Mechanically, here: `answer` is the
 //     only event that reaches `saving`.
 //
-//     That is HALF of the rule, and the half this file can hold. The write
-//     lives in the caller and is gated on its own render-scoped reading of
-//     "open and not busy", not on this machine having entered `saving` —
-//     dispatch a dismissal and an answer in one task and the flag is written
-//     while `saving` is never seen. Measured. So the property over this
-//     reducer constrains the MACHINE; what constrains the write is that the
-//     only two callbacks reaching `record()` are the two answer handlers,
-//     and that is pinned in `weightsWizard.test.tsx` rather than here. A
-//     future gesture wired straight to a writing handler would satisfy
-//     everything in this file and still be wrong.
+//  7. THE WRITE IS A CONSEQUENCE OF ENTERING `saving`, not a decision taken
+//     beside it. So rule 6's property below — "nothing but an `answer`
+//     reaches `saving`" — constrains the WRITE and not merely this machine,
+//     and that is the whole of #599.
+//
+//     It did not, until then. The write lived in the caller, gated on its
+//     own render-scoped reading of "open and not busy" plus a second copy
+//     of "a write is in flight" kept in a ref. The two could disagree, and
+//     three review rounds on #596 produced three spellings of them doing
+//     so — each measured, each a different patient losing something: a
+//     dismissal refused on another patient's write, that patient's ANSWER
+//     discarded, and the same patient's answer discarded on a return visit
+//     because this machine had reset and the ref had not.
+//
+//     `TrialMatches` now runs this reducer a second time, synchronously,
+//     against a ref holding the state as of NOW rather than as of the last
+//     committed render, and writes only when that run ACCEPTS the `answer`.
+//     Same pure function, same events, so the two cannot disagree.
+//
+//     Synchronously, and that word is load-bearing. An effect was tried
+//     first — spend a stashed payload when the committed state reaches
+//     `saving` — and it moves the write to the next commit, so a patient
+//     switch or an unmount arriving in the same task as the click loses it
+//     entirely. Measured: one write became none. "A consequence of entering
+//     `saving`" has to mean the transition, not somebody later noticing it.
+//
+//     Anything that writes without asking this file is outside the property
+//     again, so put the next one behind the same call.
 //
 //     "The next visit" is loose, and the precise statement is "the next
 //     READ". A dismissal lasts until `readerHandle` moves, because nothing
@@ -94,6 +112,22 @@ export interface WizardState {
    *  `at`, because the dialog looks identical either way — this exists only
    *  to stop a second read, and `at === "unknown"` cannot say it. */
   readonly reading: boolean;
+  /** Which VISIT to this patient the rest of this state is about.
+   *
+   *  Bumped on every reset, so `(patient, visit)` names one arrival — and
+   *  since `answer` acts only from `show` and `hide` is terminal, it names
+   *  at most one entry into `saving` too. That is what a completion has to
+   *  quote.
+   *
+   *  It exists because #599 let a second answer happen while the first
+   *  write was still out: A answers, the reader goes to B and comes back,
+   *  the flag read still says no because the first write has not landed, and
+   *  A is asked again. Both writes are harmless on their own — the flag is
+   *  the same and the weights are last-wins — but a `written` naming only
+   *  the patient let the FIRST one close the SECOND visit's dialog, out from
+   *  under a write still in the air. Rule 5 says every event names the
+   *  patient it is about; this is the same rule one notch finer. */
+  readonly visit: number;
 }
 
 export type WizardEvent =
@@ -113,13 +147,15 @@ export type WizardEvent =
    *  Escape, a click on the scrim. Nothing is written, so the offer survives
    *  to the next visit; see rule 6. */
   | { kind: "dismissed"; patient: string }
-  /** The write that answer produced has settled, landed or not. */
-  | { kind: "written"; patient: string };
+  /** The write that answer produced has settled, landed or not. Quotes the
+   *  visit it belongs to; see `visit`. */
+  | { kind: "written"; patient: string; visit: number };
 
-export const initialWizard = (patient: string): WizardState => ({
+export const initialWizard = (patient: string, visit = 0): WizardState => ({
   patient,
   at: "unknown",
   reading: false,
+  visit,
 });
 
 /** Whether a read may be issued now.
@@ -141,7 +177,12 @@ export function nextWizard(state: WizardState, event: WizardEvent): WizardState 
       // ANSWER, which is why this resets rather than merging. Rule 3 rides on
       // the same line: without it the new patient's read lands against a
       // state still naming the old one and is thrown away.
-      return event.patient === state.patient ? state : initialWizard(event.patient);
+      // The bump goes here and nowhere else: a re-render with the same
+      // patient returns the same state, so a visit counts arrivals rather
+      // than renders.
+      return event.patient === state.patient
+        ? state
+        : initialWizard(event.patient, state.visit + 1);
 
     case "reading":
       // Recorded, not assumed. The caller checks `shouldRead` and then says
@@ -191,7 +232,14 @@ export function nextWizard(state: WizardState, event: WizardEvent): WizardState 
       // symmetry: A's write can settle after the host has moved to B and B
       // has answered, and an unscoped completion then closed B's dialog on
       // A's behalf — before B's own write had been anywhere.
-      return event.patient === state.patient && state.at === "saving"
+      //
+      // And named by VISIT as well as by patient, which the patient alone
+      // cannot cover: A → B → A is the same patient twice, and #599 lets A
+      // answer again while the first write is still out. Without this the
+      // first completion closes the second dialog.
+      return event.patient === state.patient &&
+        event.visit === state.visit &&
+        state.at === "saving"
         ? { ...state, at: "hide" }
         : state;
   }
