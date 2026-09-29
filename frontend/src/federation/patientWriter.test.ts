@@ -475,3 +475,210 @@ describe("a batch the record refuses", () => {
     expect(calls[1]).toEqual({ hemoglobin_g_dl: 13 });
   });
 });
+
+describe("a write that outlived the reader who made it (#583)", () => {
+  // EXACT keys the patient row on the bearer token, so a payload sent under
+  // somebody else's credential is written into somebody else's record. The
+  // queue picks its adapter at flush time and no React key can catch an
+  // identity that changes without a session signal — #583 has the four
+  // measured shapes — so the comparison is made here, on the credential.
+  //
+  // `identity` is a plain function in these tests because that is all the
+  // writer asks for. What produces the value in the app is
+  // `fingerprintOf(token)`, tested next door.
+  const writerWith = (
+    identity: () => string | undefined,
+    write: (f: Record<string, unknown>) => Promise<Record<string, WriteOutcome>>,
+    extra: Partial<{
+      onError: (fields: string[], error: unknown) => void;
+      onSettled: (field: string, outcome: WriteOutcome) => void;
+      onBatchSettled: () => void;
+    }> = {},
+  ) => new PatientFieldWriter(write, { debounceMs: 0, identity, ...extra });
+
+  it("does not send an edit made by somebody else", async () => {
+    const write = vi.fn(
+      async (_fields: Record<string, unknown>) => ({}) as Record<string, WriteOutcome>,
+    );
+    const onError = vi.fn();
+    let who: string | undefined = "sub:iss|one";
+    const w = writerWith(() => who, write, { onError });
+
+    w.save("hemoglobin", 12);
+    who = "sub:iss|two"; // the credential swaps during the debounce
+    w.flush();
+    await w.settled();
+
+    expect(write).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toEqual(["hemoglobin"]);
+    expect((onError.mock.calls[0][1] as { name: string }).name).toBe("IdentityChanged");
+    expect((onError.mock.calls[0][1] as { fields: string[] }).fields).toEqual([
+      "hemoglobin",
+    ]);
+  });
+
+  it("strands only the fields that changed hands, and sends the rest", async () => {
+    // One batch can straddle the switch: an edit made before it and one made
+    // after. Keying the capture per BATCH would have to choose one answer for
+    // both, and either choice is wrong for half of them.
+    const write = vi.fn(
+      async (_fields: Record<string, unknown>) => ({}) as Record<string, WriteOutcome>,
+    );
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = writerWith(() => who, write, { onError });
+
+    w.save("hemoglobin", 12);
+    who = "sub:iss|two";
+    w.save("platelets", 200);
+    w.flush();
+    await w.settled();
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).toEqual({ platelets: 200 });
+    expect(onError.mock.calls[0][0]).toEqual(["hemoglobin"]);
+  });
+
+  it("does not re-read when the whole batch was stranded", async () => {
+    // `onBatchSettled` is the re-read, and its premise is that a request
+    // landed. Nothing left, so the match has not moved and re-reading would
+    // be work done on behalf of a batch that never existed.
+    const write = vi.fn(
+      async (_fields: Record<string, unknown>) => ({}) as Record<string, WriteOutcome>,
+    );
+    const onBatchSettled = vi.fn();
+    let who = "sub:iss|one";
+    const w = writerWith(() => who, write, { onBatchSettled, onError: () => {} });
+
+    w.save("hemoglobin", 12);
+    who = "sub:iss|two";
+    w.flush();
+    await w.settled();
+
+    expect(write).not.toHaveBeenCalled();
+    expect(onBatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("stops showing a stranded field as still saving", async () => {
+    // `outstanding` is what the page paints its optimistic value from. A
+    // field that will never be sent has to leave it, or the row shows a
+    // value the record does not hold, for ever.
+    const write = vi.fn(
+      async (_fields: Record<string, unknown>) => ({}) as Record<string, WriteOutcome>,
+    );
+    let who = "sub:iss|one";
+    const w = writerWith(() => who, write, { onError: () => {} });
+
+    w.save("hemoglobin", 12);
+    expect(w.outstanding).toEqual(["hemoglobin"]);
+    who = "sub:iss|two";
+    w.flush();
+    await w.settled();
+
+    expect(w.outstanding).toEqual([]);
+  });
+
+  it("lets a ROTATED credential through, which is the common case", async () => {
+    // Firebase refreshes hourly. If this dropped the write, every reader who
+    // edits across the hour loses it — a guard against a rare wrong write
+    // costing a common right one.
+    const write = vi.fn(
+      async (_fields: Record<string, unknown>) => ({}) as Record<string, WriteOutcome>,
+    );
+    const onError = vi.fn();
+    // The same fingerprint, which is what `fingerprintOf` gives two tokens
+    // for one person; the tokens themselves differ and are not compared.
+    const w = writerWith(() => "sub:iss|one", write, { onError });
+
+    w.save("hemoglobin", 12);
+    w.flush();
+    await w.settled();
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("does nothing at all when nobody told it who is signed in", async () => {
+    // The default, and every existing caller. A queue with no way to learn
+    // the identity cannot tell a stranger from a refresh, so it must not
+    // pretend to: silence here means the guard is off, not that it passed.
+    const write = vi.fn(
+      async (_fields: Record<string, unknown>) => ({}) as Record<string, WriteOutcome>,
+    );
+    const w = new PatientFieldWriter(write, { debounceMs: 0 });
+
+    w.save("hemoglobin", 12);
+    w.flush();
+    await w.settled();
+
+    expect(write).toHaveBeenCalledWith({ hemoglobin: 12 });
+  });
+
+  it("guards the RETRY, which is the write a reader never sees", async () => {
+    // The refusal path re-queues the fields the server did not name. Without
+    // carrying their owner back with them they come back unowned, the guard
+    // reads "unknown" and waves them through — so the one payload that
+    // escapes is the one nobody is watching.
+    const { write, calls } = refusing([["hemoglobin"], null]);
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PatientFieldWriter(write, {
+      debounceMs: 0,
+      identity: () => who,
+      onError,
+      onSettled: () => {},
+    });
+
+    w.save("hemoglobin", -1); // the value the vocabulary refuses
+    w.save("platelets", 200); // innocent, and re-queued by the refusal
+    w.flush();
+    // The account changes while that batch is on the wire. Synchronously
+    // after `flush`, because the retry is not a second `flush` — `finally`
+    // re-drains as soon as the refusal settles, and that is the request
+    // being guarded. A test that waited and then flushed would watch the
+    // retry go out first and prove nothing.
+    who = "sub:iss|two";
+    await w.settled();
+    await tick();
+
+    // First attempt carried both; the server named only one.
+    expect(calls[0]).toEqual({ hemoglobin: -1, platelets: 200 });
+    expect(calls).toHaveLength(1); // and the retry never left
+    const stranded = onError.mock.calls.map((c) => c[1] as { name?: string });
+    expect(stranded.some((e) => e?.name === "IdentityChanged")).toBe(true);
+    const names = onError.mock.calls.flatMap((c) => c[0] as string[]);
+    expect(names).toContain("platelets");
+  });
+
+  it("keeps a superseded edit under whoever made it last", async () => {
+    // A refusal re-queues, but a field the reader edited AGAIN mid-flight is
+    // not re-queued — the newer value is already there, under the newer
+    // owner. Carrying the old owner back over it would strand an edit the
+    // current reader just made.
+    const { write, calls } = refusing([["hemoglobin"], null]);
+    const onError = vi.fn();
+    const w = new PatientFieldWriter(write, {
+      debounceMs: 0,
+      identity: () => "sub:iss|one",
+      onError,
+      onSettled: () => {},
+    });
+
+    w.save("hemoglobin", -1);
+    w.save("platelets", 200);
+    w.flush();
+    // Edited again while the first batch is on the wire.
+    w.save("platelets", 300);
+    await w.settled();
+    await tick();
+    await w.settled();
+
+    expect(calls[1]).toEqual({ platelets: 300 });
+    expect(
+      onError.mock.calls.some(
+        (c) => (c[1] as { name?: string })?.name === "IdentityChanged",
+      ),
+    ).toBe(false);
+  });
+});

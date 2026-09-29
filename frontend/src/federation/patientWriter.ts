@@ -12,6 +12,7 @@
 // which is a merge, and merging is the one thing it must not do to filters —
 // a cleared filter would come back.
 
+import { IdentityChanged, sameIdentity } from "./identityFingerprint";
 import type { TrialStateAdapter, WriteOutcome } from "./state";
 
 /** How long an edit waits for company.
@@ -32,12 +33,37 @@ export interface PatientWriterOptions {
   onSettled?: (field: string, outcome: WriteOutcome) => void;
   /** The batch was refused — 403, 404, a 400 from the serializer. Reported
    *  with every field in it, because the caller cannot tell from a rejection
-   *  which of them the server objected to. */
+   *  which of them the server objected to.
+   *
+   *  Also how a STRANDED write is reported: one that was never sent because
+   *  the signed-in account changed while it waited. The error is an
+   *  `IdentityChanged`, so a caller that wants to word it differently can;
+   *  one that does not gets "could not be written", which is true. This is
+   *  not optional politeness — `onError` is what retires a field from
+   *  "Saving…", and a stranded field that went unreported would sit there
+   *  for the life of the page. */
   onError?: (fields: string[], error: unknown) => void;
   /** Once per batch, after its fields have been reported. Separate from
    *  `onSettled` because what hangs off it is the re-read: the match moves
    *  when a REQUEST lands, so one re-read per request, not one per value. */
   onBatchSettled?: () => void;
+  /** Who is signed in, RIGHT NOW, as a fingerprint (`identityFingerprint.ts`).
+   *
+   *  Read twice: when an edit is enqueued, and again when a batch goes out.
+   *  A payload whose two readings disagree is not sent — EXACT keys the row
+   *  on the token, so sending it would write one reader's value into
+   *  another's record, which is the whole of #583.
+   *
+   *  Synchronous on purpose. `getToken` is async, and awaiting it inside
+   *  `save()` would let the reader's keystroke land after the batch it
+   *  belongs to. The bridge records the fingerprint of each token it hands
+   *  out and this reads the last one.
+   *
+   *  Omitted means no guard, and every caller behaves exactly as it did.
+   *  That is what lets this be wired one call site at a time, and it is also
+   *  the honest default: a queue with no way to learn who is signed in
+   *  cannot tell a stranger from a refresh. */
+  identity?: () => string | undefined;
 }
 
 type Writer = NonNullable<TrialStateAdapter["setPatientFields"]>;
@@ -84,12 +110,17 @@ export class PatientFieldWriter {
   private readonly onSettled: (field: string, outcome: WriteOutcome) => void;
   private readonly onError: (fields: string[], error: unknown) => void;
   private readonly onBatchSettled: () => void;
+  private readonly identity: () => string | undefined;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   /** Edits waiting for the timer, and edits waiting for the wire to clear.
    *  One map, because an edit that arrives during a flight simply joins the
    *  next batch — there is no third state for it to be in. */
   private queued: Record<string, unknown> = {};
+  /** Who was signed in when each queued edit was made. Keyed per FIELD, not
+   *  per batch: a batch can carry an edit from before an account change and
+   *  one from after it, and only the first is a stranger's. */
+  private queuedBy: Record<string, string | undefined> = {};
   private inFlight: Promise<void> | null = null;
 
   constructor(write: Writer, opts: PatientWriterOptions = {}) {
@@ -97,6 +128,7 @@ export class PatientFieldWriter {
     this.debounceMs = opts.debounceMs ?? PATIENT_WRITE_DEBOUNCE_MS;
     this.onSettled = opts.onSettled ?? (() => {});
     this.onBatchSettled = opts.onBatchSettled ?? (() => {});
+    this.identity = opts.identity ?? (() => undefined);
     this.onError =
       opts.onError ??
       ((fields, error) => {
@@ -114,6 +146,11 @@ export class PatientFieldWriter {
    *  the record hold a value they had already moved on from. */
   save(field: string, value: unknown): void {
     this.queued[field] = value;
+    // Captured HERE, not at flush: this is the moment the reader made the
+    // edit, and it is the only moment at which who they are is not in doubt.
+    // Replaced along with the value, because a second edit to the same field
+    // is a new statement by whoever is signed in now.
+    this.queuedBy[field] = this.identity();
     this.arm();
   }
 
@@ -158,9 +195,37 @@ export class PatientFieldWriter {
     // the facts it just wrote, so the loser's derivation can land last and
     // describe a record that no longer exists.
     if (this.inFlight) return;
-    const batch = this.queued;
-    if (Object.keys(batch).length === 0) return;
+    const taken = this.queued;
+    if (Object.keys(taken).length === 0) return;
     this.queued = {};
+
+    // WHO THIS BATCH IS FOR, decided one field at a time. `sameIdentity`
+    // lets a rotated token and an unknown identity through and stops a known
+    // stranger — see `identityFingerprint.ts` for why those are not the same
+    // question. A field that fails it is STRANDED: never sent, reported, and
+    // gone. It is not re-queued, because the credential that could have
+    // carried it is the thing that went away.
+    const now = this.identity();
+    const batch: Record<string, unknown> = {};
+    const batchBy: Record<string, string | undefined> = {};
+    const stranded: string[] = [];
+    for (const field of Object.keys(taken)) {
+      batchBy[field] = this.queuedBy[field];
+      delete this.queuedBy[field];
+      if (sameIdentity(batchBy[field], now)) batch[field] = taken[field];
+      else stranded.push(field);
+    }
+    if (stranded.length > 0) {
+      try {
+        this.onError(stranded, new IdentityChanged(stranded));
+      } catch (error: unknown) {
+        console.warn("[exact] a stranded write could not be reported", stranded, error);
+      }
+    }
+    // Nothing survived, so nothing reached the server — and `onBatchSettled`
+    // is the re-read hook, whose whole premise is that a request landed.
+    // Firing it here would re-read on behalf of a batch that never left.
+    if (Object.keys(batch).length === 0) return;
     this.sent = batch;
 
     // `Promise.resolve().then` rather than calling `write` bare: a transport
@@ -234,6 +299,13 @@ export class PatientFieldWriter {
             continue;
           }
           this.queued[field] = batch[field];
+          // AND WHO IT WAS FOR. Without this the re-queued field comes back
+          // with no owner, `sameIdentity` reads "unknown" and waves it
+          // through — so the one write that escapes the guard is the retry,
+          // which is the path a reader never sees. Restored to the value the
+          // batch carried, not to `this.identity()`, which is whoever is
+          // signed in NOW and may be the stranger.
+          this.queuedBy[field] = batchBy[field];
         }
         try {
           this.onError(failed, error);
