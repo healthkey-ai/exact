@@ -2,8 +2,9 @@
 patient field, on the search queryset and the per-trial matcher together.
 
 Flag off: legacy codes on both sides (``speak__en`` vs ``languages_skills_required``).
-Flag on: the consumer's ``language_skill_concept_ids`` pairs vs
-``omop_languages_skills_required``. EXACT translates nothing (therapy precedent).
+Flag on: the patient's ``language_skill_concept_ids`` pairs (EXACT-built from PROMOP's
+booleans; see test_omop_patient_languages.py) vs
+``omop_languages_skills_required``. These tests set the pair list directly.
 """
 import pytest
 from django.test import override_settings
@@ -193,7 +194,7 @@ def test_attrs_to_fill_in_follows_the_same_column(flag, legacy, omop, asked):
         assert _asks_for_languages(trial) is asked
 
 
-# ── the consumer field reaches PatientInfo on both resolve paths ─────
+# ── a directly-sent pair list reaches PatientInfo on both resolve paths ─
 
 def test_inline_camelcase_payload_keeps_the_pairs():
     from trials.services.patient_info.resolve import _build_in_memory

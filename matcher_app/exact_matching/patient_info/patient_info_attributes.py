@@ -226,8 +226,8 @@ class PatientInfoAttributes:
         """The patient's language skills, read through LANGUAGES_MATCH_PROFILE.
 
         Legacy: the ``languages_skills`` string, unchanged. OMOP
-        (``EXACT_OMOP_LANGUAGES``): the consumer's ``language_skill_concept_ids``
-        pair list, joined with "," so every reader downstream (the blank check,
+        (``EXACT_OMOP_LANGUAGES``): the ``language_skill_concept_ids`` pair list
+        (built at resolve time from PROMOP's capability booleans), joined with "," so every reader downstream (the blank check,
         the queryset's ``_csv`` split, the matcher's string split) treats it
         exactly like the legacy value. ``[]`` becomes ``''``, i.e. blank.
         """

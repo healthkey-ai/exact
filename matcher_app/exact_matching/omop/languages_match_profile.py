@@ -12,9 +12,12 @@ The profile names two things, one per side:
   pairs, filled by CB (``backfill_omop_languages_skills_column``).
 - ``patient_languages_skills`` — the PATIENT attribute. Legacy ``languages_skills``
   (a comma-separated code string); OMOP ``language_skill_concept_ids``, a list of the
-  same pair strings supplied by the consumer (PROMOP derives it from
-  ``PersonLanguageSkill``). EXACT does NOT translate the patient — same rule as
-  therapies: both sides must already speak the same vocabulary.
+  same pair strings. EXACT builds it at resolve time from PROMOP's
+  ``english_*`` / ``spanish_*`` capability booleans
+  (``trials.services.omop.patient_languages``), a deliberate exception to "EXACT owns
+  no patient crosswalk": the ids come from EXACT's own mapping CSV, the same rows the
+  trial column is built from, and trials use only en/es. Only speak/write produce
+  pairs (interim; see that module).
 
 Surfaces that read it — a cutover flips all three together, which is why they go
 through this one profile rather than literals:

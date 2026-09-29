@@ -526,8 +526,12 @@ def build_patient_info_from_promop_row(row: dict):
     what the API would produce.
     """
     from trials.services.patient_info.resolve import _build_in_memory
+    from trials.services.omop.patient_languages import language_skill_concept_ids_from_capabilities
 
     row = normalize_promop_row(row)
+    # Language booleans -> pairs BEFORE the None-stripping below: a row whose
+    # booleans are all NULL must still become [] (asked about nothing), not vanish.
+    row = language_skill_concept_ids_from_capabilities(row)
 
     # Strip source-only columns; decode any JSON-as-string fields
     cleaned = {}
