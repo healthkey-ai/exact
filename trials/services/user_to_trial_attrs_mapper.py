@@ -11,14 +11,29 @@ from trials.services.utils import disease_attr_applies
 from trials.services.patient_info.language_capability import (
     asked_languages,
     held_codes,
+    verdict as language_verdict,
     sql_has_requirement,
     sql_has_unasked_language,
     sql_holds_any,
 )
 
 
+def _languages_open(trial, patient_info):
+    """Whether "languages" is still an open question for this trial and patient.
+
+    With PROMOP's asked set known, the language requirement is open exactly when
+    that trial's verdict is unknown (cases 2 and 4 in `language_capability`).
+    Without a patient, or without an asked set, every trial with a language
+    requirement may ask, as before.
+    """
+    asked = asked_languages(patient_info)
+    if not asked:
+        return True
+    return language_verdict(trial.languages_skills_required, held_codes(patient_info), asked) == 'unknown'
+
+
 class UserToTrialAttrsMapper:
-    def potential_attrs_for_trial(self, trial, counts):
+    def potential_attrs_for_trial(self, trial, counts, patient_info=None):
         def item(trial_attribute_name, user_attribute_name, trial_obj, cnt):
             if getattr(trial_obj, trial_attribute_name) is None:
                 return
@@ -26,6 +41,9 @@ class UserToTrialAttrsMapper:
             if trial_attribute_name in TRIAL_ATTRS_JSON_AS_A_LIST:
                 if getattr(trial_obj, trial_attribute_name) == []:
                     return
+
+            if user_attribute_name == 'languages_skills' and not _languages_open(trial_obj, patient_info):
+                return
 
             return {
                 'trialAttributeName': AttributeNames.get_by_snake_case(trial_attribute_name),

@@ -108,6 +108,74 @@ class TestWorkedExamples:
         assert kept and status == 'not_evaluated'
 
 
+class TestPatientsAlsoGainTrials:
+    """An unasked language is unknown, so a trial that used to be excluded on no
+    overlap is now Potential."""
+
+    def test_anna_against_a_spanish_trial_is_kept(self, es_speak):
+        assert assert_agree(es_speak, promop(english_speak=True)) == (True, 'unknown')
+
+    def test_anna_against_an_other_language_trial_is_kept(self):
+        trial = TrialFactory(languages_skills_required=['speak__other'])
+        assert assert_agree(trial, promop(english_speak=True)) == (True, 'unknown')
+
+
+class TestNonCodeElements:
+    """JSON null and blank strings in R are ignored the same way everywhere."""
+
+    @pytest.mark.parametrize('required', [[''], [None], ['  '], [None, '']])
+    def test_only_non_codes_is_no_requirement(self, required):
+        trial = TrialFactory(languages_skills_required=required)
+        carlos = promop(english_speak=False, english_read=True)
+        kept, status, potential, _e = surfaces(trial, carlos)
+        assert kept and status == 'not_evaluated' and potential is None
+        assert verdict(required, [], ['en']) == 'not_evaluated'
+
+    def test_non_codes_beside_a_code_are_ignored(self):
+        trial = TrialFactory(languages_skills_required=[None, 'speak__en', ''])
+        carlos = promop(english_speak=False, english_read=True)
+        assert assert_agree(trial, carlos) == (False, 'not_matched')
+
+
+class TestNestedQuery:
+    """The filter must bind to the INNER alias when the scope becomes a subquery
+    (`blank_attribute_records_count` does `pk__in=scope.values('pk')`). A
+    hard-coded table name there made a correlated subquery that timed out."""
+
+    def test_pk_in_subquery_uses_the_inner_alias(self, en_speak):
+        carlos = promop(english_speak=False, english_read=True)
+        scope = Trial.objects.all().eligible_for_languages_skills([], asked=['en'])
+        nested = Trial.objects.filter(pk__in=scope.values('pk'))
+        # The outer SELECT lists every column; only the subquery holds the filter.
+        inner = str(nested.query).split(' IN (SELECT ', 1)[1]
+        assert 'U0."languages_skills_required"' in inner
+        assert '"trials_trial"."languages_skills_required"' not in inner
+        assert list(nested) == []  # en_speak excluded for an asked-English, no-code patient
+
+    def test_count_through_the_nested_path_agrees(self, en_speak, es_speak):
+        scope = Trial.objects.all().eligible_for_languages_skills([], asked=['en'])
+        nested = Trial.objects.filter(pk__in=scope.values('pk'))
+        assert set(nested.values_list('id', flat=True)) == {es_speak.id}
+
+
+class TestFillIn:
+    """"languages" is offered only where this trial's language verdict is unknown."""
+
+    def asks(self, trial, patient):
+        return any(i['userAttributeName'] == 'languagesSkills'
+                   for i in trial.attrs_to_fill_in({'languages_skills': 1}, patient_info=patient))
+
+    def test_matched_trial_does_not_ask(self, en_speak):
+        assert not self.asks(en_speak, promop(english_speak=True))
+
+    def test_unknown_trial_asks(self, es_speak):
+        assert self.asks(es_speak, promop(english_speak=True))
+
+    def test_without_asked_set_every_language_trial_may_ask(self, en_speak):
+        assert self.asks(en_speak, _build_in_memory({'languages_skills': 'speak__en'}))
+        assert self.asks(en_speak, None)
+
+
 class TestCallersSendingCodesAreUnchanged:
     """No booleans: exactly the legacy two-state overlap."""
 

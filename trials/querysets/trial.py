@@ -11,12 +11,7 @@ from django.db import models
 from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, QuerySet, Min, Subquery
 from django.db.models.expressions import RawSQL
 
-from trials.services.patient_info.language_capability import (
-    asked_languages,
-    sql_has_requirement,
-    sql_has_unasked_language,
-    sql_holds_any,
-)
+from trials.services.patient_info.language_capability import LanguagesKept, asked_languages
 from django.db.models.functions import Coalesce, Least, Lower
 from django.contrib.gis.geos import Point
 from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField
@@ -1732,16 +1727,8 @@ class TrialQuerySet(models.QuerySet):
                 values=languages_skills,
                 required_attr_name='languages_skills_required'
             )
-        column = f'"{self.model._meta.db_table}"."languages_skills_required"'
         held = [str(x).strip() for x in (languages_skills or []) if str(x).strip()]
-        keep_sql = (
-            f"(NOT {sql_has_requirement(column)}"
-            f" OR {sql_holds_any(column, held)}"
-            f" OR {sql_has_unasked_language(column, asked)})"
-        )
-        return self.annotate(
-            _languages_kept=RawSQL(keep_sql, [], output_field=models.BooleanField())
-        ).filter(_languages_kept=True)
+        return self.filter(LanguagesKept('languages_skills_required', held, asked))
 
     # Receptor parent-code expansion lives in trials.services.receptor_hierarchy
     # — shared with the matcher's uvalue_function lambdas so SQL filtering and
