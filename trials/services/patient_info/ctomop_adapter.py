@@ -311,6 +311,15 @@ def normalize_ctomop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # Language capability: the eight booleans replace the display string
+    # (#591). Done here, while NULL booleans are still in the row, because
+    # `build_patient_info_from_ctomop_row` drops None values afterwards and
+    # their presence is what says this is a PROMOP record.
+    from trials.services.patient_info.resolve import languages_skills_from_capabilities
+    derived = languages_skills_from_capabilities(row)
+    if derived is not row:
+        row.clear()
+        row.update(derived)
     # ── Receptor statuses ──────────────────────────────────────────────
     # Resolved via DB-backed LRU map; aliases handle CTOMOP-specific labels
     # (e.g. "Equivocal" → her2_low, "Borderline" → er_plus_with_low_exp).

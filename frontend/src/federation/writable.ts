@@ -341,12 +341,14 @@ const NOT_IN_RECORD =
  *  strip, `_csv_stripped` is gone, and a writer that joined with ", " no
  *  longer produces `" write__fr"`.
  *
- *  It is not the reason `languages_skills` is blocked, and #588 did not
- *  unblock it. PROMOP serves that column `"; "`-joined BETWEEN languages
- *  and `", "`-joined INSIDE each one (`omop_core/models.py:955`), so `_csv`
- *  splits on the inner separator and the matcher reads garbage on both
- *  sides of it, whatever a writer sends (#591). Read the paragraph below
- *  for the standing reason.
+ *  It is not the reason `languages_skills` is blocked, and neither #588 nor
+ *  the #591 read fix unblocks it. PROMOP serves that column as a display
+ *  string, `"; "`-joined BETWEEN languages and `", "`-joined INSIDE each one
+ *  (`format_language_skills` in `omop_core/models.py`); when PROMOP sends the
+ *  language booleans beside it, the matcher rebuilds the codes from those
+ *  instead (`resolve.py`, `languages_skills_from_capabilities`). That fixes
+ *  what is READ, not what may be WRITTEN. Read the paragraph below for the
+ *  standing reason.
  *
  *  `languages_skills` would stay here even with a working editor: PROMOP
  *  denormalizes that column from `PersonLanguageSkill` and says of the eight

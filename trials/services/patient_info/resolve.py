@@ -219,6 +219,73 @@ _INBOUND_ALIASES = {
     'pd_l1_tumor_cells': 'pd_l1_tumor_cels',
 }
 
+#: PROMOP's machine-readable form of language capability (promop #827).
+#:
+#: PROMOP's `languages_skills` is a DISPLAY string, "English language: read,
+#: speak; Spanish language: speak" (`format_language_skills` in
+#: `omop_core/models.py`), and it can never equal a trial code like
+#: `speak__en`. So a PROMOP patient who recorded any language failed every
+#: trial with a language requirement (#591). The same record carries eight
+#: three-valued booleans, english_/spanish_ x speak/read/write/understand
+#: (NULL = that language was never asked about), derived from the same
+#: `PersonLanguageSkill` rows.
+#:
+#: Only the two capabilities trials are written in, speak and write, become
+#: codes, so the value stays inside the vocabulary the "Yours" cell labels.
+#: The cost is that "reads English only", or a language answered with no
+#: capability, reads as unknown and does not fail a "speaks English"
+#: requirement; a language other than English or Spanish is not unrolled by
+#: PROMOP at all. This is the interim read fix. The OMOP pair path
+#: (cancerbot-org/cancerbot#5350) carries all four capabilities as concepts.
+_LANGUAGE_CAPABILITY_CODES = {
+    f'{language}_{skill}': f'{skill}__{code}'
+    for language, code in (('english', 'en'), ('spanish', 'es'))
+    for skill in ('speak', 'write')
+}
+#: All eight names PROMOP sends. The four without a code are consumed here so
+#: that their presence still marks the record as PROMOP's; they are not
+#: recognised by the gate, because nothing EXACT stores comes from them.
+_LANGUAGE_CAPABILITY_FIELDS = {
+    f'{language}_{skill}'
+    for language in ('english', 'spanish')
+    for skill in ('speak', 'read', 'write', 'understand')
+}
+
+
+def _is_true(value):
+    # A JSON boolean from PROMOP, or the string a form-encoded client sends.
+    # Never truthiness: the string "false" is truthy.
+    return value is True or (isinstance(value, str) and value.strip().lower() == 'true')
+
+
+def languages_skills_from_capabilities(data):
+    """Replace a PROMOP display `languages_skills` with codes from the booleans.
+
+    Returns `data` unchanged when none of the eight names is present. Otherwise
+    returns a copy without them, and:
+
+    * if any of them has a value, `languages_skills` is rebuilt from the True
+      speak/write ones (`None` when there are none, which skips the filter);
+    * if all of them are NULL or blank, `languages_skills` is dropped only when
+      it is PROMOP's display string (it contains ':', which no CB code does),
+      so codes a caller sent alongside a form's empty fields survive.
+
+    When a boolean does have a value, the booleans win over any codes sent
+    beside them.
+    """
+    if not any(name in data for name in _LANGUAGE_CAPABILITY_FIELDS):
+        return data
+    out = {k: v for k, v in data.items() if k not in _LANGUAGE_CAPABILITY_FIELDS}
+    if not any(_says_something(data.get(name)) for name in _LANGUAGE_CAPABILITY_FIELDS):
+        current = out.get('languages_skills')
+        if isinstance(current, str) and ':' in current:
+            out['languages_skills'] = None
+        return out
+    held = sorted(code for name, code in _LANGUAGE_CAPABILITY_CODES.items() if _is_true(data.get(name)))
+    out['languages_skills'] = ','.join(held) if held else None
+    return out
+
+
 #: A second entry is coming (#590), and this table has four ways to go wrong
 #: with nothing failing: chaining one entry's target into another's source,
 #: two sources onto one target, a source that shadows a real field, and a
@@ -270,6 +337,10 @@ def _known_attribute_names():
     # answered None. The form-backed client this empty state exists for is
     # exactly the one serialising every field, so it would have met that.
     names.update(_INBOUND_ALIASES)
+    # Same third case: the speak/write language booleans are moved onto
+    # `languages_skills` by `languages_skills_from_capabilities`, so a payload
+    # carrying only them describes a patient.
+    names.update(_LANGUAGE_CAPABILITY_CODES)
     return names
 
 
@@ -340,7 +411,14 @@ def _patient_from_inline(payload, sent_as):
     # That combination is not a curiosity: the form-backed client the empty
     # state exists FOR — every field serialised, most of them null — is
     # exactly the client most likely to also carry a misspelled one.
-    if any(_says_something(snake[name]) for name in recognised):
+    # A language boolean says something only when it becomes a code: a False
+    # one is dropped by `languages_skills_from_capabilities`, and letting it
+    # through alone would build the blank patient again.
+    if any(
+        _says_something(snake[name])
+        and (name not in _LANGUAGE_CAPABILITY_CODES or _is_true(snake[name]))
+        for name in recognised
+    ):
         # Something usable arrived. Unrecognised keys alongside it are not an
         # error: a client sending a field EXACT has not heard of yet, next to
         # ones it has, described a patient.
@@ -391,7 +469,7 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     # value vanished, with a 200: measured, `{"preExistingConditionCategories":
     # [1]}` produced a patient with no categories while the snake_case form
     # produced the real one.
-    snake_data = _normalise_inbound_keys(data)
+    snake_data = languages_skills_from_capabilities(_normalise_inbound_keys(data))
 
     # Extract the M2M field, which cannot be set on an unsaved instance
     pre_existing_ids = snake_data.pop(M2M_PAYLOAD_KEYS[0], None) or []
