@@ -40,6 +40,10 @@ _FIELDS = [
     _f(CharField, 'external_id', max_length=255),
     _f(TextField, 'status'),
     _f(TextField, 'languages_skills'),
+    # Languages the patient was asked about (en/es, comma-joined), from PROMOP's
+    # capability booleans; see exact_matching.patient_info.language_capability.
+    # None when unknown (#605).
+    _f(TextField, 'languages_asked'),
     # Disease block
     _f(IntegerField, 'patient_age'),
     _f(CharField, 'gender', max_length=2),

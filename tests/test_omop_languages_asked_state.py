@@ -267,12 +267,19 @@ def test_non_ascii_digits_are_not_concept_ids(value):
     assert not _CID.fullmatch(value)
 
 
-def test_backend_flag_off_does_not_touch_the_patient(settings):
+@pytest.mark.parametrize('flag', [False, True])
+def test_backend_passes_the_patient_and_tolerates_none(settings, flag):
+    # Off the OMOP path the host call is unchanged (CB's attrs_to_fill_in takes no
+    # patient_info); on it, the patient is passed and a missing one is tolerated.
     from exact_matching.backend import ExactMatcher
-    settings.EXACT_OMOP_LANGUAGES = False
+    settings.EXACT_OMOP_LANGUAGES = flag
     trial = _trial('speak__en')
+    seen = []
 
-    class _NoPatient:
+    class _Patient:
         def as_patient_info(self):
-            raise AssertionError('as_patient_info called with the flag off')
-    ExactMatcher().attrs_to_fill_in(trial, _NoPatient(), {'languages_skills': 1})
+            seen.append(True)
+            return None
+    ExactMatcher().attrs_to_fill_in(trial, _Patient(), {'languages_skills': 1})
+    ExactMatcher().attrs_to_fill_in(trial, None, {'languages_skills': 1})
+    assert seen == ([True] if flag else [])

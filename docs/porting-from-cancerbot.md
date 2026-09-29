@@ -110,6 +110,13 @@ These already differ from CB on purpose. Leave them; do not try to re-sync them 
   that an empty consumer set must not read as unknown. The state model is written down in
   `patient_languages.py`; queryset, matcher, potential count and attrs-to-fill-in share it
   through `exact_matching/omop/languages_verdict.py`.
+- **The legacy language path has the same asked state** (#605, ported from cb-like-trials
+  #597/#607; fixes #591 on this line). `resolve.languages_skills_from_capabilities` turns the
+  same eight booleans into legacy codes (`languages_skills`, speak/write only) and
+  `languages_asked`; `exact_matching/patient_info/language_capability.py` applies the same five
+  cases over codes. `resolve.translate_language_capabilities` builds the legacy fields first
+  (keeping the booleans) and the OMOP pairs second, so both paths have their input whichever the
+  readiness snapshot picks. Callers that send codes and no booleans keep the plain overlap.
 Maintain an up-to-date inventory of these so agents can tell *intended* divergence from *drift*.
 
 ## Deploy order: trial columns come from CB

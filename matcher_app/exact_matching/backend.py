@@ -77,12 +77,16 @@ class ExactMatcher:
         return trial.matching_type(patient_info=patient.as_patient_info())
 
     def attrs_to_fill_in(self, trial, patient, counts: dict):
-        # The patient only narrows languages on the OMOP path; off it, the call is
-        # exactly what it was (no as_patient_info()).
+        # Off the OMOP path the call stays exactly what it was: CB's
+        # Trial.attrs_to_fill_in(self, counts) takes no patient_info, so passing
+        # one would raise TypeError in a CB host. Consequence: via this backend,
+        # the legacy path does not narrow "languages" by verdict; EXACT's own views
+        # pass the patient to Trial.attrs_to_fill_in directly (#605).
         from exact_matching.omop.languages_match_profile import omop_languages_enabled
         if not omop_languages_enabled():
             return trial.attrs_to_fill_in(counts)
-        return trial.attrs_to_fill_in(counts, patient_info=patient.as_patient_info())
+        patient_info = patient.as_patient_info() if patient is not None else None
+        return trial.attrs_to_fill_in(counts, patient_info=patient_info)
 
     def high_risk_breakdown(self, trial, patient):
         from exact_matching.matcher import UserToTrialAttrMatcher

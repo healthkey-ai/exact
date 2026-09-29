@@ -5,7 +5,15 @@ from django.db import models
 from django.db.models import Q
 
 from exact_matching.attribute_names import AttributeNames
-from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_match_profile import (
+    LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
+)
+from exact_matching.patient_info import language_capability as legacy_languages
+from exact_matching.patient_info.language_capability import (
+    asked_languages as legacy_asked_languages,
+    held_codes as legacy_held_codes,
+    verdict as legacy_language_verdict,
+)
 from exact_matching.omop.languages_verdict import language_verdict, language_verdict_sql
 from exact_matching.patient_info.configs import (
     THERAPY_LINES_ATTRS_UNDERSCORED,
@@ -41,13 +49,20 @@ def _trial_column(user_attr, trial_attr_name):
 def _languages_open(trial, patient_info):
     """Whether "languages" is still an open question for this trial and patient.
 
-    Only the OMOP path with a known patient narrows it: there the language
-    requirement is open exactly when its verdict is unknown (state-model cases 2
-    and 4). Without a patient, or off the OMOP path, every trial with a language
-    requirement may ask, as before.
+    With a known patient whose state is known, the language requirement is open
+    exactly when that trial's verdict is unknown (state-model cases 2 and 4): the
+    OMOP verdict on the OMOP path, the legacy one when PROMOP's asked set is known
+    (#605). Otherwise every trial with a language requirement may ask, as before.
     """
-    if patient_info is None or not omop_languages_enabled():
+    if patient_info is None:
         return True
+    if not omop_languages_enabled():
+        asked = legacy_asked_languages(patient_info)
+        if not asked:
+            return True
+        required = getattr(trial, LEGACY_LANGUAGES_MATCH_PROFILE.languages_skills_required)
+        return legacy_language_verdict(required, legacy_held_codes(patient_info), asked) == 'unknown'
+
     service = PatientInfoAttributes(patient_info)
     held, asked = service.get_language_held_ids(), service.get_language_asked_ids()
     if not held and not asked:
@@ -413,6 +428,19 @@ class UserToTrialAttrsMapper:
                         f'(CASE WHEN {required} AND NOT {overlap} AND {unasked} THEN 1 ELSE NULL END)')
                     eligible_attrs2check[user_attr] = (
                         f'(CASE WHEN {required} AND {overlap} THEN 1 ELSE NULL END)')
+                    continue
+
+                # Legacy language path with PROMOP's asked set known (#605): the same
+                # verdict over codes. Case 4 is potential, case 3 counts toward the
+                # match score, case 5 is dropped by the queryset.
+                if user_attr == 'languages_skills' and is_filled_by_user and not omop_languages_enabled() \
+                        and legacy_asked_languages(patient_info):
+                    column = LEGACY_LANGUAGES_MATCH_PROFILE.languages_skills_required   # unqualified
+                    has_req = legacy_languages.sql_has_requirement(column)
+                    holds = legacy_languages.sql_holds_any(column, legacy_held_codes(patient_info))
+                    unasked = legacy_languages.sql_has_unasked_language(column, legacy_asked_languages(patient_info))
+                    attrs2check[user_attr] = f'(CASE WHEN {has_req} AND NOT {holds} AND {unasked} THEN 1 ELSE NULL END)'
+                    eligible_attrs2check[user_attr] = f'(CASE WHEN {has_req} AND {holds} THEN 1 ELSE NULL END)'
                     continue
 
             then_value = 'NULL ELSE 1'

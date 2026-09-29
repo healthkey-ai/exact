@@ -25,17 +25,30 @@ def language_of(pair):
     return str(pair).split(':', 1)[0]
 
 
-def language_verdict(required, held, asked):
-    """'matched' / 'unknown' / 'not_matched' for a non-blank patient (cases 1, 3-5)."""
-    # Only string elements are pairs; SQL ignores the rest the same way.
-    required = [p for p in (required or []) if isinstance(p, str)]
+def three_state_verdict(required, held, asked, language_of):
+    """Cases 1 and 3-5 of the language state model, for either vocabulary.
+
+    ``required`` is the trial's already-cleaned elements, ``held`` the patient's,
+    ``asked`` the asked languages, and ``language_of`` maps an element to its
+    language: the OMOP pair ``"<lang>:<skill>"`` here, the legacy code
+    ``<skill>__<lang>`` in ``exact_matching.patient_info.language_capability``.
+    The two vocabularies never mix; only the decision is shared.
+    """
     if not required:
         return 'matched'
     if set(required) & set(held):
         return 'matched'
-    if any(language_of(p) not in set(asked) for p in required):
+    asked = set(asked)
+    if any(language_of(e) not in asked for e in required):
         return 'unknown'
     return 'not_matched'
+
+
+def language_verdict(required, held, asked):
+    """'matched' / 'unknown' / 'not_matched' for a non-blank patient (cases 1, 3-5)."""
+    # Only string elements are pairs; SQL ignores the rest the same way.
+    required = [p for p in (required or []) if isinstance(p, str)]
+    return three_state_verdict(required, held, asked, language_of)
 
 
 def _text_array(values, shape):
