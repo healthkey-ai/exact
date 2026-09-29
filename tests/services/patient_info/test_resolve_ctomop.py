@@ -92,7 +92,9 @@ class TestResolvePatientInfoDispatch:
 
             result = resolve_patient_info(req)
 
-        mock_inline.assert_called_once_with({'disease': 'multiple myeloma'})
+        # `strict=True` because this is the inline path: the one caller who
+        # typed the value and can be told about it (#594).
+        mock_inline.assert_called_once_with({'disease': 'multiple myeloma'}, strict=True)
         MockClient.return_value.fetch_patient.assert_not_called()
         assert result == 'inline_pi'
 
