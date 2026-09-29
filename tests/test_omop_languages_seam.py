@@ -171,8 +171,9 @@ def test_count_reads_the_omop_column_under_the_flag():
 @override_settings(EXACT_OMOP_LANGUAGES=True)
 def test_count_still_potential_on_a_real_omop_requirement():
     from trials.services.matching import status_equivalence as se
+    # consistent backfill (the readiness gate refuses a pair without its code)
     trial = TrialFactory(disease='multiple myeloma',
-                         languages_skills_required=[], omop_languages_skills_required=[EN_SPEAK])
+                         languages_skills_required=['speak__en'], omop_languages_skills_required=[EN_SPEAK])
     blank = PatientInfo(disease='multiple myeloma', patient_age=65)
     assert _potential_count(trial, blank) == 1
     assert se.compare(Trial.objects.filter(id=trial.id), blank) == []
@@ -193,7 +194,7 @@ def _asks_for_languages(trial):
 
 @pytest.mark.parametrize('flag, legacy, omop, asked', [
     (True, ['speak__other'], [], False),   # flag on: OMOP column decides
-    (True, [], [EN_SPEAK], True),
+    (True, ['speak__en'], [EN_SPEAK], True),
     (False, ['speak__en'], [], True),      # flag off: legacy column decides
     (False, [], [EN_SPEAK], False),
 ])

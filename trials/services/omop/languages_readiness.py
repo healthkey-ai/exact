@@ -13,9 +13,11 @@ Checks (``check_languages_readiness``):
 
 a) vocab: ``Language`` en/es and ``LanguageSkillLevel`` speak/write all carry an
    ``omop_concept_id`` (``load_language_omop_concept_ids`` has run);
-b) backfill coverage: no trial whose legacy ``languages_skills_required`` holds a
-   code that has a pair under the current vocab while
-   ``omop_languages_skills_required`` lacks that pair;
+b) backfill coverage, both directions: no trial whose legacy
+   ``languages_skills_required`` holds a code that has a pair under the current
+   vocab while ``omop_languages_skills_required`` lacks that pair, and no trial
+   whose OMOP column holds such a pair while the legacy list no longer holds its
+   code (a removed requirement the backfill has not caught up with);
 c) CB<->EXACT drift: every distinct pair in ``omop_languages_skills_required``
    across the catalog is one EXACT's vocab can produce. Only a duplicated mapping
    CSV binds CB's trial ids to EXACT's patient ids.
@@ -91,17 +93,20 @@ def check_languages_readiness():
         reasons.append(
             f'vocab: no omop_concept_id on {", ".join(missing)}; run load_language_omop_concept_ids')
 
-    # b) backfill coverage: one query over every (code, pair) the vocab can produce
+    # b) backfill coverage, both directions, in one query over every (code, pair)
+    # the vocab can produce (the loader refuses duplicate ids, so pair -> code is 1:1)
     producible = _producible_pairs(concept_ids)
     if producible:
-        uncovered = Q()
+        out_of_step = Q()
         for code, pair in producible.items():
-            uncovered |= Q(languages_skills_required__has_key=code) & ~Q(omop_languages_skills_required__has_key=pair)
-        stale = Trial.objects.filter(uncovered).count()
+            legacy, omop = Q(languages_skills_required__has_key=code), Q(omop_languages_skills_required__has_key=pair)
+            out_of_step |= (legacy & ~omop) | (omop & ~legacy)
+        stale = Trial.objects.filter(out_of_step).count()
         if stale:
             reasons.append(
-                f'backfill: {stale} trial(s) require a mapped language code whose pair is missing '
-                f'from omop_languages_skills_required; run backfill_omop_languages_skills_column')
+                f'backfill: {stale} trial(s) have language requirements and OMOP pairs out of step '
+                f'(a mapped code without its pair, or a pair without its code); '
+                f'run backfill_omop_languages_skills_column')
 
     # c) drift: every trial pair must be one EXACT's vocab produces
     foreign = sorted(_distinct_elements('omop_languages_skills_required') - set(producible.values()))

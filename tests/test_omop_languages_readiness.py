@@ -63,6 +63,11 @@ def _break_backfill():
     TrialFactory(languages_skills_required=['write__en'], omop_languages_skills_required=[])
 
 
+def _break_backfill_reverse():
+    # requirement removed, OMOP column not refreshed
+    TrialFactory(languages_skills_required=[], omop_languages_skills_required=[EN_SPEAK])
+
+
 def _break_drift():
     TrialFactory(languages_skills_required=[], omop_languages_skills_required=['999:888'])
 
@@ -78,6 +83,7 @@ class TestGate:
     @pytest.mark.parametrize('breaker, reason', [
         (_break_vocab, 'vocab:'),
         (_break_backfill, 'backfill:'),
+        (_break_backfill_reverse, 'backfill:'),
         (_break_drift, 'drift:'),
     ])
     def test_each_failing_check_falls_back_to_legacy_and_logs(self, caplog, breaker, reason):
