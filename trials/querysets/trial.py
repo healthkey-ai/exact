@@ -10,6 +10,8 @@ from django.contrib.postgres.search import SearchVector, SearchQuery
 from django.db import models
 from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, QuerySet, Min, Subquery
 from django.db.models.expressions import RawSQL
+
+from trials.services.patient_info.language_capability import LanguagesKept, asked_languages
 from django.db.models.functions import Coalesce, Least, Lower
 from django.contrib.gis.geos import Point
 from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField
@@ -385,7 +387,8 @@ _CUSTOM_SEARCH_DISPATCH = {
     'tp53_disruption': lambda s, v, _c: s.eligible_for_tp53_disruption(v),
     # Multi-valued: one `_csv` for all of them (#588).
     'ethnicity': lambda s, v, _c: s.eligible_for_ethnicity(_csv(v)),
-    'languages_skills': lambda s, v, _c: s.eligible_for_languages_skills(_csv(v)),
+    'languages_skills': lambda s, v, c: s.eligible_for_languages_skills(
+        _csv(v), asked=asked_languages(c.get('patient_info'))),
     'planned_therapies': lambda s, v, _c: s.eligible_for_planned_therapies(_csv(v)),
     'cytogenic_markers': lambda s, v, _c: s.eligible_for_cytogenic_markers(_csv(v)),
     'molecular_markers': lambda s, v, _c: s.eligible_for_molecular_marker(_csv(v)),
@@ -1711,11 +1714,21 @@ class TrialQuerySet(models.QuerySet):
             required_attr_name='ethnicity_required'
         )
 
-    def eligible_for_languages_skills(self, languages_skills: list[str]) -> models.QuerySet:
-        return self.eligible_for_required_lists(
-            values=languages_skills,
-            required_attr_name='languages_skills_required'
-        )
+    def eligible_for_languages_skills(self, languages_skills: list[str], asked=None) -> models.QuerySet:
+        """Language requirement filter.
+
+        Without `asked` (no PROMOP capability booleans arrived) this is the
+        legacy any-of overlap. With it, the three-state verdict in
+        `language_capability`: a trial is excluded only when every language it
+        requires was asked about and none of the required codes is held.
+        """
+        if not asked:
+            return self.eligible_for_required_lists(
+                values=languages_skills,
+                required_attr_name='languages_skills_required'
+            )
+        held = [str(x).strip() for x in (languages_skills or []) if str(x).strip()]
+        return self.filter(LanguagesKept('languages_skills_required', held, asked))
 
     # Receptor parent-code expansion lives in trials.services.receptor_hierarchy
     # — shared with the matcher's uvalue_function lambdas so SQL filtering and
