@@ -337,6 +337,7 @@ class TestRecognisedMeansWeWillActuallyReadIt:
         from trials.services.patient_info.resolve import (
             _INBOUND_ALIASES,
             _LANGUAGE_CAPABILITY_CODES,
+            _LANGUAGE_CAPABILITY_FIELDS,
             M2M_PAYLOAD_KEYS,
             _build_in_memory,
             _known_attribute_names,
@@ -371,13 +372,16 @@ class TestRecognisedMeansWeWillActuallyReadIt:
             # there. Recognising it without that redirection is the defect
             # this covers: the key would pass the gate and the value would
             # still be dropped at the filter.
-            # A language boolean is the same redirection with a translation:
-            # recognised under PROMOP's name, it arrives on `languages_skills`
-            # as the code it stands for (#591).
-            if name in _LANGUAGE_CAPABILITY_CODES:
+            if name in _LANGUAGE_CAPABILITY_FIELDS:
+                # A language boolean arrives as the language it marks asked
+                # (`languages_asked`), and a speak/write one also as its code
+                # on `languages_skills` (#591, P1-1).
                 patient = _build_in_memory({name: True})
                 checked += 1
-                if patient.languages_skills != _LANGUAGE_CAPABILITY_CODES[name]:
+                if patient.languages_asked != _LANGUAGE_CAPABILITY_FIELDS[name]:
+                    lost.append(name)
+                elif name in _LANGUAGE_CAPABILITY_CODES and (
+                        patient.languages_skills != _LANGUAGE_CAPABILITY_CODES[name]):
                     lost.append(name)
                 continue
             stored = _INBOUND_ALIASES.get(name, name)

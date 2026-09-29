@@ -44,6 +44,11 @@ from trials.services.patient_info.genetic_mutations import GeneticMutations
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.utils import disease_attr_applies, get_overlap
+from trials.services.patient_info.language_capability import (
+    asked_languages,
+    held_codes,
+    verdict as language_verdict,
+)
 
 
 @dataclass
@@ -84,6 +89,7 @@ _CUSTOM_SEARCH_NAMED_HANDLERS = {
     'flipi_score_options': '_match_flipi_score_options',
     'prior_therapy': '_match_prior_therapy',
     'genetic_mutations': '_match_genetic_mutations',
+    'languages_skills': '_match_languages_skills',
 }
 
 # Therapy-line attrs fall back to a single handler after the named
@@ -783,6 +789,18 @@ class UserToTrialAttrMatcher:
             # folded into that one calculation and never matched on their own,
             # so claiming a match for them was claiming a check that never ran.
             return 'not_evaluated'
+
+    def _match_languages_skills(self, ctx):
+        """Three-state language verdict when PROMOP said what was asked (P1-1).
+
+        Without `languages_asked` this is exactly the computed-attr path it
+        always used. See `language_capability` for the five cases.
+        """
+        asked = asked_languages(self.patient_info)
+        if not asked:
+            return self._match_computed_attr(ctx)
+        required = getattr(self.trial, ctx.trial_attr_name)
+        return language_verdict(required, held_codes(self.patient_info), asked)
 
     def _match_computed_attr(self, ctx):
         # "Named OR" criteria attrs (e.g. high-risk MCL) need count/sufficient/
