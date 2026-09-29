@@ -73,7 +73,10 @@ def patient_info_payload(**overrides):
 @pytest.fixture(autouse=True)
 def _reset_omop_languages_readiness_cache():
     """The EXACT_OMOP_LANGUAGES readiness gate caches per process; never across tests."""
+    from exact_matching.omop.languages_match_profile import reset_languages_decision
     from trials.services.omop.languages_readiness import reset_readiness_cache
     reset_readiness_cache()
+    reset_languages_decision()
     yield
     reset_readiness_cache()
+    reset_languages_decision()

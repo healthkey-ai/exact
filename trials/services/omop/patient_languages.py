@@ -10,14 +10,15 @@ under ``EXACT_OMOP_LANGUAGES``.
 
 This is a deliberate exception to "EXACT owns no patient crosswalk" (the PROMOP
 field was dropped for it, promop#1635; this module has no CB counterpart): the
-concept ids come from EXACT's own mapping CSV (``load_language_omop_concept_ids``),
-and trials use only en/es.
+concept ids come from the ``Language`` / ``LanguageSkillLevel`` rows EXACT reads
+(loaded by ``load_language_omop_concept_ids``; in split-DB mode they are the CB
+trials DB's rows, the same ones CB's backfill used), and trials use only en/es.
 
-Because the patient side uses EXACT's own ids, a renumbering of PROMOP's
-HK-Language mint no longer reaches matching through the patient. What still
-binds the two sides is the trial column, which CB backfills from CB's copy of the
-CSV; the readiness gate's drift check (``languages_readiness``, check c) refuses
-the OMOP path when those ids are ones EXACT's vocab cannot produce.
+Because the patient side takes its ids from those vocab rows, a renumbering of
+PROMOP's HK-Language mint no longer reaches matching through the patient. What
+can still split the sides is the trial column falling behind the vocab rows (ids
+re-curated, column not re-backfilled); the readiness gate's check (c) in
+``languages_readiness`` refuses the OMOP path then.
 
 Interim limitation: only capabilities that have a ``LanguageSkillLevel`` row with a
 concept id produce a pair, i.e. speak and write (CB's vocab has no read/understand
