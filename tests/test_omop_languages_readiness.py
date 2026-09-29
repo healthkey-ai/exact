@@ -161,3 +161,24 @@ class TestCommand:
             call_command('check_omop_languages_readiness', stdout=out)
         assert 'drift:' in out.getvalue()
 
+
+
+@pytest.mark.usefixtures('lang_vocab')
+def test_null_list_elements_do_not_break_the_check():
+    _probe()
+    TrialFactory(languages_skills_required=[None, 'speak__fr'], omop_languages_skills_required=[None])
+    report = check_languages_readiness()
+    assert report.ok
+    assert 'fr' in report.warnings[0]
+
+
+@pytest.mark.usefixtures('flag_on', 'lang_vocab')
+def test_a_raising_check_falls_back_to_legacy(monkeypatch, caplog):
+    trial, patient = _probe()
+
+    def boom():
+        raise RuntimeError('db gone')
+    monkeypatch.setattr(languages_readiness, 'check_languages_readiness', boom)
+    with caplog.at_level(logging.ERROR, logger=languages_readiness.__name__):
+        assert _path(trial, patient) == 'legacy'
+    assert 'readiness check raised' in caplog.text

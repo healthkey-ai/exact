@@ -65,9 +65,10 @@ def _distinct_elements(column):
     from trials.models import Trial
 
     db = router.db_for_read(Trial) or 'default'
+    # JSON nulls inside a list come back as SQL NULL; they are not codes, skip them.
     sql = (
-        f'SELECT DISTINCT jsonb_array_elements_text("{column}") '
-        f'FROM "{Trial._meta.db_table}" WHERE jsonb_typeof("{column}") = \'array\''
+        f'SELECT DISTINCT e FROM "{Trial._meta.db_table}", jsonb_array_elements_text("{column}") AS e '
+        f'WHERE jsonb_typeof("{column}") = \'array\' AND e IS NOT NULL'
     )
     with connections[db].cursor() as cursor:
         cursor.execute(sql)
@@ -127,7 +128,13 @@ def languages_ready():
     now = time.monotonic()
     if _cache['report'] is not None and now - _cache['at'] < READINESS_TTL_SECONDS:
         return _cache['report'].ok
-    report = check_languages_readiness()
+    try:
+        report = check_languages_readiness()
+    except Exception:  # noqa: BLE001 - a broken check must fail to legacy, not fail the request
+        logger.exception('language OMOP readiness check raised; matching uses the legacy path')
+        report = ReadinessReport(ok=False, reasons=['readiness check raised; see the logged exception'])
+        _cache['at'], _cache['report'] = now, report
+        return False
     _cache['at'], _cache['report'] = now, report
     if not report.ok:
         logger.error(
