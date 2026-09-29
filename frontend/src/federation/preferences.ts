@@ -89,6 +89,26 @@ export interface PreferenceTransport {
  */
 export function adapterPreferences(
   state: PreferenceMethods,
+  /** Who the credential names, right now (`identityFingerprint.ts`).
+   *
+   *  A BELIEF ABOUT A ROW BELONGS TO THE READER IT WAS READ FOR. Everything
+   *  cached below — `stored`, `believed`, `version` — describes one row, and
+   *  which row that is depends on the credential. When the credential names
+   *  somebody else, all three describe a row this transport is no longer
+   *  writing to, and the next save merges the previous reader's filters into
+   *  the new reader's row (#603).
+   *
+   *  #583's guard cannot see this. It compares the credential a write was
+   *  QUEUED under against the one it is SENT under, and here the two agree:
+   *  the new reader queued and sent their own edit. What is wrong is the
+   *  merge BASE, not the attribution.
+   *
+   *  Nothing else can see it either. The transport is rebuilt when the
+   *  hook's key moves, and #583 measured four shapes where the identity
+   *  changes and no key does — nothing in the React tree learns anything.
+   *
+   *  Omitted means no check, and the caller behaves as it did. */
+  identity?: () => string | undefined,
 ): PreferenceTransport {
   // What the server is believed to hold — seeded by `get`, kept current by
   // every successful write. Under a wholesale replace this is not an
@@ -182,11 +202,53 @@ export function adapterPreferences(
   // baseline is excluded from what gets saved at all. Representing "the reader
   // cleared the host's value" would need a sentinel that survives reads, and
   // that is a product decision about whose scope wins, not a defect.
+  //: Whose belief the cache above currently is.
+  let believedFor: string | undefined = undefined;
+
+  /** Drop everything if the credential has changed hands.
+   *
+   *  `sameIdentity` rather than `!==`, for the two reasons it exists: a
+   *  rotated token is the same reader, and an unknown identity on either
+   *  side is not a mismatch — a host with no credential at all would
+   *  otherwise re-read on every call, which is the deployment this guard
+   *  is least able to help and most able to slow down.
+   *
+   *  Everything, not just the tag. `forget()` above clears the tag alone
+   *  because the row's payload is untouched by the write that moved it;
+   *  here the row itself is a different one, so `stored` and `believed` are
+   *  about somebody else and `generation` has to move so a read already in
+   *  flight cannot seed the new reader from the old one's row.
+   *
+   *  Read synchronously, from the cached fingerprint rather than by
+   *  fetching a token. That is sound because of the ORDER: `PreferenceWriter`
+   *  does its own send-time check immediately before calling `save` here,
+   *  and that check fetches a token and refreshes the cache. For `get` there
+   *  is no such guarantee and none is needed — a stale answer there costs
+   *  one extra read later, not a wrong row.
+   */
+  const stillTheSameReader = () => {
+    const now = identity?.();
+    if (sameIdentity(believedFor, now)) {
+      // Do not let an "unknown" erase a reader we do know about.
+      if (now !== undefined) believedFor = now;
+      return;
+    }
+    stored = {};
+    believed = {};
+    seeded = false;
+    version = undefined;
+    generation += 1;
+    firstRead = null;
+    believedFor = now;
+  };
+
   return {
     forget: () => {
+      stillTheSameReader();
       version = undefined;
     },
     get: async () => {
+      stillTheSameReader();
       const era = generation;
       const read = (async () => {
         const fromServer = versioning
@@ -217,6 +279,7 @@ export function adapterPreferences(
       return read;
     },
     save: async (filters) => {
+      stillTheSameReader();
       // Serialised behind the first read — see `firstRead` above. A save that
       // overtakes it would build its payload against an empty `stored` and
       // replace the row with the one key the reader has touched.
@@ -468,6 +531,7 @@ export function adapterPreferences(
       }
     },
     reset: async () => {
+      stillTheSameReader();
       generation += 1;
       // `stored` cleared REGARDLESS of the outcome, which is the opposite of
       // what a merging endpoint would want. Under a replace, a `stored` still

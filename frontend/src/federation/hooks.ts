@@ -962,7 +962,15 @@ export function useSavedFilters(
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     return captured
-      ? adapterPreferences(preferenceMethodsThrough(captured, live))
+      ? adapterPreferences(
+          preferenceMethodsThrough(captured, live),
+          // Whose row this transport believes it is caching. The key above
+          // rebuilds it when the host SIGNALS an account change; #583
+          // measured four shapes where the identity moves and no key does,
+          // and in those the cache would otherwise survive the swap and
+          // become the merge base for the next reader's first save (#603).
+          () => filterIdentityRef.current?.(),
+        )
       : localStoragePreferences(persistedKey ?? key);
     // `source` rather than `state`: see above, and `sourceId`.
     // eslint-disable-next-line react-hooks/exhaustive-deps

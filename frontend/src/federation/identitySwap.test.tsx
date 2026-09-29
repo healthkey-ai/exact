@@ -260,6 +260,54 @@ describe("a filter edit never crosses an account switch", () => {
     view.unmount();
   });
 
+  it("does not carry one reader's saved filters into the next reader's row", async () => {
+    // #603, and a different mechanism from everything above. The write the
+    // new reader makes IS theirs — captured under their credential and sent
+    // under it — so #583's guard has nothing to object to. What crosses is
+    // the MERGE BASE: `adapterPreferences` caches what the server holds so a
+    // partial payload does not replace the row, and that cache belongs to
+    // whoever it was read for.
+    //
+    // Through the bridge rather than in a unit test, because the unit tests
+    // can only show the transport forgetting; this shows what actually goes
+    // on the wire.
+    const view = await start({ sessionKey: "user-1" });
+
+    act(() => {
+      persist!({ searchTitle: "USER-1-ONLY" });
+    });
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    user = "2"; // no rerender, no new key, no new getToken
+
+    // TWO edits after the swap, and the first one is scaffolding. #583
+    // strands it — the cached fingerprint still says user one at the moment
+    // it is queued — but its send-time check fetches a token and so brings
+    // the cache up to date. Only the second edit is both queued and sent as
+    // user two, which is the shape #603 is about: a write nothing else
+    // objects to, carrying the previous reader's row underneath it.
+    act(() => {
+      persist!({ distance: 50 });
+    });
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+    const before = requests.length;
+
+    act(() => {
+      persist!({ distance: 100 });
+    });
+    await act(() => new Promise((r) => setTimeout(r, 800)));
+
+    const bodies = requests
+      .slice(before)
+      .filter((r) => r.url?.includes("user-state") && r.method === "post")
+      .map((r) => JSON.stringify(r.data ?? {}));
+    expect(bodies.length).toBeGreaterThan(0);
+    for (const body of bodies) {
+      expect(body).not.toContain("USER-1-ONLY");
+    }
+    view.unmount();
+  });
+
   it("still lets the same reader save across a token REFRESH", async () => {
     // The cost of getting this wrong in the other direction. Tokens rotate —
     // Firebase roughly hourly — and a guard comparing credentials as strings
