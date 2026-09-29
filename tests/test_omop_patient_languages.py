@@ -82,6 +82,17 @@ class TestBuilder:
             {'english_speak': True, 'language_skill_concept_ids': [ES_SPEAK]})
         assert out['language_skill_concept_ids'] == [EN_SPEAK]
 
+    def test_all_null_booleans_still_override_a_directly_sent_list(self, lang_vocab):
+        # Present-but-NULL is PROMOP saying "not asked", which beats a stale list.
+        row = {name: None for name in LANGUAGE_CAPABILITY_FIELDS}
+        out = language_skill_concept_ids_from_capabilities({**row, 'language_skill_concept_ids': ['1:2']})
+        assert out['language_skill_concept_ids'] == []
+
+    def test_unloaded_vocab_warns(self, db, caplog):
+        out = language_skill_concept_ids_from_capabilities({'english_speak': True})
+        assert out['language_skill_concept_ids'] == []
+        assert 'speak__en' in caplog.text
+
     def test_no_boolean_leaves_a_directly_sent_list_alone(self, lang_vocab):
         data = {'language_skill_concept_ids': [ES_SPEAK], 'disease': 'x'}
         assert language_skill_concept_ids_from_capabilities(data) is data

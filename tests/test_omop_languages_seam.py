@@ -122,7 +122,7 @@ class TestFlagOn:
     @pytest.mark.parametrize('pairs', [None, []])
     def test_no_pairs_skips_the_filter(self, pairs):
         speaks_en, writes_es, anyone = _trials()
-        # nothing recorded (or consumer did not send the field): not filtered, matcher unknown
+        # nothing recorded (or no capability booleans arrived): not filtered, matcher unknown
         patient = PatientInfo(languages_skills='speak__en', language_skill_concept_ids=pairs)
         assert _search(patient, [speaks_en, writes_es, anyone]) == {speaks_en.id, writes_es.id, anyone.id}
         assert _status(speaks_en, patient) == 'unknown'

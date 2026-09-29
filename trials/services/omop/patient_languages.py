@@ -19,7 +19,11 @@ rows, and EXACT does not add any, to stay identical to CB). A patient who only
 reads, or only understands, gets ``[]`` and reads as unknown, not as failing a
 requirement. Before the loader has run every patient gets ``[]``.
 """
+import logging
+
 from trials.services.omop.languages import language_skill_concept_key, load_concept_ids
+
+logger = logging.getLogger(__name__)
 
 _LANGUAGE_CODES = {'english': 'en', 'spanish': 'es'}
 _SKILLS = ('speak', 'read', 'write', 'understand')
@@ -44,10 +48,11 @@ def language_skill_concept_ids_from_capabilities(data):
 
     Returns ``data`` unchanged when ``EXACT_OMOP_LANGUAGES`` is off, or when none of
     the eight names is present (so a ``language_skill_concept_ids`` sent directly
-    survives). Otherwise returns a copy
-    without the eight names whose ``language_skill_concept_ids`` is the sorted,
-    de-duplicated pair list built from the True ones (``[]`` when none is True),
-    overriding any value sent directly. Reads the vocab concept ids once.
+    survives). Otherwise returns a copy without the eight names, whose
+    ``language_skill_concept_ids`` is the sorted, de-duplicated pair list built
+    from the True ones (``[]`` when none is True, including all-NULL), overriding
+    any value sent directly. Reads the vocab concept ids once, and logs a warning
+    when a True speak/write capability has no pair because the vocab is not loaded.
     """
     from exact_matching.omop.languages_match_profile import omop_languages_enabled
 
@@ -61,6 +66,18 @@ def language_skill_concept_ids_from_capabilities(data):
     pairs = []
     if held:
         concept_ids = load_concept_ids()
-        pairs = [language_skill_concept_key(f'{skill}__{code}', concept_ids) for code, skill in held]
+        codes = [f'{skill}__{code}' for code, skill in held]
+        pairs = [language_skill_concept_key(code, concept_ids) for code in codes]
+        # read/understand never have a pair (no vocab rows); a speak/write one
+        # without a pair means the vocab concept ids are not loaded.
+        lost = sorted(
+            code for code, pair in zip(codes, pairs)
+            if pair is None and code.split('__')[0] in ('speak', 'write')
+        )
+        if lost:
+            logger.warning(
+                'language capabilities without an OMOP pair (run load_language_omop_concept_ids?): %s',
+                ', '.join(lost),
+            )
     out['language_skill_concept_ids'] = sorted({p for p in pairs if p is not None})
     return out

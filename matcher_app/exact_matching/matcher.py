@@ -885,7 +885,8 @@ class UserToTrialAttrMatcher:
         Flag off: exactly the generic computed handler this entry always used
         (config ``attr`` + ``uvalue_function``). Flag on: the same required-list
         rule against the OMOP pair column, with the patient value from
-        ``PatientInfoAttributes`` (the consumer's pair list, comma-joined).
+        ``PatientInfoAttributes`` (the patient's pair list, built from PROMOP's
+        capability booleans, comma-joined).
         """
         if not omop_languages_enabled():
             return self._match_computed_attr(ctx)
