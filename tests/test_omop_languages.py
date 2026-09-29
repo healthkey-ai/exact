@@ -90,6 +90,22 @@ class TestLoader:
             call_command('load_language_omop_concept_ids', '--csv', str(path), stdout=StringIO())
         assert Language.objects.get(code='en').omop_concept_id is None  # nothing written
 
+    def test_same_concept_id_twice_at_one_level_is_refused(self, lang_vocab, tmp_path):
+        # a pre-existing mapping must survive the refused load
+        path = tmp_path / 'twice.csv'
+        path.write_text(open(LANGUAGE_CSV).read().replace(
+            'language,other,Other,,,,no_omop', 'language,other,Other,4180186,English language,SNOMED,curated'))
+        with pytest.raises(CommandError, match='concept_id 4180186 accepted twice at level language'):
+            call_command('load_language_omop_concept_ids', '--csv', str(path), stdout=StringIO())
+        assert Language.objects.get(code='other').omop_concept_id is None
+
+    def test_same_concept_id_at_different_levels_is_allowed(self, db, tmp_path):
+        LoadLangOptions().load_all()
+        path = tmp_path / 'cross.csv'
+        path.write_text(open(LANGUAGE_CSV).read().replace(
+            'skill,write,Write,2100007855', 'skill,write,Write,4182511'))
+        call_command('load_language_omop_concept_ids', '--csv', str(path), stdout=StringIO())
+
     def test_idempotent(self, lang_vocab):
         out = StringIO()
         call_command('load_language_omop_concept_ids', stdout=out)

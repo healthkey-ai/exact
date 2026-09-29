@@ -21,6 +21,16 @@ from tests.factories import TrialFactory
 
 pytestmark = pytest.mark.django_db
 
+
+@pytest.fixture(autouse=True)
+def lang_vocab(db):
+    # The readiness gate needs the vocab loaded before the flag takes effect.
+    from io import StringIO
+    from django.core.management import call_command
+    from trials.services.loaders.load_lang_options import LoadLangOptions
+    LoadLangOptions().load_all()
+    call_command('load_language_omop_concept_ids', stdout=StringIO())
+
 EN_SPEAK = '4180186:2100007853'
 ES_WRITE = '4182511:2100007855'
 

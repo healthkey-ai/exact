@@ -60,6 +60,12 @@ class Command(BaseCommand):
                 seen.add((row['level'], row['cb_code']))
                 cid = int(row['omop_concept_id']) if row['omop_concept_id'] else None
                 if row['match'] in ACCEPTED and cid is not None:
+                    # Two codes on one concept would make distinct requirements
+                    # indistinguishable in the pair column.
+                    if cid in wanted[row['level']].values():
+                        raise CommandError(
+                            f"concept_id {cid} accepted twice at level {row['level']} "
+                            f"(again for {row['cb_code']!r})")
                     wanted[row['level']][row['cb_code']] = cid
 
         stats = Counter()

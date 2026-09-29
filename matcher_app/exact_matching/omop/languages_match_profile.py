@@ -58,8 +58,19 @@ OMOP_LANGUAGES_MATCH_PROFILE = LanguagesMatchProfile(
 
 
 def omop_languages_enabled() -> bool:
-    """Whether language-skill matching reads the OMOP pair column / patient field."""
-    return bool(getattr(settings, 'EXACT_OMOP_LANGUAGES', False))
+    """Whether language-skill matching reads the OMOP pair column / patient field.
+
+    ``EXACT_OMOP_LANGUAGES`` AND the data is ready
+    (``trials.services.omop.languages_readiness``: vocab loaded, trials backfilled,
+    no CB<->EXACT id drift). Not ready -> the legacy path, with an ERROR log. The
+    readiness module is imported only when the setting is on, so the legacy path
+    stays import-free (as the therapy release gates do). Every surface (queryset,
+    matcher, count SQL, attrs-to-fill-in, patient builder) reads the flag here.
+    """
+    if not getattr(settings, 'EXACT_OMOP_LANGUAGES', False):
+        return False
+    from trials.services.omop.languages_readiness import languages_ready
+    return languages_ready()
 
 
 def get_languages_match_profile() -> LanguagesMatchProfile:
