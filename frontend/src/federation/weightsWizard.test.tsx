@@ -245,8 +245,9 @@ describe("answering it", () => {
 
   it("lets a reader back out of the questions to the offer", async () => {
     // Back from the first question is "I have changed my mind about
-    // answering", which Escape cannot say — Escape declines, and that is
-    // recorded.
+    // answering, show me the two choices again". Escape cannot say that: it
+    // leaves the dialog entirely. Since #596 it no longer RECORDS anything
+    // either, so the two differ in where they land, not in what they cost.
     const { state, record } = withWizard(false);
     renderTrialMatches(fakeApi(), { state });
     await screen.findByText(OFFER);
@@ -284,12 +285,189 @@ describe("answering it", () => {
 });
 
 describe("the ways out of it", () => {
-  it("does not take Escape as a decline while an answer is on the wire", async () => {
+  it("writes nothing when the reader clicks outside the panel (#596)", async () => {
+    // The bug, end to end, at the level where it cost something. Measured on
+    // the local stand 2026-09-28: a reader clicked the scrim, chose nothing,
+    // reloaded, and the wizard was gone for good — PROMOP's row came back
+    // `weights_wizard_offered: true` with `preferences: {}`, a decision
+    // recorded for somebody who had not made one.
+    const { state, record, savePreferences } = withWizard(false);
+    renderTrialMatches(fakeApi(), { state });
+    await screen.findByText(OFFER);
+
+    const scrim = screen.getByRole("dialog").parentElement;
+    expect(scrim).toHaveClass("exact-subform__scrim");
+    await userEvent.click(scrim as HTMLElement);
+
+    // Off the screen, and nothing said about it to anybody.
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+    expect(record).not.toHaveBeenCalled();
+    // Not the weights either: a dismissal is not "keep them equal" being
+    // written down, it is nothing being written down.
+    expect(savePreferences).not.toHaveBeenCalled();
+  });
+
+  it("offers it again on the next visit, because nothing was recorded", async () => {
+    // The consequence of writing nothing, from the reader's side: a fresh
+    // mount asks again, because the only thing that remembers across visits
+    // is the flag and a dismissal did not write it.
+    //
+    // `wasOffered` READS what `record` wrote rather than being pinned to
+    // false. Pinned, the second mount re-offers whether or not the flag was
+    // written, so the test passed with the whole fix reverted and only its
+    // `record` assertion — a copy of the previous test's — did any work.
+    // Wired to the same fake row, reverting the fix makes this fail on the
+    // offer being ABSENT, which is the claim in the name.
+    const state = fakeState();
+    const record = vi.fn().mockResolvedValue(undefined);
+    const store = {
+      ...state.adapter,
+      weightsWizard: {
+        wasOffered: vi.fn(async () => record.mock.calls.length > 0),
+        record,
+      },
+    };
+
+    renderTrialMatches(fakeApi(), { state: store, personId: 11 });
+    await screen.findByText(OFFER);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+    expect(record).not.toHaveBeenCalled();
+
+    // The next visit: a new mount over the same row. A new mount rather than
+    // a prop change, because a dismissal lasts exactly as long as
+    // `readerHandle` does — and the test below is a prop change that MOVES
+    // the handle and is asked again, which is the same rule, not a different
+    // one.
+    cleanup();
+    renderTrialMatches(fakeApi(), { state: store, personId: 11 });
+    expect(await screen.findByText(OFFER)).toBeTruthy();
+
+    // And an ANSWER on that second visit does end it, so the re-offer above
+    // is the flag speaking and not the mount.
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+    cleanup();
+    renderTrialMatches(fakeApi(), { state: store, personId: 11 });
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+  });
+
+  /** Wait for the re-read the handle change triggers, then let it dispatch.
+   *
+   *  `waitFor(() => expect(queryByText(OFFER)).toBeNull())` cannot do this
+   *  job: the dialog is already absent the instant the handle changes, so it
+   *  passes on the first check and never sees the read land a tick later.
+   *  Written that way the test below passed with a dismissal writing the
+   *  flag again — measured. The claim has to be checked AFTER the read that
+   *  decides whether the question comes back. */
+  const afterTheReread = async (
+    wasOffered: ReturnType<typeof vi.fn>,
+    before: number,
+  ) => {
+    await waitFor(() => expect(wasOffered.mock.calls.length).toBeGreaterThan(before));
+    await act(async () => {});
+  };
+
+  it("is not even re-read when a NAMED patient's profile is refreshed", async () => {
+    // Where the "the modal comes back after an inline edit" worry lands once
+    // the payload NAMES the patient: nowhere. `patientHandleOf` keys on the
+    // id and ignores the rest of the payload precisely so a host re-reading
+    // the profile (#555, which `setPatientFields` and `onPatientRecordChanged`
+    // exist to cause) is not read as a change of patient. The handle does not
+    // move, the reducer does not reset, and no second read is issued — so the
+    // dismissal simply stands, with nothing added here to make it.
+    //
+    // Measured rather than assumed: a draft of this change carried a
+    // dismissal memo justified by this case, and the case does not exist.
+    const { state, record } = withWizard(false);
+    const wasOffered = state.weightsWizard.wasOffered as ReturnType<typeof vi.fn>;
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state,
+      personId: 11,
+      patientInfo: { person_id: 9009, disease: "multiple myeloma", weight: 70 },
+    });
+    await screen.findByText(OFFER);
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+
+    const reads = wasOffered.mock.calls.length;
+    setProps({
+      patientInfo: { person_id: 9009, disease: "multiple myeloma", weight: 71 },
+    });
+    await act(async () => {});
+    expect(screen.queryByText(OFFER)).toBeNull();
+    expect(wasOffered).toHaveBeenCalledTimes(reads);
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("asks again on every refresh when the payload names nobody", async () => {
+    // The cost of #596, pinned so it is a decision and not a surprise. With
+    // no id in the payload `patientHandleOf` hashes the whole payload, so a
+    // refresh reads as a new patient, the reducer resets and the question
+    // comes back — once per refresh, where before #596 it came once and the
+    // offer was spent. Nothing here can close that: a dismissal is not
+    // written down, and remembering one for a patient who cannot be NAMED
+    // would mean remembering it for whoever came next. Repeated is the safe
+    // direction; `TrialMatches` already warns such a host about this whole
+    // class of problem, and #600 tracks it.
+    const { state, record } = withWizard(false);
+    const wasOffered = state.weightsWizard.wasOffered as ReturnType<typeof vi.fn>;
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state,
+      personId: 11,
+      patientInfo: { disease: "multiple myeloma", weight: 70 },
+    });
+    await screen.findByText(OFFER);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+
+    const before = wasOffered.mock.calls.length;
+    setProps({ patientInfo: { disease: "multiple myeloma", weight: 71 } });
+    await afterTheReread(wasOffered, before);
+    expect(screen.queryByText(OFFER)).toBeTruthy();
+    // And still nothing was recorded, so the offer is not being spent either.
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("does not seal one patient's dialog on another patient's write", async () => {
+    // `dismissWizard` does not read `answering` at all, and this is why.
+    // That ref is one slot cleared only when a write settles or its
+    // eight-second grace expires, so testing it with `!== null` — which the
+    // answer handlers still do, see #599 — seals every dialog, including one
+    // belonging to a patient the reader has already moved to. A dismissal
+    // must always take the question off the screen; that is the whole of
+    // #596, and it cannot be conditional on somebody else's write.
+    const { state, record } = withWizard(false);
+    record.mockImplementation(() => new Promise<void>(() => {}));
+    const { setProps } = renderTrialMatches(fakeApi(), { state, personId: 11 });
+    await screen.findByText(OFFER);
+
+    // Patient 11 answers, and the write hangs.
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+
+    setProps({ personId: 22 });
+    await screen.findByText(OFFER);
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+    // And still nobody wrote anything for 22.
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let Escape close over an answer still on the wire", async () => {
     // `Dialog` dismisses on Escape, on its own Close button and on the scrim,
     // and `busy` reaches none of them — it disables the wizard's buttons and
     // nothing else. So Escape after the third question recorded a DECLINE
     // over a ranking still in flight, by the one path that skips the check
     // that the ranking saved.
+    //
+    // #596 took the decline out of Escape, which removes that particular
+    // wrong write but NOT the reason for the seal: the dialog says "Saving
+    // your answer…" and must not vanish while that is true, and a dismissal
+    // must not close a state the settled write is about to close itself.
+    // What is pinned here is that the ranking's own flag still lands exactly
+    // once, after the ranking, with two dismissals in between.
     const { state, record, savePreferences } = withWizard(false);
     let release: () => void = () => {};
     savePreferences.mockImplementation(
@@ -322,7 +500,10 @@ describe("the ways out of it", () => {
     // `Dialog` moves focus in once, onto Close, and its effect never runs
     // again. Choosing a factor unmounts the focused button, so focus fell to
     // `document.body`: nothing was announced, and Tab put a screen-reader
-    // user back on Close, which is the permanent decline.
+    // user back on Close — which was the permanent decline when this was
+    // written, and since #596 is merely the way out without answering. The
+    // reason to move focus is unchanged: the first tab stop should be an
+    // answer, not an exit.
     const { state } = withWizard(false);
     renderTrialMatches(fakeApi(), { state });
     const offer = await screen.findByText(OFFER);
@@ -525,7 +706,7 @@ describe("what the dialog says while it is writing", () => {
     // Every control is disabled during the write, which leaves `Dialog`'s
     // focus trap cycling on one button whose handler is a no-op. Without
     // this that is indistinguishable from a hung dialog.
-    render(<WeightsWizard busy onDecline={vi.fn()} onFinish={vi.fn()} />);
+    render(<WeightsWizard busy onDecline={vi.fn()} onDismiss={vi.fn()} onFinish={vi.fn()} />);
 
     expect(screen.getByRole("status")).toHaveTextContent("Saving your answer…");
     expect(
@@ -540,7 +721,7 @@ describe("what the dialog says while it is writing", () => {
     // refusal, a re-read and a retry. That screen has no primary button to
     // relabel, so it said nothing at all.
     const { rerender } = render(
-      <WeightsWizard onDecline={vi.fn()} onFinish={vi.fn()} />,
+      <WeightsWizard onDecline={vi.fn()} onDismiss={vi.fn()} onFinish={vi.fn()} />,
     );
     await userEvent.click(
       screen.getByRole("button", { name: "Answer three questions" }),
@@ -548,28 +729,105 @@ describe("what the dialog says while it is writing", () => {
     await screen.findByText(/most important factor when choosing/);
     expect(screen.queryByRole("status")).toBeNull();
 
-    rerender(<WeightsWizard busy onDecline={vi.fn()} onFinish={vi.fn()} />);
+    rerender(<WeightsWizard busy onDecline={vi.fn()} onDismiss={vi.fn()} onFinish={vi.fn()} />);
     expect(screen.getByRole("status")).toHaveTextContent("Saving your answer…");
   });
 
   it("refuses Escape and Close on its own, without help from the caller", async () => {
-    // Two guards stand between a dismissal and a recorded decline: this one,
-    // and `TrialMatches`'s refusal to record while saving. Each covers the
-    // other, so neither shows up when the other is removed — which is why
-    // this one is pinned here, away from the caller.
-    const onDecline = vi.fn();
-    render(<WeightsWizard busy onDecline={onDecline} onFinish={vi.fn()} />);
+    // Two guards stand between a dismissal and a closed dialog mid-write:
+    // this one, and `TrialMatches`'s refusal to act while saving. Each covers
+    // the other, so neither shows up when the other is removed — which is
+    // why this one is pinned here, away from the caller.
+    const onDismiss = vi.fn();
+    render(
+      <WeightsWizard busy onDecline={vi.fn()} onDismiss={onDismiss} onFinish={vi.fn()} />,
+    );
 
     await userEvent.keyboard("{Escape}");
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
-    expect(onDecline).not.toHaveBeenCalled();
+    expect(onDismiss).not.toHaveBeenCalled();
 
     // And the guard is about `busy`, not about the dialog: not busy, it goes.
     cleanup();
     const second = vi.fn();
-    render(<WeightsWizard onDecline={second} onFinish={vi.fn()} />);
+    render(
+      <WeightsWizard onDecline={vi.fn()} onDismiss={second} onFinish={vi.fn()} />,
+    );
     await userEvent.keyboard("{Escape}");
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("which gestures answer, and which merely close (#596)", () => {
+  // Rule 6 at the only level that can see a gesture at all. The reducer
+  // property says `saving` is reachable by an answer and nothing else; these
+  // say which finger movements produce one, which is the half that was
+  // wrong: every exit went to `onDecline`, so a click landing outside the
+  // panel was recorded as a decision the reader never made.
+  const spies = () => ({ onDecline: vi.fn(), onDismiss: vi.fn(), onFinish: vi.fn() });
+
+  const gestures: Array<[string, () => Promise<unknown>]> = [
+    ["a click on the scrim", async () => {
+      // The scrim is the panel's parent and carries no role, so there is
+      // nothing to query it by. Clicking the dialog's own container would
+      // hit the panel's `stopPropagation` and prove the opposite of what
+      // this is for, so the element is taken structurally and asserted to be
+      // the scrim before it is clicked.
+      const scrim = screen.getByRole("dialog").parentElement;
+      expect(scrim).toHaveClass("exact-subform__scrim");
+      return userEvent.click(scrim as HTMLElement);
+    }],
+    ["the Close button", () =>
+      userEvent.click(screen.getByRole("button", { name: "Close" }))],
+    ["the Escape key", () => userEvent.keyboard("{Escape}")],
+  ];
+
+  for (const [name, gesture] of gestures) {
+    it(`does not spend the offer on ${name}`, async () => {
+      const on = spies();
+      render(<WeightsWizard {...on} />);
+      await gesture();
+      expect(on.onDismiss).toHaveBeenCalledTimes(1);
+      expect(on.onDecline).not.toHaveBeenCalled();
+      expect(on.onFinish).not.toHaveBeenCalled();
+    });
+  }
+
+  it("spends it on Keep them equal, which is the answer with no questions", async () => {
+    const on = spies();
+    render(<WeightsWizard {...on} />);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    expect(on.onDecline).toHaveBeenCalledTimes(1);
+    expect(on.onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("does not close when a click lands inside the panel", async () => {
+    // The other half of the scrim case, and the reason the scrim test above
+    // has to reach for the parent: a click on the panel must not bubble out
+    // to the scrim's handler, or reading the dialog would dismiss it.
+    const on = spies();
+    render(<WeightsWizard {...on} />);
+    await userEvent.click(screen.getByText(/They currently count equally/));
+    expect(on.onDismiss).not.toHaveBeenCalled();
+    expect(on.onDecline).not.toHaveBeenCalled();
+  });
+
+  it("keeps the line on the questions screen too", async () => {
+    // The dialog is rendered twice, from two `<Dialog>` call sites, and only
+    // the first one carries the two answer buttons. A fix applied to the
+    // offer alone would leave a reader who opened the questions and then
+    // clicked away still spending the offer.
+    const on = spies();
+    render(<WeightsWizard {...on} />);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer three questions" }),
+    );
+    await screen.findByText(/most important factor when choosing/);
+
+    await userEvent.keyboard("{Escape}");
+    expect(on.onDismiss).toHaveBeenCalledTimes(1);
+    expect(on.onDecline).not.toHaveBeenCalled();
+    expect(on.onFinish).not.toHaveBeenCalled();
   });
 });
 
@@ -671,21 +929,48 @@ describe("what it asks the server, and how often", () => {
 });
 
 describe("answering twice in one breath", () => {
-  it("records the decline once, however many dismissals arrive together", async () => {
+  it("records the decline once, however many clicks arrive together", async () => {
     // The reducer refuses the second `answer`, but the WRITE belongs to the
     // widget and it cannot see that refusal: `wizardOpen` and `wizardBusy`
-    // are render-scoped, so two dismissals dispatched in the same task both
-    // read "open, not busy". Not reachable through the UI today; it is the
-    // next control added to the panel that would find it.
+    // are render-scoped, so two answers dispatched in the same task both read
+    // "open, not busy". Not reachable through the UI today; it is the next
+    // control added to the panel that would find it.
+    //
+    // Aimed at "Keep them equal" rather than at Escape, which is what it used
+    // to press. Since #596 Escape writes nothing at all, so pressing it three
+    // times says nothing about a doubled WRITE — the test would have passed
+    // with the caller-side guard deleted. The gesture has to be one that
+    // spends the offer, and this is the only one that does it in a single
+    // click.
+    const { state, record } = withWizard(false);
+    renderTrialMatches(fakeApi(), { state });
+    await screen.findByText(OFFER);
+    const skip = screen.getByRole("button", { name: "Keep them equal" });
+
+    // Three inside ONE `act`, dispatched straight at the button. Each
+    // `fireEvent`/`userEvent` wraps itself in its own `act`, so a render
+    // lands between them and the second one already sees `busy` — which is
+    // the very render-scoped reading this is about, and would make the test
+    // agree with the bug.
+    await act(async () => {
+      for (let i = 0; i < 3; i += 1) {
+        skip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      }
+    });
+
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes once, and writes nothing, however many dismissals arrive together", async () => {
+    // The same race on the path that does NOT write. Three Escapes in one
+    // task all read "open, not busy" and all dispatch; the reducer makes the
+    // second and third no-ops, and none of them may reach `record`.
     const { state, record } = withWizard(false);
     renderTrialMatches(fakeApi(), { state });
     await screen.findByText(OFFER);
 
-    // Three inside ONE `act`, dispatched straight at the document. Each
-    // `fireEvent` wraps itself in its own `act`, so a render lands between
-    // them and the second one already sees `busy` — which is the very
-    // render-scoped reading this is about, and would make the test agree with
-    // the bug.
     await act(async () => {
       for (let i = 0; i < 3; i += 1) {
         document.dispatchEvent(
@@ -694,9 +979,8 @@ describe("answering twice in one breath", () => {
       }
     });
 
-    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(record).toHaveBeenCalledTimes(1);
+    expect(record).not.toHaveBeenCalled();
   });
 });
 

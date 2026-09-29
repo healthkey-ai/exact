@@ -34,6 +34,44 @@ const randomFrom = (seed: number) => {
 
 const PATIENTS = ["A", "B", "C"];
 
+/** How often each kind of step happens, as weights rather than as a chain of
+ *  cumulative `roll <` thresholds.
+ *
+ *  The chain was the original shape, and it has a failure mode this file met:
+ *  #596 added a sixth kind by carving its span out of `answer`'s, which took
+ *  a quarter of the answer events away from the five properties that already
+ *  quantified over them. Nothing said so, and the comment on the new branch
+ *  claimed the two rates were equal when they were three times apart. Weights
+ *  ADD to the total instead, so an existing kind's share can only change if
+ *  somebody edits its number, and `STEPS_PER_RUN` is scaled with the total so
+ *  the expected count per run of each original kind is unchanged. */
+const WEIGHTS = {
+  patient: 20,
+  gate: 25,
+  read: 25,
+  answer: 20,
+  dismissed: 20,
+  written: 10,
+} as const;
+
+type StepKind = keyof typeof WEIGHTS;
+
+const TOTAL_WEIGHT = Object.values(WEIGHTS).reduce((sum, w) => sum + w, 0);
+
+/** 60 steps carried the original 100 units of weight. At 120 the same 72. */
+const STEPS_PER_RUN = Math.round((60 * TOTAL_WEIGHT) / 100);
+
+const pickKind = (roll: number): StepKind => {
+  let at = roll * TOTAL_WEIGHT;
+  for (const kind of Object.keys(WEIGHTS) as StepKind[]) {
+    at -= WEIGHTS[kind];
+    if (at < 0) return kind;
+  }
+  // Only reachable if `roll` is exactly 1, which this generator never
+  // produces; the last kind is the honest answer either way.
+  return "written";
+};
+
 /** One run of the machine, and everything that happened to it. */
 function drive(seed: number, steps: number) {
   const random = randomFrom(seed);
@@ -70,15 +108,15 @@ function drive(seed: number, steps: number) {
   };
 
   for (let step = 0; step < steps; step += 1) {
-    const roll = random();
-    if (roll < 0.2) {
+    const kind = pickKind(random());
+    if (kind === "patient") {
       // The host moves to another patient — sometimes the same one, which is
       // what a re-render looks like and must change nothing.
       const before = patient;
       patient = pick(PATIENTS);
       if (patient !== before) issuedForCurrent = 0;
       apply({ kind: "patient", patient });
-    } else if (roll < 0.45) {
+    } else if (kind === "gate") {
       // The caller's own gate opens and closes: a store appears, the saved
       // filters go pending again.
       const ready = random() < 0.8;
@@ -97,7 +135,7 @@ function drive(seed: number, steps: number) {
         // reports it.
         stuck += 1;
       }
-    } else if (roll < 0.7) {
+    } else if (kind === "read") {
       // A read answers. Usually one that is outstanding; sometimes one that
       // is not, because a read issued before a patient switch is still in the
       // air afterwards and the machine has to be right about a straggler it
@@ -112,10 +150,20 @@ function drive(seed: number, steps: number) {
           ? { kind: "readFailed", patient: answering }
           : { kind: "read", patient: answering, offered: random() < 0.5 },
       );
-    } else if (roll < 0.9) {
+    } else if (kind === "answer") {
       // Usually the reader in front of us; sometimes a stale one, because an
       // answer or a completion can be in flight across a patient switch.
       apply({ kind: "answer", patient: random() < 0.85 ? state.patient : pick(PATIENTS) });
+    } else if (kind === "dismissed") {
+      // Close, Escape, the scrim. Weighted the same as an answer and drawn
+      // against the same mix of stale patients, because the machine has to
+      // be as right about a dismissal landing late as about an answer — and
+      // because the property below is only worth anything if dismissals are
+      // tried from every state an answer is tried from.
+      apply({
+        kind: "dismissed",
+        patient: random() < 0.85 ? state.patient : pick(PATIENTS),
+      });
     } else {
       apply({
         kind: "written",
@@ -134,7 +182,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // open only for the patient it names, and only because a read for THAT
     // patient said they had not been asked.
     for (const seed of SEEDS) {
-      const { log } = drive(seed, 60);
+      const { log } = drive(seed, STEPS_PER_RUN);
       for (const { event, before, after } of log) {
         if (after.at !== "show" || before.at === "show") continue;
         // It just opened. The only event that may open it is that patient's
@@ -159,7 +207,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // again, and every one of those finds `before.reading` already true, so
     // the transition never happens and the count stays at one.
     for (const seed of SEEDS) {
-      const { log, issuedForCurrent } = drive(seed, 60);
+      const { log, issuedForCurrent } = drive(seed, STEPS_PER_RUN);
       let issued = 0;
       for (const { event, before, after, outstanding } of log) {
         if (event.kind === "patient" && after.patient !== before.patient) issued = 0;
@@ -187,7 +235,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // the model against, so the driver keeps the books and reports how often
     // it was refused a read it should have got.
     for (const seed of SEEDS) {
-      const { stuck } = drive(seed, 60);
+      const { stuck } = drive(seed, STEPS_PER_RUN);
       expect(
         { seed, stuck },
         "a patient was ready to be asked and the model refused",
@@ -201,7 +249,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // same thing as never asking. Checked against the run's own record of
     // what it actually issued.
     for (const seed of SEEDS) {
-      const { log } = drive(seed, 60);
+      const { log } = drive(seed, STEPS_PER_RUN);
       for (const { event, after, outstanding } of log) {
         if (!after.reading) continue;
         expect(
@@ -219,7 +267,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // has settled it — the reader answering, an earlier read — a later one is
     // stale by definition, whoever it names.
     for (const seed of SEEDS) {
-      const { log } = drive(seed, 60);
+      const { log } = drive(seed, STEPS_PER_RUN);
       for (const { event, before, after } of log) {
         if (event.kind !== "read" && event.kind !== "readFailed") continue;
         if (before.at === "unknown" && event.patient === before.patient) continue;
@@ -236,7 +284,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // mid-answer, closed B's dialog on A's behalf — before B's own write had
     // been anywhere.
     for (const seed of SEEDS) {
-      const { log } = drive(seed, 60);
+      const { log } = drive(seed, STEPS_PER_RUN);
       for (const { event, before, after } of log) {
         if (event.kind !== "written" && event.kind !== "answer") continue;
         if (event.patient === before.patient) continue;
@@ -252,7 +300,7 @@ describe("the wizard state machine, over generated event sequences", () => {
     // Rule 4. A read that resolves late must not reopen a dialog the reader
     // has already declined or completed.
     for (const seed of SEEDS) {
-      const { log } = drive(seed, 60);
+      const { log } = drive(seed, STEPS_PER_RUN);
       const answered = new Set<string>();
       for (const { event, before, after } of log) {
         if (event.kind === "patient" && after.patient !== before.patient) {
@@ -271,15 +319,78 @@ describe("the wizard state machine, over generated event sequences", () => {
   });
 
   it("only ever writes one answer per patient", () => {
-    // `saving` is entered from `show` alone, so Escape during a write, a
-    // double click, or a second answer arriving from anywhere cannot produce
-    // a second flag write.
+    // `saving` is entered from `show` alone, so a second click during a
+    // write, or a second answer arriving from anywhere, cannot produce a
+    // second flag write.
     for (const seed of SEEDS) {
-      const { log } = drive(seed, 60);
+      const { log } = drive(seed, STEPS_PER_RUN);
       for (const { before, after } of log) {
         if (after.at === "saving" && before.at !== "saving") {
           expect({ seed, before }, "entered saving from somewhere other than show")
             .toMatchObject({ before: { at: "show" } });
+        }
+      }
+    }
+  });
+
+  it("spends the offer only on an answer, never on a dismissal", () => {
+    // Rule 6, and the whole of #596. `saving` is the only state the caller
+    // writes the flag from, so "which gestures can spend the one offer this
+    // feature has" reduces to "which events can reach `saving`" — and the
+    // answer has to be exactly one of them, over every interleaving, not
+    // just the four a component test can reach.
+    //
+    // Stated over the event rather than over the state deliberately. The
+    // previous bug was not a wrong transition; it was the caller sending
+    // `answer` for a gesture that had not answered anything. A property that
+    // only checked `before.at === "show"` would have passed throughout.
+    //
+    // Not vacuous, measured over these seeds: 242 entries into `saving` to
+    // quantify over, and 4693 dismissals attempted against them. Of those,
+    // the three states that could go wrong are reached 253 times from `show`
+    // with a matching patient, 202 against the seal and 466 naming a patient
+    // who has moved on; the remaining 3772 are this patient at `unknown` or
+    // `hide`, where there is nothing to dismiss.
+    for (const seed of SEEDS) {
+      const { log } = drive(seed, STEPS_PER_RUN);
+      for (const { event, before, after } of log) {
+        if (after.at === "saving" && before.at !== "saving") {
+          expect(
+            { seed, event, before },
+            "something other than an answer reached saving",
+          ).toMatchObject({ event: { kind: "answer" } });
+        }
+      }
+    }
+  });
+
+  it("leaves a dismissed patient asked again, by writing nothing", () => {
+    // The other half of rule 6, and the half a reader actually feels. A
+    // dismissal must land on `hide` — off the screen for this visit — and it
+    // must never pass through `saving`, because passing through `saving` is
+    // how the caller learns to write.
+    for (const seed of SEEDS) {
+      const { log } = drive(seed, STEPS_PER_RUN);
+      for (const { event, before, after } of log) {
+        if (event.kind !== "dismissed") continue;
+        const acted = before.patient === event.patient && before.at === "show";
+        if (acted) {
+          expect(
+            { seed, event, before, after },
+            "a dismissal did not close the question",
+          ).toMatchObject({ after: { at: "hide" } });
+        } else {
+          // Identity, not `after.at === before.at`, which is what rule 5's
+          // property next door asserts and for the same reason: a dismissal
+          // that has no business acting must return the state untouched, and
+          // comparing one field would let it clear `reading` or rewrite
+          // `patient` on the way past. Measured over these seeds: 4440 of
+          // the 4693 generated dismissals take this branch, so it carries
+          // most of the coverage.
+          expect(
+            { seed, event, before, after },
+            "a dismissal that should not have acted changed the state",
+          ).toSatisfy(() => after === before);
         }
       }
     }
@@ -368,6 +479,49 @@ describe("the transitions that carried a defect", () => {
     const state = initialWizard("A");
     expect(shouldRead(state, false)).toBe(false);
     expect(shouldRead(state, true)).toBe(true);
+  });
+
+  it("closes a dismissal straight out, and only from show", () => {
+    // #596. Close, Escape and the scrim take the question off the screen
+    // without writing anything, so the machine has to reach `hide` WITHOUT
+    // passing through `saving` — that state is the caller's signal to write.
+    let state = initialWizard("A");
+    state = nextWizard(state, { kind: "reading", patient: "A" });
+    state = nextWizard(state, { kind: "read", patient: "A", offered: false });
+    expect(state.at).toBe("show");
+
+    // Somebody else's dismissal is not this patient's business.
+    expect(nextWizard(state, { kind: "dismissed", patient: "B" })).toBe(state);
+
+    const dismissed = nextWizard(state, { kind: "dismissed", patient: "A" });
+    expect(dismissed.at).toBe("hide");
+
+    // Sealed while an answer is on the wire, exactly as `answer` is: a
+    // dismissal arriving behind one must not be read as undoing it.
+    const saving = nextWizard(state, { kind: "answer", patient: "A" });
+    expect(saving.at).toBe("saving");
+    expect(nextWizard(saving, { kind: "dismissed", patient: "A" })).toBe(saving);
+
+    // And nothing to dismiss once it is gone.
+    expect(nextWizard(dismissed, { kind: "dismissed", patient: "A" })).toBe(dismissed);
+  });
+
+  it("asks a dismissed patient again the next time they arrive", () => {
+    // The visit scope, from the reducer's side. Nothing here remembers a
+    // dismissal across a patient switch, and nothing should: the server flag
+    // is the only thing that remembers, and a dismissal does not write it.
+    let state = initialWizard("A");
+    state = nextWizard(state, { kind: "reading", patient: "A" });
+    state = nextWizard(state, { kind: "read", patient: "A", offered: false });
+    state = nextWizard(state, { kind: "dismissed", patient: "A" });
+    expect(isOpen(state, "A")).toBe(false);
+
+    state = nextWizard(state, { kind: "patient", patient: "B" });
+    state = nextWizard(state, { kind: "patient", patient: "A" });
+    expect(shouldRead(state, true)).toBe(true);
+    state = nextWizard(state, { kind: "reading", patient: "A" });
+    state = nextWizard(state, { kind: "read", patient: "A", offered: false });
+    expect(isOpen(state, "A")).toBe(true);
   });
 
   it("closes on the write settling, and only from saving", () => {

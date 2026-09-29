@@ -1448,12 +1448,6 @@ function TrialMatchesInner({
       .catch(() => dispatchWizard({ kind: "readFailed", patient }));
   }, [wizardStore, savedFilters.pending, readerHandle, wizard]);
 
-  /** Write the flag, and tell the filter writer its tag is stale.
-   *
-   *  The flag goes to the same ROW by a different route, so it moves
-   *  `updated_at` — the tag the writer quotes in `If-Match`. Left alone, every
-   *  save after the wizard costs a refusal and a re-read, and a second tab can
-   *  turn that retry into a dropped edit. See `PreferenceTransport.forget`. */
   // Where focus goes when the wizard closes. See the heading itself.
   const listTitleRef = useRef<HTMLHeadingElement>(null);
   const wizardWasOpen = useRef(false);
@@ -1462,6 +1456,12 @@ function TrialMatchesInner({
     wizardWasOpen.current = wizardOpen;
   }, [wizardOpen]);
 
+  /** Write the flag, and tell the filter writer its tag is stale.
+   *
+   *  The flag goes to the same ROW by a different route, so it moves
+   *  `updated_at` — the tag the writer quotes in `If-Match`. Left alone, every
+   *  save after the wizard costs a refusal and a re-read, and a second tab can
+   *  turn that retry into a dropped edit. See `PreferenceTransport.forget`. */
   const recordOffer = () =>
     Promise.resolve(wizardStore?.record())
       .then(() => savedFilters.forget())
@@ -1471,8 +1471,12 @@ function TrialMatchesInner({
    *
    *  Nothing in this package times a request out, and while the answer is on
    *  the wire the dialog is sealed: every control disabled, Escape, Close and
-   *  the scrim all refusing, by design, so a dismissal cannot record a
-   *  decline over a ranking in flight. Those two together mean a request that
+   *  the scrim all refusing, by design. That used to be because a dismissal
+   *  would otherwise record a decline over a ranking in flight; since #596 a
+   *  dismissal records nothing, and the seal stands for the reason that
+   *  outlived it — the dialog says "Saving your answer…" and must not vanish
+   *  while that is true, nor be closed out from under a settled write about
+   *  to close it itself. Those two together mean a request that
    *  never settles leaves a modal the reader never opened, sitting over a
    *  clinical trial list, with no way out but a reload.
    *
@@ -1500,18 +1504,61 @@ function TrialMatchesInner({
    *
    *  The reducer refuses a second `answer`, but the WRITE belongs to the
    *  callers below and they cannot see that refusal: `wizardOpen` and
-   *  `wizardBusy` are render-scoped, so two dismissals dispatched in one task
-   *  both read "open, not busy" and both send a PATCH. Unreachable through
-   *  the UI today — `Dialog` stops a panel click reaching the scrim, and
-   *  repeated Escapes measured as one write — but it is a trap for the next
-   *  control added to the panel, and the flag is the thing being written. */
+   *  `wizardBusy` are render-scoped, so two ANSWERS dispatched in one task
+   *  both read "open, not busy" and both send a PATCH. It said "dismissals"
+   *  until #596, when they stopped writing anything — which also means the
+   *  test that pinned this by pressing Escape three times stopped pinning it,
+   *  and now clicks "Keep them equal" three times instead.
+   *
+   *  Unreachable through the UI today — the offer has one writing control and
+   *  `Dialog` stops a panel click reaching the scrim — but it is a trap for
+   *  the next control added to the panel, and the flag is the thing being
+   *  written.
+   *
+   *  KNOWN WRONG, and left alone here on purpose — see #599. One slot tested
+   *  with `!== null` reads "somebody is writing" as "this reader is writing",
+   *  and the host can move to another patient, or return to this one, while a
+   *  write is in the air. Measured with `record()` hanging: the other
+   *  patient's answer is discarded and their dialog sits open with no
+   *  "Saving…" and no disabled buttons, for up to `WIZARD_WRITE_GRACE_MS`.
+   *
+   *  Three review rounds on #596 produced three spellings of it, which is
+   *  what says the shape is wrong rather than the comparison: this mark is a
+   *  second copy of what the reducer already holds as `saving`, and every
+   *  bug has been the two disagreeing. #599 removes the copy by driving the
+   *  write off the transition. Narrowing it a fourth time here would be
+   *  guessing at the fourth spelling. */
   const answering = useRef<string | null>(null);
 
+  /** Close, Escape, the scrim. Takes the question off the screen and writes
+   *  NOTHING, so the next read asks again — see rule 6 in
+   *  `weightsWizardState.ts`.
+   *
+   *  Nothing of the answer machinery applies. No `answering` mark and no
+   *  `closeWhenSettled`: both exist to hold the dialog open until a write
+   *  settles, and there is no write. No `savedFilters.forget()`: that is
+   *  there because recording the flag moves the row's `updated_at` out from
+   *  under the filter writer's `If-Match`, and a dismissal touches no row.
+   *
+   *  It does not READ `answering` either, which is the one thing about that
+   *  ref this change does touch. Copying the answer handlers' `!== null` in
+   *  here made a dismissal refuse while some other patient's write was in
+   *  flight — so Escape, Close and the scrim all stopped working for up to
+   *  `WIZARD_WRITE_GRACE_MS`, against the whole point of this change, which
+   *  is that a dismissal always takes the question off the screen. Removing
+   *  it is safe and measured: a dismissal has no write to double up, the
+   *  reducer refuses `dismissed` from `saving`, and `wizardBusy` covers the
+   *  render-scoped case. #599 has the rest of that ref. */
+  const dismissWizard = () => {
+    if (!wizardOpen || wizardBusy) return;
+    dispatchWizard({ kind: "dismissed", patient: readerHandle });
+  };
+
   const declineWizard = () => {
-    // `Dialog` dismisses on Escape, on its Close button and on the scrim, and
-    // all three arrive here. The guard is here as well as in the reducer, or
-    // a dismissal during a save would record a decline over a ranking still
-    // on the wire.
+    // "Keep them equal" — an answer, and the only dismissal-shaped gesture
+    // that is one. The guard is here as well as in the reducer, or a second
+    // click during a save would record a decline over a ranking still on the
+    // wire.
     if (!wizardOpen || wizardBusy || answering.current !== null) return;
     const patient = readerHandle;
     answering.current = patient;
@@ -1821,6 +1868,7 @@ function TrialMatchesInner({
       {wizardStore && wizardOpen ? (
         <WeightsWizard
           onDecline={declineWizard}
+          onDismiss={dismissWizard}
           onFinish={finishWizard}
           busy={wizardBusy}
         />
