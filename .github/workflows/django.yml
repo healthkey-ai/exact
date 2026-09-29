@@ -46,9 +46,16 @@ jobs:
       # with get-pip.py, which runs its own zip-bundled pip and never imports the
       # broken one. Pin < 24.1 because a build-isolation path in `pip install -r
       # requirements.txt` still imports get_runnable_pip, which 24.1 removed.
-      # (The pythonLocation cache above, bumped v1 -> v2, also caches pip, so a
-      # cache hit can mask this; get-pip.py fixes the cache-miss base pip too.)
+      # (The pythonLocation cache above, bumped v1 -> v2, also caches pip.)
       run: |
+        # A pythonLocation cache hit unpacks the cached pip 24.0 OVER the image's
+        # newer pip without deleting anything, leaving two dist-infos and files
+        # only the newer pip has. get-pip then uninstalls 24.0 by 24.0's RECORD,
+        # so the newer-only `pip/_internal/build_env/` package survives, shadows
+        # 24.0's `build_env.py`, and pip dies at import (ImportError:
+        # open_rich_spinner). Remove the pip package outright before bootstrapping.
+        SITE=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+        rm -rf "$SITE"/pip "$SITE"/pip-*.dist-info
         curl -fsS https://bootstrap.pypa.io/pip/get-pip.py -o /tmp/get-pip.py
         python /tmp/get-pip.py "pip<24.1"
         python -m pip install -r requirements.txt
