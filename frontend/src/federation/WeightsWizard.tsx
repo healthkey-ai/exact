@@ -28,9 +28,15 @@ import type { WeightKey } from "./weights";
 import type { FilterState } from "./types";
 
 export interface WeightsWizardProps {
-  /** Dismiss without answering the questions. Recorded — the whole point of
-   *  the offer is that it is made once. */
+  /** "Keep them equal" — an answer, and recorded as one. The offer is made
+   *  once, and this is one of the two gestures that spends it. */
   onDecline: () => void;
+  /** Close, Escape, a click on the scrim. NOT an answer: the question leaves
+   *  the screen for this visit and nothing is recorded, so the reader is
+   *  asked again next time (#596). Separate from `onDecline` because the two
+   *  used to be the same call, which made a stray click outside the panel
+   *  spend the one offer this feature has. */
+  onDismiss: () => void;
   /** The ranking, as weights. One call, at the end. */
   onFinish: (weights: FilterState) => void;
   /** A write is on the wire. Both buttons wait for it rather than letting a
@@ -57,7 +63,7 @@ const Saving = () => (
   </p>
 );
 
-export function WeightsWizard({ onDecline, onFinish, busy }: WeightsWizardProps) {
+export function WeightsWizard({ onDecline, onDismiss, onFinish, busy }: WeightsWizardProps) {
   // `Dialog` moves focus in once, onto its Close button, and never again —
   // its effect has `[]` deps and React reconciles every screen below to the
   // same instance. So choosing a factor unmounted the focused button and
@@ -90,14 +96,23 @@ export function WeightsWizard({ onDecline, onFinish, busy }: WeightsWizardProps)
   };
 
   // Escape, the scrim and `Dialog`'s own Close button all reach `onClose`,
-  // and `busy` never did: it disables the buttons in here and nothing else.
-  // So a reader could answer the third question and then press Escape while
-  // the write was still out, which recorded a DECLINE over their answer —
-  // and the caller records a decline unconditionally, bypassing the check
-  // that the ranking actually saved. While a write is in the air the dialog
-  // does not close; it is about to close itself.
+  // and none of them is an answer. They went to `onDecline` until #596, which
+  // made the one gesture a reader makes BY ACCIDENT — a click that lands
+  // outside the panel — spend an offer that is never made twice. The reader
+  // saw the dialog vanish, chose nothing, and could not get it back.
+  //
+  // The line is drawn at what a gesture says, not at how deliberate it looks.
+  // The button is labelled "Close"; Escape is its keyboard spelling; the
+  // scrim is not labelled at all. None of the three says "keep them equal" —
+  // that button does, and it is still `onDecline`.
+  //
+  // `busy` guards this because it never did: it disables the buttons in here
+  // and nothing else. A reader could answer the third question and then press
+  // Escape while the write was still out, which recorded a decline over their
+  // answer. While a write is in the air the dialog does not close; it is
+  // about to close itself.
   const dismiss = () => {
-    if (!busy) onDecline();
+    if (!busy) onDismiss();
   };
 
   // Each screen's accessible name is the question ON it, not a standing title
@@ -176,8 +191,11 @@ export function WeightsWizard({ onDecline, onFinish, busy }: WeightsWizardProps)
         </ul>
 
         {/* Back to the offer from the first question, so "I have changed my
-            mind about answering at all" is reachable without the Escape key
-            — which declines, and would record that. */}
+            mind about answering at all" is reachable without leaving the
+            dialog. Since #596 Escape no longer records anything either, so
+            this is no longer the only non-recording way out — it is still the
+            only one that leads back to the two answers rather than away from
+            the question. */}
         <button
           type="button"
           className="exact-wizard__back"

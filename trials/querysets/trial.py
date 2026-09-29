@@ -209,10 +209,11 @@ def get_recruitment_status_filter_values(recruitment_status):
 #     it (#590). That is the bigger bug and it is filed separately.
 #   - `molecular_markers` is `"; "`-joined by the producer
 #     (`patient_record_service.py:2733`), so it is one token either way.
-#   - `languages_skills` is worse, not safer: `"; "` BETWEEN languages and
-#     `", "` INSIDE each one (`omop_core/models.py:955`), so `_csv` splits
-#     it on the inner separator and returns garbage on both sides of it.
-#     Its editor is already suppressed for an unrelated reason (#591).
+#   - `languages_skills` is PROMOP's display string, `"; "` BETWEEN languages
+#     and `", "` INSIDE each one, which `_csv` would split into garbage. It
+#     no longer arrives in that form when PROMOP sends its language booleans:
+#     `resolve.py` first rebuilds it as codes, or drops it when every boolean
+#     is null (#591).
 #   - the remaining fields are scalar columns in PROMOP with no join at all.
 #
 # Brackets are the other half of the rule. `inv(3)(q21,q26)` is ONE marker
