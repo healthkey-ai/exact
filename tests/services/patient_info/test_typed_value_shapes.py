@@ -82,6 +82,18 @@ class TestUsable:
     def test_a_whole_number_arrives_as_one(self, value, expected):
         assert numeric(value) == expected
 
+    @pytest.mark.parametrize("value", ["10.20", "10.2", 10.2])
+    def test_a_decimal_on_an_integer_column_is_accepted_either_way(self, value):
+        # An integer COLUMN does not mean an integer value: a raw `10.2` has
+        # always been kept, because the coercers only touched strings. A
+        # 400 for the string form gave one number two answers, and the
+        # message said "expected a whole number" about a column that
+        # demonstrably takes 10.2. Six of the integer columns are labs and
+        # vitals an EHR routinely emits with a decimal point, and
+        # `_build_in_memory` has said "CB API can send '10.20'" since long
+        # before this change.
+        assert numeric(value) == 10.2
+
     def test_zero_is_an_answer(self):
         # `_says_something` says so, and it matters: a PD-L1 of 0 is a
         # finding. What happens to it downstream is `is_attr_blank`'s
@@ -151,7 +163,9 @@ class TestWrongFromSomebodyWhoCanFixIt:
         with pytest.raises(MalformedPatientValue) as raised:
             numeric([1])
         said = raised.value.as_message()
-        assert "whole number" in said
+        # "a number", not "a whole number": the integer columns accept a
+        # decimal too, and the old wording was the untrue half of that.
+        assert "a number" in said
         assert "list" in said
         assert "null" in said
 

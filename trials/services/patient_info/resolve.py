@@ -51,18 +51,24 @@ from typing import TYPE_CHECKING, Any, Optional
 from django.db.models import (
     DateField, DecimalField, FloatField, IntegerField, JSONField, Q,
 )
-# Module level, unlike the local imports below. Those are inside functions
-# because they predate this one and nothing made them move; this one is on
-# the inline path's error translation and would be a second copy of the
-# same line there.
-from rest_framework.exceptions import ValidationError
-
 from trials.services.patient_info.normalize import normalize_patient_info
 
 logger = logging.getLogger(__name__)
 
 #: Distinguishes "no value was given" from a value that happens to be None.
 _UNSET = object()
+
+
+def _short(value, limit: int = 120) -> str:
+    """A value, bounded, for a log line.
+
+    The lenient path logs what it dropped, and what it dropped is patient
+    data of unbounded length — a therapy date, a lab string. Same rule as
+    `_QUOTED_KEY_LENGTH` further down, which exists because a payload with
+    5 000 junk keys produced a 69 kB response.
+    """
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -94,7 +100,7 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
         # ignore so the disabled path can't masquerade as a no-patient search.
         from django.conf import settings
         if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
-            from rest_framework.exceptions import PermissionDenied, ValidationError
+            from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied(
                 'person_id lookup is disabled. Provide an inline patient_info '
                 'payload instead.'
@@ -528,9 +534,32 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     `strict` is about WHO SENT the dict, not about how careful to be. Only
     the inline payload has a caller who can fix a wrong value, so only that
     path asks for the raise; see `MalformedPatientValue`. An upstream row
-    and the batch commands get what they always got — the value dropped and
-    a log line — because telling a reader that PROMOP holds `'unknown'` in
-    a lab column asks them to fix something they cannot reach.
+    and the batch commands get a drop and a log line, because telling a
+    reader that PROMOP holds `'unknown'` in a lab column asks them to fix
+    something they cannot reach.
+
+    THE LENIENT PATH IS NOT UNCHANGED, and an earlier version of this
+    docstring said it was. Measured against the base, on a CTOMOP row:
+
+      * three date shapes that used to be DROPPED now parse —
+        `'2026-01-31T10:00:00'`, `'2026-01-31 00:00:00'`, and a padded
+        `' 2026-01-31 '` — and a `datetime` object narrows to a date
+        instead of being kept whole. Dates are a strict superset of what
+        base accepted, so a therapy-date filter that used to be skipped for
+        those patients now applies. That is a real change in matching
+        output and it is the intended direction, but it is a change.
+      * `True` on a numeric column used to be kept and read by the ORM as
+        1; it is now dropped. That widens rather than narrows — the
+        direction this whole change calls the dangerous one — and it is
+        accepted here only because no realistic PROMOP row produces it.
+      * `''`, `[]`, `{}` and a non-finite float used to be kept and blow up
+        at the ORM or at DRF's renderer. They are dropped.
+
+    ONLY THE FIRST BAD FIELD IS NAMED, in `PatientInfo._meta` declaration
+    order rather than payload order, and dates are checked before numbers.
+    A caller with three bad fields needs three round trips. Worth fixing
+    the day somebody hits it; not worth collecting errors for a shape
+    nobody has reported.
     """
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
@@ -641,8 +670,9 @@ class MalformedPatientValue(ValueError):
     """A value that cannot be its column's type.
 
     A PLAIN exception, not a DRF one, and that distinction is the whole of
-    the first review round on this change. `_build_in_memory` has three
-    callers and only one of them is a caller who can be blamed:
+    the first review round on this change. `_build_in_memory` has four
+    callers in production and only one of them is a caller who can be
+    blamed:
 
       * the inline payload — somebody who typed the value and can fix it.
         `_patient_from_inline` turns this into a 400 naming the key THEY
@@ -651,11 +681,12 @@ class MalformedPatientValue(ValueError):
         adapter already expects unparseable labs: `ctomop_adapter` names
         `'unknown'` and a censored `'<0.5'` in as many words. Dropped to
         `None`, with a log line.
-      * the batch commands (`search_trials_for_patients`,
-        `probe_eligibility`, `explain_trial_match`). Two of them have no
-        guard at all, so a DRF exception here killed the run on a row that
-        used to print, and the third counted the patient as an error and
-        could exit non-zero for a whole cohort sharing one censored lab.
+      * the batch commands — `search_trials_for_patients`,
+        `probe_eligibility`, `explain_trial_match` and `compare_trials`.
+        Two of them have no guard at all, so a DRF exception here killed
+        the run on a row that used to print, and `search_trials_for_patients`
+        counted the patient as an error and could exit non-zero for a whole
+        cohort sharing one censored lab.
 
     Raising a `ValidationError` from the builder reached all three, and the
     view's `except APIException: raise` fires BEFORE the branch that keeps a
@@ -721,8 +752,8 @@ def _coerce_dates(data: dict, model_cls, strict: bool = False):
             if strict:
                 raise
             logger.warning(
-                'Dropping an unusable value for %s from an upstream row: %r',
-                key, data[key],
+                'Dropping an unusable value for %s from an upstream row: %s',
+                key, _short(data[key]),
             )
             data[key] = None
 
@@ -738,8 +769,33 @@ def _coerce_dates(data: dict, model_cls, strict: bool = False):
 #: `IntegerField` and WOULD be matched; nothing here excludes it, and
 #: nothing needs to, because `PatientInfo` is a plain class with a
 #: hand-built `_meta` and has no `AutoField`, no `ForeignKey` and no `id`.
+def _whole_or_not(text: str):
+    """`"12"` -> 12, `"10.20"` -> 10.2, `"abc"` -> raises.
+
+    An integer COLUMN here does not mean an integer value. A raw `10.2` on
+    one is kept as it is — the coercers only ever touched strings — and
+    `_build_in_memory` has said since long before this change that "CB API
+    can send '10.20' etc.". Refusing the string while accepting the float
+    gave one number two answers and an error message that was not true: the
+    column demonstrably takes 10.2.
+
+    It matters on more than principle. Six of the integer columns are labs
+    and vitals an EHR routinely emits with a decimal point —
+    `creatinine_clearance_rate`, `estimated_glomerular_filtration_rate`,
+    `platelet_count`, `ejection_fraction`, `clonal_b_lymphocyte_count`,
+    `lymphocyte_doubling_time`.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return float(text)
+
+
+#: 'a number' for all three, because that is what they accept. It said
+#: 'a whole number' for the integer columns and that was the untrue half of
+#: the inconsistency above.
 _NUMERIC_KINDS = (
-    (IntegerField, int, 'a whole number'),
+    (IntegerField, _whole_or_not, 'a number'),
     (FloatField, float, 'a number'),
     (DecimalField, Decimal, 'a number'),
 )
@@ -761,9 +817,17 @@ def _as_number(key: str, val, parse, expected: str):
     # NaN AND INFINITY ARE NOT NUMBERS HERE, though `float('nan')` and
     # `Decimal('Infinity')` both construct. `lab_number` in `ctomop_adapter`
     # already refuses them and says why: a NaN reaches DRF's renderer, which
-    # will not emit it and answers 500 — and through the non-HTTP path it is
-    # quieter and worse, because every threshold comparison against it is
-    # False and the patient fails criteria nobody can see them failing.
+    # will not emit it and answers 500 — measured, `JSONRenderer.strict` is
+    # True and it raises "Out of range float values are not JSON compliant"
+    # — and through the non-HTTP path it is quieter and worse, because every
+    # threshold comparison against it is False and the patient fails
+    # criteria nobody can see them failing.
+    #
+    # It does not cover a SIGNALLING NaN arriving as a `Decimal` through the
+    # CTOMOP adapter: `ctomop_adapter` casts `Decimal` to `float` before the
+    # builder sees it, and `float(Decimal('sNaN'))` raises there. Unchanged
+    # by this and not reachable from Postgres `numeric`, but this comment
+    # would otherwise imply it were handled.
     if isinstance(val, float) and not math.isfinite(val):
         raise MalformedPatientValue(key, expected, val)
     if isinstance(val, Decimal) and not val.is_finite():
@@ -790,8 +854,8 @@ def _coerce_numerics(data: dict, model_cls, strict: bool = False):
             if strict:
                 raise
             logger.warning(
-                'Dropping an unusable value for %s from an upstream row: %r',
-                f.name, data[f.name],
+                'Dropping an unusable value for %s from an upstream row: %s',
+                f.name, _short(data[f.name]),
             )
             data[f.name] = None
 
