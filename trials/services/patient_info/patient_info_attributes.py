@@ -12,6 +12,7 @@ from trials.services.patient_info.convertors.serum_creatinine_convertor import S
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
+from trials.services.patient_info.language_capability import asked_languages
 
 
 # Default hepatic adequacy thresholds (ratio to ULN). Used when the trial does
@@ -113,6 +114,10 @@ class PatientInfoAttributes:
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
 
     def is_attr_blank(self, attr_name):
+        # A patient asked about a language has answered, even when the answer
+        # holds no speak/write code (P1-1, language_capability).
+        if attr_name == 'languages_skills' and asked_languages(self.patient_info):
+            return False
         is_blank = False
         user_attr_value = self.get_value(attr_name)
         if attr_name in ('genetic_mutations', 'supportive_therapies', 'later_therapies') and user_attr_value == []:

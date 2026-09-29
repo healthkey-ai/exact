@@ -231,23 +231,21 @@ _INBOUND_ALIASES = {
 #: `PersonLanguageSkill` rows.
 #:
 #: Only the two capabilities trials are written in, speak and write, become
-#: codes, so the value stays inside the vocabulary the "Yours" cell labels.
-#: The cost is that "reads English only", or a language answered with no
-#: capability, reads as unknown and does not fail a "speaks English"
-#: requirement; a language other than English or Spanish is not unrolled by
-#: PROMOP at all. This is the interim read fix. The OMOP pair path
-#: (cancerbot-org/cancerbot#5350) carries all four capabilities as concepts.
+#: codes (`languages_skills`, H), so the value stays inside the vocabulary the
+#: "Yours" cell labels. Which languages were asked about at all goes to
+#: `languages_asked` (A), so "asked, and not able" is not read as "not asked":
+#: see `language_capability` for the verdict that uses both (P1-1). A language
+#: other than English or Spanish is not unrolled by PROMOP at all.
 _LANGUAGE_CAPABILITY_CODES = {
     f'{language}_{skill}': f'{skill}__{code}'
     for language, code in (('english', 'en'), ('spanish', 'es'))
     for skill in ('speak', 'write')
 }
-#: All eight names PROMOP sends. The four without a code are consumed here so
-#: that their presence still marks the record as PROMOP's; they are not
-#: recognised by the gate, because nothing EXACT stores comes from them.
+#: All eight names PROMOP sends, keyed to their language. Every one of them
+#: contributes to `languages_asked`, so every one is recognised by the gate.
 _LANGUAGE_CAPABILITY_FIELDS = {
-    f'{language}_{skill}'
-    for language in ('english', 'spanish')
+    f'{language}_{skill}': code
+    for language, code in (('english', 'en'), ('spanish', 'es'))
     for skill in ('speak', 'read', 'write', 'understand')
 }
 
@@ -265,7 +263,8 @@ def languages_skills_from_capabilities(data):
     returns a copy without them, and:
 
     * if any of them has a value, `languages_skills` is rebuilt from the True
-      speak/write ones (`None` when there are none, which skips the filter);
+      speak/write ones (`None` when there are none), and `languages_asked`
+      lists the languages with at least one valued boolean;
     * if all of them are NULL or blank, `languages_skills` is dropped only when
       it is PROMOP's display string (it contains ':', which no CB code does),
       so codes a caller sent alongside a form's empty fields survive.
@@ -283,6 +282,11 @@ def languages_skills_from_capabilities(data):
         return out
     held = sorted(code for name, code in _LANGUAGE_CAPABILITY_CODES.items() if _is_true(data.get(name)))
     out['languages_skills'] = ','.join(held) if held else None
+    asked = sorted({
+        language for name, language in _LANGUAGE_CAPABILITY_FIELDS.items()
+        if _says_something(data.get(name))
+    })
+    out['languages_asked'] = ','.join(asked) if asked else None
     return out
 
 
@@ -337,10 +341,11 @@ def _known_attribute_names():
     # answered None. The form-backed client this empty state exists for is
     # exactly the one serialising every field, so it would have met that.
     names.update(_INBOUND_ALIASES)
-    # Same third case: the speak/write language booleans are moved onto
-    # `languages_skills` by `languages_skills_from_capabilities`, so a payload
-    # carrying only them describes a patient.
-    names.update(_LANGUAGE_CAPABILITY_CODES)
+    # Same third case: the language booleans are moved onto `languages_skills`
+    # and `languages_asked` by `languages_skills_from_capabilities`, so a payload
+    # carrying only them describes a patient -- including a False one, which is
+    # the answer "asked, and not able" (P1-1).
+    names.update(_LANGUAGE_CAPABILITY_FIELDS)
     return names
 
 
@@ -411,14 +416,10 @@ def _patient_from_inline(payload, sent_as):
     # That combination is not a curiosity: the form-backed client the empty
     # state exists FOR — every field serialised, most of them null — is
     # exactly the client most likely to also carry a misspelled one.
-    # A language boolean says something only when it becomes a code: a False
-    # one is dropped by `languages_skills_from_capabilities`, and letting it
-    # through alone would build the blank patient again.
-    if any(
-        _says_something(snake[name])
-        and (name not in _LANGUAGE_CAPABILITY_CODES or _is_true(snake[name]))
-        for name in recognised
-    ):
+    # A language boolean with any value says something, a False one included:
+    # it is the answer "asked, and not able", which `languages_asked` keeps
+    # (P1-1). Only a blank one is silence, as for every other field.
+    if any(_says_something(snake[name]) for name in recognised):
         # Something usable arrived. Unrecognised keys alongside it are not an
         # error: a client sending a field EXACT has not heard of yet, next to
         # ones it has, described a patient.

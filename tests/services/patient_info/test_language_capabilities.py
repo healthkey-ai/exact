@@ -103,15 +103,20 @@ def test_a_payload_of_only_booleans_describes_a_patient():
     assert pi is not None and pi.languages_skills == 'speak__en'
 
 
-def test_a_false_boolean_alone_is_not_a_patient():
-    # It becomes no code, so it must not build the blank patient (#466).
-    assert _patient_from_inline({'englishSpeak': False}, 'patient_info') is None
+def test_a_false_boolean_alone_is_a_patient_asked_and_not_able():
+    # "Asked, and not able" is an answer (P1-1), not silence.
+    pi = _patient_from_inline({'englishSpeak': False}, 'patient_info')
+    assert pi is not None
+    assert pi.languages_asked == 'en' and pi.languages_skills is None
 
 
-def test_a_capability_that_becomes_no_code_is_not_recognised():
-    # Nothing EXACT stores comes from it, so the gate must not accept it alone.
-    with pytest.raises(ValidationError):
-        _patient_from_inline({'englishRead': True}, 'patient_info')
+def test_a_read_only_boolean_is_recognised_as_asked():
+    pi = _patient_from_inline({'englishRead': True}, 'patient_info')
+    assert pi.languages_asked == 'en' and pi.languages_skills is None
+
+
+def test_a_blank_boolean_alone_is_still_silence():
+    assert _patient_from_inline({'englishSpeak': ''}, 'patient_info') is None
 
 
 @pytest.mark.django_db

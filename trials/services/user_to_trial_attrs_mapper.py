@@ -8,6 +8,13 @@ from trials.services.attribute_names import AttributeNames
 from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING, TRIAL_ATTRS_JSON_AS_A_LIST
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
 from trials.services.utils import disease_attr_applies
+from trials.services.patient_info.language_capability import (
+    asked_languages,
+    held_codes,
+    sql_has_requirement,
+    sql_has_unasked_language,
+    sql_holds_any,
+)
 
 
 class UserToTrialAttrsMapper:
@@ -229,6 +236,19 @@ class UserToTrialAttrsMapper:
                 # is_attr_blank + '[]' checks (#4416). Patient-side only; the
                 # counts-only profit path (patient_info=None) keeps the aggregate
                 # SQL below.
+                # Languages with PROMOP's "asked" set known (P1-1): a trial is
+                # potential only when it requires a language nobody asked about
+                # and none of its codes is held; case 5 (asked, not able) is
+                # filtered out of the list before counting, like not_matched.
+                if user_attr == 'languages_skills' and asked_languages(patient_info):
+                    column = trial_attr_meta["attr"]
+                    has_req = sql_has_requirement(column)
+                    holds = sql_holds_any(column, held_codes(patient_info))
+                    unasked = sql_has_unasked_language(column, asked_languages(patient_info))
+                    attrs2check[user_attr] = f'(CASE WHEN {has_req} AND NOT {holds} AND {unasked} THEN 1 ELSE NULL END)'
+                    eligible_attrs2check[user_attr] = f'(CASE WHEN {has_req} AND {holds} THEN 1 ELSE NULL END)'
+                    continue
+
                 if trial_attr_meta.get("criteria_count_match"):
                     gating, matched_cond = self._criteria_count_match_expressions(trial_attr_meta, service)
                     # matched (incl. a non-gating trial) -> NULL (eligible / not
