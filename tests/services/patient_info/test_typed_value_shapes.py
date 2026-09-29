@@ -223,6 +223,46 @@ class TestThroughTheInlinePath:
             )
         assert 'pd_l1_tumor_cells' in raised.value.detail
 
+    def test_it_names_the_spelling_that_carried_the_BAD_value(self):
+        # Two spellings reach one column and an alias never overwrites, so
+        # the value that fails here is the one under EXACT's own key. Naming
+        # whichever came first in the payload would hand back
+        # `pd_l1_tumor_cells`, whose 12 is fine: the caller corrects a field
+        # that was never the problem and gets the same 400 back.
+        with pytest.raises(ValidationError) as raised:
+            _patient_from_inline(
+                {
+                    'disease': 'breast cancer',
+                    'pd_l1_tumor_cells': 12,
+                    'pd_l1_tumor_cels': 'abc',
+                },
+                'patient_info',
+            )
+        assert 'pd_l1_tumor_cels' in raised.value.detail
+        assert 'pd_l1_tumor_cells' not in raised.value.detail
+
+    def test_the_mirror_case_never_reaches_validation_at_all(self):
+        # Measured, because I assumed the opposite and wrote a test for it.
+        # With a USABLE value under EXACT's own spelling the alias does not
+        # copy — `_normalise_inbound_keys` only fills a gap (#593) — so the
+        # `'abc'` under the documented name never reaches a column and
+        # nothing refuses it. The patient builds on the 12.
+        #
+        # That is a silent drop of something the caller typed, and it is
+        # #593's tie-break rather than anything #594 introduced: changing it
+        # means changing which spelling wins, which is not a decision to
+        # take inside a bugfix. Pinned here so it is a known shape rather
+        # than a surprise.
+        built = _patient_from_inline(
+            {
+                'disease': 'breast cancer',
+                'pd_l1_tumor_cells': 'abc',
+                'pd_l1_tumor_cels': 12,
+            },
+            'patient_info',
+        )
+        assert built.pd_l1_tumor_cels == 12
+
     def test_an_empty_box_builds_a_patient_with_no_answer(self):
         built = _patient_from_inline({'disease': 'breast cancer', NUMBER: ''}, 'patient_info')
         assert built.pd_l1_tumor_cels is None

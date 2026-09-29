@@ -61,6 +61,9 @@ from trials.services.patient_info.normalize import normalize_patient_info
 
 logger = logging.getLogger(__name__)
 
+#: Distinguishes "no value was given" from a value that happens to be None.
+_UNSET = object()
+
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
 
@@ -440,7 +443,8 @@ def _patient_from_inline(payload, sent_as):
             return _build_in_memory(payload, strict=True)
         except MalformedPatientValue as wrong:
             raise ValidationError({
-                _as_the_caller_wrote_it(payload, wrong.field_name): wrong.as_message()
+                _as_the_caller_wrote_it(payload, wrong.field_name, wrong.value):
+                    wrong.as_message()
             })
 
     if set(snake) - recognised:
@@ -453,8 +457,8 @@ def _patient_from_inline(payload, sent_as):
     return None
 
 
-def _as_the_caller_wrote_it(payload, field_name: str) -> str:
-    """The key the caller actually sent for this column.
+def _as_the_caller_wrote_it(payload, field_name: str, value=_UNSET) -> str:
+    """The key the caller actually sent for the value that was refused.
 
     `_no_recognised_fields_message` below exists for this reason and says it
     in its own words: "Names the keys the CALLER typed, not what they
@@ -462,7 +466,18 @@ def _as_the_caller_wrote_it(payload, field_name: str) -> str:
     never wrote." An error naming `patient_age` at somebody who sent
     `patientAge` makes them search their payload for a key that is not in
     it.
+
+    BY VALUE FIRST, then by name. Two spellings can reach one column —
+    `pd_l1_tumor_cells` is aliased onto `pd_l1_tumor_cels` and an alias
+    never overwrites, so `{"pd_l1_tumor_cells": 12, "pd_l1_tumor_cels":
+    "abc"}` keeps the "abc". Naming whichever key came first in the payload
+    could hand back `pd_l1_tumor_cells`, whose value is fine: the caller
+    corrects a field that was never the problem and gets the same 400 back.
+    Identity rather than equality, because the value in the payload IS the
+    object that failed — `_to_snake_case` copies references — and `==`
+    would tie two keys holding equal-but-distinct values.
     """
+    candidates = []
     for sent in payload:
         if not isinstance(sent, str):
             continue
@@ -471,7 +486,13 @@ def _as_the_caller_wrote_it(payload, field_name: str) -> str:
         # `pd_l1_tumor_cells` is told about `pd_l1_tumor_cells`, not about
         # EXACT's misspelled column.
         if snake == field_name or _INBOUND_ALIASES.get(snake) == field_name:
-            return sent
+            candidates.append(sent)
+    if value is not _UNSET:
+        for sent in candidates:
+            if payload[sent] is value:
+                return sent
+    if candidates:
+        return candidates[0]
     # Nothing in the payload maps to it — a derived column, or a name this
     # function has not been taught. The column name is a worse answer than
     # the caller's own key and a better one than silence.
@@ -645,6 +666,10 @@ class MalformedPatientValue(ValueError):
     def __init__(self, field_name: str, expected: str, value):
         self.field_name = field_name
         self.expected = expected
+        #: The offending value itself, kept so the inline path can find
+        #: WHICH of two accepted spellings carried it. See
+        #: `_as_the_caller_wrote_it`.
+        self.value = value
         self.got = type(value).__name__
         super().__init__(
             f'{field_name}: expected {expected}, got {self.got}.'
