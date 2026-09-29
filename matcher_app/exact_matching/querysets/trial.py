@@ -11,7 +11,7 @@ from django.db.models import Case, Count, Q, When, Exists, OuterRef, Value, Quer
 from django.db.models.expressions import RawSQL
 from django.db.models.functions import Coalesce, Least
 from django.contrib.gis.geos import Point
-from django.db.models import BigIntegerField, F, FloatField, ExpressionWrapper, IntegerField
+from django.db.models import BigIntegerField, BooleanField, F, FloatField, ExpressionWrapper, IntegerField
 
 from django.utils import timezone
 
@@ -28,7 +28,8 @@ from exact_matching.patient_info.configs import (
 from exact_matching.receptor_hierarchy import expand_values as expand_receptor_values
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled
 from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PROFILE
-from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE
+from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_verdict import language_verdict_sql
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from exact_matching.trial_details.configs import PHASE_CODE_MAPPING
@@ -98,6 +99,16 @@ def _csv(value):
 
 def _csv_stripped(value):
     return [x.strip() for x in _csv(value)]
+
+
+def _filter_languages_skills(scope, value, ctx):
+    # OMOP path (flag on and ready): the asked-state verdict (held pairs AND asked
+    # languages; see exact_matching.omop.languages_verdict). Otherwise unchanged.
+    if omop_languages_enabled():
+        attr = ctx['patient_info_attr']
+        return scope.eligible_for_languages_skills_omop(
+            attr.get_language_held_ids(), attr.get_language_asked_ids())
+    return scope.eligible_for_languages_skills(_csv(value))
 
 
 def _as_list_stripped(value):
@@ -218,7 +229,7 @@ _CUSTOM_SEARCH_DISPATCH = {
     'tp53_disruption': lambda s, v, _c: s.eligible_for_tp53_disruption(v),
     # Comma-separated.
     'ethnicity': lambda s, v, _c: s.eligible_for_ethnicity(_csv(v)),
-    'languages_skills': lambda s, v, _c: s.eligible_for_languages_skills(_csv(v)),
+    'languages_skills': _filter_languages_skills,
     'planned_therapies': lambda s, v, _c: s.eligible_for_planned_therapies(_csv(v)),
     'supportive_therapies': _filter_supportive_therapies,
     'cytogenic_markers': lambda s, v, _c: s.eligible_for_cytogenic_markers(_csv(v)),
@@ -1444,6 +1455,19 @@ class TrialQuerySet(models.QuerySet):
             values=languages_skills,
             required_attr_name=LANGUAGES_MATCH_PROFILE.languages_skills_required
         )
+
+    def eligible_for_languages_skills_omop(self, held: list[str], asked: list[str]) -> models.QuerySet:
+        """Drop only definite failures (state-model case 5), in SQL.
+
+        Kept: no requirement, an overlap with the held pairs, or a required
+        language the patient was never asked about. The caller skips this when
+        nothing was asked (case 2, blank).
+        """
+        # Unqualified on purpose: see language_verdict_sql.
+        required, overlap, unasked = language_verdict_sql(
+            LANGUAGES_MATCH_PROFILE.languages_skills_required, held, asked)
+        return self.filter(RawSQL(
+            f'(NOT {required} OR {overlap} OR {unasked})', [], output_field=BooleanField()))
 
     # Receptor parent-code expansion lives in exact_matching.receptor_hierarchy
     # — shared with the matcher's uvalue_function lambdas so SQL filtering and

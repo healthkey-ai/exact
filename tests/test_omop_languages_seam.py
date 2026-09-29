@@ -115,18 +115,21 @@ class TestFlagOn:
             languages_skills='English language: read, speak',
             language_skill_concept_ids=[EN_SPEAK],
         )
-        assert _search(patient, [speaks_en, writes_es, anyone]) == {speaks_en.id, anyone.id}
+        # Pairs sent directly carry no negatives (no asked list), so a requirement they
+        # do not meet is unknown and kept, never not_matched.
+        assert _search(patient, [speaks_en, writes_es, anyone]) == {speaks_en.id, writes_es.id, anyone.id}
         assert _status(speaks_en, patient) == 'matched'
-        assert _status(writes_es, patient) == 'not_matched'
+        assert _status(writes_es, patient) == 'unknown'
         assert _status(anyone, patient) == 'matched'
 
     @override_settings(EXACT_OMOP_LANGUAGES=True)
     def test_legacy_code_is_not_translated(self):
         speaks_en, writes_es, anyone = _trials()
-        # a patient speaking legacy codes in the pair field matches nothing that requires
-        # a language: EXACT does not translate
+        # a legacy code in the pair field is not translated: it matches no requirement.
+        # With no booleans it proves no negative either, so the trials stay unknown.
         patient = PatientInfo(language_skill_concept_ids=['speak__en'])
-        assert _search(patient, [speaks_en, writes_es, anyone]) == {anyone.id}
+        assert _search(patient, [speaks_en, writes_es, anyone]) == {speaks_en.id, writes_es.id, anyone.id}
+        assert _status(speaks_en, patient) == 'unknown'
 
     @override_settings(EXACT_OMOP_LANGUAGES=True)
     @pytest.mark.parametrize('pairs', [None, []])

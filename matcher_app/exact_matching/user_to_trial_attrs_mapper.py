@@ -5,7 +5,8 @@ from django.db import models
 from django.db.models import Q
 
 from exact_matching.attribute_names import AttributeNames
-from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE
+from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_verdict import language_verdict, language_verdict_sql
 from exact_matching.patient_info.configs import (
     THERAPY_LINES_ATTRS_UNDERSCORED,
     TRIAL_ATTRS_JSON_AS_A_LIST,
@@ -37,8 +38,26 @@ def _trial_column(user_attr, trial_attr_name):
     return trial_attr_name
 
 
+def _languages_open(trial, patient_info):
+    """Whether "languages" is still an open question for this trial and patient.
+
+    Only the OMOP path with a known patient narrows it: there the language
+    requirement is open exactly when its verdict is unknown (state-model cases 2
+    and 4). Without a patient, or off the OMOP path, every trial with a language
+    requirement may ask, as before.
+    """
+    if patient_info is None or not omop_languages_enabled():
+        return True
+    service = PatientInfoAttributes(patient_info)
+    held, asked = service.get_language_held_ids(), service.get_language_asked_ids()
+    if not held and not asked:
+        return True
+    required = getattr(trial, LANGUAGES_MATCH_PROFILE.languages_skills_required) or []
+    return language_verdict(required, held, asked) == 'unknown'
+
+
 class UserToTrialAttrsMapper:
-    def potential_attrs_for_trial(self, trial, counts):
+    def potential_attrs_for_trial(self, trial, counts, patient_info=None):
         def item(trial_attribute_name, user_attribute_name, trial_obj, cnt):
             # Emptiness is judged on the column matching reads; the label keeps the
             # config name (only languages_skills differs, see _trial_column).
@@ -49,6 +68,9 @@ class UserToTrialAttrsMapper:
             if value_attribute_name in TRIAL_ATTRS_JSON_AS_A_LIST:
                 if getattr(trial_obj, value_attribute_name) == []:
                     return
+
+            if user_attribute_name == 'languages_skills' and not _languages_open(trial_obj, patient_info):
+                return
 
             return {
                 'trialAttributeName': AttributeNames.get_by_snake_case(trial_attribute_name),
@@ -375,6 +397,22 @@ class UserToTrialAttrsMapper:
                     # and the patient definitively satisfies. A non-gating trial is
                     # neutral (NULL), matching the old aggregate SQL.
                     eligible_attrs2check[user_attr] = f'(CASE WHEN {gating} AND {matched_cond} THEN 1 ELSE NULL END)'
+                    continue
+
+                # OMOP language path, answered patient (some language asked): the
+                # asked-state verdict per trial. Case 4 (a required language never
+                # asked, no overlap) is potential and offers "languages" to fill in;
+                # case 3 (overlap) counts toward the match score; case 5 is dropped
+                # by the queryset. A blank patient (nothing asked) keeps the generic
+                # SQL below, as before.
+                if user_attr == 'languages_skills' and is_filled_by_user and omop_languages_enabled():
+                    required, overlap, unasked = language_verdict_sql(
+                        LANGUAGES_MATCH_PROFILE.languages_skills_required,
+                        service.get_language_held_ids(), service.get_language_asked_ids())
+                    attrs2check[user_attr] = (
+                        f'(CASE WHEN {required} AND NOT {overlap} AND {unasked} THEN 1 ELSE NULL END)')
+                    eligible_attrs2check[user_attr] = (
+                        f'(CASE WHEN {required} AND {overlap} THEN 1 ELSE NULL END)')
                     continue
 
             then_value = 'NULL ELSE 1'

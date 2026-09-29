@@ -104,6 +104,12 @@ These already differ from CB on purpose. Leave them; do not try to re-sync them 
   refuses the OMOP path while the vocab is unloaded, while the trial column is out of step with
   the legacy list or with the vocab ids, and while any trial's language requirement maps to no
   pair at all (cancerbot-org/cancerbot#5356).
+  On the OMOP path the patient also carries which languages were ASKED (any of the four
+  booleans non-null), and the verdict distinguishes "asked, does not have the skill"
+  (not_matched, excluded) from "never asked" (unknown, potential). That honours the rule above
+  that an empty consumer set must not read as unknown. The state model is written down in
+  `patient_languages.py`; queryset, matcher, potential count and attrs-to-fill-in share it
+  through `exact_matching/omop/languages_verdict.py`.
 Maintain an up-to-date inventory of these so agents can tell *intended* divergence from *drift*.
 
 ## Deploy order: trial columns come from CB

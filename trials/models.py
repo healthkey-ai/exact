@@ -794,8 +794,8 @@ class Trial(TimeStampMixin):
             ),
         ]
 
-    def attrs_to_fill_in(self, counts):
-        return UserToTrialAttrsMapper().potential_attrs_for_trial(self, counts)
+    def attrs_to_fill_in(self, counts, patient_info=None):
+        return UserToTrialAttrsMapper().potential_attrs_for_trial(self, counts, patient_info=patient_info)
 
     def get_match_score(self, patient_info):
         return UserToTrialAttrMatcher(trial=self, patient_info=patient_info).trial_match_score()

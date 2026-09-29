@@ -53,11 +53,12 @@ class TestBuilder:
     def test_true_speak_write_become_sorted_deduped_pairs(self, lang_vocab):
         out = language_skill_concept_ids_from_capabilities(
             {'spanish_speak': True, 'english_write': True, 'english_speak': True, 'english_read': False})
-        assert out == {'language_skill_concept_ids': [EN_SPEAK, EN_WRITE, ES_SPEAK]}
+        assert out == {'language_skill_concept_ids': [EN_SPEAK, EN_WRITE, ES_SPEAK],
+                       'language_asked_concept_ids': ['4180186', '4182511']}
 
     def test_null_only_gives_empty(self, lang_vocab):
         out = language_skill_concept_ids_from_capabilities({name: None for name in LANGUAGE_CAPABILITY_FIELDS})
-        assert out == {'language_skill_concept_ids': []}
+        assert out == {'language_skill_concept_ids': [], 'language_asked_concept_ids': []}
 
     def test_read_or_understand_only_gives_empty(self, lang_vocab):
         # interim limitation: no LanguageSkillLevel rows for read/understand
@@ -164,8 +165,9 @@ class TestEndToEnd:
         assert self._kept(patient, [speaks_en, anyone]) == {anyone.id}
         assert UserToTrialAttrMatcher(speaks_en, patient).attr_match_status('languages_skills') == 'not_matched'
 
-    def test_reader_only_is_unknown_not_rejected(self, lang_vocab):
+    def test_reader_only_was_asked_and_does_not_speak(self, lang_vocab):
+        # English was asked (read is non-null) and speak is not held: not_matched.
         speaks_en, anyone = self._trials()
         patient = build_patient_info_from_promop_row(_promop_row(english_read=True))
-        assert self._kept(patient, [speaks_en, anyone]) == {speaks_en.id, anyone.id}
-        assert UserToTrialAttrMatcher(speaks_en, patient).attr_match_status('languages_skills') == 'unknown'
+        assert self._kept(patient, [speaks_en, anyone]) == {anyone.id}
+        assert UserToTrialAttrMatcher(speaks_en, patient).attr_match_status('languages_skills') == 'not_matched'

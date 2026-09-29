@@ -165,7 +165,7 @@ def _blank_attr_counts(patient_info) -> dict:
     return {user_attr: 1 for user_attr in attrs2check}
 
 
-def _sql_potential_attrs(trial, counts) -> list[str]:
+def _sql_potential_attrs(trial, counts, patient_info=None) -> list[str]:
     """Which attrs the SQL path would list as attributesToFillIn for this trial.
 
     `attrs_to_fill_in` emits camelCase `userAttributeName`; normalize back to the
@@ -174,7 +174,7 @@ def _sql_potential_attrs(trial, counts) -> list[str]:
     """
     return [
         AttributeNames.get_by_camel_case(entry['userAttributeName'])
-        for entry in trial.attrs_to_fill_in(counts)
+        for entry in trial.attrs_to_fill_in(counts, patient_info=patient_info)
         if entry
     ]
 
@@ -211,7 +211,7 @@ def compare(base_qs, patient_info, attribute_sql_drops: bool = True) -> list[Div
         if attribute_sql_drops and sql_verdict == NOT_ELIGIBLE:
             d.sql_dropped_attrs = _sql_dropped_attrs(base_qs, tid, patient_info)
         elif attribute_sql_drops and sql_verdict == POTENTIAL:
-            d.sql_potential_attrs = _sql_potential_attrs(trial, counts)
+            d.sql_potential_attrs = _sql_potential_attrs(trial, counts, patient_info)
         divergences.append(d)
     return divergences
 
