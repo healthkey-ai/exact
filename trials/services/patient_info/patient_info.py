@@ -103,6 +103,10 @@ _FIELDS = [
     # booleans (trials.services.omop.patient_languages). None when the payload
     # carries neither the booleans nor the list; read only under EXACT_OMOP_LANGUAGES.
     _f(JSONField, 'language_skill_concept_ids', default=None),
+    # Language concept ids the patient was ASKED about (any of the four capability
+    # booleans non-null), built alongside the pairs; None when not built. See the
+    # state model in trials/services/omop/patient_languages.py.
+    _f(JSONField, 'language_asked_concept_ids', default=None),
     # Aggregate therapy-vocab release the patient's therapy_type_ids were derived
     # against (promop VocabularyRelease pk as a decimal string; promop#394). One
     # value for the whole class set (unanimous-of-lines else null). #286 Gate 1

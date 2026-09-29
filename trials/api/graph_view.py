@@ -107,7 +107,7 @@ class TrialsGraphViewSet(TrialsViewSet):
             if search_type == "eligible" or getattr(trial, "match_score", None) == 100:
                 attrs_to_fill_in = []
             else:
-                attrs_to_fill_in = trial.attrs_to_fill_in(counts)
+                attrs_to_fill_in = trial.attrs_to_fill_in(counts, patient_info=patient_info)
 
             tt = TrialTemplates(trial, patient_info)
             details = tt.potential_attributes_first_view(attrs_to_fill_in=attrs_to_fill_in)

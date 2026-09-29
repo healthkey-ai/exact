@@ -77,7 +77,12 @@ class ExactMatcher:
         return trial.matching_type(patient_info=patient.as_patient_info())
 
     def attrs_to_fill_in(self, trial, patient, counts: dict):
-        return trial.attrs_to_fill_in(counts)
+        # The patient only narrows languages on the OMOP path; off it, the call is
+        # exactly what it was (no as_patient_info()).
+        from exact_matching.omop.languages_match_profile import omop_languages_enabled
+        if not omop_languages_enabled():
+            return trial.attrs_to_fill_in(counts)
+        return trial.attrs_to_fill_in(counts, patient_info=patient.as_patient_info())
 
     def high_risk_breakdown(self, trial, patient):
         from exact_matching.matcher import UserToTrialAttrMatcher

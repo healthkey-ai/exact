@@ -106,6 +106,11 @@ class PatientInfoAttributes:
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
 
     def is_attr_blank(self, attr_name):
+        if attr_name == 'languages_skills' and omop_languages_enabled():
+            # OMOP path: answered iff some language was asked (state model in
+            # trials/services/omop/patient_languages.py, case 2). A patient asked
+            # about a language who holds no pair is answered, not blank.
+            return not (self.get_language_asked_ids() or self.get_language_held_ids())
         is_blank = False
         user_attr_value = self.get_value(attr_name)
         if attr_name in ('genetic_mutations', 'supportive_therapies', 'later_therapies') and user_attr_value == []:
@@ -241,6 +246,29 @@ class PatientInfoAttributes:
         if omop and isinstance(value, (list, tuple)):
             return ','.join(str(v) for v in value)
         return value
+
+    def get_language_held_ids(self):
+        """H: the patient's held (language, skill) pairs on the OMOP path, as strings."""
+        value = getattr(self.patient_info, 'language_skill_concept_ids', None)
+        if not isinstance(value, (list, tuple)):
+            return []
+        return sorted({str(v) for v in value if v is not None})
+
+    def get_language_asked_ids(self):
+        """A: the language concept ids whose negatives are known, as strings.
+
+        Exactly the built (or sent) ``language_asked_concept_ids``. A held pair
+        adds nothing to A: it says nothing about the other skills in its language.
+        So with no asked list, or an empty one (a client that sent only pairs),
+        every requirement the held pairs do not meet stays unknown and the patient
+        is never not_matched. It still counts as answered (``is_attr_blank``)
+        through its held pairs. The builder always puts a held pair's language in
+        A, since a True capability is non-null.
+        """
+        asked = getattr(self.patient_info, 'language_asked_concept_ids', None)
+        if not isinstance(asked, (list, tuple)):
+            return []
+        return sorted({str(v) for v in asked if v is not None})
 
     def get_uln_value(self, attr_name):
         trial_attr_meta = self.mapping[attr_name]

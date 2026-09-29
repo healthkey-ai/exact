@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE
 from exact_matching.omop.languages_match_profile import LANGUAGES_MATCH_PROFILE, omop_languages_enabled
+from exact_matching.omop.languages_verdict import language_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -882,19 +883,23 @@ class UserToTrialAttrMatcher:
     def _match_languages_skills(self, ctx):
         """Language skills, read through LANGUAGES_MATCH_PROFILE.
 
-        Flag off: exactly the generic computed handler this entry always used
-        (config ``attr`` + ``uvalue_function``). Flag on: the same required-list
-        rule against the OMOP pair column, with the patient value from
-        ``PatientInfoAttributes`` (the patient's pair list, built from PROMOP's
-        capability booleans, comma-joined).
+        Flag off (or not ready): exactly the generic computed handler this entry
+        always used (config ``attr`` + ``uvalue_function``). OMOP path: the
+        asked-state verdict over the OMOP pair column, the held pairs and the
+        asked languages.
         """
         if not omop_languages_enabled():
             return self._match_computed_attr(ctx)
-        return self._match_computed_subattr(
-            LANGUAGES_MATCH_PROFILE.languages_skills_required,
-            lambda _patient_info: ctx.value,
-            ctx.is_blank,
-        )
+        # OMOP path: the asked-state verdict (exact_matching.omop.languages_verdict;
+        # state model in trials/services/omop/patient_languages.py).
+        required = getattr(self.trial, LANGUAGES_MATCH_PROFILE.languages_skills_required) or []
+        if not required:
+            return 'matched'                                   # case 1
+        asked = self.patient_info_attr.get_language_asked_ids()
+        held = self.patient_info_attr.get_language_held_ids()
+        if not asked and not held:
+            return 'unknown'                                   # case 2
+        return language_verdict(required, held, asked)
 
     def _match_therapy_lines_attr(self, ctx):
         if ctx.name == 'first_line_therapy':  # calc things for just one line of therapy

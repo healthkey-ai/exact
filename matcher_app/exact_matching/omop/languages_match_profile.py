@@ -19,14 +19,23 @@ The profile names two things, one per side:
   no patient crosswalk": the ids come from the ``Language`` / ``LanguageSkillLevel``
   vocab rows EXACT reads (in split-DB mode those live in the CB trials DB, the same
   rows CB's backfill used), and trials use only en/es. Only speak/write produce
-  pairs (interim; see that module).
+  pairs (interim; see that module). Beside the pairs the patient carries the ASKED
+  languages (``language_asked_concept_ids``), so on the OMOP path "asked and does not
+  have the skill" is not_matched while "never asked" is unknown. An empty set of held
+  pairs is not read as unknown when the language was asked (the state model is in
+  ``trials.services.omop.patient_languages``; the shared verdict in
+  ``exact_matching.omop.languages_verdict``).
 
 Surfaces that read it — a cutover flips all three together, which is why they go
 through this one profile rather than literals:
 
 1. the search queryset, ``TrialQuerySet.eligible_for_languages_skills`` (trial column);
-2. ``PatientInfoAttributes.get_value('languages_skills')`` (patient value). It feeds
-   the queryset dispatch, the blank check both paths share, and the matcher;
+2. the patient value: off the OMOP path ``PatientInfoAttributes.get_value
+   ('languages_skills')``, which feeds the queryset dispatch, the blank check both
+   paths share and the matcher. On the OMOP path the queryset handler, the matcher,
+   the blank check and the count read H and A instead
+   (``get_language_held_ids`` / ``get_language_asked_ids``), and get_value only
+   supplies the joined pairs that dispatch skips;
 3. the per-trial matcher, ``UserToTrialAttrMatcher._match_languages_skills`` (trial
    column). With the flag off it delegates to the generic computed handler, so the
    ``USER_TO_TRIAL_ATTRS_MAPPING['languages_skills']`` entry (``attr`` +
