@@ -232,9 +232,10 @@ describe("an await added in front of a write is a window", () => {
     // Reset's own ask answers immediately instead of deadlocking.
     let duringTheAsk: null | (() => Promise<void>) = null;
     // `save` asks twice before it writes: once on entry, and once
-    // immediately before the write. It is the SECOND one this is about —
-    // the first is far enough ahead of the write that the existing
-    // generation logic already covers it.
+    // immediately before the write. This case is the SECOND; the case
+    // below is the first, which an earlier version of this comment
+    // asserted was already covered. It was not — that was reasoning, not
+    // measurement, and a reviewer measured it.
     let skip = 0;
     const t = adapterPreferences(
       a.methods as never,
@@ -326,6 +327,40 @@ describe("an await added in front of a write is a window", () => {
     await t.get();
     a.contend();
     skip = 2;
+    duringTheAsk = () => t.reset();
+    await t.save({ distance: 100 } as FilterState);
+
+    expect(a.seen()).toEqual({});
+    expect(a.writes).toEqual([]);
+  });
+
+  it("does not let a Reset landing inside the FIRST ask bring them back", async () => {
+    // The one I claimed did not need a test. `save` asks on entry, long
+    // before it writes — but every generation it checks afterwards is
+    // captured AFTER that ask, so a Reset landing inside it is already
+    // folded into what those checks compare. They agree, the write quotes
+    // the tag Reset installed, the precondition passes, and the reader
+    // watches their cleared filters come back.
+    //
+    // The fix is a generation taken before anything is awaited at all.
+    const a = versionedRow();
+    a.put({ country: "US", sponsor: "Acme" });
+    let duringTheAsk: null | (() => Promise<void>) = null;
+    const t = adapterPreferences(
+      a.methods as never,
+      () => "sub:iss|one",
+      async () => {
+        if (duringTheAsk) {
+          const hook = duringTheAsk;
+          duringTheAsk = null;
+          await hook();
+        }
+        return "sub:iss|one";
+      },
+    );
+
+    await t.get();
+    // No skip: the very first ask `save` makes.
     duringTheAsk = () => t.reset();
     await t.save({ distance: 100 } as FilterState);
 

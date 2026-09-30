@@ -509,6 +509,21 @@ export function adapterPreferences(
     },
     save: async (filters) => {
       stillTheSameReader();
+      // WHICH RESET ERA THIS SAVE BELONGS TO, taken before anything is
+      // awaited. Everything below — the first read, the re-read, three
+      // asks — is a window a Reset can land in, and a Reset is the newer
+      // intent: this payload describes a panel it has already cleared.
+      //
+      // The per-write checks further down are NOT enough, and the reason
+      // is worth stating because it cost a round. They capture
+      // `generation` after the awaits above, so a Reset that landed in one
+      // of those windows is already folded into what they compare — both
+      // agree, the write goes out quoting the tag Reset installed, the
+      // precondition passes, and the reader's cleared filters come back
+      // with nothing on `onError`. I had written in a test that the first
+      // ask was "far enough ahead of the write that the existing logic
+      // covers it". That was reasoning, not measurement, and it was wrong.
+      const saveEra = generation;
       // Serialised behind the first read — see `firstRead` above. A save that
       // overtakes it would build its payload against an empty `stored` and
       // replace the row with the one key the reader has touched.
@@ -576,6 +591,7 @@ export function adapterPreferences(
       // filters, so re-basing would send those into the new row, which is
       // the whole of #603.
       await refuseIfTheReaderChanged();
+      if (saveEra !== generation) return;
 
       // The reader's payload over what the server holds. A key they cleared is
       // present-and-`undefined` and drops out on the way through JSON; a key
