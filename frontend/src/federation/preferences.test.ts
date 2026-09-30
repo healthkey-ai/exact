@@ -1874,12 +1874,12 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
     // that is rare — and `fingerprintOf` exists precisely so a refresh is
     // not a change.
     //
-    // BOTH halves of the reader contract, where this used to pass only the
-    // cached one. A host that cannot be asked who a request is going out
-    // as cannot tell a rotation from a swap without reading, so it re-reads
-    // — see `blindToSwaps`. The single read this test is about is what the
-    // full contract buys, and production supplies it; the shape without it
-    // is pinned in `preferences.identity.property.test.ts`.
+    // BOTH halves of the reader contract, where this used to pass only
+    // the cached one. That matters because the single read asserted here
+    // is what the full contract buys: a host that cannot be asked cannot
+    // tell a rotation from a swap at all, so it gets no guard and no
+    // extra reads either — pinned by `does not guard, and does not
+    // re-read, a host that cannot be asked`, below.
     const a = fakeRow();
     const t = adapterPreferences(a.methods, () => "sub:iss|one", () => "sub:iss|one");
     a.put({ country: "US" });
@@ -1974,7 +1974,7 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
     // and costs nothing: the edit lands where it belongs on the first
     // attempt. The refusal still exists for the case it is the only answer
     // to — a swap after the payload was composed — and
-    // `preferences.mountStamp.test.ts` pins the other half.
+    // `preferences.whoseRequest.test.ts` pins the other half.
     const saving = t.save({ distance: 100 });
     await Promise.resolve();
     releaseFirst();

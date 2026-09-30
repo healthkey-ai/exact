@@ -460,6 +460,15 @@ export interface TrialMatchesProps {
    *  loading (exact#603). Pass both, or accept that two accounts sharing
    *  one mounted remote can share saved filters.
    *
+   *  ANSWER A NAME OR A SENTINEL, NEVER `undefined`, if this host can ever
+   *  name anybody. `undefined` means "there is nobody to name here" and
+   *  switches the guard off — it is what a host with no accounts at all
+   *  answers, and it is matched against every reader on purpose so that
+   *  such a host keeps working. A host that answers it only while signed
+   *  out, with `credentialIdentity` still naming the previous reader, gets
+   *  the guard off while believing it wired both halves. EXACT's own
+   *  bridge floors the answer at `NO_CREDENTIAL` for exactly this reason.
+   *
    *
    *  A pair, because the two readings happen at moments with different
    *  budgets. The cached one above is consulted on a keystroke and must not

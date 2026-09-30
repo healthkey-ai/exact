@@ -120,10 +120,11 @@ describe("a cached row belongs to the reader its read went out for", () => {
   });
 
   it("does not refuse a host that has no credentials at all", async () => {
-    // The other direction, and the reason `cacheStillBelongsTo` is not just
-    // `believedFor === current`. A host with no identity mechanism answers
-    // unknown for ever; refusing there would break the deployment this
-    // guard can help least — the local stand, and anything behind a gateway
+    // The other direction, and the reason `belongsTo` is `sameIdentity`
+    // rather than `believedFor === current`. A host with no identity
+    // mechanism answers unknown for ever; refusing there would break the
+    // deployment this guard can help least — the local stand, and
+    // anything behind a gateway
     // that injects the header.
     const s = twoRowServer(() => "one");
     s.rows["one"] = { searchTitle: "kept", country: "US" };
@@ -469,5 +470,58 @@ describe("an await added in front of a write is a window", () => {
 
     expect(a.preconditions).toHaveLength(1);
     expect(a.preconditions[0].kind).toBe("ifMatch");
+  });
+
+  it("stamps a Reset too, so an unseeded one cannot wave the next reader through", async () => {
+    // `seeded` WITHOUT A STAMP switches the guard off for the life of the
+    // transport, because `sameIdentity(undefined, anyone)` is true. Reset
+    // is the one path that can reach that state: it claims `seeded` on its
+    // way out, and before this branch it claimed it bare.
+    //
+    // The invariant — `seeded` implies `believedFor` is stamped — was
+    // stated in the property harness and asserted by nothing: deleting the
+    // stamp from `reset()` left all 1216 tests green. This is the example
+    // the generated sequences could not produce, because a wiped row
+    // carries no stranger's marker for them to notice.
+    const rows: Record<string, Record<string, unknown>> = {
+      one: { country: "US" },
+      two: { country: "CA", sponsor: "Acme", distance: 25 },
+    };
+    let signedIn = "one";
+    let cached: string | undefined = undefined;
+    const methods = {
+      getPreferences: async () => {
+        cached = signedIn;
+        return { ...rows[signedIn] } as never;
+      },
+      savePreferences: async (f: FilterState) => {
+        cached = signedIn;
+        rows[signedIn] = { ...(f as object) };
+      },
+      resetPreferences: async () => {
+        cached = signedIn;
+        rows[signedIn] = {};
+      },
+    };
+    const t = adapterPreferences(
+      methods as never,
+      () => cached,
+      async () => {
+        cached = signedIn;
+        return signedIn;
+      },
+    );
+
+    // Reset before anything has seeded — the reader clears the panel on a
+    // fresh mount.
+    await t.reset();
+    // The host swaps, with nothing in the tree told about it.
+    signedIn = "two";
+    // Reader two's first edit.
+    await t.save({ distance: 100 } as FilterState).catch(() => undefined);
+
+    // Unstamped, this wrote `{distance: 100}` over reader two's row and
+    // took their country, sponsor and distance with it.
+    expect(rows["two"]).toEqual({ country: "CA", sponsor: "Acme", distance: 25 });
   });
 });

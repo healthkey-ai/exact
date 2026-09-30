@@ -58,7 +58,7 @@ export function fingerprintOf(token: string | undefined | null): string | undefi
  *  real identity, and equal to itself — so a host that never has a
  *  credential sees it on every read and is unaffected, which is the carve-out
  *  `sameIdentity` documents. */
-export const NO_CREDENTIAL = "none";
+export const NO_CREDENTIAL = "#no-credential";
 
 /** Asked, and the asking itself failed.
  *
@@ -78,14 +78,18 @@ export const NO_CREDENTIAL = "none";
  *  of the transport, and the first reader's saved filters were written
  *  wholesale into the second's row.
  *
- *  A string, and one no fingerprint can equal: `fingerprintOf` only ever
- *  produces `sub:…` or `raw:…`. So it compares unequal to any real reader
+ *  A string, and one nothing else can equal. `fingerprintOf` only ever
+ *  produces `sub:…` or `raw:…`, but the readers themselves are
+ *  host-supplied `() => string | undefined`, so the bare word "unknown"
+ *  was a value a host could legitimately return and be mistaken for this.
+ *  The `#` prefix costs nothing and removes the question. So it compares
+ *  unequal to any real reader
  *  and equal to itself, which is what makes a cache stamped with it
  *  unusable by anybody — including, deliberately, by the reader it was
  *  actually read for. That costs one extra read and recovers by itself:
  *  the mismatch drops the cache, the next save re-reads, and that read's
  *  ask usually succeeds. */
-export const COULD_NOT_TELL = "unknown";
+export const COULD_NOT_TELL = "#could-not-tell";
 
 /** Whether a payload queued under `queued` may be sent under `current`.
  *
