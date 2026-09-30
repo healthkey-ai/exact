@@ -49,6 +49,7 @@ import {
   isOpen,
   nextWizard,
   shouldRead,
+  type WizardEvent,
 } from "./weightsWizardState";
 import type { SegmentSource } from "./SegmentedControl";
 import { ViewModeControl } from "./ViewModeControl";
@@ -1425,14 +1426,51 @@ function TrialMatchesInner({
   // believed, live in `weightsWizardState.ts` — written down once, after
   // three review rounds had each closed a different spelling of the same one.
   // What is left here is the wiring: when to fire an event, and what to draw.
-  const [wizard, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
+  const [wizardState, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
+
+  /** The machine as of NOW, not as of this render.
+   *
+   *  `useReducer` hands back the state of the last COMMITTED render, which
+   *  is the wrong clock for a click handler: two gestures in one task both
+   *  read the pre-click value, and both think they are the first. That gap
+   *  is what a caller-side "a write is in flight" ref was invented to paper
+   *  over, and #599 is the three ways the paper tore.
+   *
+   *  So the reducer is run here as well, synchronously, and the answer is
+   *  kept in a ref. Same pure function, same events, so the two cannot
+   *  disagree — and the ref is re-synced from the committed state on every
+   *  render, which makes a render React abandoned harmless.
+   *
+   *  An effect was tried first and is the wrong instrument: it moves the
+   *  write to the next COMMIT, and anything that changes the patient or
+   *  unmounts in the same task as the click then means the write never
+   *  happens at all. Measured, against the commit before it: the reader
+   *  answered, nothing was recorded, and they were asked again. */
+  const wizardRef = useRef(wizardState);
+  wizardRef.current = wizardState;
+
+  /** Raise an event, and say whether the machine took it.
+   *
+   *  The return value is the only permission anything needs. Every dispatch
+   *  goes through here so the mirror is never behind. */
+  const send = (event: WizardEvent): boolean => {
+    const before = wizardRef.current;
+    const after = nextWizard(before, event);
+    wizardRef.current = after;
+    dispatchWizard(event);
+    return after !== before;
+  };
+
   // Re-raised DURING the render that changes the patient, like `typed` above.
   // An effect would be a render late, and the new patient's read would then
   // land against a state still naming the old one and be thrown away — with
   // no second read allowed, so they would never be asked at all.
-  if (wizard.patient !== readerHandle) {
-    dispatchWizard({ kind: "patient", patient: readerHandle });
+  if (wizardState.patient !== readerHandle) {
+    send({ kind: "patient", patient: readerHandle });
   }
+  // Read off the mirror from here down, so the rest of this render sees the
+  // patient event above rather than the state that preceded it.
+  const wizard = wizardRef.current;
   // Both read off the model rather than recomputed: this render may still be
   // holding the previous patient's state, one render before the line above
   // takes effect, and `isOpen` says no for exactly that reason.
@@ -1444,9 +1482,15 @@ function TrialMatchesInner({
     // `shouldRead` owns the two reasons not to: an answer is already known,
     // or a read is already out. The second is the one a state value cannot
     // express — see the module.
-    if (!shouldRead(wizard, !savedFilters.pending)) return;
+    // Asked of the MIRROR and answered by it. `shouldRead` on the
+    // render-captured state plus an unchecked dispatch was the old shape,
+    // and it claimed a protection it did not give: two runs of this effect
+    // inside one commit both read the same pre-dispatch value, so the mark
+    // the second was supposed to see was not there yet. `send` returning
+    // false IS that mark, so spend it.
+    if (!shouldRead(wizardRef.current, !savedFilters.pending)) return;
     const patient = readerHandle;
-    dispatchWizard({ kind: "reading", patient });
+    if (!send({ kind: "reading", patient })) return;
     // Every result is dispatched, none suppressed by a cleanup flag: the
     // reducer decides whether a result still applies, which is the only place
     // that can know. A failed read is treated as "already offered" — asking a
@@ -1454,8 +1498,8 @@ function TrialMatchesInner({
     // cannot record.
     wizardStore
       .wasOffered()
-      .then((offered) => dispatchWizard({ kind: "read", patient, offered }))
-      .catch(() => dispatchWizard({ kind: "readFailed", patient }));
+      .then((offered) => send({ kind: "read", patient, offered }))
+      .catch(() => send({ kind: "readFailed", patient }));
   }, [wizardStore, savedFilters.pending, readerHandle, wizard]);
 
   // Where focus goes when the wizard closes. See the heading itself.
@@ -1494,7 +1538,7 @@ function TrialMatchesInner({
    *  land, and the flag with it; the reader simply stops being held. If it
    *  never lands they are asked once more, which is the cost this whole
    *  feature is willing to pay everywhere else. */
-  const closeWhenSettled = (patient: string, work: Promise<unknown>) => {
+  const closeWhenSettled = (patient: string, visit: number, work: Promise<unknown>) => {
     let shut = false;
     const deadline = setTimeout(() => close(), WIZARD_WRITE_GRACE_MS);
     const close = () => {
@@ -1504,105 +1548,99 @@ function TrialMatchesInner({
       // second timer per answer is not a leak anybody would notice in a
       // browser, and is one per test in a suite that runs thousands.
       clearTimeout(deadline);
-      answering.current = null;
-      dispatchWizard({ kind: "written", patient });
+      send({ kind: "written", patient, visit });
     };
     void work.then(close, close);
   };
-
-  /** Which patient's answer is being written, if any.
-   *
-   *  The reducer refuses a second `answer`, but the WRITE belongs to the
-   *  callers below and they cannot see that refusal: `wizardOpen` and
-   *  `wizardBusy` are render-scoped, so two ANSWERS dispatched in one task
-   *  both read "open, not busy" and both send a PATCH. It said "dismissals"
-   *  until #596, when they stopped writing anything — which also means the
-   *  test that pinned this by pressing Escape three times stopped pinning it,
-   *  and now clicks "Keep them equal" three times instead.
-   *
-   *  Unreachable through the UI today — the offer has one writing control and
-   *  `Dialog` stops a panel click reaching the scrim — but it is a trap for
-   *  the next control added to the panel, and the flag is the thing being
-   *  written.
-   *
-   *  KNOWN WRONG, and left alone here on purpose — see #599. One slot tested
-   *  with `!== null` reads "somebody is writing" as "this reader is writing",
-   *  and the host can move to another patient, or return to this one, while a
-   *  write is in the air. Measured with `record()` hanging: the other
-   *  patient's answer is discarded and their dialog sits open with no
-   *  "Saving…" and no disabled buttons, for up to `WIZARD_WRITE_GRACE_MS`.
-   *
-   *  Three review rounds on #596 produced three spellings of it, which is
-   *  what says the shape is wrong rather than the comparison: this mark is a
-   *  second copy of what the reducer already holds as `saving`, and every
-   *  bug has been the two disagreeing. #599 removes the copy by driving the
-   *  write off the transition. Narrowing it a fourth time here would be
-   *  guessing at the fourth spelling. */
-  const answering = useRef<string | null>(null);
 
   /** Close, Escape, the scrim. Takes the question off the screen and writes
    *  NOTHING, so the next read asks again — see rule 6 in
    *  `weightsWizardState.ts`.
    *
-   *  Nothing of the answer machinery applies. No `answering` mark and no
-   *  `closeWhenSettled`: both exist to hold the dialog open until a write
-   *  settles, and there is no write. No `savedFilters.forget()`: that is
-   *  there because recording the flag moves the row's `updated_at` out from
-   *  under the filter writer's `If-Match`, and a dismissal touches no row.
+   *  Nothing of the answer machinery applies. No `closeWhenSettled`: that
+   *  holds the dialog open until a write settles, and there is no write. No
+   *  `savedFilters.forget()`: that is there because recording the flag moves
+   *  the row's `updated_at` out from under the filter writer's `If-Match`,
+   *  and a dismissal touches no row.
    *
-   *  It does not READ `answering` either, which is the one thing about that
-   *  ref this change does touch. Copying the answer handlers' `!== null` in
-   *  here made a dismissal refuse while some other patient's write was in
-   *  flight — so Escape, Close and the scrim all stopped working for up to
-   *  `WIZARD_WRITE_GRACE_MS`, against the whole point of this change, which
-   *  is that a dismissal always takes the question off the screen. Removing
-   *  it is safe and measured: a dismissal has no write to double up, the
-   *  reducer refuses `dismissed` from `saving`, and `wizardBusy` covers the
-   *  render-scoped case. #599 has the rest of that ref. */
+   *  And no permission to ask for beyond `send`'s. A caller-side "a write is
+   *  in flight" ref used to be consulted here too, which made a dismissal
+   *  refuse while some OTHER patient's write was out — Escape, Close and the
+   *  scrim dead for up to `WIZARD_WRITE_GRACE_MS` against the whole point,
+   *  which is that a dismissal always takes the question off the screen.
+   *  #596 removed the reading and #599 removed the ref; the reducer refuses
+   *  `dismissed` from `saving` on its own, which is the only refusal that
+   *  was ever wanted.
+   *
+   *  Not `wizardOpen && !wizardBusy` either, which lingered here through a
+   *  draft: those are computed from the last committed render, so keeping
+   *  them would have left this the one handler still asking the question
+   *  the rest of this change removes — a comment and a guard saying
+   *  different things. The reducer refuses a `dismissed` that is not from
+   *  `show`, and for this patient, which is the same answer from the only
+   *  clock that is current. */
   const dismissWizard = () => {
-    if (!wizardOpen || wizardBusy) return;
-    dispatchWizard({ kind: "dismissed", patient: readerHandle });
+    send({ kind: "dismissed", patient: readerHandle });
+  };
+
+  /** Say an answer, and write what it means — if the machine took it.
+   *
+   *  THE ONLY PERMISSION IS THE REDUCER'S, and `send` is how it is asked.
+   *  There used to be a second copy of "a write is in flight" here, one slot
+   *  for all patients, read together with a render-scoped `wizardBusy`; the
+   *  reducer's own refusal of a second `answer` was invisible to the write,
+   *  so the two could disagree. Three review rounds on #596 produced three
+   *  spellings of them doing so, each measured, each a different patient
+   *  losing something.
+   *
+   *  `answer` reaches `saving` from `show` and nowhere else, so a refusal
+   *  here is the machine saying this gesture is not the one — a second click
+   *  in the same task, or a click on a dialog already saving. Nothing else
+   *  needs asking, and the write happens in the same task as the click,
+   *  which is what keeps a patient switch arriving in that task from
+   *  swallowing it. */
+  const answerWizard = (work: () => Promise<unknown>) => {
+    const patient = readerHandle;
+    if (!send({ kind: "answer", patient })) return;
+    closeWhenSettled(patient, wizardRef.current.visit, work());
   };
 
   const declineWizard = () => {
     // "Keep them equal" — an answer, and the only dismissal-shaped gesture
-    // that is one. The guard is here as well as in the reducer, or a second
-    // click during a save would record a decline over a ranking still on the
-    // wire.
-    if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = readerHandle;
-    answering.current = patient;
-    dispatchWizard({ kind: "answer", patient });
+    // that is one.
+    //
     // A failure is not surfaced — there is nothing for the reader to do about
     // it, and the cost is being asked once more.
-    closeWhenSettled(patient, recordOffer());
+    answerWizard(() => recordOffer());
   };
 
   const finishWizard = (weights: FilterState) => {
-    // Same one-write rule as the decline. This one had no caller-side guard
-    // at all — only `disabled={busy}` in the view, which is a claim about
-    // pointers, not about calls.
-    if (!wizardOpen || wizardBusy || answering.current !== null) return;
-    const patient = readerHandle;
-    answering.current = patient;
-    dispatchWizard({ kind: "answer", patient });
-    // Weights first, through the same path the preferences dialog uses, so
-    // the store's belief of what is saved stays true. See
-    // `TrialPreferenceStore.weightsWizard`.
-    handleWeightsChange(weights as Record<WeightKey, number>);
-    // The flag second, and ONLY if the weights landed. Both write the same
-    // row, but by different routes: the weights go through the queue, which
-    // refuses a write it cannot base on a fresh read, while the flag is
-    // unconditional and so cannot be refused. Recording regardless marks a
-    // reader as answered while their answer is nowhere, and there is no
-    // second offer to correct it with.
-    closeWhenSettled(
-      patient,
-      savedFilters
+    answerWizard(() => {
+      // Weights first, through the same path the preferences dialog uses, so
+      // the store's belief of what is saved stays true. See
+      // `TrialPreferenceStore.weightsWizard`.
+      //
+      // Inside the payload, not beside the dispatch: it must happen when the
+      // write happens, and a second click that the reducer refuses must not
+      // send the weights again.
+      //
+      // UNPINNED, and said so: hoisting this back out passes every test.
+      // The only way to get a refused second answer carrying weights is two
+      // third-question clicks in one task, and the debounce in front of
+      // `savePreferences` collapses them either way, so the test that would
+      // catch it does not exist rather than has been forgotten. Measured.
+      handleWeightsChange(weights as Record<WeightKey, number>);
+      // The flag second, and ONLY if the weights landed. Both write the same
+      // row, but by different routes: the weights go through the queue, which
+      // refuses a write it cannot base on a fresh read, while the flag is
+      // unconditional and so cannot be refused. Recording regardless marks a
+      // reader as answered while their answer is nowhere, and there is no
+      // second offer to correct it with.
+      return savedFilters
         .settle()
         .then((saved) => (saved ? recordOffer() : undefined))
-        .catch(() => {}),
-    );
+        .catch(() => {});
+    });
   };
 
   // What anything keyed on these filters should see: the weights at their

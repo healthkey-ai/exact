@@ -165,9 +165,14 @@ function drive(seed: number, steps: number) {
         patient: random() < 0.85 ? state.patient : pick(PATIENTS),
       });
     } else {
+      // Usually this visit's, sometimes an older one — a write started
+      // before a patient switch can settle after the reader has come BACK,
+      // which is the case `visit` exists for and the one a generator that
+      // always quotes the current number would never produce.
       apply({
         kind: "written",
         patient: random() < 0.7 ? state.patient : pick(PATIENTS),
+        visit: random() < 0.75 ? state.visit : Math.max(0, state.visit - 1),
       });
     }
   }
@@ -333,6 +338,28 @@ describe("the wizard state machine, over generated event sequences", () => {
     }
   });
 
+  it("never lets an older visit's completion close this one", () => {
+    // #599. The generator quotes a stale visit a quarter of the time, and
+    // without this nothing looked at the outcome — ablating the check in
+    // the reducer failed one hand-written test and none of these. Measured
+    // over these seeds: 19 completions arrive for this patient, at
+    // `saving`, quoting a visit that is not the current one. Few, because
+    // the state has to be `saving` at the moment one lands, and enough that
+    // the branch is exercised rather than asserted into the void.
+    for (const seed of SEEDS) {
+      const { log } = drive(seed, STEPS_PER_RUN);
+      for (const { event, before, after } of log) {
+        if (event.kind !== "written") continue;
+        if (event.patient !== before.patient || before.at !== "saving") continue;
+        if (event.visit === before.visit) continue;
+        expect(
+          { seed, event, before, after },
+          "a completion from another visit closed this one's dialog",
+        ).toSatisfy(() => after === before);
+      }
+    }
+  });
+
   it("spends the offer only on an answer, never on a dismissal", () => {
     // Rule 6, and the whole of #596. `saving` is the only state the caller
     // writes the flag from, so "which gestures can spend the one offer this
@@ -345,12 +372,14 @@ describe("the wizard state machine, over generated event sequences", () => {
     // `answer` for a gesture that had not answered anything. A property that
     // only checked `before.at === "show"` would have passed throughout.
     //
-    // Not vacuous, measured over these seeds: 242 entries into `saving` to
-    // quantify over, and 4693 dismissals attempted against them. Of those,
-    // the three states that could go wrong are reached 253 times from `show`
-    // with a matching patient, 202 against the seal and 466 naming a patient
-    // who has moved on; the remaining 3772 are this patient at `unknown` or
-    // `hide`, where there is nothing to dismiss.
+    // Not vacuous, re-measured over these seeds after #599 added `visit`
+    // (which makes the machine sit in `saving` longer, so every number
+    // moved): 235 entries into `saving` to quantify over, and 4775
+    // dismissals attempted against them. Of those, the three states that
+    // could go wrong are reached 264 times from `show` with a matching
+    // patient, 212 against the seal and 493 naming a patient who has moved
+    // on; the remaining 3806 are this patient at `unknown` or `hide`, where
+    // there is nothing to dismiss.
     for (const seed of SEEDS) {
       const { log } = drive(seed, STEPS_PER_RUN);
       for (const { event, before, after } of log) {
@@ -384,8 +413,8 @@ describe("the wizard state machine, over generated event sequences", () => {
           // property next door asserts and for the same reason: a dismissal
           // that has no business acting must return the state untouched, and
           // comparing one field would let it clear `reading` or rewrite
-          // `patient` on the way past. Measured over these seeds: 4440 of
-          // the 4693 generated dismissals take this branch, so it carries
+          // `patient` on the way past. Measured over these seeds: 4511 of
+          // the 4775 generated dismissals take this branch, so it carries
           // most of the coverage.
           expect(
             { seed, event, before, after },
@@ -408,7 +437,10 @@ describe("the transitions that carried a defect", () => {
     expect(state.at).toBe("hide");
 
     state = nextWizard(state, { kind: "patient", patient: "B" });
-    expect(state).toEqual({ patient: "B", at: "unknown", reading: false });
+    // `visit: 1` rather than a looser match: the reset bumping it is what
+    // lets a completion name the arrival it belongs to, and an exact
+    // comparison is the thing that would notice if a reset stopped doing it.
+    expect(state).toEqual({ patient: "B", at: "unknown", reading: false, visit: 1 });
 
     state = nextWizard(state, { kind: "reading", patient: "B" });
     state = nextWizard(state, { kind: "read", patient: "B", offered: false });
@@ -422,7 +454,10 @@ describe("the transitions that carried a defect", () => {
     // A's read lands late, and says A had never been asked.
     state = nextWizard(state, { kind: "read", patient: "A", offered: false });
     expect(isOpen(state, "B")).toBe(false);
-    expect(state).toEqual({ patient: "B", at: "unknown", reading: false });
+    // `visit: 1` rather than a looser match: the reset bumping it is what
+    // lets a completion name the arrival it belongs to, and an exact
+    // comparison is the thing that would notice if a reset stopped doing it.
+    expect(state).toEqual({ patient: "B", at: "unknown", reading: false, visit: 1 });
   });
 
   it("treats the same patient arriving again as a re-render, not a reset", () => {
@@ -529,10 +564,41 @@ describe("the transitions that carried a defect", () => {
     state = nextWizard(state, { kind: "reading", patient: "A" });
     state = nextWizard(state, { kind: "read", patient: "A", offered: false });
     // A stray `written` while the question is up must not close it.
-    state = nextWizard(state, { kind: "written", patient: "A" });
+    state = nextWizard(state, { kind: "written", patient: "A", visit: state.visit });
     expect(state.at).toBe("show");
     state = nextWizard(state, { kind: "answer", patient: "A" });
-    state = nextWizard(state, { kind: "written", patient: "A" });
+    state = nextWizard(state, { kind: "written", patient: "A", visit: state.visit });
+    expect(state.at).toBe("hide");
+  });
+
+  it("does not let an earlier visit's completion close this one's dialog", () => {
+    // #599. A answers, the reader goes to B and comes back, and A is asked
+    // again because the first write has not landed and the flag still reads
+    // no. Both writes are harmless — the flag is the same, the weights are
+    // last-wins — but the FIRST one settling must not close the SECOND
+    // one's dialog, out from under a write still in the air.
+    let state = initialWizard("A");
+    state = nextWizard(state, { kind: "reading", patient: "A" });
+    state = nextWizard(state, { kind: "read", patient: "A", offered: false });
+    state = nextWizard(state, { kind: "answer", patient: "A" });
+    const firstVisit = state.visit;
+    expect(state.at).toBe("saving");
+
+    // Away and back: a new visit, a new question, a second answer.
+    state = nextWizard(state, { kind: "patient", patient: "B" });
+    state = nextWizard(state, { kind: "patient", patient: "A" });
+    expect(state.visit).toBeGreaterThan(firstVisit);
+    state = nextWizard(state, { kind: "reading", patient: "A" });
+    state = nextWizard(state, { kind: "read", patient: "A", offered: false });
+    state = nextWizard(state, { kind: "answer", patient: "A" });
+    expect(state.at).toBe("saving");
+
+    // The first write finally settles. Same patient, older visit.
+    state = nextWizard(state, { kind: "written", patient: "A", visit: firstVisit });
+    expect(state.at).toBe("saving");
+
+    // And this visit's own completion does close it.
+    state = nextWizard(state, { kind: "written", patient: "A", visit: state.visit });
     expect(state.at).toBe("hide");
   });
 });

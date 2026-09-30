@@ -1047,3 +1047,237 @@ describe("where focus goes afterwards", () => {
     );
   });
 });
+
+describe("one authority for a write in flight (#599)", () => {
+  // The write used to be decided by a caller-side mark — one slot, tested
+  // with `!== null` — beside the reducer that already knew. Three review
+  // rounds on #596 produced three spellings of the two disagreeing. The
+  // write is now a consequence of the machine entering `saving`, so the
+  // three below are one property looked at from three sides.
+  const hanging = () => {
+    let release: () => void = () => {};
+    const record = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = () => resolve();
+        }),
+    );
+    return { record, release: () => release() };
+  };
+
+  it("sends another patient's answer while this one's write is in flight", async () => {
+    // Spelling two, and the expensive one: B's answer was DISCARDED. Through
+    // the three questions their whole ranking went with it.
+    const state = fakeState();
+    const { record, release } = hanging();
+    const store = {
+      ...state.adapter,
+      weightsWizard: { wasOffered: vi.fn().mockResolvedValue(false), record },
+    };
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state: store,
+      personId: 11,
+      patientInfo: null,
+    });
+    await screen.findByText(OFFER);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+
+    setProps({ personId: 22 });
+    await screen.findByText(OFFER);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(2));
+    release();
+  });
+
+  it("closes another patient's dialog while this one's write is in flight", async () => {
+    // Spelling one. Escape, Close and the scrim all refused for up to
+    // WIZARD_WRITE_GRACE_MS on behalf of somebody the reader had left.
+    //
+    // Already fixed by #596, which stopped `dismissWizard` reading the mark
+    // at all — so this is a regression guard rather than a pin on the
+    // change below it, and it does not fail when the old mark is restored
+    // to the ANSWER handlers only. Kept because the three spellings are one
+    // property and a reader chasing the next one should find all three
+    // together.
+    const state = fakeState();
+    const { record, release } = hanging();
+    const store = {
+      ...state.adapter,
+      weightsWizard: { wasOffered: vi.fn().mockResolvedValue(false), record },
+    };
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state: store,
+      personId: 11,
+      patientInfo: null,
+    });
+    await screen.findByText(OFFER);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+
+    setProps({ personId: 22 });
+    await screen.findByText(OFFER);
+    await userEvent.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+    expect(record).toHaveBeenCalledTimes(1); // and 22 wrote nothing
+    release();
+  });
+
+  // BOTH OF THESE PASS AGAINST THE BASE COMMIT, and that is not a defect in
+  // them: the base also wrote synchronously in the handler. What they guard
+  // against is the shape this change was nearly made in — a passive effect
+  // spending a stashed payload — which fails both. Like the #596 guard
+  // below, they are here so the next person to reach for that shape finds
+  // out in a second rather than in a review round.
+  it("writes in the same task as the click, so a patient switch cannot swallow it", async () => {
+    // The write must not wait for the next commit. Moved into a passive
+    // effect it did, and anything that changed the patient IN THE SAME TASK
+    // as the click then reset the machine before the effect ran: the reader
+    // answered, nothing was recorded, and they were asked again. Measured
+    // against the commit before that change — 1 write became 0.
+    //
+    // The WEAKER of the two, measured rather than assumed: the effect-shaped
+    // ablation fails both, a macrotask of deferral fails only its sibling
+    // below, and one microtask fails neither. An earlier version of this
+    // comment had that backwards.
+    const { state, record } = withWizard(false);
+    const { setProps } = renderTrialMatches(fakeApi(), { state, personId: 11 });
+    await screen.findByText(OFFER);
+    const skip = screen.getByRole("button", { name: "Keep them equal" });
+
+    await act(async () => {
+      skip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      setProps({ personId: 22 });
+    });
+
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes in the same task as the click, so an unmount cannot swallow it", async () => {
+    // The other half: a host tearing the remote down in the task that
+    // carried the click. Same cause, same loss.
+    //
+    // The STRONGER of the two: a macrotask of deferral fails this and not
+    // its sibling, because a `setTimeout` scheduled before an unmount still
+    // runs but React has torn the tree down by then. One microtask fails
+    // neither, so neither test claims to catch that.
+    const { state, record } = withWizard(false);
+    const view = renderTrialMatches(fakeApi(), { state, personId: 11 });
+    await screen.findByText(OFFER);
+    const skip = screen.getByRole("button", { name: "Keep them equal" });
+
+    await act(async () => {
+      skip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      view.unmount();
+    });
+
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it("still answers when a dismissal arrived first in the same task", async () => {
+    // Only reachable with scripted events, but it is the shape that says
+    // where the permission lives: the dismissal is accepted, so the answer
+    // that follows is refused by the machine — and must therefore write
+    // NOTHING rather than write and be forgotten. Under the effect it was
+    // worse than either: the payload was stashed, the state never reached
+    // `saving`, and the payload was silently dropped.
+    const { state, record } = withWizard(false);
+    renderTrialMatches(fakeApi(), { state, personId: 11 });
+    await screen.findByText(OFFER);
+    const skip = screen.getByRole("button", { name: "Keep them equal" });
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      skip.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // The dismissal won, so nothing is written — and nothing is left hanging.
+    expect(record).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+  });
+
+  it("answers again on a return visit while the first write is still out", async () => {
+    // Spelling three, the one the per-patient narrowing still left open: the
+    // reducer resets on the handle move, so coming back to 11 is a NEW
+    // question — but the old mark named 11, so every control on that fresh
+    // dialog did nothing, with no "Saving…" and nothing disabled to say why.
+    const state = fakeState();
+    const { record, release } = hanging();
+    const store = {
+      ...state.adapter,
+      weightsWizard: { wasOffered: vi.fn().mockResolvedValue(false), record },
+    };
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state: store,
+      personId: 11,
+      patientInfo: null,
+    });
+    await screen.findByText(OFFER);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+
+    setProps({ personId: 22 });
+    await screen.findByText(OFFER);
+    setProps({ personId: 11 });
+    const again = await screen.findByText(OFFER);
+    expect(again).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(2));
+    release();
+  });
+
+  it("does not let the first visit's write close the second visit's dialog", async () => {
+    // What `visit` is FOR, at the level where a reader would feel it. The
+    // test above only shows the second answer goes out; this one shows the
+    // first completion does not land on it. Without the visit in `written`
+    // the first settle closes a dialog whose own write is still in the air,
+    // and the reader watches "Saving…" vanish over nothing.
+    //
+    // Two independently releasable writes, because the point is which
+    // completion matches which dialog.
+    const state = fakeState();
+    const releases: Array<() => void> = [];
+    const record = vi.fn(
+      () => new Promise<void>((resolve) => releases.push(() => resolve())),
+    );
+    const store = {
+      ...state.adapter,
+      weightsWizard: { wasOffered: vi.fn().mockResolvedValue(false), record },
+    };
+    const { setProps } = renderTrialMatches(fakeApi(), {
+      state: store,
+      personId: 11,
+      patientInfo: null,
+    });
+    await screen.findByText(OFFER);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+
+    // Away and back: a second visit, a second question, a second answer.
+    setProps({ personId: 22 });
+    await screen.findByText(OFFER);
+    setProps({ personId: 11 });
+    await screen.findByText(OFFER);
+    await userEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(2));
+    // Scoped to the dialog: the page carries other `role="status"` regions.
+    const saving = () =>
+      within(screen.getByRole("dialog")).queryByText("Saving your answer…");
+    expect(saving()).not.toBeNull();
+
+    // The FIRST write finally settles. It belongs to a visit that is gone.
+    await act(async () => {
+      releases[0]();
+    });
+    expect(saving()).not.toBeNull();
+
+    // The second visit's own completion is what closes it.
+    await act(async () => {
+      releases[1]();
+    });
+    await waitFor(() => expect(screen.queryByText(OFFER)).toBeNull());
+  });
+});
