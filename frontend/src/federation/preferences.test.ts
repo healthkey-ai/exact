@@ -1902,12 +1902,22 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
   });
 
   it("does nothing at all when nobody told it who is signed in", async () => {
-    // The default, and every caller that has not been wired.
+    // The default, and every caller that has not been wired. Written as a
+    // swap that is NOT noticed, because the merge assertion alone passed
+    // both with the change reverted and with the guard forced to fire on
+    // every call — it measured neither direction.
     const a = fakeRow();
-    const t = adapterPreferences(a.methods);
+    const t = adapterPreferences(a.methods); // no identity reader
     a.put({ country: "US" });
     await t.get();
+    const before = a.reads.length;
+
+    // Whatever the credential is doing, this transport was not told and
+    // must behave exactly as it did: no re-read, and the cache still used.
+    a.put({ country: "CA" });
     await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
     expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
   });
 
@@ -1941,26 +1951,25 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
     const t = adapterPreferences(slow, () => who);
 
     const inFlight = t.get();
-    await Promise.resolve(); // the read is out
+    await Promise.resolve(); // the read is out, issued for reader one
     who = "sub:iss|two";
 
-    // The new reader saves. This clears the cache and issues its own read,
-    // which answers CA. The old read is still out.
+    // The new reader saves. It serialises behind the read already in
+    // flight, which lands holding reader ONE's row and stamps it as such —
+    // so the check after the awaits refuses rather than merging over it.
+    // Refusing costs this one edit, which `PreferenceWriter` reports; the
+    // reader's next keystroke saves against their own row.
     const saving = t.save({ distance: 100 });
     await Promise.resolve();
     releaseFirst();
     await inFlight;
-    await saving;
+    await expect(saving).rejects.toThrow(/account changed/);
+    expect(a.saved).toEqual([]);
 
-    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
-    expect(a.saved.at(-1)).not.toHaveProperty("country", "US");
-
-    // And the NEXT save, which is where the bump actually earns its place:
-    // without it the late read has re-seeded `stored` with the old
-    // reader's row by now, and this payload carries it. Measured — the
-    // assertions above pass with the bump removed, because the cleared
-    // `seeded` already forced this save its own read.
+    // And the next save goes, against the NEW reader's row: the refusal
+    // forgot reader one's cache on its way out.
     await t.save({ distance: 200 });
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 200 });
     expect(a.saved.at(-1)).not.toHaveProperty("country", "US");
   });
 

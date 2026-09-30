@@ -132,6 +132,16 @@ export function adapterPreferences(
   // `stored` was seeded — and under a wholesale replace that payload IS the
   // row, so everything they had saved would go with it.
   let firstRead: Promise<unknown> | null = null;
+  //: Whose belief the cache is. Written ONLY where a belief is recorded —
+  //: see `stampWhoThisIsFor` — because the moment the cache is seeded is
+  //: the only moment at which the answer is known.
+  let believedFor: string | undefined = undefined;
+  //: Bumped when the reader changes, and separate from `generation` on
+  //: purpose. `generation` is the RESET era, and a save in flight reads it
+  //: to decide whether to abandon quietly; borrowing it here let a reader
+  //: change abandon a save with no error, so `onSuccess` fired over a write
+  //: that never happened. This one only ever stops a stale read seeding.
+  let readerEra = 0;
   // The row's entity-tag as last seen. Three states, and collapsing any two
   // of them produces a wrong precondition:
   //
@@ -202,9 +212,6 @@ export function adapterPreferences(
   // baseline is excluded from what gets saved at all. Representing "the reader
   // cleared the host's value" would need a sentinel that survives reads, and
   // that is a product decision about whose scope wins, not a defect.
-  //: Whose belief the cache above currently is.
-  let believedFor: string | undefined = undefined;
-
   /** Drop everything if the credential has changed hands.
    *
    *  `sameIdentity` rather than `!==`, for the two reasons it exists: a
@@ -227,29 +234,68 @@ export function adapterPreferences(
    *  one extra read later, not a wrong row.
    */
   const stillTheSameReader = () => {
-    const now = identity?.();
-    if (sameIdentity(believedFor, now)) {
-      // Do not let an "unknown" erase a reader we do know about.
-      if (now !== undefined) believedFor = now;
-      return;
-    }
+    if (sameIdentity(believedFor, identity?.())) return;
     stored = {};
     believed = {};
     seeded = false;
     version = undefined;
-    generation += 1;
+    readerEra += 1;
     firstRead = null;
-    believedFor = now;
+    // Cleared rather than set to the new reader: nothing is believed yet,
+    // and the read that seeds it is what will say whose it is.
+    believedFor = undefined;
+  };
+
+  /** Record whose row the cache now describes.
+   *
+   *  AT THE MOMENT IT IS SEEDED, and that is the whole correction: the
+   *  first version stamped inside the check above, which runs BEFORE a
+   *  read. On the mount-time `get` no token has been fetched yet, so the
+   *  fingerprint is unknown, and the read that loaded reader one's row left
+   *  the cache unstamped — `sameIdentity(undefined, anything)` is true, so
+   *  the guard then waved every later reader through. A reader who loads
+   *  their filters and never saves is the common case, and it was the one
+   *  the guard did nothing for. Measured through the real bridge.
+   *
+   *  After the read resolves the answer is available, because the read
+   *  itself went through the client and its interceptor fetched a token.
+   *  A host with no credentials at all stamps `undefined` and keeps the
+   *  behaviour it had, which is the carve-out `sameIdentity` is for.
+   */
+  const stampWhoThisIsFor = (whenIssued: string | undefined) => {
+    // THE READER THE READ WENT OUT FOR, not the one who happens to be
+    // signed in when it lands. A read issued as one and resolving after the
+    // swap otherwise stamps the cache with TWO while holding ONE's row —
+    // and then every check agrees and the merge goes ahead. Measured; it is
+    // the same bug one step later.
+    //
+    // Falling back to the resolve-time reading when the issue-time one was
+    // unknown, which is the mount: no token has been fetched when the load
+    // effect calls `get`, and by the time it answers one has, because the
+    // read itself went through the client. Without that fallback the very
+    // first cache is never stamped and the guard is off for a reader who
+    // loads their filters and never saves.
+    believedFor = whenIssued ?? identity?.() ?? undefined;
   };
 
   return {
     forget: () => {
-      stillTheSameReader();
+      // NOT `stillTheSameReader()`. This is called from the wizard's flag
+      // write, which is not serialised behind the save queue, and the
+      // forget's bump could land inside a save's refresh read — the save
+      // then abandoned quietly and `onSuccess` fired over a write that
+      // never happened. The next `get` or `save` does the identity check
+      // anyway; all this one owes is the tag.
       version = undefined;
     },
     get: async () => {
       stillTheSameReader();
       const era = generation;
+      // Which READER this read belongs to, alongside which reset era. Both
+      // must still hold for it to seed: a read issued for the previous
+      // reader resolves holding their row.
+      const mine = readerEra;
+      const issuedFor = identity?.();
       const read = (async () => {
         const fromServer = versioning
           ? await versioning.read()
@@ -260,7 +306,7 @@ export function adapterPreferences(
           // value. Nothing writes them any more.
           if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
         }
-        if (era === generation) {
+        if (era === generation && mine === readerEra) {
           stored = { ...out };
           // What the panel is about to show — ALMOST. The caller holds back
           // the fields the reader overruled while this read was in flight
@@ -272,6 +318,7 @@ export function adapterPreferences(
           believed = { ...out };
           seeded = true;
           version = fromServer.version;
+          stampWhoThisIsFor(issuedFor);
         }
         return out;
       })();
@@ -288,6 +335,8 @@ export function adapterPreferences(
         // One more attempt, because a read that failed once may not fail
         // twice, and the alternative is losing the reader's edit.
         const era = generation;
+        const mine = readerEra;
+        const issuedFor = identity?.();
         try {
           // Through the versioning transport when there is one, so `stored`
           // and `version` are seeded by the SAME read. Seeding only `stored`
@@ -303,7 +352,7 @@ export function adapterPreferences(
             if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
           }
           // Same era check as `get`: a Reset during the retry wins.
-          if (era === generation) {
+          if (era === generation && mine === readerEra) {
             stored = out;
             // The panel was loaded from whatever the caller showed; this
             // read is the first thing we know about the row, so it is also
@@ -314,6 +363,7 @@ export function adapterPreferences(
             believed = { ...out };
             seeded = true;
             version = fromServer.version;
+            stampWhoThisIsFor(issuedFor);
           }
         } catch {
           // Still blind. Refusing costs the reader this one edit, which they
@@ -323,6 +373,23 @@ export function adapterPreferences(
           throw new Error("saved filters could not be read, so they were not overwritten");
         }
       }
+      // ASKED AGAIN, after the awaits above. The check at the top of `save`
+      // is taken synchronously, and everything since — the first read, the
+      // re-read when nothing was seeded — is one or two round trips during
+      // which the account can change. Refusing costs the reader this one
+      // edit, which they can make again and which `PreferenceWriter`
+      // reports through `onError`; writing costs somebody else their saved
+      // search. Refused rather than re-based on the new reader's row: the
+      // payload was composed for a panel showing the PREVIOUS reader's
+      // filters, so re-basing would send those into the new row, which is
+      // the whole of #603.
+      if (!sameIdentity(believedFor, identity?.())) {
+        stillTheSameReader();
+        throw new Error(
+          "the signed-in account changed while these filters were being saved",
+        );
+      }
+
       // The reader's payload over what the server holds. A key they cleared is
       // present-and-`undefined` and drops out on the way through JSON; a key
       // they never saw survives.

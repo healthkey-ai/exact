@@ -26,11 +26,26 @@ const recordingAdapter: AxiosAdapter = async (config) => {
   if (config.url === "/patient-info/me/") return respond(config, { patient_info: { person_id: 42 } });
   if (config.url === "/normalize-ctomop-row/") return respond(config, { diseaseCode: "MM" });
   if (config.url?.endsWith("/trial-enrollments/ids/")) return respond(config, { trial_ids: [], count: 0 });
+  // The saved-filter row as the server holds it, so a test can model a
+  // reader who LOADED filters without ever saving any — which is the shape
+  // #603's guard was blind to.
+  if (config.url?.includes("user-state") && config.method === "get") {
+    // KEYED ON THE TOKEN, because that is how EXACT finds the row — the
+    // whole reason one reader's cache must not become another's merge
+    // base. A fake that served one row to everybody could not tell a
+    // working guard from a broken one.
+    const bearer = String(config.headers?.Authorization ?? "");
+    return respond(config, {
+      preferences: serverRows[bearer] ?? {},
+      updated_at: `tag-${bearer}`,
+    });
+  }
   return respond(config, {});
 };
 axios.defaults.adapter = recordingAdapter;
 
 let persist: ((f: Record<string, unknown>) => void) | null = null;
+let serverRows: Record<string, Record<string, unknown>> = {};
 
 vi.mock("./TrialMatches", () => ({
   default: (props: {
@@ -96,6 +111,7 @@ describe("a filter edit never crosses an account switch", () => {
     );
 
   beforeEach(() => {
+    serverRows = {};
     user = "1";
     requests.length = 0;
   });
@@ -262,30 +278,31 @@ describe("a filter edit never crosses an account switch", () => {
 
   it("does not carry one reader's saved filters into the next reader's row", async () => {
     // #603, and a different mechanism from everything above. The write the
-    // new reader makes IS theirs — captured under their credential and sent
+    // new reader makes IS theirs — queued under their credential and sent
     // under it — so #583's guard has nothing to object to. What crosses is
-    // the MERGE BASE: `adapterPreferences` caches what the server holds so a
-    // partial payload does not replace the row, and that cache belongs to
+    // the MERGE BASE: `adapterPreferences` caches what the server holds so
+    // a partial payload does not replace the row, and that cache belongs to
     // whoever it was read for.
     //
-    // Through the bridge rather than in a unit test, because the unit tests
-    // can only show the transport forgetting; this shows what actually goes
-    // on the wire.
+    // READER ONE NEVER SAVES. That is the shape, and the first version of
+    // this test got it wrong: it persisted before the swap, and that save
+    // was the only thing stamping the cache with an owner — so the test
+    // passed while the common case, a reader who loads their filters and
+    // never edits, left the guard switched off entirely. Review measured
+    // it through this same harness.
+    serverRows = {
+      "Bearer token-1": { searchTitle: "USER-1-ONLY" },
+      "Bearer token-2": { country: "CA" },
+    };
     const view = await start({ sessionKey: "user-1" });
-
-    act(() => {
-      persist!({ searchTitle: "USER-1-ONLY" });
-    });
-    await act(() => new Promise((r) => setTimeout(r, 800)));
 
     user = "2"; // no rerender, no new key, no new getToken
 
-    // TWO edits after the swap, and the first one is scaffolding. #583
-    // strands it — the cached fingerprint still says user one at the moment
-    // it is queued — but its send-time check fetches a token and so brings
-    // the cache up to date. Only the second edit is both queued and sent as
-    // user two, which is the shape #603 is about: a write nothing else
-    // objects to, carrying the previous reader's row underneath it.
+    // TWO edits after the swap, and the first is scaffolding. #583 strands
+    // it — the cached fingerprint still says user one when it is queued —
+    // but its send-time check fetches a token and brings the cache up to
+    // date. Only the second is both queued and sent as user two, which is
+    // the write #603 is about.
     act(() => {
       persist!({ distance: 50 });
     });
@@ -304,6 +321,10 @@ describe("a filter edit never crosses an account switch", () => {
     expect(bodies.length).toBeGreaterThan(0);
     for (const body of bodies) {
       expect(body).not.toContain("USER-1-ONLY");
+      // And it is their OWN row underneath, not an empty one: forgetting
+      // without re-reading would replace user two's filters with the one
+      // key they touched.
+      expect(body).toContain("CA");
     }
     view.unmount();
   });
