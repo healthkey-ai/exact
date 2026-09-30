@@ -478,6 +478,13 @@ export function adapterPreferences(
             filters: (await state.getPreferences()) ?? {},
             version: null as string | null,
           }))();
+      // A handler NOW, not when it is awaited. `reading` is started beside
+      // the ask and awaited after it, and in that gap a rejection has
+      // nobody listening — Node reports an unhandled rejection even though
+      // the caller does catch `get()`. The original promise is still the
+      // one awaited below, so the failure is not swallowed, only
+      // acknowledged.
+      void reading.catch(() => undefined);
       // THE RESET ERA IS READ HERE, synchronously, beside the request it
       // describes. "This read predates the Reset" is a statement about when
       // the read was ISSUED, so taking it after an await answers a different
@@ -561,6 +568,8 @@ export function adapterPreferences(
               filters: (await state.getPreferences()) ?? {},
               version: undefined,
             }))();
+        // Same as in `get`: acknowledged now, awaited below.
+        void reading.catch(() => undefined);
         // Beside the request, for the reason spelled out in `get`.
         const era = generation;
         const issuedFor = await asking;
@@ -673,7 +682,9 @@ export function adapterPreferences(
 
       if (!versioning) {
         const payload = merge(stored);
+        const era = generation;
         await refuseIfTheReaderChanged();
+        if (era !== generation) return;
         await state.savePreferences(payload);
         // AFTER it resolves. Recording a payload that failed means the next
         // one is built against a row that does not exist.
@@ -740,9 +751,15 @@ export function adapterPreferences(
       let refusedWith: string | null | undefined;
       const writeEra = generation;
       // The unknown-version refresh above is a full round trip, and the
-      // reader can change inside it. The refresh also went through the
-      // client, so the cache this reads was written by it.
+      // reader can change inside it.
       await refuseIfTheReaderChanged();
+      // AND the ask itself is a round trip, during which a Reset can land.
+      // The check after the write is too late: by then the pre-reset
+      // payload has gone out quoting the tag Reset installed, so the
+      // precondition PASSES and everything the reader cleared comes back.
+      // Every await before a write needs this in front of it, not only the
+      // ones that fetch.
+      if (writeEra !== generation) return;
       try {
         const tag = normalise(await versioning.write(payload, precondition()));
         if (writeEra !== generation) {
@@ -786,8 +803,10 @@ export function adapterPreferences(
       // would re-assert the whole stale panel — see `edited` above.
       const retried = mergeEdit(stored, edit);
       const retryEra = generation;
-      // Same again: the 412 recovery re-read is another round trip.
+      // Same again: the 412 recovery re-read is another round trip, and so
+      // is the ask inside the refusal.
       await refuseIfTheReaderChanged();
+      if (retryEra !== generation) return;
       try {
         const tag = normalise(await versioning.write(retried, precondition()));
         if (retryEra !== generation) {
@@ -854,6 +873,7 @@ export function adapterPreferences(
       believed = {};
       if (!versioning) {
         const clearing = state.resetPreferences();
+        void clearing.catch(() => undefined);
         const issuedFor = await asking;
         // Through the pair, so the stamp cannot drift away from the flag.
         // Before the await as well as after: `knew` carries the previous
@@ -888,6 +908,8 @@ export function adapterPreferences(
           return normalise(await versioning.clear({ kind: "none" }));
         }
       })();
+      // Same as in `get`.
+      void clearing.catch(() => undefined);
       const issuedFor = await asking;
       if (knew) nowBelievedFor(issuedFor);
       else seeded = false;
