@@ -970,6 +970,13 @@ export function useSavedFilters(
           // and in those the cache would otherwise survive the swap and
           // become the merge base for the next reader's first save (#603).
           () => filterIdentityRef.current?.(),
+          // The asked-afresh half, and the guard does not work at mount
+          // without it: the cached reading above is written by the client's
+          // interceptor, so at the moment the seeding read is issued it has
+          // never been written at all. Same fallback as the writer's, so a
+          // host that supplies only the cached reader keeps working — later
+          // than it could, never wrongly.
+          () => (filterIdentityNowRef.current ?? filterIdentityRef.current)?.(),
         )
       : localStoragePreferences(persistedKey ?? key);
     // `source` rather than `state`: see above, and `sourceId`.

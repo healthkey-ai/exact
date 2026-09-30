@@ -1,0 +1,345 @@
+// One reader's saved filters must never reach another reader's row.
+//
+// WHY THIS FILE EXISTS RATHER THAN A THIRD REVIEW ROUND. Two rounds of
+// review found the same defect in the same function with two different
+// spellings: the cache that says "the server holds this" was stamped with
+// the wrong reader, first by reading the fingerprint too early and then by
+// reading it too late. Each round closed one spelling. Both shared a
+// premise — that the identity of a request can be recovered afterwards by
+// inspecting a cache some OTHER request may have moved — and a third round
+// would have found a third spelling of it.
+//
+// So the invariant is written down and generated against instead. Every
+// example below is produced from a seed; a failure prints the seed and the
+// exact op sequence, which is the whole point of keeping the harness here
+// rather than throwing it away with the review.
+//
+// THE TWO INVARIANTS
+//
+//   1. No value in reader B's row originated from a read of reader A's row.
+//      This is the leak in plain terms. It covers the merge base (#603),
+//      because a save composed against somebody else's cache carries their
+//      values, and the endpoint REPLACES the row rather than merging.
+//
+//   2. `seeded` implies `believedFor` is stamped. Not observable from
+//      outside, so it is asserted through its consequence: an unstamped
+//      cache switches the guard off for good — `sameIdentity(undefined,
+//      anyone)` is true — so the sequences end with one more reader and one
+//      more save, and invariant 1 is checked again after it. A transport
+//      that reached the unstamped state passes the first check and fails
+//      the second.
+//
+// WHAT THE FAKE SERVER MODELS, and why each part is load-bearing:
+//
+//   * A request is attributed to whoever the credential names AT THE MOMENT
+//     IT IS MADE, not when it resolves. That is what EXACT's backend does,
+//     and a fake that answered one row to everybody cannot tell a working
+//     guard from a broken one — an earlier regression test for this very
+//     bug passed for exactly that reason.
+//   * A write REPLACES the row. PROMOP's endpoint has no server-side merge,
+//     which is why a wrong merge base destroys the victim's other filters
+//     rather than adding to them.
+//   * Reading a token refreshes the cached fingerprint, because in the real
+//     bridge that cache is written by the client's interceptor. This is the
+//     thing both defects turned on: between a swap and the next request the
+//     cache still names the reader who has gone.
+import { describe, expect, it } from "vitest";
+
+import { adapterPreferences } from "./preferences";
+import type { Precondition, VersionedPreferences } from "./state";
+import type { FilterState } from "./types";
+
+/** Reproducible randomness. A property test whose failures cannot be
+ *  replayed is a flaky test; the seed is printed with every failure. */
+const rng = (seed: number) => {
+  let s = seed >>> 0 || 1;
+  return () => {
+    s ^= s << 13;
+    s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5;
+    s >>>= 0;
+    return s / 0x100000000;
+  };
+};
+
+const READERS = ["sub:iss|one", "sub:iss|two", "sub:iss|three"] as const;
+/** The value that can only have come from this reader's row. */
+const markerOf = (who: string) => `ONLY-${who}`;
+
+interface Server {
+  rows: Record<string, Record<string, unknown>>;
+  /** Whoever the host has signed in right now. */
+  signedIn: string;
+  /** What a synchronous reading of the credential would say — stale until
+   *  something fetches a token, exactly like the bridge's `identityRef`. */
+  cached: string | undefined;
+}
+
+const newServer = (): Server => {
+  const rows: Record<string, Record<string, unknown>> = {};
+  for (const who of READERS) rows[who] = { marker: markerOf(who) };
+  return { rows, signedIn: READERS[0], cached: undefined };
+};
+
+/** Fetching a token, which is also what refreshes the cached reading. */
+const fetchToken = (server: Server) => {
+  server.cached = server.signedIn;
+  return server.signedIn;
+};
+
+const strip = (row: Record<string, unknown>): FilterState => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) if (v !== undefined) out[k] = v;
+  return out as FilterState;
+};
+
+/** The adapter methods, in both the shapes production has. */
+const methodsFor = (server: Server, versioned: boolean) => {
+  const tags: Record<string, string | null> = {};
+  for (const who of READERS) tags[who] = `"v0-${who}"`;
+  // Attributed when the call is ENTERED, like a request leaving with a
+  // header on it. Everything after the first await belongs to whoever this
+  // says, however long the round trip takes.
+  const attribute = () => fetchToken(server);
+  const base = {
+    getPreferences: async () => {
+      const who = attribute();
+      await Promise.resolve();
+      return strip(server.rows[who]);
+    },
+    savePreferences: async (filters: FilterState) => {
+      const who = attribute();
+      await Promise.resolve();
+      server.rows[who] = { ...(filters as object) };
+    },
+    resetPreferences: async () => {
+      const who = attribute();
+      await Promise.resolve();
+      server.rows[who] = {};
+    },
+  };
+  if (!versioned) return base;
+  return {
+    ...base,
+    preferenceVersioning: {
+      read: async (): Promise<VersionedPreferences> => {
+        const who = attribute();
+        await Promise.resolve();
+        return { filters: strip(server.rows[who]) as never, version: tags[who] };
+      },
+      write: async (filters: FilterState, _p: Precondition): Promise<string | null> => {
+        // Preconditions are exercised by `preferences.test.ts`; here there
+        // is one writer per row, so every write is accepted and the subject
+        // under test is attribution alone.
+        const who = attribute();
+        await Promise.resolve();
+        server.rows[who] = { ...(filters as object) };
+        tags[who] = `"v-${who}-${Date.now()}"`;
+        return tags[who];
+      },
+      clear: async (_p: Precondition): Promise<string | null> => {
+        const who = attribute();
+        await Promise.resolve();
+        server.rows[who] = {};
+        tags[who] = `"vc-${who}"`;
+        return tags[who];
+      },
+    },
+  };
+};
+
+/** Every marker that is in the wrong row. */
+const foreignMarkers = (server: Server): string[] => {
+  const wrong: string[] = [];
+  for (const who of READERS) {
+    for (const value of Object.values(server.rows[who])) {
+      if (typeof value !== "string" || !value.startsWith("ONLY-")) continue;
+      if (value !== markerOf(who)) wrong.push(`${who} holds ${value}`);
+    }
+  }
+  return wrong;
+};
+
+type Op = "get" | "save" | "reset" | "swap" | "settle";
+
+const OPS: Op[] = ["get", "save", "reset", "swap", "settle", "get", "save"];
+
+const runSequence = async (seed: number, versioned: boolean, asked: boolean) => {
+  const random = rng(seed);
+  const server = newServer();
+  const methods = methodsFor(server, versioned);
+  const transport = adapterPreferences(
+    methods as never,
+    () => server.cached,
+    // `asked: false` is the host that supplies `credentialIdentity` and not
+    // `credentialIdentityNow` — permitted by the prop contract, and the
+    // shape in which a request cannot be attributed when it is issued. It
+    // is a distinct axis rather than a footnote because the two halves of
+    // the guard divide along it: with an answer available the stamp does
+    // the work, and without one it falls to the two asymmetric unknown
+    // rules. Run with only the first half, the second was never exercised
+    // and an ablation of it passed the whole suite.
+    asked
+      ? // Asked afresh: fetches a token, which is what makes the cached
+        // reading current — the bridge's `credentialIdentityNow` does
+        // exactly this.
+        async () => fetchToken(server)
+      : undefined,
+  );
+
+  const log: string[] = [];
+  /** Invariant 3's violations: rows a read put in front of the wrong
+   *  reader. Collected rather than thrown so one sequence reports all of
+   *  them. */
+  const handedOver: string[] = [];
+  // Never awaited in lockstep: the defects both lived in the gap between a
+  // request being issued and resolving, so the sequence deliberately leaves
+  // work in flight and settles it later.
+  const inFlight: Promise<unknown>[] = [];
+  const swallow = (p: Promise<unknown>) => {
+    // A refusal is a correct outcome here — the transport declining to write
+    // across a swap is the behaviour under test — so rejections are recorded
+    // rather than thrown.
+    inFlight.push(p.catch(() => undefined));
+  };
+
+  const steps = 4 + Math.floor(random() * 9);
+  for (let i = 0; i < steps; i += 1) {
+    const op = OPS[Math.floor(random() * OPS.length)];
+    log.push(`${op}(signedIn=${server.signedIn})`);
+    if (op === "get") {
+      // INVARIANT 3 — what a read HANDS BACK, not only what it caches.
+      //
+      // The caller paints this into the filter panel (`hooks.ts`, the load
+      // effect), so a read that resolves after a swap holding the departed
+      // reader's row draws their saved search in front of the arriving
+      // one — visible, and the arriving reader's next keystroke sends the
+      // whole panel back. Judged against whoever is signed in AT THE
+      // MOMENT IT RESOLVES, because that is who is looking at it.
+      //
+      // Added after the first version of this file asserted only on server
+      // rows: six of the guards below could be deleted with every test
+      // still green, because the write path caught what the read path let
+      // through one caller later.
+      swallow(
+        transport.get().then((row) => {
+          const at = server.signedIn;
+          for (const value of Object.values(row as Record<string, unknown>)) {
+            if (typeof value !== "string" || !value.startsWith("ONLY-")) continue;
+            if (value !== markerOf(at)) handedOver.push(`${at} was shown ${value}`);
+          }
+        }),
+      );
+    }
+    else if (op === "save") {
+      // The reader types something of their own. What they must never send
+      // is somebody else's marker, and they can only be holding one if the
+      // transport handed it to them.
+      swallow(transport.save({ searchTitle: `typed-by-${server.signedIn}` } as FilterState));
+    } else if (op === "reset") swallow(transport.reset());
+    else if (op === "swap") {
+      if (!asked) {
+        // WHAT IS NOT PROMISED, and why it is excluded here rather than
+        // quietly passing.
+        //
+        // A host that supplies `credentialIdentity` and not
+        // `credentialIdentityNow` cannot be asked who a request is about
+        // to go out as. The transport answers by re-reading before every
+        // save, which re-attributes the row and refreshes what the cached
+        // reading can see — but between that last check and the request
+        // actually leaving there is a gap, and on this path nothing can
+        // close it. A swap landing inside that gap writes the checked
+        // reader's payload under the arriving reader's credential.
+        //
+        // So the sequence settles before swapping here. What remains under
+        // test for this shape is everything else — and that is not
+        // nothing: it is the mount read, the cache across saves, and the
+        // reset. `adapterPreferences` warns at construction that the rest
+        // is not guaranteed, and `hooks.ts` supplies both halves, so no
+        // deployment is on this path today.
+        await Promise.all(inFlight.splice(0));
+        for (let t = 0; t < 4; t += 1) await Promise.resolve();
+      }
+      server.signedIn = READERS[Math.floor(random() * READERS.length)];
+      // Deliberately NOT refreshing `server.cached`: an unsignalled swap is
+      // invisible until something next fetches a token, and that window is
+      // where both defects lived.
+    } else {
+      await Promise.all(inFlight.splice(0));
+      // A few turns of the microtask queue, so anything chained settles.
+      for (let t = 0; t < 4; t += 1) await Promise.resolve();
+    }
+  }
+  await Promise.all(inFlight.splice(0));
+  for (let t = 0; t < 8; t += 1) await Promise.resolve();
+
+  const afterTheSequence = foreignMarkers(server);
+
+  // INVARIANT 2, through its consequence. A transport left `seeded` with no
+  // stamp waves every later reader through, and nothing above has to notice
+  // — so one more reader arrives and writes, and invariant 1 is asked again.
+  server.signedIn = READERS[(READERS.indexOf(server.signedIn as never) + 1) % READERS.length];
+  log.push(`final-swap(signedIn=${server.signedIn})`);
+  // Nothing is in flight here — everything was settled above — so this one
+  // is a fair test for both shapes.
+  await transport.save({ searchTitle: "last-word" } as FilterState).catch(() => undefined);
+  for (let t = 0; t < 8; t += 1) await Promise.resolve();
+
+  return { server, log, afterTheSequence, handedOver, afterOneMore: foreignMarkers(server) };
+};
+
+describe("no reader's saved filters reach another reader's row", () => {
+  const shapes: Array<[boolean, boolean, string]> = [
+    [true, true, "the versioned adapter, host answers afresh"],
+    [false, true, "no versioning, host answers afresh"],
+    [true, false, "the versioned adapter, host has only the cached reader"],
+    [false, false, "no versioning, host has only the cached reader"],
+  ];
+  for (const [versioned, asked, what] of shapes) {
+    it(`holds over generated interleavings — ${what}`, async () => {
+      const failures: string[] = [];
+      for (let seed = 1; seed <= 300; seed += 1) {
+        const { log, afterTheSequence, handedOver, afterOneMore } = await runSequence(
+          seed,
+          versioned,
+          asked,
+        );
+        if (afterTheSequence.length || afterOneMore.length || handedOver.length) {
+          failures.push(
+            [
+              `seed ${seed}`,
+              `  ops: ${log.join(" → ")}`,
+              handedOver.length ? `  a read handed over: ${handedOver.join("; ")}` : "",
+              afterTheSequence.length ? `  after the sequence: ${afterTheSequence.join("; ")}` : "",
+              afterOneMore.length ? `  after one more reader: ${afterOneMore.join("; ")}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          );
+        }
+        // Enough detail to replay, and short enough to read. Ten is plenty
+        // to see the shape; the seed reproduces the rest.
+        if (failures.length >= 10) break;
+      }
+      expect(failures.join("\n\n")).toBe("");
+    });
+  }
+
+  it("still lets one reader save their own filters, which is what it must not break", async () => {
+    // The guard's failure mode in the other direction: refusing everything
+    // also satisfies invariant 1, and would be worthless. This pins that a
+    // single reader with no swap at all still gets their edit stored.
+    const server = newServer();
+    const transport = adapterPreferences(
+      methodsFor(server, true) as never,
+      () => server.cached,
+      async () => fetchToken(server),
+    );
+    await transport.get();
+    await transport.save({ searchTitle: "mine" } as FilterState);
+    expect(server.rows[READERS[0]]).toMatchObject({ searchTitle: "mine" });
+    // And the rest of their row survived, because the merge base was theirs.
+    expect(server.rows[READERS[0]].marker).toBe(markerOf(READERS[0]));
+  });
+});
