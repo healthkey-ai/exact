@@ -712,6 +712,20 @@ export function adapterPreferences(
       // have built: the keys it omits are exactly the ones already equal to
       // what `stored` holds.
       const payload = mergeEdit(stored, edit);
+      // CAPTURED WITH THE PAYLOAD IT DESCRIBES, not read again at the
+      // write. `precondition()` reads `version`, and `forget()` sets that
+      // to `undefined` without touching `generation` — on purpose: it is
+      // called from the wizard's flag write, which is not serialised
+      // behind this queue. Evaluated after the await below, it therefore
+      // answers `{ kind: "none" }`, and a conditional write silently
+      // becomes an unconditional one: no `If-Match`, no 412, another tab's
+      // edit destroyed with nothing on `onError`.
+      //
+      // There was no await between the refresh and the write before this
+      // branch, so the window is one this change opened. Captured here,
+      // the worst case is a tag that has gone stale, which 412s and takes
+      // the recovery path below. Stale fails safe; absent fails open.
+      const sending = precondition();
       // The tag the refusal reported, kept for the recovery below.
       let refusedWith: string | null | undefined;
       const writeEra = generation;
@@ -726,7 +740,7 @@ export function adapterPreferences(
       // ones that fetch.
       if (writeEra !== generation) return;
       try {
-        const tag = normalise(await versioning.write(payload, precondition()));
+        const tag = normalise(await versioning.write(payload, sending));
         if (writeEra !== generation) {
           // A Reset landed while this write was on the wire. Recording its
           // payload would carry the reader's pre-reset filters forward into
@@ -767,13 +781,15 @@ export function adapterPreferences(
       // Only what changed, over what is there NOW. `merge(stored)` here
       // would re-assert the whole stale panel — see `edited` above.
       const retried = mergeEdit(stored, edit);
+      // Same capture, same reason, on the path that is walked least.
+      const sendingAgain = precondition();
       const retryEra = generation;
       // Same again: the 412 recovery re-read is another round trip, and so
       // is the ask inside the refusal.
       await refuseIfTheReaderChanged();
       if (retryEra !== generation) return;
       try {
-        const tag = normalise(await versioning.write(retried, precondition()));
+        const tag = normalise(await versioning.write(retried, sendingAgain));
         if (retryEra !== generation) {
           // A Reset landed while the retry was on the wire. Same reason as
           // the first write: recording this payload would carry the

@@ -178,9 +178,11 @@ describe("an await added in front of a write is a window", () => {
     let row: Record<string, unknown> = {};
     let tag: string | null = "\"v0\"";
     let refuseOnce = false;
+    const preconditions: Precondition[] = [];
     const writes: Array<Record<string, unknown>> = [];
     return {
       writes,
+      preconditions,
       seen: () => ({ ...row }),
       /** Refuse the next write with a 412, as a second tab would. */
       contend: () => {
@@ -196,7 +198,8 @@ describe("an await added in front of a write is a window", () => {
         preferenceVersioning: {
           read: async (): Promise<VersionedPreferences> =>
             ({ filters: { ...row } as never, version: tag }),
-          write: async (filters: Record<string, unknown>, _p: Precondition) => {
+          write: async (filters: Record<string, unknown>, p: Precondition) => {
+            preconditions.push(p);
             if (refuseOnce) {
               refuseOnce = false;
               throw new PreconditionFailed(tag);
@@ -425,5 +428,46 @@ describe("an await added in front of a write is a window", () => {
     // the cache, the save re-reads, and that read's ask succeeds.
     expect(rows["two"]).toEqual({ country: "CA", distance: 100 });
     expect(rows["one"]).toEqual({ searchTitle: "USER-1-ONLY", country: "US" });
+  });
+
+  it("does not turn a conditional write unconditional when forget() lands in the ask", async () => {
+    // `precondition()` reads `version` when it is CALLED. `forget()` sets
+    // that to `undefined` and deliberately does not move `generation` — it
+    // comes from the weights wizard's flag write, which is not serialised
+    // behind the save queue. So a `precondition()` evaluated after the
+    // awaited identity check answers `{ kind: "none" }`, and the write
+    // goes out with no `If-Match` at all: no 412, no retry, another tab's
+    // edit destroyed with nothing on `onError`.
+    //
+    // Before this branch there was no await between the refresh and the
+    // write, so the window is one the identity checks opened. Captured
+    // with the payload, the worst case is a stale tag, which 412s.
+    const a = versionedRow();
+    a.put({ country: "US" });
+    let duringTheAsk: null | (() => void) = null;
+    let skip = 0;
+    const t = adapterPreferences(
+      a.methods as never,
+      () => "sub:iss|one",
+      async () => {
+        if (duringTheAsk && skip > 0) {
+          skip -= 1;
+        } else if (duringTheAsk) {
+          const hook = duringTheAsk;
+          duringTheAsk = null;
+          hook();
+        }
+        return "sub:iss|one";
+      },
+    );
+
+    await t.get();
+    // The ask immediately before the write, as in the Reset cases above.
+    skip = 1;
+    duringTheAsk = () => t.forget();
+    await t.save({ distance: 100 } as FilterState);
+
+    expect(a.preconditions).toHaveLength(1);
+    expect(a.preconditions[0].kind).toBe("ifMatch");
   });
 });
