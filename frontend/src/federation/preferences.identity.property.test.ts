@@ -172,14 +172,13 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
   const transport = adapterPreferences(
     methods as never,
     () => server.cached,
-    // `asked: false` is the host that supplies `credentialIdentity` and not
-    // `credentialIdentityNow` — permitted by the prop contract, and the
-    // shape in which a request cannot be attributed when it is issued. It
-    // is a distinct axis rather than a footnote because the two halves of
-    // the guard divide along it: with an answer available the stamp does
-    // the work, and without one it falls to the two asymmetric unknown
-    // rules. Run with only the first half, the second was never exercised
-    // and an ablation of it passed the whole suite.
+    // `asked: false` is a host that cannot be asked at all — no
+    // `credentialIdentityNow`. THE GUARD IS OFF for it, by decision: see
+    // `whoThisRequestIsFor`. What this axis pins is that being off is all
+    // that happens — the transport still loads, merges and saves, and a
+    // reader's own row is not damaged by their own use of it. An earlier
+    // revision tried to protect this shape halfway and produced both a
+    // leak and a panel that never loaded.
     asked
       ? // Asked afresh: fetches a token, which is what makes the cached
         // reading current — the bridge's `credentialIdentityNow` does
@@ -239,28 +238,11 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
       swallow(transport.save({ searchTitle: `typed-by-${server.signedIn}` } as FilterState));
     } else if (op === "reset") swallow(transport.reset());
     else if (op === "swap") {
-      if (!asked) {
-        // WHAT IS NOT PROMISED, and why it is excluded here rather than
-        // quietly passing.
-        //
-        // A host that supplies `credentialIdentity` and not
-        // `credentialIdentityNow` cannot be asked who a request is about
-        // to go out as. The transport answers by re-reading before every
-        // save, which re-attributes the row and refreshes what the cached
-        // reading can see — but between that last check and the request
-        // actually leaving there is a gap, and on this path nothing can
-        // close it. A swap landing inside that gap writes the checked
-        // reader's payload under the arriving reader's credential.
-        //
-        // So the sequence settles before swapping here. What remains under
-        // test for this shape is everything else — and that is not
-        // nothing: it is the mount read, the cache across saves, and the
-        // reset. `adapterPreferences` warns at construction that the rest
-        // is not guaranteed, and `hooks.ts` supplies both halves, so no
-        // deployment is on this path today.
-        await Promise.all(inFlight.splice(0));
-        for (let t = 0; t < 4; t += 1) await Promise.resolve();
-      }
+      // Only one reader ever signs in on the unguarded shape. Swapping
+      // there would assert isolation that is explicitly not promised, and
+      // a test that asserts an unpromised thing either fails or, worse,
+      // passes for a reason nobody chose.
+      if (!asked) continue;
       server.signedIn = READERS[Math.floor(random() * READERS.length)];
       // Deliberately NOT refreshing `server.cached`: an unsignalled swap is
       // invisible until something next fetches a token, and that window is
@@ -279,10 +261,11 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
   // INVARIANT 2, through its consequence. A transport left `seeded` with no
   // stamp waves every later reader through, and nothing above has to notice
   // — so one more reader arrives and writes, and invariant 1 is asked again.
-  server.signedIn = READERS[(READERS.indexOf(server.signedIn as never) + 1) % READERS.length];
-  log.push(`final-swap(signedIn=${server.signedIn})`);
-  // Nothing is in flight here — everything was settled above — so this one
-  // is a fair test for both shapes.
+  if (asked) {
+    server.signedIn =
+      READERS[(READERS.indexOf(server.signedIn as never) + 1) % READERS.length];
+    log.push(`final-swap(signedIn=${server.signedIn})`);
+  }
   await transport.save({ searchTitle: "last-word" } as FilterState).catch(() => undefined);
   for (let t = 0; t < 8; t += 1) await Promise.resolve();
 
@@ -293,8 +276,8 @@ describe("no reader's saved filters reach another reader's row", () => {
   const shapes: Array<[boolean, boolean, string]> = [
     [true, true, "the versioned adapter, host answers afresh"],
     [false, true, "no versioning, host answers afresh"],
-    [true, false, "the versioned adapter, host has only the cached reader"],
-    [false, false, "no versioning, host has only the cached reader"],
+    [true, false, "the versioned adapter, a host that cannot be asked"],
+    [false, false, "no versioning, a host that cannot be asked"],
   ];
   for (const [versioned, asked, what] of shapes) {
     it(`holds over generated interleavings — ${what}`, async () => {

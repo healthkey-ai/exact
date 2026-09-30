@@ -270,14 +270,21 @@ export function adapterPreferences(
    *  belief. */
   const whoThisRequestIsFor = async (): Promise<string | undefined> => {
     try {
-      return (await identityNow?.()) ?? identity?.();
+      // NO FALLBACK to the cached reader, and that is the correction this
+      // whole round is about. `identityNow` absent means the host cannot
+      // be asked; answering from the cache instead makes "we asked" and
+      // "we looked at a value somebody else may have moved" the same
+      // thing, which is the premise all three defects here shared. With
+      // no fallback the answer is honestly unknown, the guard is off for
+      // that host, and nothing pretends otherwise.
+      return await identityNow?.();
     } catch {
-      // A host whose `getToken` rejects has told us nothing, and nothing is
-      // what gets recorded — an unknown stamp leaves the guard off for this
-      // cache, which is the same place a credential-less host sits. It must
-      // not REJECT: this promise is started beside the request and awaited
-      // after it, so throwing here would leave the read unhandled.
-      return identity?.();
+      // A host whose `getToken` rejects has told us nothing, and nothing
+      // is what gets recorded — an unknown stamp leaves the guard off for
+      // this cache, which is the same place a credential-less host sits.
+      // It must not REJECT: this promise is started beside the request and
+      // awaited after it, so throwing here would leave the read unhandled.
+      return undefined;
     }
   };
 
@@ -301,33 +308,18 @@ export function adapterPreferences(
 
   /** Whether something attributed to `whose` may be used for `now`.
    *
-   *  ONE RULE, two questions: the cache we already hold (`believedFor`),
-   *  and a row that has just landed (`issuedFor`). They were two functions
-   *  and the second one's ablation passed the whole suite, which is the
-   *  usual sign that there was only ever one rule.
-   *
-   *  NOT `sameIdentity`, and the asymmetry is the whole of it. There,
-   *  unknown on EITHER side is a match, which is right for a queued write:
-   *  before anything has looked there is nothing to compare, and a guard
-   *  that dropped edits on that would break every host at its first one.
-   *
-   *  Here the two unknowns are different facts and must not share an
-   *  answer:
-   *
-   *    * unknown on both sides — a host with no credentials at all.
-   *      Nothing to guard, and re-reading on every call would be a cost
-   *      paid by the deployment this protects least. The local stand.
-   *    * unknown on the left WHILE somebody can be named now — we hold
-   *      something we could not attribute, and there is now a reader who
-   *      could receive it. That is not "nothing to guard"; it is "we
-   *      cannot vouch for this". Treating it as a match is how the hole
-   *      reopened for a host that supplies `credentialIdentity` and not
-   *      `credentialIdentityNow`: the mount read could not be stamped, the
-   *      stamp stayed unknown, and the next reader was waved through it.
-   *      Measured — the review's own repro reproduced against the fix.
+   *  Plain `sameIdentity`, including its carve-out: unknown on either side
+   *  is a match. An earlier revision made the unknowns asymmetric so that
+   *  "we could not attribute this" would refuse a reader who CAN be named.
+   *  That existed for one host shape — `credentialIdentity` supplied and
+   *  `credentialIdentityNow` not — and that shape is no longer supported
+   *  (see `whoThisRequestIsFor`). With it gone, "unknown" means only "this
+   *  deployment has no credentials", which has nothing to guard and must
+   *  not be made to pay; the asymmetric rule then had no reachable case
+   *  except to refuse the reader's own saved filters on a plain page load.
    */
   const belongsTo = (whose: string | undefined, now: string | undefined) =>
-    whose == null ? now == null : sameIdentity(whose, now);
+    sameIdentity(whose, now);
 
   /** Whether a read that went out for `issuedFor` may still be adopted.
    *
@@ -377,30 +369,6 @@ export function adapterPreferences(
    *  confuse with anybody, and making it pay a round trip per save would be
    *  a cost borne entirely by the deployment the guard does nothing for.
    *  The local stand is that host. */
-  //
-  // ASKED EACH TIME, not decided at construction. The condition is not
-  // "was a function passed" — `hooks.ts` always passes one — it is "does
-  // this host actually name anybody". A reader-less deployment hands over
-  // a function that answers `undefined` for ever, has nobody to confuse
-  // with anybody, and must not pay a round trip per save for a guard that
-  // can do nothing for it. The local stand is that deployment.
-  const blindToSwaps = () => identityNow == null && identity?.() != null;
-  let warnedAboutBlindness = false;
-  const sayItOnce = () => {
-    if (warnedAboutBlindness || typeof console === "undefined") return;
-    warnedAboutBlindness = true;
-    // Once, because the limit is a property of how the transport was WIRED
-    // and nothing at runtime can change it. Isolation between accounts is
-    // NOT guaranteed on this path: re-reading narrows the window to the gap
-    // between the last check and the request leaving, and without being
-    // able to ask, nothing on the client can close that gap.
-    console.warn(
-      "[exact] `credentialIdentity` was supplied without " +
-        "`credentialIdentityNow`. Saved filters are re-read before every " +
-        "save as a result, and an account switch can still race a write. " +
-        "Pass both to get the guarantee and the single read.",
-    );
-  };
 
   /** Refuse to write if the row this payload was composed for is no longer
    *  the row a write would land in.
@@ -545,11 +513,7 @@ export function adapterPreferences(
       // overtakes it would build its payload against an empty `stored` and
       // replace the row with the one key the reader has touched.
       if (firstRead) await firstRead.catch(() => {});
-      // `blindToSwaps()` forces the re-read even when the cache looks good
-      // — see its note. For every other host `seeded` alone decides.
-      const cannotAsk = blindToSwaps();
-      if (cannotAsk) sayItOnce();
-      if (!seeded || cannotAsk) {
+      if (!seeded) {
         // One more attempt, because a read that failed once may not fail
         // twice, and the alternative is losing the reader's edit.
         //

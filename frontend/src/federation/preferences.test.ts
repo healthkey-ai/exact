@@ -1831,7 +1831,7 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
   it("does not merge one reader's filters into the next reader's row", async () => {
     const a = fakeRow();
     let who = "sub:iss|one";
-    const t = adapterPreferences(a.methods, () => who);
+    const t = adapterPreferences(a.methods, () => who, async () => who);
 
     // Reader one's row, read and cached.
     a.put({ country: "US", distance: 50 });
@@ -1855,7 +1855,7 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
     // one key they touched.
     const a = fakeRow();
     let who = "sub:iss|one";
-    const t = adapterPreferences(a.methods, () => who);
+    const t = adapterPreferences(a.methods, () => who, async () => who);
     a.put({ country: "US" });
     await t.get();
     const before = a.reads.length;
@@ -1955,7 +1955,7 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
         return { country: "CA" } as never;
       },
     };
-    const t = adapterPreferences(slow, () => who);
+    const t = adapterPreferences(slow, () => who, async () => who);
 
     const inFlight = t.get();
     await Promise.resolve(); // the read is out, issued for reader one
@@ -1989,32 +1989,25 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
     expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 200 });
   });
 
-  it("re-reads a cache it could not attribute once a reader can be named", async () => {
-    // THE EXPECTATION CHANGED HERE. It used to assert the opposite — keep
-    // the cache, spend no second read — and that was the hole the mount
-    // defect went through, so the reasoning is worth keeping rather than
-    // just the new number.
+  it("does not guard, and does not re-read, a host that cannot be asked", async () => {
+    // THIS TEST REPLACES its opposite, twice over, and the history is the
+    // point of keeping it.
     //
-    // From inside the transport these two situations are the same
-    // situation: a cache stamped "unknown", and a reader who can now be
-    // named.
+    // It first asserted that a cache stamped "unknown" survives the
+    // identity becoming known — which was the hole the mount defect went
+    // through. It was then changed to assert the reverse, re-reading to be
+    // safe. Both were attempts to half-protect a host that supplies
+    // `credentialIdentity` and not `credentialIdentityNow`, and half was
+    // the wrong amount: measured, that shape leaked in full anyway,
+    // because the transport decided it could ask by looking at whether an
+    // argument was passed and `hooks.ts` always passed one.
     //
-    //   * one reader throughout, whose token simply had not been fetched
-    //     when the mount read went out. The row IS theirs. Re-reading costs
-    //     one request.
-    //   * a read issued before any token, then a swap. The row is the
-    //     PREVIOUS reader's. Keeping it makes it the merge base for the
-    //     arriving reader's first save, and under a wholesale replace that
-    //     destroys their row.
-    //
-    // Nothing distinguishes them here, so one of the two has to lose, and
-    // it is not going to be the second. A request is cheap; a row is not.
-    //
-    // In production neither arises: the bridge supplies
-    // `credentialIdentityNow`, so the mount read is attributed at issue
-    // time and the stamp is never unknown. The cost falls only on a host
-    // that supplies the cached reader alone — which is exactly the host
-    // that has no other protection.
+    // The decision now is that the shape is not supported. Asking means
+    // asking; a host that cannot be asked gets no guard, pays for no extra
+    // reads, and `hooks.ts` reports the missing prop as missing instead of
+    // substituting the cache for it. What is asserted here is that "off"
+    // is all that happens — no refusals, no re-reads, the reader's own row
+    // loaded and merged as it always was.
     const a = fakeRow();
     let who: string | undefined = undefined;
     const t = adapterPreferences(a.methods, () => who);
@@ -2025,9 +2018,7 @@ describe("adapterPreferences — a belief belongs to the reader it was read for 
     who = "sub:iss|one";
     await t.save({ distance: 100 });
 
-    expect(a.reads.length).toBe(before + 1);
-    // The reader loses nothing by it: the re-read found their own row and
-    // the edit merged into it.
+    expect(a.reads.length).toBe(before);
     expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
   });
 

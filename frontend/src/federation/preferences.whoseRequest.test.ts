@@ -77,16 +77,26 @@ function twoRowServer(whoNow: () => string) {
 
 describe("a cached row belongs to the reader its read went out for", () => {
   it("does not hand a mount read to whoever is signed in when it lands", async () => {
-    // The host supplies only the CACHED reader, not the asked-afresh one —
-    // permitted by the prop contract, and the shape in which there is no
-    // answer available at issue time. The read therefore cannot be
-    // attributed, and the rule is that an unattributable cache is not one
-    // the next reader may inherit.
-    let who: string | undefined = undefined;
-    const s = twoRowServer(() => who ?? "one");
+    // THE SUPPORTED CONTRACT: both halves of the reader. The cached one
+    // is still unknown when the mount read is issued — it is written by
+    // the client's interceptor and this read is the first request to
+    // fetch a token — so the issue-time answer has to come from the ask,
+    // and it does.
+    let who = "one";
+    // What a synchronous reading would say: nothing, until a request has
+    // fetched a token. That is the state the mount read starts in.
+    let cached: string | undefined = undefined;
+    const s = twoRowServer(() => who);
     s.rows["one"] = { searchTitle: "USER-1-ONLY", country: "US" };
     s.rows["sub:iss|two"] = { country: "CA" };
-    const t = adapterPreferences(s.methods, () => who);
+    const t = adapterPreferences(
+      s.methods,
+      () => cached,
+      async () => {
+        cached = who;
+        return who;
+      },
+    );
 
     s.holdNext();
     const reading = t.get();

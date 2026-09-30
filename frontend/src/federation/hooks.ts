@@ -971,12 +971,29 @@ export function useSavedFilters(
           // become the merge base for the next reader's first save (#603).
           () => filterIdentityRef.current?.(),
           // The asked-afresh half, and the guard does not work at mount
-          // without it: the cached reading above is written by the client's
-          // interceptor, so at the moment the seeding read is issued it has
-          // never been written at all. Same fallback as the writer's, so a
-          // host that supplies only the cached reader keeps working — later
-          // than it could, never wrongly.
-          () => (filterIdentityNowRef.current ?? filterIdentityRef.current)?.(),
+          // without it: the cached reading above is written by the
+          // client's interceptor, so at the moment the seeding read is
+          // issued it has never been written at all.
+          //
+          // PASSED THROUGH, NOT SUBSTITUTED. This used to fall back to the
+          // cached reader when the host supplied no `credentialIdentityNow`
+          // — and that fallback was invisible to the transport, which
+          // decides whether it can ask by looking at this argument. It
+          // always got a function, so it always believed it could ask, and
+          // what it got back was the very cache it must not trust. The
+          // measured result was #603 reproducing in full for that host,
+          // with the transport's own handling of the case unreachable.
+          // Answering `undefined` is the truth, and the transport acts on
+          // it: an unattributed request stamps unknown, which leaves the
+          // guard off for that host rather than confidently wrong.
+          //
+          // Still a closure, and still evaluated lazily. Reading the ref
+          // here in the factory to decide whether to pass one at all was
+          // the obvious spelling and it is a `ReferenceError` — the ref is
+          // declared BELOW this memo, so the factory is inside its
+          // temporal dead zone. It took out a dozen tests at once, which
+          // is the only pleasant thing about it.
+          () => filterIdentityNowRef.current?.(),
         )
       : localStoragePreferences(persistedKey ?? key);
     // `source` rather than `state`: see above, and `sourceId`.
@@ -1015,7 +1032,19 @@ export function useSavedFilters(
       // it is declared.
       identity: () => filterIdentityRef.current?.(),
       // Same fallback as the patient queue, for the same reason.
-      identityNow: () => (filterIdentityNowRef.current ?? filterIdentityRef.current)?.(),
+      // The fallback STAYS here, unlike the transport's above, and the
+      // difference is worth stating because the two lines look identical.
+      //
+      // `PreferenceWriter` compares the reader a payload was queued under
+      // against this answer and drops the write if they differ. It makes
+      // no decision about whether it CAN ask, so a cached answer is a
+      // weaker guard than a fresh one, not a wrong one: it catches every
+      // swap the cache has seen and misses the ones it has not. The
+      // transport's version had to go because it keyed "can I ask" on this
+      // argument being present, so laundering it turned the guard off
+      // while reporting it on.
+      identityNow: () =>
+        (filterIdentityNowRef.current ?? filterIdentityRef.current)?.(),
       // `=== built`, so a NULL ref means "not mine" and this stays quiet.
       // `useQueuedPatientFields` writes the same guard as
       // `current && current !== built`, where null means "nobody has claimed
