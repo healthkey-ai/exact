@@ -60,6 +60,33 @@ export function fingerprintOf(token: string | undefined | null): string | undefi
  *  `sameIdentity` documents. */
 export const NO_CREDENTIAL = "none";
 
+/** Asked, and the asking itself failed.
+ *
+ *  THE THIRD STATE, and it is here because leaving it out cost four review
+ *  rounds. "Who is this request for" has three answers, not two:
+ *
+ *    a fingerprint      — we know.
+ *    `NO_CREDENTIAL`    — we asked; this deployment has nobody signed in.
+ *    `COULD_NOT_TELL`   — we asked and the ask threw. A token refresh that
+ *                         failed, a network blip, a sign-out in flight.
+ *
+ *  The first two are knowledge. The third is not, and representing it as
+ *  `undefined` merged it with "nothing to guard" — which `sameIdentity`
+ *  matches against everybody, on purpose, so that hosts with no accounts
+ *  keep working. Measured: one rejecting `getToken` at mount stamped the
+ *  cache unknown, the stamp then matched every later reader for the life
+ *  of the transport, and the first reader's saved filters were written
+ *  wholesale into the second's row.
+ *
+ *  A string, and one no fingerprint can equal: `fingerprintOf` only ever
+ *  produces `sub:…` or `raw:…`. So it compares unequal to any real reader
+ *  and equal to itself, which is what makes a cache stamped with it
+ *  unusable by anybody — including, deliberately, by the reader it was
+ *  actually read for. That costs one extra read and recovers by itself:
+ *  the mismatch drops the cache, the next save re-reads, and that read's
+ *  ask usually succeeds. */
+export const COULD_NOT_TELL = "unknown";
+
 /** Whether a payload queued under `queued` may be sent under `current`.
  *
  *  UNKNOWN IS NOT A MISMATCH. Either side being nullish answers yes, and

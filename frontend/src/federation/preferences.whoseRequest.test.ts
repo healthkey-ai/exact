@@ -367,4 +367,63 @@ describe("an await added in front of a write is a window", () => {
     expect(a.seen()).toEqual({});
     expect(a.writes).toEqual([]);
   });
+
+  it("does not stamp a cache with 'unknown' when the ask itself failed", async () => {
+    // THE STATE THAT WAS NOT REPRESENTED, and the P1 that came of leaving
+    // it out. "We asked and it threw" was recorded as `undefined`, which
+    // is the same value as "this deployment has nobody to name" — and
+    // `sameIdentity` matches that against everybody, by design, so hosts
+    // without accounts keep working. One rejecting `getToken` therefore
+    // stamped the cache with a value that fitted the NEXT reader too, for
+    // the life of the transport.
+    //
+    // This case had no test at all before, which is why it shipped: the
+    // `catch` could be made to return arbitrary garbage and 1214 tests
+    // stayed green.
+    const rows: Record<string, Record<string, unknown>> = {
+      one: { searchTitle: "USER-1-ONLY", country: "US" },
+      two: { country: "CA" },
+    };
+    let signedIn = "one";
+    let cached: string | undefined = undefined;
+    let failNext = true;
+    const methods = {
+      getPreferences: async () => {
+        const at = signedIn;
+        cached = at;
+        return { ...rows[at] } as never;
+      },
+      savePreferences: async (f: FilterState) => {
+        rows[signedIn] = { ...(f as object) };
+      },
+      resetPreferences: async () => {
+        rows[signedIn] = {};
+      },
+    };
+    const t = adapterPreferences(
+      methods as never,
+      () => cached,
+      // The bridge's shape: `noteIdentity(await getToken())`. An unwrapped
+      // host `getToken` that rejects propagates straight out of here — a
+      // failed Firebase refresh, a network blip, a sign-out in flight.
+      async () => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("token refresh failed");
+        }
+        cached = signedIn;
+        return signedIn;
+      },
+    );
+
+    await t.get();
+    signedIn = "two";
+    await t.save({ distance: 100 } as FilterState).catch(() => undefined);
+
+    expect(rows["two"]).not.toHaveProperty("searchTitle", "USER-1-ONLY");
+    // And it recovers by itself rather than wedging: the mismatch drops
+    // the cache, the save re-reads, and that read's ask succeeds.
+    expect(rows["two"]).toEqual({ country: "CA", distance: 100 });
+    expect(rows["one"]).toEqual({ searchTitle: "USER-1-ONLY", country: "US" });
+  });
 });

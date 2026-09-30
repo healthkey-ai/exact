@@ -23,7 +23,7 @@
 import { sameValue } from "./filters";
 import { PreconditionFailed } from "./state";
 import type { Precondition, TrialPreferenceStore } from "./state";
-import { IdentityChanged, sameIdentity } from "./identityFingerprint";
+import { COULD_NOT_TELL, IdentityChanged, sameIdentity } from "./identityFingerprint";
 import type { FilterState } from "./types";
 
 /** The preference half, which is now its own interface: `TrialPreferenceStore`
@@ -279,12 +279,16 @@ export function adapterPreferences(
       // that host, and nothing pretends otherwise.
       return await identityNow?.();
     } catch {
-      // A host whose `getToken` rejects has told us nothing, and nothing
-      // is what gets recorded — an unknown stamp leaves the guard off for
-      // this cache, which is the same place a credential-less host sits.
+      // `COULD_NOT_TELL`, NOT `undefined`, and the difference is a P1.
+      // `undefined` here means "nothing to guard", which `sameIdentity`
+      // matches against everybody — so one rejecting `getToken` stamped
+      // the cache with a value that fitted the next reader too, and the
+      // first reader's row became their merge base. Measured on the
+      // deployed wiring; see the constant's own note.
+      //
       // It must not REJECT: this promise is started beside the request and
       // awaited after it, so throwing here would leave the read unhandled.
-      return undefined;
+      return COULD_NOT_TELL;
     }
   };
 
@@ -350,25 +354,6 @@ export function adapterPreferences(
     return belongsTo(issuedFor, await whoThisRequestIsFor());
   };
 
-  /** A host that names its reader but cannot be ASKED afresh.
-   *
-   *  `credentialIdentity` without `credentialIdentityNow`: permitted by the
-   *  prop contract, and the one shape in which the transport genuinely
-   *  cannot see a swap coming. The cached reading only moves when something
-   *  fetches a token, and between two saves nothing does — so a swap is
-   *  invisible right up until the write goes out under the new credential,
-   *  by which time the row is gone. Generated interleavings found it in the
-   *  first three seeds.
-   *
-   *  The answer is to stop trusting the cache across a save: the re-read
-   *  below both attributes the row afresh and, by going through the client,
-   *  refreshes what the cached reading can see. The reader loses at most
-   *  the one edit that straddles the swap and the next one lands correctly.
-   *
-   *  A host with no identity at all is NOT this: there is nobody to
-   *  confuse with anybody, and making it pay a round trip per save would be
-   *  a cost borne entirely by the deployment the guard does nothing for.
-   *  The local stand is that host. */
 
   /** Refuse to write if the row this payload was composed for is no longer
    *  the row a write would land in.

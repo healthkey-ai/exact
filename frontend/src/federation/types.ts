@@ -449,6 +449,18 @@ export interface TrialMatchesProps {
   credentialIdentity?: () => string | undefined;
   /** The same thing, read AFRESH rather than remembered.
    *
+   *  NOT A LATENCY REFINEMENT OF THE ONE ABOVE, whatever the rest of this
+   *  note used to suggest. Supplying `credentialIdentity` and omitting
+   *  this one switches the saved-filters isolation guard OFF: the cached
+   *  reading is written by the client's own interceptor, so at the moment
+   *  a request is issued it can be a reader who has already gone, and a
+   *  guard built on it is a guard that compares a stale value with
+   *  itself. EXACT does not try to protect that shape halfway any more —
+   *  it tried, and the half-protection both leaked and stopped the panel
+   *  loading (exact#603). Pass both, or accept that two accounts sharing
+   *  one mounted remote can share saved filters.
+   *
+   *
    *  A pair, because the two readings happen at moments with different
    *  budgets. The cached one above is consulted on a keystroke and must not
    *  await anything; this one is consulted immediately before a request,
