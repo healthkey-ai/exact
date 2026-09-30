@@ -240,14 +240,23 @@ class TestWhatTheAliasMustNotLetThrough:
         producer's spelling behave like EXACT's own, and here it does,
         including in the failure.
 
-        A malformed patient value should be a 400 and is a 500, under either
-        spelling. Tracked separately (#594); pinned here so this test has to
-        be revisited when that is fixed, rather than quietly passing for a
-        new reason.
+        It used to be a 500, under either spelling — a `TypeError` out of
+        Django when the filter handed it a list. This test was left
+        expecting the `TypeError` on purpose so that it had to be revisited
+        when #594 landed, rather than quietly passing for a new reason.
+
+        Revisited. The requirement was always "the same way under both
+        spellings" and it still is; only the way changed. `_search` builds
+        the patient directly rather than through the inline path, which is
+        the LENIENT audience — so what it shows is the drop, identically
+        under both keys. The 400 belongs to the inline path and is tested
+        in `test_typed_value_shapes.py`.
         """
         for key in ('pd_l1_tumor_cells', 'pd_l1_tumor_cels'):
-            with pytest.raises(TypeError):
-                self._search({'disease': 'breast cancer', key: [1]})
+            built = _build_in_memory({'disease': 'breast cancer', key: [1]})
+            assert built.pd_l1_tumor_cels is None
+            # And it is a drop, not a crash: the search still runs.
+            assert self._search({'disease': 'breast cancer', key: [1]}) == 2
 
     @pytest.mark.django_db
     def test_zero_is_kept_here_and_discarded_downstream(self, corpus):

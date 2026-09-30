@@ -150,7 +150,7 @@ trial-search request.
 > raises before serializing (#455). Until that lands, do not read a detail
 > response as the authority on what a patient-less verdict looks like.
 >
-> How an inline `patient_info` payload is read, in three states (#466):
+> How an inline `patient_info` payload is read, in four states (#466, #594):
 >
 > * **no key EXACT recognises** — `400`, naming the keys it could not read.
 >   Sending the key means describing a patient, so understanding none of it is
@@ -158,9 +158,28 @@ trial-search request.
 > * **keys it recognises, but every value `null`, `""` or whitespace** — no
 >   patient. A client serialising a form the reader has not filled in yet is
 >   well behaved, and `matchingType` is `null` for every row.
+> * **a value that cannot be its column's type** — `400`, keyed by the field
+>   name *as you sent it* rather than by `patient_info`:
+>
+>   ```json
+>   {"pd_l1_tumor_cells": ["Expected a number, got str. Send null or omit the field if it was not answered."]}
+>   ```
+>
+>   A number column takes a number or a numeric string; a date column takes
+>   an ISO date or datetime. A list, an object, a boolean or an unparseable
+>   string is refused — it used to be silently dropped, which left the filter
+>   for that field switched off and showed you trials a real value would have
+>   excluded. `null`, `""` and whitespace are not errors: they mean the
+>   question was not answered. Only the first bad field is named.
 > * **anything else** — a patient. Keys EXACT does not recognise, alongside
 >   ones it does, are ignored rather than refused: a client may send a field
 >   this version has not heard of.
+>
+> Note the three error shapes this endpoint can return: `{"patient_info":
+> [...]}` for an unreadable payload, `{"<your field name>": [...]}` for a
+> value of the wrong type, and `{"detail": ...}` for auth and permission.
+> A `person_id` payload never produces the second: a value EXACT cannot use
+> in a row it fetched is not your error, so the field is dropped and logged.
 >
 > An empty object — or no key at all — is the first-class way to search
 > without a patient. `POST /trials/export/` needs a patient to narrow it and

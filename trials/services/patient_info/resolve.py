@@ -40,6 +40,8 @@ Re-enabling it in production requires BOTH:
 Tracked as #150/#108.
 """
 import ast
+import logging
+import math
 import re
 import datetime as dt
 import json
@@ -47,10 +49,26 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import (
-    DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField, Q,
+    DateField, DecimalField, FloatField, IntegerField, JSONField, Q,
 )
-
 from trials.services.patient_info.normalize import normalize_patient_info
+
+logger = logging.getLogger(__name__)
+
+#: Distinguishes "no value was given" from a value that happens to be None.
+_UNSET = object()
+
+
+def _short(value, limit: int = 120) -> str:
+    """A value, bounded, for a log line.
+
+    The lenient path logs what it dropped, and what it dropped is patient
+    data of unbounded length — a therapy date, a lab string. Same rule as
+    `_QUOTED_KEY_LENGTH` further down, which exists because a payload with
+    5 000 junk keys produced a 69 kB response.
+    """
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "..."
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -423,7 +441,17 @@ def _patient_from_inline(payload, sent_as):
         # Something usable arrived. Unrecognised keys alongside it are not an
         # error: a client sending a field EXACT has not heard of yet, next to
         # ones it has, described a patient.
-        return _build_in_memory(payload)
+        #
+        # Strict, and translated HERE rather than raised from the builder:
+        # this is the one caller who typed the value and can fix it. See
+        # `MalformedPatientValue` for what raising it deeper cost.
+        try:
+            return _build_in_memory(payload, strict=True)
+        except MalformedPatientValue as wrong:
+            raise ValidationError({
+                _as_the_caller_wrote_it(payload, wrong.field_name, wrong.value):
+                    wrong.as_message()
+            })
 
     if set(snake) - recognised:
         # Nothing usable, and something we could not read. That is a caller
@@ -433,6 +461,48 @@ def _patient_from_inline(payload, sent_as):
     # Every name recognised, no value in any of them: the contract was read
     # and there is nothing in it yet.
     return None
+
+
+def _as_the_caller_wrote_it(payload, field_name: str, value=_UNSET) -> str:
+    """The key the caller actually sent for the value that was refused.
+
+    `_no_recognised_fields_message` below exists for this reason and says it
+    in its own words: "Names the keys the CALLER typed, not what they
+    became… `patientAgee` came back as `patient_agee`, a string the caller
+    never wrote." An error naming `patient_age` at somebody who sent
+    `patientAge` makes them search their payload for a key that is not in
+    it.
+
+    BY VALUE FIRST, then by name. Two spellings can reach one column —
+    `pd_l1_tumor_cells` is aliased onto `pd_l1_tumor_cels` and an alias
+    never overwrites, so `{"pd_l1_tumor_cells": 12, "pd_l1_tumor_cels":
+    "abc"}` keeps the "abc". Naming whichever key came first in the payload
+    could hand back `pd_l1_tumor_cells`, whose value is fine: the caller
+    corrects a field that was never the problem and gets the same 400 back.
+    Identity rather than equality, because the value in the payload IS the
+    object that failed — `_to_snake_case` copies references — and `==`
+    would tie two keys holding equal-but-distinct values.
+    """
+    candidates = []
+    for sent in payload:
+        if not isinstance(sent, str):
+            continue
+        snake = camel_to_snake(sent)
+        # Through the alias table too, so a caller who sent the DOCUMENTED
+        # `pd_l1_tumor_cells` is told about `pd_l1_tumor_cells`, not about
+        # EXACT's misspelled column.
+        if snake == field_name or _INBOUND_ALIASES.get(snake) == field_name:
+            candidates.append(sent)
+    if value is not _UNSET:
+        for sent in candidates:
+            if payload[sent] is value:
+                return sent
+    if candidates:
+        return candidates[0]
+    # Nothing in the payload maps to it — a derived column, or a name this
+    # function has not been taught. The column name is a worse answer than
+    # the caller's own key and a better one than silence.
+    return field_name
 
 
 def _no_recognised_fields_message(payload):
@@ -458,8 +528,39 @@ def _no_recognised_fields_message(payload):
     )
 
 
-def _build_in_memory(data: dict) -> 'PatientInfo':
-    """Build an unsaved PatientInfo from a dict, compute derived fields."""
+def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
+    """Build an unsaved PatientInfo from a dict, compute derived fields.
+
+    `strict` is about WHO SENT the dict, not about how careful to be. Only
+    the inline payload has a caller who can fix a wrong value, so only that
+    path asks for the raise; see `MalformedPatientValue`. An upstream row
+    and the batch commands get a drop and a log line, because telling a
+    reader that PROMOP holds `'unknown'` in a lab column asks them to fix
+    something they cannot reach.
+
+    THE LENIENT PATH IS NOT UNCHANGED, and an earlier version of this
+    docstring said it was. Measured against the base, on a CTOMOP row:
+
+      * three date shapes that used to be DROPPED now parse —
+        `'2026-01-31T10:00:00'`, `'2026-01-31 00:00:00'`, and a padded
+        `' 2026-01-31 '` — and a `datetime` object narrows to a date
+        instead of being kept whole. Dates are a strict superset of what
+        base accepted, so a therapy-date filter that used to be skipped for
+        those patients now applies. That is a real change in matching
+        output and it is the intended direction, but it is a change.
+      * `True` on a numeric column used to be kept and read by the ORM as
+        1; it is now dropped. That widens rather than narrows — the
+        direction this whole change calls the dangerous one — and it is
+        accepted here only because no realistic PROMOP row produces it.
+      * `''`, `[]`, `{}` and a non-finite float used to be kept and blow up
+        at the ORM or at DRF's renderer. They are dropped.
+
+    ONLY THE FIRST BAD FIELD IS NAMED, in `PatientInfo._meta` declaration
+    order rather than payload order, and dates are checked before numbers.
+    A caller with three bad fields needs three round trips. Worth fixing
+    the day somebody hits it; not worth collecting errors for a shape
+    nobody has reported.
+    """
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
 
@@ -480,9 +581,9 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     filtered = {k: v for k, v in snake_data.items() if k in model_fields}
 
     # Coerce date strings from JSON into proper date objects
-    _coerce_dates(filtered, PatientInfo)
+    _coerce_dates(filtered, PatientInfo, strict)
     # Coerce numeric strings into proper numeric types (CB API can send "10.20" etc.)
-    _coerce_numerics(filtered, PatientInfo)
+    _coerce_numerics(filtered, PatientInfo, strict)
     # Coerce string-encoded lists/dicts for JSONField columns (CB can send "[{...}]" as str)
     _coerce_json_fields(filtered, PatientInfo)
     # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
@@ -532,44 +633,231 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     return pi
 
 
-def _coerce_dates(data: dict, model_cls):
-    """Parse ISO date strings into datetime.date for all DateField entries."""
+#: THREE STATES FOR A TYPED VALUE, and before #594 there were four ANSWERS
+#: for the same mistake, none of them chosen. Measured on `pd_l1_tumor_cels`,
+#: an `IntegerField`:
+#:
+#:     'abc'   -> silently None -> no filter applied at all
+#:     true    -> silently 1    -> filtered on one
+#:     ''      -> 500 ValueError from the ORM
+#:     [1] {}  -> 500 TypeError from the ORM
+#:
+#: The silent ones are the dangerous half, not the safe half:
+#: `eligible_for_min_max_value` returns the WHOLE scope for a `None`, so a
+#: numeric value quietly dropped shows the reader trials they may not
+#: qualify for. In a clinical matcher that costs more than an error does.
+#:
+#: So a value is absent, usable, or wrong:
+#:
+#:   absent  — no key, `null`, or a string of whitespace. "Not answered".
+#:             Becomes `None`, and no filter applies. `_says_something` is
+#:             the same predicate the rest of this module already uses, so
+#:             an empty form field means here what it means everywhere.
+#:   usable  — can be the column's type without guessing.
+#:   wrong   — anything else. A `ValidationError` naming the field and what
+#:             it expected, which DRF renders as a 400. The view re-raises
+#:             an `APIException` untouched, so the caller is told WHICH of
+#:             ~170 fields was bad rather than "could not build patient
+#:             context" — the same reasoning as `_no_recognised_fields_message`.
+#:
+#: A BOOLEAN IS WRONG ON A NUMBER, though Python says `True` is an `int` and
+#: the ORM would have taken it as 1. Nobody means one by `true`; a form that
+#: sends it has a bug, and 1 is a plausible enough PD-L1 percentage that
+#: nothing downstream would look odd.
+
+
+class MalformedPatientValue(ValueError):
+    """A value that cannot be its column's type.
+
+    A PLAIN exception, not a DRF one, and that distinction is the whole of
+    the first review round on this change. `_build_in_memory` has four
+    callers in production and only one of them is a caller who can be
+    blamed:
+
+      * the inline payload — somebody who typed the value and can fix it.
+        `_patient_from_inline` turns this into a 400 naming the key THEY
+        sent.
+      * a CTOMOP/PROMOP row — the reader cannot fix PROMOP, and this
+        adapter already expects unparseable labs: `ctomop_adapter` names
+        `'unknown'` and a censored `'<0.5'` in as many words. Dropped to
+        `None`, with a log line.
+      * the batch commands — `search_trials_for_patients`,
+        `probe_eligibility`, `explain_trial_match` and `compare_trials`.
+        Two of them have no guard at all, so a DRF exception here killed
+        the run on a row that used to print, and `search_trials_for_patients`
+        counted the patient as an error and could exit non-zero for a whole
+        cohort sharing one censored lab.
+
+    Raising a `ValidationError` from the builder reached all three, and the
+    view's `except APIException: raise` fires BEFORE the branch that keeps a
+    `person_id` failure a 500 — so a bad PROMOP column answered 400, naming
+    a field the caller never sent, at the wrong party. Measured.
+    """
+
+    def __init__(self, field_name: str, expected: str, value):
+        self.field_name = field_name
+        self.expected = expected
+        #: The offending value itself, kept so the inline path can find
+        #: WHICH of two accepted spellings carried it. See
+        #: `_as_the_caller_wrote_it`.
+        self.value = value
+        self.got = type(value).__name__
+        super().__init__(
+            f'{field_name}: expected {expected}, got {self.got}.'
+        )
+
+    def as_message(self) -> str:
+        return (
+            f'Expected {self.expected}, got {self.got}. '
+            f'Send null or omit the field if it was not answered.'
+        )
+
+
+#: Every `DateField` here is a date, but the value arriving may be a
+#: datetime — `ctomop_adapter` calls `.isoformat()` on anything that is a
+#: `date`, and a `datetime` IS one, so it emits `2026-01-31T10:00:00` itself.
+#: `dt.date.fromisoformat` rejects that. Parsed as a datetime first and
+#: narrowed, so a producer that sends the time of day is understood rather
+#: than told its own output is malformed.
+def _as_date(key: str, val):
+    if isinstance(val, dt.datetime):
+        return val.date()
+    if isinstance(val, dt.date):
+        return val
+    if isinstance(val, str):
+        text = val.strip()
+        for parse in (dt.date.fromisoformat, lambda t: dt.datetime.fromisoformat(t).date()):
+            try:
+                return parse(text)
+            except ValueError:
+                continue
+    raise MalformedPatientValue(key, 'an ISO date such as 2026-01-31', val)
+
+
+def _coerce_dates(data: dict, model_cls, strict: bool = False):
+    """Absent, a date, or wrong. See `MalformedPatientValue`."""
     date_fields = {
         f.name for f in model_cls._meta.get_fields()
-        if hasattr(f, 'column') and isinstance(f, (DateField, DateTimeField))
+        # `DateTimeField` subclasses `DateField`, so naming both was
+        # redundant. Left as one name rather than two that look like a pair.
+        if hasattr(f, 'column') and isinstance(f, DateField)
     }
     for key in date_fields & data.keys():
-        val = data[key]
-        if isinstance(val, str) and val:
-            try:
-                data[key] = dt.date.fromisoformat(val)
-            except ValueError:
-                data[key] = None
+        if not _says_something(data[key]):
+            data[key] = None
+            continue
+        try:
+            data[key] = _as_date(key, data[key])
+        except MalformedPatientValue:
+            if strict:
+                raise
+            logger.warning(
+                'Dropping an unusable value for %s from an upstream row: %s',
+                key, _short(data[key]),
+            )
+            data[key] = None
 
 
-def _coerce_numerics(data: dict, model_cls):
-    """Coerce string values to numeric types for IntegerField/FloatField/DecimalField columns."""
+#: What each numeric column accepts, and what to call it when it does not.
+#:
+#: Walked in order rather than looked up by class because `Field` subclasses
+#: overlap: `PositiveIntegerField`, `SmallIntegerField` and `BigIntegerField`
+#: all derive from `IntegerField` and must match it. `BooleanField` does NOT
+#: — an earlier version of this comment said it did, and it is wrong on
+#: Django 5.2: `BooleanField` derives from `Field`, and the 40 boolean
+#: columns here are matched by no entry. `AutoField` does derive from
+#: `IntegerField` and WOULD be matched; nothing here excludes it, and
+#: nothing needs to, because `PatientInfo` is a plain class with a
+#: hand-built `_meta` and has no `AutoField`, no `ForeignKey` and no `id`.
+def _whole_or_not(text: str):
+    """`"12"` -> 12, `"10.20"` -> 10.2, `"abc"` -> raises.
+
+    An integer COLUMN here does not mean an integer value. A raw `10.2` on
+    one is kept as it is — the coercers only ever touched strings — and
+    `_build_in_memory` has said since long before this change that "CB API
+    can send '10.20' etc.". Refusing the string while accepting the float
+    gave one number two answers and an error message that was not true: the
+    column demonstrably takes 10.2.
+
+    It matters on more than principle. Six of the integer columns are labs
+    and vitals an EHR routinely emits with a decimal point —
+    `creatinine_clearance_rate`, `estimated_glomerular_filtration_rate`,
+    `platelet_count`, `ejection_fraction`, `clonal_b_lymphocyte_count`,
+    `lymphocyte_doubling_time`.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return float(text)
+
+
+#: 'a number' for all three, because that is what they accept. It said
+#: 'a whole number' for the integer columns and that was the untrue half of
+#: the inconsistency above.
+_NUMERIC_KINDS = (
+    (IntegerField, _whole_or_not, 'a number'),
+    (FloatField, float, 'a number'),
+    (DecimalField, Decimal, 'a number'),
+)
+
+
+def _as_number(key: str, val, parse, expected: str):
+    # A BOOLEAN IS WRONG ON A NUMBER, though Python says `True` is an `int`
+    # and the ORM would take it as 1. Nobody means one by `true`, and 1 is a
+    # plausible enough PD-L1 percentage that nothing downstream looks odd.
+    if isinstance(val, bool):
+        raise MalformedPatientValue(key, expected, val)
+    if isinstance(val, str):
+        try:
+            val = parse(val.strip())
+        except (ValueError, TypeError, InvalidOperation):
+            raise MalformedPatientValue(key, expected, val)
+    elif not isinstance(val, (int, float, Decimal)):
+        raise MalformedPatientValue(key, expected, val)
+    # NaN AND INFINITY ARE NOT NUMBERS HERE, though `float('nan')` and
+    # `Decimal('Infinity')` both construct. `lab_number` in `ctomop_adapter`
+    # already refuses them and says why: a NaN reaches DRF's renderer, which
+    # will not emit it and answers 500 — measured, `JSONRenderer.strict` is
+    # True and it raises "Out of range float values are not JSON compliant"
+    # — and through the non-HTTP path it is quieter and worse, because every
+    # threshold comparison against it is False and the patient fails
+    # criteria nobody can see them failing.
+    #
+    # It does not cover a SIGNALLING NaN arriving as a `Decimal` through the
+    # CTOMOP adapter: `ctomop_adapter` casts `Decimal` to `float` before the
+    # builder sees it, and `float(Decimal('sNaN'))` raises there. Unchanged
+    # by this and not reachable from Postgres `numeric`, but this comment
+    # would otherwise imply it were handled.
+    if isinstance(val, float) and not math.isfinite(val):
+        raise MalformedPatientValue(key, expected, val)
+    if isinstance(val, Decimal) and not val.is_finite():
+        raise MalformedPatientValue(key, expected, val)
+    return val
+
+
+def _coerce_numerics(data: dict, model_cls, strict: bool = False):
+    """Absent, a number, or wrong. See `MalformedPatientValue`."""
     for f in model_cls._meta.get_fields():
         if not hasattr(f, 'column') or f.name not in data:
             continue
-        val = data[f.name]
-        if not isinstance(val, str) or val == '':
+        for field_cls, parse, expected in _NUMERIC_KINDS:
+            if isinstance(f, field_cls):
+                break
+        else:
             continue
-        if isinstance(f, IntegerField):
-            try:
-                data[f.name] = int(val)
-            except (ValueError, TypeError):
-                data[f.name] = None
-        elif isinstance(f, FloatField):
-            try:
-                data[f.name] = float(val)
-            except (ValueError, TypeError):
-                data[f.name] = None
-        elif isinstance(f, DecimalField):
-            try:
-                data[f.name] = Decimal(val)
-            except (InvalidOperation, TypeError):
-                data[f.name] = None
+        if not _says_something(data[f.name]):
+            data[f.name] = None
+            continue
+        try:
+            data[f.name] = _as_number(f.name, data[f.name], parse, expected)
+        except MalformedPatientValue:
+            if strict:
+                raise
+            logger.warning(
+                'Dropping an unusable value for %s from an upstream row: %s',
+                f.name, _short(data[f.name]),
+            )
+            data[f.name] = None
 
 
 #: Procedure-name patterns, mapped to the vocabulary codes this service
@@ -845,13 +1133,21 @@ def _normalise_inbound_keys(data: dict) -> dict:
     Same tie-break as `PATIENT_INFO_KEYS`: between two usable spellings the
     existing contract decides, and the alias only fills a gap.
 
-    Both sides of that are guarded, and the SOURCE side is the one with teeth.
-    Copying an empty string onto a typed column put it somewhere the old
-    drop-at-the-filter path never let it reach: `_coerce_numerics` skips `''`,
-    `is_attr_blank` only blanks on `== 0`, and `eligible_for_min_max_value`
-    then hands it to Django, which raises `ValueError: expected a number but
-    got ''`. A 500 through the spelling every client sends, where EXACT's own
-    misspelling — which no client sends — was the only way in before.
+    Both sides of that are guarded, and the SOURCE side is the one with
+    teeth. Copying an empty string onto a typed column put it somewhere the
+    drop-at-the-filter path never let it reach, and the chain that made that
+    a 500 is written out below because it is the reason this guard exists,
+    not because it still fires: `_coerce_numerics` skipped `''`,
+    `is_attr_blank` blanks an `IntegerField` only on `== 0`, and
+    `eligible_for_min_max_value` then handed it to Django, which raised
+    `ValueError: expected a number but got ''`. A 500 through the spelling
+    every client sends, where EXACT's own misspelling — which no client
+    sends — was the only way in before.
+
+    #594 closed that chain at its head: `''` is now "not answered" and
+    becomes `None`. The guard stays, because it is about the ALIAS not
+    manufacturing a value, and that is true whatever the column does with
+    one.
     """
     snake = _to_snake_case(data)
     for sent, stored in _INBOUND_ALIASES.items():
