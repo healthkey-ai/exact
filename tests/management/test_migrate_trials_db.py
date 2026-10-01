@@ -21,11 +21,19 @@ def cmd():
     return c
 
 
+# NOTE: no `create=True` on the `django.conf.settings.*` patches below. Both
+# settings exist (`exact/settings.py`), and `create=True` makes mock skip the
+# branch CPython labels "needed for proxy objects like django settings" — so on
+# exit it `delattr`s the setting off `LazySettings` instead of restoring it, and
+# it stays gone for the rest of the session. Nothing here noticed, because
+# nothing later in this file reads them; anything that does, anywhere in the
+# suite, dies with `'Settings' object has no attribute 'DATABASES'`.
+
 @patch('trials.management.commands.migrate_trials_db.connections')
 @patch('trials.management.commands.migrate_trials_db.MigrationExecutor')
 @patch('trials.management.commands.migrate_trials_db.call_command')
-@patch('django.conf.settings.TRIALS_DB_MIGRATE', True, create=True)
-@patch('django.conf.settings.DATABASES', {'trials': {}}, create=True)
+@patch('django.conf.settings.TRIALS_DB_MIGRATE', True)
+@patch('django.conf.settings.DATABASES', {'trials': {}})
 def test_applies_clean_migrations(mock_call, mock_executor_cls, mock_conns, cmd):
     """All-clean plan: every migration runs for real."""
     plan = [(_make_migration('0012_omopconcept'), False)]
@@ -41,8 +49,8 @@ def test_applies_clean_migrations(mock_call, mock_executor_cls, mock_conns, cmd)
 @patch('trials.management.commands.migrate_trials_db.connections')
 @patch('trials.management.commands.migrate_trials_db.MigrationExecutor')
 @patch('trials.management.commands.migrate_trials_db.call_command')
-@patch('django.conf.settings.TRIALS_DB_MIGRATE', True, create=True)
-@patch('django.conf.settings.DATABASES', {'trials': {}}, create=True)
+@patch('django.conf.settings.TRIALS_DB_MIGRATE', True)
+@patch('django.conf.settings.DATABASES', {'trials': {}})
 def test_fakes_duplicate_table(mock_call, mock_executor_cls, mock_conns, cmd):
     """Migration that raises DuplicateTable is faked instead of crashing."""
     plan = [(_make_migration('0008_highriskmclcriteria'), False)]
@@ -65,8 +73,8 @@ def test_fakes_duplicate_table(mock_call, mock_executor_cls, mock_conns, cmd):
 @patch('trials.management.commands.migrate_trials_db.connections')
 @patch('trials.management.commands.migrate_trials_db.MigrationExecutor')
 @patch('trials.management.commands.migrate_trials_db.call_command')
-@patch('django.conf.settings.TRIALS_DB_MIGRATE', True, create=True)
-@patch('django.conf.settings.DATABASES', {'trials': {}}, create=True)
+@patch('django.conf.settings.TRIALS_DB_MIGRATE', True)
+@patch('django.conf.settings.DATABASES', {'trials': {}})
 def test_reraises_unexpected_error(mock_call, mock_executor_cls, mock_conns, cmd):
     """Non-duplicate ProgrammingErrors propagate as usual."""
     plan = [(_make_migration('0009_something'), False)]
@@ -77,7 +85,7 @@ def test_reraises_unexpected_error(mock_call, mock_executor_cls, mock_conns, cmd
         cmd.handle()
 
 
-@patch('django.conf.settings.TRIALS_DB_MIGRATE', False, create=True)
+@patch('django.conf.settings.TRIALS_DB_MIGRATE', False)
 def test_disabled_flag_is_noop(cmd):
     """Returns early when TRIALS_DB_MIGRATE is False."""
     cmd.handle()

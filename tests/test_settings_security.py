@@ -71,6 +71,98 @@ class TestCorsAllowAllDefault:
         ), 'CORS_ALLOWED_ORIGINS must resolve from the env var.'
 
 
+class TestPhrIntrospectionDefault:
+    """The portal introspection fallback must be opt-in outside local/DEBUG.
+
+    It delegates the signature check to another service — an `active` response
+    is taken as vouching for the token, and where the response is silent about
+    the subject the token's *unverified* payload supplies it. Both PHR_*_URLs
+    used to derive from one PHR_BASE_URL, so before the flag existed every
+    deployment that configured RS256 verification silently enabled this path
+    too, and the caller chose which one to use by writing the `alg` header.
+    PHR_INTROSPECT_URL no longer derives, but this flag is the half that fails
+    closed on an unset ENVIRONMENT, so it stays load-bearing."""
+
+    def test_introspection_defaults_off_outside_local_and_debug(self):
+        source = _settings_source()
+        # Matching the wiring too, not just the default expression: a default
+        # that is computed correctly but never passed to os.environ.get would
+        # pass a looser test while changing nothing.
+        match = re.search(
+            r"_phr_introspection_default\s*=\s*\(\s*(.*?)\s*\)\s*\n\s*"
+            r"PHR_ALLOW_INTROSPECTION\s*=\s*os\.environ\.get\(\s*"
+            r"['\"]PHR_ALLOW_INTROSPECTION['\"]\s*,\s*_phr_introspection_default\s*\)",
+            source,
+            re.DOTALL,
+        )
+        assert match is not None, \
+            'PHR_ALLOW_INTROSPECTION must resolve from the env var with ' \
+            '_phr_introspection_default as its default'
+        default = match.group(1)
+        assert re.search(r"else\s*['\"]false['\"]", default), \
+            f'PHR_ALLOW_INTROSPECTION must fall through to false when deployed; got {default!r}'
+        assert 'DEBUG' in default and 'local' in default, \
+            ('PHR_ALLOW_INTROSPECTION must be gated on DEBUG/ENVIRONMENT=local, '
+             f'not enabled unconditionally; got {default!r}')
+
+    def test_introspection_default_reads_environment_from_os_environ(self):
+        """The gate must fail closed when a deploy forgets ENVIRONMENT.
+
+        The module-level ENVIRONMENT defaults to 'local', so `ENVIRONMENT ==
+        'local'` reads as true in exactly the misconfigured deploy this gate
+        exists to protect. Same regex shape as ENABLE_DRF_TOKEN_AUTH's guard in
+        tests/test_security_hardening.py, which requires the closing paren
+        directly after the key — so `os.environ.get('ENVIRONMENT', 'local')`,
+        which would restore the fail-open behaviour, does not satisfy it.
+        """
+        source = _settings_source()
+        assert re.search(
+            r"_phr_introspection_default\s*=\s*\(?\s*\n?\s*'true'\s+if\s+\(?\s*DEBUG\s+or\s+"
+            r"os\.environ\.get\(\s*['\"]ENVIRONMENT['\"]\s*\)\s*==\s*['\"]local['\"]",
+            source,
+        ), 'PHR_ALLOW_INTROSPECTION default must fail closed on an unset ENVIRONMENT.'
+
+    def test_introspection_default_rule_fails_closed(self):
+        """Locks the truth table, so the rule survives a refactor the regex
+        above would reject. The security-critical row is the last one."""
+        def enabled(debug, environ):
+            return debug or environ.get('ENVIRONMENT') == 'local'
+
+        assert enabled(True, {}) is True                            # DEBUG
+        assert enabled(False, {'ENVIRONMENT': 'local'}) is True      # explicit local
+        assert enabled(False, {'ENVIRONMENT': 'prod'}) is False
+        assert enabled(False, {'ENVIRONMENT': 'staging'}) is False
+        assert enabled(False, {}) is False                          # unset -> closed
+
+    def test_outbound_introspection_calls_are_capped(self):
+        source = _settings_source()
+        # DRF authenticates before it throttles, so AnonRateThrottle cannot
+        # reach this path — the cap is the only bound on outbound calls an
+        # anonymous caller can drive.
+        assert re.search(
+            r"PHR_INTROSPECT_MAX_CALLS\s*=\s*int\(\s*os\.environ\.get\(", source
+        ), 'PHR_INTROSPECT_MAX_CALLS must be present and env-resolved.'
+        assert re.search(
+            r"PHR_INTROSPECT_RATE_INTERVAL\s*=\s*int\(\s*os\.environ\.get\(", source
+        ), 'PHR_INTROSPECT_RATE_INTERVAL must be present and env-resolved.'
+
+    def test_the_cap_is_sized_for_requests_not_sign_ins(self):
+        """The shipped default, not just its shape. 30 was sized against
+        sign-ins, back when a verified token was cached for a minute; #404
+        removed that cache, so the same number bounds *requests* and empties
+        under ordinary use, 401ing every introspection caller until the window
+        rolls. Nothing else in the suite would notice a revert: the PHR tests
+        set their own value, and the check above only asserts it comes from the
+        environment."""
+        source = _settings_source()
+
+        assert re.search(
+            r"PHR_INTROSPECT_MAX_CALLS\s*=\s*int\(\s*os\.environ\.get\(\s*"
+            r"'PHR_INTROSPECT_MAX_CALLS',\s*'300'\s*\)\s*\)",
+            source,
+        ), 'PHR_INTROSPECT_MAX_CALLS must default to 300 (see #404).'
+
+
 class TestRedisTlsCertVerification:
     """rediss:// Celery SSL must not disable cert verification unconditionally.
 

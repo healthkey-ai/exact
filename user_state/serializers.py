@@ -29,7 +29,7 @@ def _unstorable(value):
     """The first character in this payload that PostgreSQL `jsonb` refuses.
 
     Valid JSON is not the same as storable text. A NUL (`\u0000`) and a lone
-    surrogate (`\ud800`) both parse, and both make `psycopg2` raise
+    surrogate (U+D800) both parse, and both make `psycopg2` raise
     `UntranslatableCharacter` on the way into the column — a 500 that any
     reader with a token can repeat. A rolled-back 500 is still a 500; this
     turns it into the 400 it is.

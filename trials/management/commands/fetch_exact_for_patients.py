@@ -14,7 +14,9 @@ Cache layout
 Usage
 -----
     python manage.py fetch_exact_for_patients \\
-      --source-db-url $PATIENT_DATABASE_URL \\
+      # PATIENT_DATABASE_URL is read from the environment. Passing it as
+      # --source-db-url only looks out-of-band: the shell expands it before
+      # exec, putting the password in argv exactly as before (#403).
       --cache-dir ~/.cache/exact/patients \\
       --limit 10
 
@@ -40,6 +42,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
+from trials.services.psql_dsn import psql_dsn_and_env
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +77,10 @@ def _psql_query_rows(db_url, sql):
     """
     import subprocess
     wrapped = f"SELECT row_to_json(t) FROM ({sql}) t"
-    env = {**os.environ, 'PGSSLMODE': 'require'}
+    # The password goes in the environment, never in argv (#403).
+    dsn, env = psql_dsn_and_env(db_url, PGSSLMODE='require')
     result = subprocess.run(
-        ['psql', db_url, '-t', '--no-psqlrc', '-c', wrapped],
+        ['psql', dsn, '-t', '--no-psqlrc', '-c', wrapped],
         capture_output=True, text=True, env=env,
     )
     if result.returncode != 0:

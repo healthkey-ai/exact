@@ -41,7 +41,10 @@ from trials.services.patient_info.configs import (
     sct_value_is_none,
 )
 from trials.services.patient_info.genetic_mutations import GeneticMutations
-from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
+from trials.services.patient_info.patient_info_attributes import (
+    PatientInfoAttributes,
+    explicitly_unknown,
+)
 from trials.services.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from trials.services.utils import disease_attr_applies, get_overlap
 from trials.services.patient_info.language_capability import (
@@ -1023,12 +1026,20 @@ class UserToTrialAttrMatcher:
     def _match_type_bool_restriction(self, ctx):
         under_user_control = "under_user_control" in ctx.meta and ctx.meta["under_user_control"] is True
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
+        if trial_attr_value is None:
+            trial_attr_value = False
+        if (trial_attr_value is True
+                and ctx.value is None
+                and explicitly_unknown(self.patient_info, ctx.name)):
+            return 'unknown'
         if not trial_attr_value:
             # Unset or False: the trial does not require this, so it is not a
             # criterion. Both cases, not just None — with the flag False every
             # branch below ends in 'matched' whatever the patient's value is,
             # which claims they were measured against a requirement that does
-            # not exist. This has to come BEFORE those branches.
+            # not exist. This has to come BEFORE those branches, and AFTER the
+            # provenance check above, which is gated on `is True` and so
+            # cannot fire here.
             return 'not_evaluated'
         value = False if ctx.value is None else ctx.value
         if value is True:
@@ -1041,6 +1052,10 @@ class UserToTrialAttrMatcher:
             return 'not_matched'
 
     def _match_type_inversed_bool_restriction(self, ctx):
+        # No explicit-unknown seam here, deliberately: no attribute in
+        # `USER_TO_TRIAL_ATTRS_MAPPING` is of this type, so a copy of the guard
+        # from `_match_type_bool_restriction` would be unreachable and untested.
+        # None of the five fields it serves is inversed.
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if not trial_attr_value:
             # Unset or False — as above, every branch below returns 'matched'
