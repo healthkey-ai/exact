@@ -449,6 +449,27 @@ export interface TrialMatchesProps {
   credentialIdentity?: () => string | undefined;
   /** The same thing, read AFRESH rather than remembered.
    *
+   *  NOT A LATENCY REFINEMENT OF THE ONE ABOVE, whatever the rest of this
+   *  note used to suggest. Supplying `credentialIdentity` and omitting
+   *  this one switches the saved-filters isolation guard OFF: the cached
+   *  reading is written by the client's own interceptor, so at the moment
+   *  a request is issued it can be a reader who has already gone, and a
+   *  guard built on it is a guard that compares a stale value with
+   *  itself. EXACT does not try to protect that shape halfway any more —
+   *  it tried, and the half-protection both leaked and stopped the panel
+   *  loading (exact#603). Pass both, or accept that two accounts sharing
+   *  one mounted remote can share saved filters.
+   *
+   *  ANSWER A NAME OR A SENTINEL, NEVER `undefined`, if this host can ever
+   *  name anybody. `undefined` means "there is nobody to name here" and
+   *  switches the guard off — it is what a host with no accounts at all
+   *  answers, and it is matched against every reader on purpose so that
+   *  such a host keeps working. A host that answers it only while signed
+   *  out, with `credentialIdentity` still naming the previous reader, gets
+   *  the guard off while believing it wired both halves. EXACT's own
+   *  bridge floors the answer at `NO_CREDENTIAL` for exactly this reason.
+   *
+   *
    *  A pair, because the two readings happen at moments with different
    *  budgets. The cached one above is consulted on a keystroke and must not
    *  await anything; this one is consulted immediately before a request,

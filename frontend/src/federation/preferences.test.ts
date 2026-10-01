@@ -1788,3 +1788,258 @@ describe("PreferenceWriter — only the cached reader (#583)", () => {
     ).toBe(true);
   });
 });
+
+describe("adapterPreferences — a belief belongs to the reader it was read for (#603)", () => {
+  // The transport caches what the server holds, so a save can send the
+  // reader's payload merged over it — without that, a partial payload
+  // replaces the row and everything the reader did not submit is gone.
+  //
+  // Which row it is caching depends on the credential. In the shapes #583
+  // measured, the account changes and no key moves, so the transport
+  // survives the swap holding the PREVIOUS reader's filters, and the next
+  // reader's first save merges over them.
+  //
+  // #583's own guard cannot see this: that one compares the credential a
+  // write was queued under against the one it is sent under, and here they
+  // agree. What is wrong is the merge base.
+  function fakeRow() {
+    const saved: Array<Record<string, unknown>> = [];
+    const reads: string[] = [];
+    let row: Record<string, unknown> = {};
+    return {
+      saved,
+      reads,
+      put: (v: Record<string, unknown>) => {
+        row = v;
+      },
+      methods: {
+        getPreferences: async () => {
+          reads.push("get");
+          return row as never;
+        },
+        savePreferences: async (f: never) => {
+          saved.push(f as Record<string, unknown>);
+          row = f as Record<string, unknown>;
+        },
+        resetPreferences: async () => {
+          row = {};
+        },
+      },
+    };
+  }
+
+  it("does not merge one reader's filters into the next reader's row", async () => {
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    const t = adapterPreferences(a.methods, () => who, async () => who);
+
+    // Reader one's row, read and cached.
+    a.put({ country: "US", distance: 50 });
+    expect(await t.get()).toEqual({ country: "US", distance: 50 });
+
+    // The account changes with nothing signalled, and the new reader's row
+    // holds something else.
+    who = "sub:iss|two";
+    a.put({ country: "CA" });
+    await t.save({ distance: 100 });
+
+    // The payload is two's row plus two's edit. One's `country: US` must not
+    // be in it — that is somebody else's saved search.
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
+    expect(a.saved.at(-1)).not.toHaveProperty("country", "US");
+  });
+
+  it("re-reads for the new reader rather than writing blind", async () => {
+    // Forgetting is only half: `seeded` has to go with it, or the transport
+    // believes an empty row and replaces the new reader's filters with the
+    // one key they touched.
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    const t = adapterPreferences(a.methods, () => who, async () => who);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    who = "sub:iss|two";
+    a.put({ country: "CA", distance: 50 });
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBeGreaterThan(before);
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
+  });
+
+  it("keeps the cache across a token refresh, which is the common case", async () => {
+    // Tokens rotate hourly. Dropping the cache on every rotation would cost
+    // a read per save for every reader, all day, to protect against a swap
+    // that is rare — and `fingerprintOf` exists precisely so a refresh is
+    // not a change.
+    //
+    // BOTH halves of the reader contract, where this used to pass only
+    // the cached one. That matters because the single read asserted here
+    // is what the full contract buys: a host that cannot be asked cannot
+    // tell a rotation from a swap at all, so it gets no guard and no
+    // extra reads either — pinned by `does not guard, and does not
+    // re-read, a host that cannot be asked`, below.
+    const a = fakeRow();
+    const t = adapterPreferences(a.methods, () => "sub:iss|one", () => "sub:iss|one");
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("keeps the cache when nobody can say who is signed in", async () => {
+    // The local no-auth stand, and any deployment behind a gateway that
+    // injects the header. Re-reading on every call would slow down exactly
+    // the host this guard can do nothing for.
+    const a = fakeRow();
+    const t = adapterPreferences(a.methods, () => undefined);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("does nothing at all when nobody told it who is signed in", async () => {
+    // The default, and every caller that has not been wired. Written as a
+    // swap that is NOT noticed, because the merge assertion alone passed
+    // both with the change reverted and with the guard forced to fire on
+    // every call — it measured neither direction.
+    const a = fakeRow();
+    const t = adapterPreferences(a.methods); // no identity reader
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    // Whatever the credential is doing, this transport was not told and
+    // must behave exactly as it did: no re-read, and the cache still used.
+    a.put({ country: "CA" });
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("does not let a read issued for the old reader seed the new one", async () => {
+    // The generation bump, and it has to be timed to mean anything. If the
+    // old read RESOLVES before the swap it has already seeded, and the
+    // clear alone covers it — the first version of this test was arranged
+    // that way and passed with the bump removed. What the bump is for is a
+    // read that is still in the air when the new reader's save has already
+    // cleared the cache: it resolves afterwards holding the PREVIOUS
+    // reader's row, and must not seed from it.
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    let releaseFirst: () => void = () => {};
+    const firstOut = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let call = 0;
+    const slow = {
+      ...a.methods,
+      getPreferences: async () => {
+        call += 1;
+        a.reads.push("get");
+        if (call === 1) {
+          await firstOut;
+          return { country: "US" } as never;
+        }
+        return { country: "CA" } as never;
+      },
+    };
+    const t = adapterPreferences(slow, () => who, async () => who);
+
+    const inFlight = t.get();
+    await Promise.resolve(); // the read is out, issued for reader one
+    who = "sub:iss|two";
+
+    // The new reader saves. It serialises behind the read already in
+    // flight, which lands holding reader ONE's row — and that read is now
+    // DROPPED rather than adopted, because the reader it went out for is no
+    // longer the one signed in (`stillTheirs`). Nothing is seeded, so this
+    // save takes the re-read path and builds against reader TWO's own row.
+    //
+    // THE EXPECTATION CHANGED HERE, and deliberately. It used to be that
+    // the read seeded, was stamped as reader one's, and the post-await
+    // check refused the save — costing the reader an edit to protect
+    // somebody else's row. Dropping the read instead protects the same row
+    // and costs nothing: the edit lands where it belongs on the first
+    // attempt. The refusal still exists for the case it is the only answer
+    // to — a swap after the payload was composed — and
+    // `preferences.whoseRequest.test.ts` pins the other half.
+    const saving = t.save({ distance: 100 });
+    await Promise.resolve();
+    releaseFirst();
+    await inFlight;
+    await saving;
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
+    // The whole point: nothing of reader one's crossed over.
+    expect(a.saved.at(-1)).not.toHaveProperty("country", "US");
+
+    // And the next one goes the same way.
+    await t.save({ distance: 200 });
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 200 });
+  });
+
+  it("does not guard, and does not re-read, a host that cannot be asked", async () => {
+    // THIS TEST REPLACES its opposite, twice over, and the history is the
+    // point of keeping it.
+    //
+    // It first asserted that a cache stamped "unknown" survives the
+    // identity becoming known — which was the hole the mount defect went
+    // through. It was then changed to assert the reverse, re-reading to be
+    // safe. Both were attempts to half-protect a host that supplies
+    // `credentialIdentity` and not `credentialIdentityNow`, and half was
+    // the wrong amount: measured, that shape leaked in full anyway,
+    // because the transport decided it could ask by looking at whether an
+    // argument was passed and `hooks.ts` always passed one.
+    //
+    // The decision now is that the shape is not supported. Asking means
+    // asking; a host that cannot be asked gets no guard, pays for no extra
+    // reads, and `hooks.ts` reports the missing prop as missing instead of
+    // substituting the cache for it. What is asserted here is that "off"
+    // is all that happens — no refusals, no re-reads, the reader's own row
+    // loaded and merged as it always was.
+    const a = fakeRow();
+    let who: string | undefined = undefined;
+    const t = adapterPreferences(a.methods, () => who);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    who = "sub:iss|one";
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("does not re-read for a rotated token, which is what `sameIdentity` is for", async () => {
+    // The case the test above used to be standing in for, pinned properly:
+    // a STAMPED cache meeting the same reader again. Firebase hands out a
+    // fresh JWT about once an hour, and a strict comparison would throw
+    // away a good cache — one wasted read per reader, per hour.
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    const t = adapterPreferences(a.methods, () => who, () => who);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    // Same person, a credential the host has since refreshed. The
+    // fingerprint does not move, so nothing here should notice.
+    who = "sub:iss|one";
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+});
