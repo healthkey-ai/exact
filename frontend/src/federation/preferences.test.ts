@@ -20,7 +20,11 @@ import type { FilterState } from "./types";
 
 /** A transport that lets the test decide when each request completes. */
 function controllable() {
-  const calls: Array<{ kind: "save" | "reset"; value?: FilterState }> = [];
+  const calls: Array<{
+    kind: "save" | "reset";
+    value?: FilterState;
+    askedBy?: string | undefined;
+  }> = [];
   const resolvers: Array<() => void> = [];
   const hold = () =>
     new Promise<void>((resolve) => {
@@ -33,8 +37,8 @@ function controllable() {
       calls.push({ kind: "save", value });
       return hold();
     },
-    reset: () => {
-      calls.push({ kind: "reset" });
+    reset: (askedBy) => {
+      calls.push({ kind: "reset", askedBy });
       return hold();
     },
   };
@@ -108,7 +112,64 @@ describe("PreferenceWriter", () => {
 
     w.save({ distance: 1 });
     w.reset();
-    expect(t.calls).toEqual([{ kind: "reset" }]);
+    expect(t.calls).toEqual([{ kind: "reset", askedBy: undefined }]);
+  });
+
+  it("hands the transport the reader who PRESSED reset, not whoever is signed in at the send", async () => {
+    // #613. This queue already compared the two and refused a mismatch, but
+    // the transport below it had no way to know the difference: everything it
+    // can see describes whoever is signed in when the request goes out, and
+    // that is the value in question. So the click-time reader travels with
+    // the request.
+    //
+    // The gap between the two is real, not theoretical — a reset is queued
+    // behind whatever write is in flight, and that write is a full round
+    // trip. Measured on the generated harness: a reset asked by `one` emptied
+    // `three`'s row.
+    // The CACHED reading, which is what the click-time capture uses: it only
+    // moves when something fetches a token, so it can name a reader who has
+    // already gone.
+    let cached = "sub:iss|one";
+    // The ASKED answer, which is what the send-time check uses. It still says
+    // `two`, because a token is fetched only when something asks the host for
+    // one and nothing has since. So this queue's own guard — the #583 check,
+    // which works — sees `two` on both sides and lets the reset through.
+    //
+    // That is not a hole in the test, it is the shape of the bug: the queue
+    // is the LAST thing that knows who pressed, and it cannot see past its own
+    // ask. The transport asks again and is told otherwise.
+    let asked = "sub:iss|one";
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => cached,
+      identityNow: () => asked,
+    });
+
+    // A save goes on the wire and the account changes while it is there.
+    w.save({ distance: 1 });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    cached = "sub:iss|two";
+    asked = "sub:iss|two";
+    // `two` presses Reset…
+    w.reset();
+    const askedBy = cached;
+    // …and the host has moved on to `three` since, without having been asked.
+    // A token is fetched only when something asks for one, and the reset in
+    // flight is waiting on the request it has not issued yet — so every
+    // reading this queue can take still says `two`.
+    cached = "sub:iss|three";
+
+    await t.settle();
+    await t.settle();
+
+    const resetCall = t.calls.find((c) => c.kind === "reset");
+    // The queue's own guard let it through, so the reset really was sent.
+    expect(resetCall).toBeDefined();
+    // And it carries `two` — the reader who pressed. Not `sub:iss|three`,
+    // which is whoever is signed in at the send and precisely the value the
+    // transport must not be left to compare on its own.
+    expect(askedBy).toBe("sub:iss|two");
+    expect(resetCall?.askedBy).toBe("sub:iss|two");
   });
 
   it("drops a save that was waiting behind a reset", async () => {
@@ -1759,7 +1820,7 @@ describe("PreferenceWriter — the credential is read afresh at send (#583)", ()
     const w = new PreferenceWriter(t.transport, { identity: () => "sub:iss|one" });
 
     w.reset();
-    expect(t.calls).toEqual([{ kind: "reset" }]);
+    expect(t.calls).toEqual([{ kind: "reset", askedBy: "sub:iss|one" }]);
   });
 });
 

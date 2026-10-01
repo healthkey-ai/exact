@@ -524,4 +524,50 @@ describe("an await added in front of a write is a window", () => {
     // took their country, sponsor and distance with it.
     expect(rows["two"]).toEqual({ country: "CA", sponsor: "Acme", distance: 25 });
   });
+
+  it("asks WHO the clear is for before it issues one, and refuses a stranger's", async () => {
+    // #613. Every other write on this transport compares the reader before
+    // it sends; `reset` compared nobody, so a clear issued for one reader
+    // emptied whichever row the credential named when it LANDED. The endpoint
+    // REPLACES the row, so that is the victim's whole row and not an edit
+    // they can make again.
+    //
+    // `askedBy` comes from the caller because it is the only place the answer
+    // exists: everything this transport could compare against describes
+    // whoever is signed in NOW, which is exactly the value in question. The
+    // generated harness found the interleaving; this pins the mechanism, so
+    // deleting the check is a failure with a name on it.
+    let signedIn = "sub:iss|one";
+    let asked = 0;
+    const cleared: string[] = [];
+    const t = adapterPreferences(
+      {
+        getPreferences: async () => ({ country: "US" }) as never,
+        savePreferences: async () => {},
+        resetPreferences: async () => {
+          // Attributed when the call is ENTERED, like a request leaving with
+          // a header on it.
+          cleared.push(signedIn);
+        },
+      } as never,
+      () => signedIn,
+      async () => {
+        asked += 1;
+        return signedIn;
+      },
+    );
+
+    await t.reset("sub:iss|one");
+    // Asked, and the clear went out as the reader who asked.
+    expect(asked).toBeGreaterThan(0);
+    expect(cleared).toEqual(["sub:iss|one"]);
+
+    // The account changes while the write is queued.
+    signedIn = "sub:iss|two";
+    await expect(t.reset("sub:iss|one")).rejects.toThrow(
+      "the signed-in account changed while these filters were being reset",
+    );
+    // Nothing emptied.
+    expect(cleared).toEqual(["sub:iss|one"]);
+  });
 });

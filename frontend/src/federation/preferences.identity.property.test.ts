@@ -307,7 +307,18 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
       // Whoever the clear is attributed to legitimately loses their
       // marker; invariant 4 excuses exactly those.
       cleared.add(server.signedIn);
-      swallow(serialise(() => transport.reset()));
+      // WHO PRESSED, captured HERE, at the click — and passed down, which is
+      // the fix's whole shape. A reset queued behind another write does not
+      // run until that write settles, by which time the account can have
+      // changed; the transport is handed the reader from the click because it
+      // is the only place that answer exists.
+      //
+      // This mirrors `PreferenceWriter.reset()`, which reads
+      // `this.identity()` when the button is pressed and hands `by` to
+      // `transport.reset`. Not modelled by asking the transport to work it
+      // out: everything it could compare against is the ARRIVING reader.
+      const askedBy = server.signedIn;
+      swallow(serialise(() => transport.reset(askedBy)));
     }
     else if (op === "swap") {
       // Only one reader ever signs in on the unguarded shape. Swapping
@@ -397,6 +408,49 @@ describe("no reader's saved filters reach another reader's row", () => {
       expect(failures.join("\n\n")).toBe("");
     });
   }
+
+  it("still lets one reader reset their own filters, which is what it must not break", async () => {
+    // The refusal is only worth having if the thing it refuses is rare. A
+    // single reader, no swap, no failing ask: the clear must go out, and it
+    // must go out as them.
+    const server = newServer();
+    const transport = adapterPreferences(
+      methodsFor(server, true) as never,
+      () => server.cached,
+      async () => fetchToken(server),
+    );
+    await transport.get();
+    await transport.reset(READERS[0]);
+    expect(server.rows[READERS[0]]).toEqual({});
+    // And the cache believes what it just did, so the next save writes an
+    // empty base rather than the values the clear removed.
+    await transport.save({ searchTitle: "after" } as FilterState);
+    expect(server.rows[READERS[0]]).toEqual({ searchTitle: "after" });
+  });
+
+  it("refuses a reset issued for one reader rather than emptying another's row", async () => {
+    // #613, named rather than generated. The sequence is the harness's seed
+    // 16 and it is here so the failure is legible to somebody who does not
+    // want to replay a seed: `one` presses Reset, the account changes while
+    // the write is queued, and the clear lands on `three`.
+    const server = newServer();
+    const transport = adapterPreferences(
+      methodsFor(server, true) as never,
+      () => server.cached,
+      async () => fetchToken(server),
+    );
+    await transport.get();
+    server.signedIn = "sub:iss|three";
+
+    await expect(transport.reset(READERS[0])).rejects.toThrow(
+      "the signed-in account changed while these filters were being reset",
+    );
+
+    // Nothing was emptied. `three`'s row is intact, and so is `one`'s — the
+    // refusal drops the cache rather than half-applying the clear.
+    expect(server.rows["sub:iss|three"].marker).toBe(markerOf("sub:iss|three"));
+    expect(server.rows[READERS[0]].marker).toBe(markerOf(READERS[0]));
+  });
 
   it("still lets one reader save their own filters, which is what it must not break", async () => {
     // The guard's failure mode in the other direction: refusing everything
