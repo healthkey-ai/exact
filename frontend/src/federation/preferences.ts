@@ -42,7 +42,21 @@ export const FILTER_DEBOUNCE_MS = 400;
 export interface PreferenceTransport {
   get(): Promise<FilterState>;
   save(filters: FilterState): Promise<void>;
-  reset(): Promise<void>;
+  /** `askedBy` — who pressed Reset, read from the credential at the CLICK.
+   *
+   *  Required, and it is the one thing the transport cannot work out for
+   *  itself. Everything else on this interface is answered from the cache,
+   *  which describes whoever is signed in *now*; but "now" is precisely what
+   *  may have moved between the click and the request, and the difference
+   *  between those two is the whole question. A transport that had to guess
+   *  would be comparing the arriving reader against himself — the exact
+   *  mistake that cost round 2 of #603.
+   *
+   *  Omitting it means "nobody in particular", which under `sameIdentity`
+   *  matches everybody and so guards nothing. That is the honest way for a
+   *  host with no credentials to be here, and it is why this is not optional
+   *  in spirit even though the type permits `undefined`. */
+  reset(askedBy?: string | undefined): Promise<void>;
   /** Forget the cached ETag, because somebody wrote this row by another
    *  route.
    *
@@ -389,6 +403,29 @@ export function adapterPreferences(
     stillTheSameReader();
     throw new Error(
       "the signed-in account changed while these filters were being saved",
+    );
+  };
+
+  /** Refuse a clear that would empty a row the reader did not ask to empty.
+   *
+   *  Separate from `refuseIfTheReaderChanged` because the two compare
+   *  DIFFERENT things. That one asks "is the row our cache describes still
+   *  ours?", which is right for a save — the payload was composed against
+   *  that cache, so the cache names the reader it belongs to. A clear has no
+   *  payload: the only question is whose panel the reader was looking at
+   *  when they pressed the button, and only the caller was in a position to
+   *  see that. So `askedBy` arrives from the click and `issuedFor` from the
+   *  ask that names the request about to go out.
+   *
+   *  `stillTheSameReader()` before the throw, as in every other refusal: the
+   *  belief we were about to act on describes a row that is not ours, and
+   *  leaving it in place is how the next write merges a stranger's filters
+   *  in. */
+  const refuseUnlessOurs = (askedBy: string | undefined, issuedFor: string | undefined) => {
+    if (belongsTo(askedBy, issuedFor)) return;
+    stillTheSameReader();
+    throw new Error(
+      "the signed-in account changed while these filters were being reset",
     );
   };
 
@@ -818,12 +855,18 @@ export function adapterPreferences(
         );
       }
     },
-    reset: async () => {
+    reset: async (askedBy) => {
       stillTheSameReader();
       // Bumped SYNCHRONOUSLY, before anything is awaited. A read already in
       // flight reads `generation` to decide whether Reset superseded it, and
       // deferring the bump by even a microtask hands that read a window in
       // which it still looks current.
+      //
+      // The bump does NOT drop `stored`/`believed`, and must not be moved to
+      // after the refusal below to make it tidier. A refused Reset has still
+      // retired everything issued before it — that part happened before the
+      // account changed, and a reader who edited and then found their account
+      // swapped has lost those edits whoever they went to.
       generation += 1;
       // Asked beside the clear, never before it — `get` states both halves
       // of that rule. This call establishes a belief ("the row is empty"),
@@ -852,10 +895,38 @@ export function adapterPreferences(
       // Reset empties the panel as well, so the next save's delta is measured
       // against an empty one.
       believed = {};
+      // WHO THE CLEAR IS FOR, and the one refusal this path was missing.
+      //
+      // `askedBy` is the reader who pressed the button; `issuedFor` below is
+      // the reader the credential names when the request goes out. When they
+      // differ, the clear is about to empty somebody else's row, and under a
+      // wholesale replace that is the WHOLE row — not an edit they can make
+      // again, a wipe. Generated interleavings found this in seconds (#613,
+      // seed 16: a reset asked by `one` emptied `three`'s filters).
+      //
+      // WHY IT CANNOT BE ANSWERED FROM THE CACHE. `believedFor` is the
+      // obvious anchor and it is wrong twice over. Before anything has been
+      // read it is `undefined`, which `sameIdentity` matches against
+      // everybody — the guard silently off, which is seed 16. After a swap it
+      // names the ARRIVING reader, and comparing him with himself passes,
+      // which is seed 174: the cache said `two`, the credential said `two`,
+      // and the row that got emptied was still not the one `one` asked to
+      // clear. Nothing on this transport remembers who asked; only the
+      // caller, at the click, can know.
+      //
+      // SAFE TO AWAIT HERE, AND ONLY BECAUSE OF WHERE IT ENDS. `get` and
+      // `save` both refuse to wait before issuing, because a microtask of
+      // delay let a write from elsewhere land first — see `get`. Here the
+      // delay IS the check, and nothing is awaited between the answer
+      // arriving and the request leaving: the clear is issued in the same
+      // continuation. One more promise in between and the identity can move
+      // again, at which point `issuedFor` describes the past and the check
+      // has bought nothing.
+      const issuedFor = await asking;
+      refuseUnlessOurs(askedBy, issuedFor);
       if (!versioning) {
         const clearing = state.resetPreferences();
         void clearing.catch(() => undefined);
-        const issuedFor = await asking;
         // Through the pair, so the stamp cannot drift away from the flag.
         // Before the await as well as after: `knew` carries the previous
         // answer forward, and a reset that FAILS must not leave the cache
@@ -866,8 +937,8 @@ export function adapterPreferences(
         nowBelievedFor(issuedFor);
         return;
       }
-      // Issued in this tick, like every other request here, so awaiting the
-      // ask cannot let anything overtake it.
+      // Issued in the continuation that took the answer, with nothing awaited
+      // in between — see the note on the refusal above.
       const clearing = (async () => {
         try {
           // A reset with no known version is still worth sending: there is
@@ -891,7 +962,6 @@ export function adapterPreferences(
       })();
       // Same as in `get`.
       void clearing.catch(() => undefined);
-      const issuedFor = await asking;
       if (knew) nowBelievedFor(issuedFor);
       else seeded = false;
       version = await clearing;
@@ -970,7 +1040,14 @@ export function localStoragePreferences(key: string): PreferenceTransport {
         // reason to break the search that is already on screen.
       }
     },
-    reset: async () => {
+    // `askedBy` is accepted and ignored. This transport is keyed by PATIENT,
+    // not by credential, and holds no reader identity to compare: the row it
+    // empties is the one this browser wrote, which follows the reader to
+    // every device they sign in from. There is no stranger's row here, so
+    // there is nothing for the adapter's comparison to protect. The parameter
+    // exists because `PreferenceTransport` asks for it — the shape IS the
+    // guard, and a shape only some transports honour is not one.
+    reset: async (_askedBy?: string | undefined) => {
       try {
         storage()?.removeItem(storageKey);
       } catch {
@@ -1186,8 +1263,17 @@ export class PreferenceWriter {
     // a success.
     const send = (now: string | undefined): Promise<void> => {
       if (!sameIdentity(write.by, now)) throw new IdentityChanged();
+      // `write.by` goes down with a reset, not just up from it. This queue
+      // compares it against `now` above and refuses a mismatch, but the
+      // transport below cannot see this queue and has only the credential to
+      // go on — which by the time a queued reset is sent may already name the
+      // NEXT reader. So the reader who pressed the button travels with the
+      // request, and the transport compares it against whoever the request
+      // would actually go out as. #613: `reset` was the one write path with
+      // no such comparison, and an endpoint that REPLACES the row turns that
+      // into somebody else's whole row.
       return write.kind === "reset"
-        ? this.transport.reset()
+        ? this.transport.reset(write.by)
         : this.transport.save(write.value);
     };
     let request: Promise<void>;

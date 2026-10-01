@@ -74,12 +74,19 @@ interface Server {
   /** What a synchronous reading of the credential would say — stale until
    *  something fetches a token, exactly like the bridge's `identityRef`. */
   cached: string | undefined;
+  /** Arms a one-shot rejection of the next ask. The bridge's
+   *  `credentialIdentityNow` awaits the host's UNWRAPPED `getToken`, so a
+   *  failed refresh, a network blip or a sign-out in flight propagates
+   *  straight out of it. Modelled because leaving it out is exactly how a
+   *  P1 got past this harness: the `catch` was unreachable here, so what
+   *  it recorded could be arbitrary garbage with every test still green. */
+  askFailsNext: boolean;
 }
 
 const newServer = (): Server => {
   const rows: Record<string, Record<string, unknown>> = {};
   for (const who of READERS) rows[who] = { marker: markerOf(who) };
-  return { rows, signedIn: READERS[0], cached: undefined };
+  return { rows, signedIn: READERS[0], cached: undefined, askFailsNext: false };
 };
 
 /** Fetching a token, which is also what refreshes the cached reading. */
@@ -149,6 +156,30 @@ const methodsFor = (server: Server, versioned: boolean) => {
   };
 };
 
+/** Every row that has LOST its own marker.
+ *
+ *  Invariant 4, and it is the one that gives the unguarded axis something
+ *  to fail. `foreignMarkers` only sees a stranger's value ARRIVING; a save
+ *  composed over an empty base wipes the victim's row and leaves no
+ *  stranger's marker behind, so it slips past. It is also what a transport
+ *  that never adopts its own reads looks like from outside — every save
+ *  builds on `{}` and replaces the row with one field. That was a real
+ *  defect once (an over-tightened unknown rule refused the reader their
+ *  own row on a plain page load) and nothing here could have caught it.
+ *
+ *  A reset is the one legitimate way to lose a marker, so rows cleared by
+ *  one are excused. */
+const markersLost = (server: Server, cleared: Set<string>): string[] => {
+  const gone: string[] = [];
+  for (const who of READERS) {
+    if (cleared.has(who)) continue;
+    if (server.rows[who].marker !== markerOf(who)) {
+      gone.push(`${who} lost its own row`);
+    }
+  }
+  return gone;
+};
+
 /** Every marker that is in the wrong row. */
 const foreignMarkers = (server: Server): string[] => {
   const wrong: string[] = [];
@@ -161,9 +192,18 @@ const foreignMarkers = (server: Server): string[] => {
   return wrong;
 };
 
-type Op = "get" | "save" | "reset" | "swap" | "settle";
+type Op = "get" | "save" | "reset" | "swap" | "settle" | "askFails";
 
-const OPS: Op[] = ["get", "save", "reset", "swap", "settle", "get", "save"];
+const OPS: Op[] = [
+  "get",
+  "save",
+  "reset",
+  "swap",
+  "settle",
+  "get",
+  "save",
+  "askFails",
+];
 
 const runSequence = async (seed: number, versioned: boolean, asked: boolean) => {
   const random = rng(seed);
@@ -182,8 +222,15 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
     asked
       ? // Asked afresh: fetches a token, which is what makes the cached
         // reading current — the bridge's `credentialIdentityNow` does
-        // exactly this.
-        async () => fetchToken(server)
+        // exactly this. Unless the host's `getToken` is having a bad
+        // moment, in which case the rejection comes out of here.
+        async () => {
+          if (server.askFailsNext) {
+            server.askFailsNext = false;
+            throw new Error("token refresh failed");
+          }
+          return fetchToken(server);
+        }
       : undefined,
   );
 
@@ -192,10 +239,29 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
    *  reader. Collected rather than thrown so one sequence reports all of
    *  them. */
   const handedOver: string[] = [];
+  /** Readers whose row a reset was attributed to — see `markersLost`. */
+  const cleared = new Set<string>();
   // Never awaited in lockstep: the defects both lived in the gap between a
   // request being issued and resolving, so the sequence deliberately leaves
   // work in flight and settles it later.
   const inFlight: Promise<unknown>[] = [];
+  // SAVES AND RESETS ARE SERIALISED, because `PreferenceWriter` serialises
+  // them and the transport is never called directly by anything else.
+  //
+  // Found the hard way: overlapping them is not a harsher test, it is a
+  // different program. Two saves sharing one transport share `stored`, so
+  // one refusing drops the cache out from under the other after it has
+  // passed its own checks, and the second writes `merge({})` — a wiped row
+  // with nobody's values in it. Real, but unreachable, and a fake that is
+  // stricter than reality spends the same attention as one that is looser.
+  // Reads stay concurrent: those genuinely overlap in the tree, which is
+  // what `firstRead` exists for.
+  let writes: Promise<unknown> = Promise.resolve();
+  const serialise = (start: () => Promise<unknown>) => {
+    const next = writes.then(start, start);
+    writes = next.catch(() => undefined);
+    return next;
+  };
   const swallow = (p: Promise<unknown>) => {
     // A refusal is a correct outcome here — the transport declining to write
     // across a swap is the behaviour under test — so rejections are recorded
@@ -235,8 +301,25 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
       // The reader types something of their own. What they must never send
       // is somebody else's marker, and they can only be holding one if the
       // transport handed it to them.
-      swallow(transport.save({ searchTitle: `typed-by-${server.signedIn}` } as FilterState));
-    } else if (op === "reset") swallow(transport.reset());
+      const who = server.signedIn;
+      swallow(serialise(() => transport.save({ searchTitle: `typed-by-${who}` } as FilterState)));
+    } else if (op === "reset") {
+      // Whoever the clear is attributed to legitimately loses their
+      // marker; invariant 4 excuses exactly those.
+      cleared.add(server.signedIn);
+      // WHO PRESSED, captured HERE, at the click — and passed down, which is
+      // the fix's whole shape. A reset queued behind another write does not
+      // run until that write settles, by which time the account can have
+      // changed; the transport is handed the reader from the click because it
+      // is the only place that answer exists.
+      //
+      // This mirrors `PreferenceWriter.reset()`, which reads
+      // `this.identity()` when the button is pressed and hands `by` to
+      // `transport.reset`. Not modelled by asking the transport to work it
+      // out: everything it could compare against is the ARRIVING reader.
+      const askedBy = server.signedIn;
+      swallow(serialise(() => transport.reset(askedBy)));
+    }
     else if (op === "swap") {
       // Only one reader ever signs in on the unguarded shape. Swapping
       // there would assert isolation that is explicitly not promised, and
@@ -247,6 +330,8 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
       // Deliberately NOT refreshing `server.cached`: an unsignalled swap is
       // invisible until something next fetches a token, and that window is
       // where both defects lived.
+    } else if (op === "askFails") {
+      server.askFailsNext = true;
     } else {
       await Promise.all(inFlight.splice(0));
       // A few turns of the microtask queue, so anything chained settles.
@@ -266,10 +351,19 @@ const runSequence = async (seed: number, versioned: boolean, asked: boolean) => 
       READERS[(READERS.indexOf(server.signedIn as never) + 1) % READERS.length];
     log.push(`final-swap(signedIn=${server.signedIn})`);
   }
-  await transport.save({ searchTitle: "last-word" } as FilterState).catch(() => undefined);
+  await serialise(() => transport.save({ searchTitle: "last-word" } as FilterState)).catch(
+    () => undefined,
+  );
   for (let t = 0; t < 8; t += 1) await Promise.resolve();
 
-  return { server, log, afterTheSequence, handedOver, afterOneMore: foreignMarkers(server) };
+  return {
+    server,
+    log,
+    afterTheSequence,
+    handedOver,
+    lost: markersLost(server, cleared),
+    afterOneMore: foreignMarkers(server),
+  };
 };
 
 describe("no reader's saved filters reach another reader's row", () => {
@@ -283,17 +377,23 @@ describe("no reader's saved filters reach another reader's row", () => {
     it(`holds over generated interleavings — ${what}`, async () => {
       const failures: string[] = [];
       for (let seed = 1; seed <= 300; seed += 1) {
-        const { log, afterTheSequence, handedOver, afterOneMore } = await runSequence(
+        const { log, afterTheSequence, handedOver, lost, afterOneMore } = await runSequence(
           seed,
           versioned,
           asked,
         );
-        if (afterTheSequence.length || afterOneMore.length || handedOver.length) {
+        if (
+          afterTheSequence.length ||
+          afterOneMore.length ||
+          handedOver.length ||
+          lost.length
+        ) {
           failures.push(
             [
               `seed ${seed}`,
               `  ops: ${log.join(" → ")}`,
               handedOver.length ? `  a read handed over: ${handedOver.join("; ")}` : "",
+              lost.length ? `  a row was wiped: ${lost.join("; ")}` : "",
               afterTheSequence.length ? `  after the sequence: ${afterTheSequence.join("; ")}` : "",
               afterOneMore.length ? `  after one more reader: ${afterOneMore.join("; ")}` : "",
             ]
@@ -308,6 +408,49 @@ describe("no reader's saved filters reach another reader's row", () => {
       expect(failures.join("\n\n")).toBe("");
     });
   }
+
+  it("still lets one reader reset their own filters, which is what it must not break", async () => {
+    // The refusal is only worth having if the thing it refuses is rare. A
+    // single reader, no swap, no failing ask: the clear must go out, and it
+    // must go out as them.
+    const server = newServer();
+    const transport = adapterPreferences(
+      methodsFor(server, true) as never,
+      () => server.cached,
+      async () => fetchToken(server),
+    );
+    await transport.get();
+    await transport.reset(READERS[0]);
+    expect(server.rows[READERS[0]]).toEqual({});
+    // And the cache believes what it just did, so the next save writes an
+    // empty base rather than the values the clear removed.
+    await transport.save({ searchTitle: "after" } as FilterState);
+    expect(server.rows[READERS[0]]).toEqual({ searchTitle: "after" });
+  });
+
+  it("refuses a reset issued for one reader rather than emptying another's row", async () => {
+    // #613, named rather than generated. The sequence is the harness's seed
+    // 16 and it is here so the failure is legible to somebody who does not
+    // want to replay a seed: `one` presses Reset, the account changes while
+    // the write is queued, and the clear lands on `three`.
+    const server = newServer();
+    const transport = adapterPreferences(
+      methodsFor(server, true) as never,
+      () => server.cached,
+      async () => fetchToken(server),
+    );
+    await transport.get();
+    server.signedIn = "sub:iss|three";
+
+    await expect(transport.reset(READERS[0])).rejects.toThrow(
+      "the signed-in account changed while these filters were being reset",
+    );
+
+    // Nothing was emptied. `three`'s row is intact, and so is `one`'s — the
+    // refusal drops the cache rather than half-applying the clear.
+    expect(server.rows["sub:iss|three"].marker).toBe(markerOf("sub:iss|three"));
+    expect(server.rows[READERS[0]].marker).toBe(markerOf(READERS[0]));
+  });
 
   it("still lets one reader save their own filters, which is what it must not break", async () => {
     // The guard's failure mode in the other direction: refusing everything
