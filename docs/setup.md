@@ -371,6 +371,17 @@ environment variables — never commit secret values to git.
 | `GEOS_LIBRARY_PATH` | `/opt/homebrew/lib/libgeos_c.dylib` | Path to GEOS shared library |
 | `ENVIRONMENT` | `local` | Environment name (`local` / `dev` / `staging` / `prod`) |
 | `ADD_SEARCH_TRIALS_TRACES` | `false` | Set to `true` to log detailed trial-search reasoning |
+| `PARTNER_AUTH_PROVIDERS` | Firebase + PHR | Comma-separated dotted paths of the token providers this deployment has. Set to the portal provider alone where there is no Firebase. |
+| `PHR_ISSUER` | `healthkey-phr` | The `iss` claim that routes a token to the portal provider. Not safely changeable after a deploy: `Identity.sub` is globally unique, so existing users would collide under a new issuer. |
+| `PHR_BASE_URL` | _(empty)_ | Portal base URL; derives `PHR_JWKS_URL`. Unset means portal **RS256** tokens never verify (fails closed). It no longer governs the introspection path — that has its own URL below, so an HS-family token can still verify with this unset. |
+| `PHR_JWKS_URL` | _(derived)_ | Overrides the JWKS endpoint derived from `PHR_BASE_URL` |
+| `PHR_INTROSPECT_URL` | _(empty)_ | Introspection endpoint. Deliberately **not** derived from `PHR_BASE_URL`: an RS256 deployment sets the base URL for JWKS and must not get an introspection surface with it. Empty means the fallback is unusable even where `PHR_ALLOW_INTROSPECTION` is on, and says so at debug level only — so if HS256 sign-in 401s locally, check this first. |
+| `PHR_INTROSPECT_AUTH` | _(empty)_ | `client_id:client_secret` → HTTP Basic on the introspection call, per RFC 7662 §2.1. Empty sends none. A value missing either half is ignored with a warning rather than sent as a half-blank credential, which would read as authenticated in the portal's log. |
+| `PHR_JWKS_CACHE_TTL` | `3600` | Seconds a fetched JWKS document is reused |
+| `PHR_JWKS_MIN_REFRESH_INTERVAL` | `60` | Floor between JWKS refetches. A token's `kid` is attacker-controlled and a miss triggers a refresh, so this is what stops one blocking outbound fetch per bogus token. Keep well under `PHR_JWKS_CACHE_TTL`. |
+| `PHR_ALLOW_INTROSPECTION` | `true` local/DEBUG, else `false` | **Security gate — leave off when deployed.** Enables the HS256 introspection fallback, which moves the signature check into the portal: an `active` response is taken as vouching for the token, and where the response omits the subject the token's *unverified* payload supplies it. A portal that introspects without fully verifying signatures would let a forged token through. Reads `ENVIRONMENT` from the process env, so an unset value counts as deployed and fails closed. |
+| `PHR_INTROSPECT_MAX_CALLS` | `30` | Ceiling on outbound introspection calls per interval, per process. DRF authenticates before it throttles, so `AnonRateThrottle` cannot reach that path — this is the only bound an anonymous caller runs into. |
+| `PHR_INTROSPECT_RATE_INTERVAL` | `60` | Window, in seconds, for `PHR_INTROSPECT_MAX_CALLS`. Clamped to a minimum of 1 — at `0` the window would restart on every call and remove the ceiling. |
 
 ---
 
