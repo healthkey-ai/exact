@@ -594,6 +594,67 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
 
     pi = PatientInfo(**filtered)
 
+    # An EXPLICIT null and a field nobody supplied both arrive as a falsy value
+    # the derivations cannot tell apart — so an explicit "we do not know"
+    # becomes a confirmed "no", which `match_score_and_status()` then
+    # short-circuits to `not_eligible` and the prefilter deletes. Naming the
+    # keys the caller actually sent is what lets `explicitly_unknown` tell the
+    # two apart. This is the shared form of the marker `tp53_disruption` uses
+    # on its own.
+    #
+    # Captured from `filtered`, which keeps None values.
+    #
+    # NOT inline-payload-only — the CTOMOP/PROMOP adapter and the management
+    # commands reach this too, and there a null is EXACT's own stored
+    # derivation rather than anyone's assertion. What keeps those apart today
+    # is `ctomop_adapter`, which strips None from the row before calling in;
+    # nothing here enforces it. If that strip is ever widened the way
+    # `tp53_disruption` is already exempted from it, upstream nulls would start
+    # reading as caller assertions.
+    pi._provided_fields = frozenset(filtered)
+
+    # An EXPLICIT tp53_disruption is provenance, and has to survive the
+    # derivation that would otherwise overwrite it. `patient_info_attributes`
+    # reads `_provided_tp53_disruption` first and stops on an explicit True,
+    # because nothing the markers can say contradicts a source that knows of a
+    # disruption this record does not spell out.
+    if 'tp53_disruption' in filtered:
+        value = filtered['tp53_disruption']
+        if value is not None and type(value) is not bool and strict:
+            # The inline path only: a client sent something that is not an
+            # aggregate, and 400 names the right party.
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError(
+                {'patient_info': {'tp53_disruption': 'Expected a boolean or null.'}}
+            )
+        if value is None or type(value) is bool:
+            # An explicit aggregate is supplied by the caller (including
+            # unknown). Retain it across normalization and later
+            # attribute-service instances.
+            pi._provided_tp53_disruption = value
+        else:
+            # Anything else is not an aggregate we can trust, so no provenance
+            # is recorded and the legacy derivation runs — exactly what these
+            # values did before the aggregate was honoured at all, since
+            # `normalize` overwrote the field unconditionally.
+            #
+            # Deliberately not a ValidationError. This helper is shared: the
+            # CTOMOP adapter and the management commands all reach it, so a
+            # raise here turns a malformed UPSTREAM row into a client 400 —
+            # `trials_views._resolve_patient_info` re-raises `APIException`
+            # unchanged, and its own comment says a person_id-path failure must
+            # surface as 500 "rather than masking it as a misleading 400". In a
+            # batch command it is not a 400 at all, it is a traceback.
+            #
+            # Reached only with `strict` off, i.e. from the CTOMOP adapter or a
+            # management command. Falling back is the status quo, not new
+            # leniency.
+            logger.warning(
+                'Ignoring tp53_disruption of unsupported type %s for person_id '
+                '%s; falling back to the marker derivation.',
+                type(value).__name__, data.get('person_id', '<inline>'),
+            )
+
     # Attach M2M as synthetic attributes so matchers can read them
     # By id OR by code, because the documented example uses codes and the
     # lookup only ever took ids. That mismatch was invisible while the

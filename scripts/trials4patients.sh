@@ -90,8 +90,11 @@ echo ""
 echo "=============================================="
 echo "Step 2: Run trial search for patients (direct DB)"
 echo "=============================================="
+# --source-db-url deliberately omitted: the command already defaults to
+# os.environ['PATIENT_DATABASE_URL'], and passing it here would put the
+# password into this process's own argv for the whole run -- longer-lived than
+# the psql child that #403 fixed, and just as world-readable.
 SEARCH_ARGS=(
-  --source-db-url "$PATIENT_DATABASE_URL"
   --limit "$SEARCH_LIMIT"
   --output /tmp/exact_local_test_results.json
 )
