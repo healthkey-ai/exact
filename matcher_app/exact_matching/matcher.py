@@ -38,10 +38,7 @@ from exact_matching.patient_info.configs import (
     sct_value_is_none,
 )
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
-from exact_matching.patient_info.patient_info_attributes import (
-    PatientInfoAttributes,
-    explicitly_unknown,
-)
+from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
 from exact_matching.utils import disease_attr_applies, get_overlap
 
@@ -1135,24 +1132,22 @@ class UserToTrialAttrMatcher:
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None:
             trial_attr_value = False
-        # An explicit "we do not know" is not a "no". Collapsing it below turns
-        # it into one, and `False` here is an ASSERTION: it reaches
-        # `not_matched`, `match_score_and_status()` short-circuits the trial to
-        # `not_eligible` and the prefilter deletes it. `unknown` demotes the
-        # trial to a candidate and costs a point instead.
+        # NOTE on the explicit-unknown seam (dev #502): `explicitly_unknown` is
+        # NOT consulted here, and that is deliberate rather than an omission.
+        # #4832 below already answers this case, and it answers it for EVERY
+        # bool_restriction: an unresolved value is `unknown`, not `not_matched`.
+        # Measured over an AST truth table across the five `EXPLICIT_UNKNOWN_FIELDS`
+        # x {trial requires True/False/None} x {value None/False/True} x {named
+        # or not} — 36 rows — an `explicitly_unknown` guard here changed the
+        # verdict in ZERO of them, because a named null and an un-named null both
+        # leave `ctx.is_blank` true and both already fall through to 'unknown'.
         #
-        # Gated on provenance, not on the value: twelve other bool_restriction
-        # attributes sit at None for any patient who never supplied them, and
-        # treating a bare None as unknown would move matching for all of them.
-        #
-        # The `ctx.is_blank` branch below covers most of this already (a named
-        # null makes the attr blank); this one is checked FIRST because it is the
-        # narrower, provenance-keyed test, so it cannot be pre-empted by a
-        # patient who is merely blank on an unrelated input.
-        if (trial_attr_value is True
-                and ctx.value is None
-                and explicitly_unknown(self.patient_info, ctx.name)):
-            return 'unknown'
+        # Provenance still matters one layer down, in the derivations themselves
+        # (`_unknown_or_false` in patient_info_attributes): there it separates
+        # "the caller said they do not know" (None) from "the caller never
+        # supplied the inputs" (legacy False), which is a distinction the blank
+        # check cannot make. This handler sees the finished value and cannot
+        # recover it.
         value = False if ctx.value is None else ctx.value
         if value is True:
             return 'matched'
