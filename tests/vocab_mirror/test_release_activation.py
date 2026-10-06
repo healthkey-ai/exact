@@ -1,0 +1,193 @@
+"""Release contract + atomic activation tests (#249 / ADR 0002).
+
+Covers the control-plane guarantees: fail-closed reads, an atomic single-ACTIVE
+swap that supersedes (but retains) the previous generation, the DB-enforced
+"one active" invariant, the release-match gate, and idempotency.
+"""
+import pytest
+from django.db import IntegrityError
+
+from vocab_mirror import activation
+from vocab_mirror.activation import (
+    ReleaseMatchFailed,
+    ReleaseNotReady,
+    activate_release,
+    active_release_id,
+    register_release_match_check,
+)
+from vocab_mirror.models import (
+    MirrorConcept,
+    MirrorConceptAncestor,
+    MirrorConceptRelationship,
+    MirrorRelease,
+    MirrorVocabulary,
+)
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _restore_release_checks():
+    """The release-match registry is module-global; snapshot/restore it so a
+    test that registers a check can't leak into others."""
+    snapshot = list(activation._release_match_checks)
+    yield
+    activation._release_match_checks[:] = snapshot
+
+
+def _ready_release(rid, with_data=True):
+    rel = MirrorRelease.objects.create(release_id=rid, state=MirrorRelease.READY)
+    if with_data:
+        # A complete generation: one row in every required mirror table, or the
+        # populated-generation gate refuses to activate it.
+        MirrorConcept.objects.create(
+            release_id=rid, concept_id=1, concept_name='x', domain_id='Drug',
+            vocabulary_id='RxNorm', concept_class_id='Ingredient', concept_code='c')
+        MirrorVocabulary.objects.create(
+            release_id=rid, vocabulary_id='RxNorm', vocabulary_name='RxNorm',
+            vocabulary_concept_id=1)
+        MirrorConceptRelationship.objects.create(
+            release_id=rid, concept_id_1=1, concept_id_2=2, relationship_id='Subsumes')
+        MirrorConceptAncestor.objects.create(
+            release_id=rid, ancestor_concept_id=1, descendant_concept_id=2,
+            min_levels_of_separation=1, max_levels_of_separation=1)
+    return rel
+
+
+class TestFailClosed:
+    def test_active_release_id_is_none_when_nothing_active(self):
+        _ready_release(1)  # READY but not activated
+        assert active_release_id() is None
+
+
+class TestActivation:
+    def test_activate_ready_release(self):
+        _ready_release(1)
+        activate_release(1)
+        assert active_release_id() == 1
+        assert MirrorRelease.objects.get(release_id=1).state == MirrorRelease.ACTIVE
+
+    def test_swap_supersedes_previous_keeps_single_active_and_retains_rows(self):
+        _ready_release(1)
+        _ready_release(2)
+        activate_release(1)
+        activate_release(2)
+        assert active_release_id() == 2
+        assert MirrorRelease.objects.get(release_id=1).state == MirrorRelease.SUPERSEDED
+        assert MirrorRelease.objects.filter(state=MirrorRelease.ACTIVE).count() == 1
+        # retention: the superseded generation's data rows survive the swap
+        assert MirrorConcept.objects.filter(release_id=1).exists()
+
+    def test_activation_is_idempotent(self):
+        _ready_release(1)
+        activate_release(1)
+        activate_release(1)
+        assert active_release_id() == 1
+        assert MirrorRelease.objects.filter(state=MirrorRelease.ACTIVE).count() == 1
+
+    def test_not_ready_raises_and_leaves_active_unchanged(self):
+        _ready_release(1)
+        activate_release(1)
+        MirrorRelease.objects.create(release_id=2, state=MirrorRelease.STAGING)
+        with pytest.raises(ReleaseNotReady):
+            activate_release(2)
+        assert active_release_id() == 1
+
+    def test_missing_release_raises(self):
+        with pytest.raises(ReleaseNotReady):
+            activate_release(999)
+
+
+class TestReleaseMatchGate:
+    def test_empty_mirror_generation_is_rejected(self):
+        _ready_release(1, with_data=False)  # READY, but zero concept rows
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(1)
+        assert active_release_id() is None
+
+    def test_registered_check_failure_blocks_and_preserves_active(self):
+        _ready_release(1)
+        activate_release(1)
+        _ready_release(2)
+
+        @register_release_match_check
+        def _reject(release_id):
+            raise ReleaseMatchFailed('artifact disagrees')
+
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(2)
+        assert active_release_id() == 1  # unchanged; previous generation preserved
+
+
+class TestComponentLookupGate:
+    """The component→category lookup cross-artifact gate (#262 / ADR 0002 B′)."""
+
+    def _lookup(self, concept_id, codes=('zz_pi',)):
+        from vocab_mirror.models import ComponentCategoryOmopLookup
+        ComponentCategoryOmopLookup.objects.create(
+            component_concept_id=concept_id, category_codes=list(codes))
+
+    def _stamp(self, rid):
+        from vocab_mirror.models import ComponentLookupStamp
+        ComponentLookupStamp.objects.update_or_create(
+            singleton=True, defaults={'release_id': rid})
+
+    def test_empty_lookup_does_not_block_activation(self):
+        # A fresh deploy with no lookup rows must not be blocked by this gate.
+        _ready_release(1)
+        activate_release(1)
+        assert active_release_id() == 1
+
+    def test_stamped_and_covered_activates(self):
+        _ready_release(1)          # seeds MirrorConcept concept_id=1
+        self._lookup(1)            # lookup references concept_id 1, present in release 1
+        self._stamp(1)
+        activate_release(1)
+        assert active_release_id() == 1
+
+    def test_populated_but_unstamped_blocks(self):
+        _ready_release(1)
+        self._lookup(1)            # populated, but no stamp
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(1)
+        assert active_release_id() is None
+
+    def test_stamp_for_other_release_blocks(self):
+        _ready_release(2)
+        self._lookup(1)
+        self._stamp(999)           # stamped for a different release
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(2)
+        assert active_release_id() is None
+
+    def test_missing_concept_coverage_blocks(self):
+        _ready_release(1)          # seeds concept_id=1 only
+        self._lookup(424242)       # a concept_id absent from release 1
+        self._stamp(1)
+        with pytest.raises(ReleaseMatchFailed):
+            activate_release(1)
+        assert active_release_id() is None
+
+
+class TestSingleActiveInvariant:
+    def test_db_rejects_two_active_releases(self):
+        MirrorRelease.objects.create(release_id=1, state=MirrorRelease.ACTIVE)
+        with pytest.raises(IntegrityError):
+            MirrorRelease.objects.create(release_id=2, state=MirrorRelease.ACTIVE)
+
+    def test_promote_integrity_error_becomes_typed_concurrent_activation(self, monkeypatch):
+        """A concurrent activation that wins the one-active slot makes the
+        loser's promote hit the partial-unique. That IntegrityError must surface
+        as a typed ConcurrentActivation (inside the MirrorReleaseError contract),
+        not a raw DB error, and roll back cleanly."""
+        _ready_release(1)
+
+        def _boom(self, *a, **k):
+            raise IntegrityError(
+                'duplicate key value violates unique constraint '
+                '"uq_one_active_mirror_release"')
+
+        monkeypatch.setattr(MirrorRelease, 'save', _boom)
+        with pytest.raises(activation.ConcurrentActivation):
+            activate_release(1)
+        assert active_release_id() is None  # rolled back; nothing activated

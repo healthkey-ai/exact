@@ -92,7 +92,48 @@ These already differ from CB on purpose. Leave them; do not try to re-sync them 
 - `expand_receptor_values()` for ER/PR/HR (EXACT only).
 - Parent-stage regex matching (EXACT only).
 - DB routing / read-only trials DB / OMOP fields (EXACT only).
+- **Patient language pairs are built by EXACT** (`trials/services/omop/patient_languages.py`,
+  no CB counterpart on purpose). An exception to golden rule 5: PROMOP serves
+  `english_*`/`spanish_*` capability booleans and EXACT turns them into
+  `"<language_concept_id>:<skill_concept_id>"` pairs from the `Language` / `LanguageSkillLevel`
+  vocab rows it reads, instead of PROMOP emitting a pair field (promop#1635 was closed for this).
+  In split-DB mode those rows are in the CB trials DB, so patient and trial pairs come from the
+  same rows. PROMOP unrolls only English and Spanish, so a trial language beyond those drops out
+  of the OMOP requirement; `check_omop_languages_readiness` lists such languages as a warning.
+  The `EXACT_OMOP_LANGUAGES` readiness gate (`trials/services/omop/languages_readiness.py`)
+  refuses the OMOP path while the vocab is unloaded, while the trial column is out of step with
+  the legacy list or with the vocab ids, and while any trial's language requirement maps to no
+  pair at all (cancerbot-org/cancerbot#5356).
+  On the OMOP path the patient also carries which languages were ASKED (any of the four
+  booleans non-null), and the verdict distinguishes "asked, does not have the skill"
+  (not_matched, excluded) from "never asked" (unknown, potential). That honours the rule above
+  that an empty consumer set must not read as unknown. The state model is written down in
+  `patient_languages.py`; queryset, matcher, potential count and attrs-to-fill-in share it
+  through `exact_matching/omop/languages_verdict.py`.
+- **The legacy language path has the same asked state** (#605, ported from cb-like-trials
+  #597/#607; fixes #591 on this line). `resolve.languages_skills_from_capabilities` turns the
+  same eight booleans into legacy codes (`languages_skills`, speak/write only) and
+  `languages_asked`; `exact_matching/patient_info/language_capability.py` applies the same five
+  cases over codes. `resolve.translate_language_capabilities` builds the legacy fields first
+  (keeping the booleans) and the OMOP pairs second, so both paths have their input whichever the
+  readiness snapshot picks. Callers that send codes and no booleans keep the plain overlap.
 Maintain an up-to-date inventory of these so agents can tell *intended* divergence from *drift*.
+
+## Deploy order: trial columns come from CB
+EXACT never migrates the CB-owned trials DB (`exact/db_router.py` `allow_migrate`, unless
+`TRIALS_DB_MIGRATE`), yet every Trial query SELECTs every concrete field. So a column EXACT's
+`Trial` model gains must exist in the trials DB **before** an EXACT build containing it is
+deployed, or every trial query fails with `UndefinedColumn`, whatever feature flag is set.
+
+- `omop_languages_skills_required` (EXACT migration 0023): apply **CB migration 0421** to the
+  trials DB EXACT reads first. As of 2026-09-29 that migration is on CB's `promop` branch, not
+  yet on CB `dev`/`main`.
+- Then load and backfill (`load_language_omop_concept_ids`,
+  `backfill_omop_languages_skills_column`). In split-DB mode both write the `trials` models,
+  which route to the CB trials DB, so **CB runs them there** (CB has the same commands). EXACT
+  runs them only in single-DB (local) mode. Then run `check_omop_languages_readiness` (EXACT,
+  read-only) before setting `EXACT_OMOP_LANGUAGES`. The flag falls back to legacy on its own
+  while not ready.
 
 ## Anti-patterns (never do during a port)
 - Restyling/restructuring ported code to EXACT conventions.

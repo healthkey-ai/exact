@@ -15,14 +15,14 @@ See [Typical end-to-end workflow](#typical-end-to-end-workflow) below.
 Both the ground-truth and the EXACT results CSV use the same format:
 
 ```
-CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
 20291,NCT03452774,potential,81
 20291,NCT07038785,eligible,79
 ```
 
 | Column | Description |
 |---|---|
-| `CTOMOP Patient ID` | Integer person ID |
+| `PROMOP Patient ID` | Integer person ID |
 | `Trial` | NCT number or internal trial code |
 | `Eligible/Potential` | `eligible` or `potential` |
 | `Suitability Score` | Integer goodness score (0–100) |

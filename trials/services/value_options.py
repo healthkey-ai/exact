@@ -25,11 +25,29 @@ class ValueOptions:
     def to_value_and_label(data):
         return [{'value': k, 'label': v} for k, v in data.items()]
 
-    @staticmethod
-    def therapies_by_disease_code_and_line_code(disease_code, line_code):
-        from trials.models import Disease, Therapy, TherapyRound, DiseaseRoundTherapyConnection
+    @cached_property
+    def _disease_by_code_cache(self):
+        # Per-instance memo so one all_options() build (which fans out to ~40
+        # per-disease/line therapy lists) resolves each Disease once instead of
+        # re-running `Disease WHERE code IN (lower, upper)` for every list — an
+        # N+1 (ported from CB perf(value-options) memoize disease-by-code). A
+        # fresh ValueOptions is built per all_options() call, so there is no
+        # cross-request staleness.
+        return {}
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+    def _disease_by_code(self, disease_code):
+        from trials.models import Disease
+        key = disease_code.upper()
+        if key not in self._disease_by_code_cache:
+            self._disease_by_code_cache[key] = list(
+                Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()])
+            )
+        return self._disease_by_code_cache[key]
+
+    def therapies_by_disease_code_and_line_code(self, disease_code, line_code):
+        from trials.models import Therapy, TherapyRound, DiseaseRoundTherapyConnection
+
+        disease = self._disease_by_code(disease_code)
         therapy_line = TherapyRound.objects.filter(code=line_code).first()
         connections = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease, round=therapy_line).select_related('therapy')
         items = [x.therapy.id for x in connections]
@@ -61,21 +79,19 @@ class ValueOptions:
         items = TherapyComponentCategory.objects.all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapies_by_disease_code(disease_code):
-        from trials.models import Disease, Therapy, DiseaseRoundTherapyConnection
+    def therapies_by_disease_code(self, disease_code):
+        from trials.models import Therapy, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         connections = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).select_related('therapy')
         items = [x.therapy.id for x in connections]
         items = Therapy.objects.filter(id__in=items).all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapy_components_by_disease_code(disease_code):
-        from trials.models import Disease, TherapyComponent, DiseaseRoundTherapyConnection
+    def therapy_components_by_disease_code(self, disease_code):
+        from trials.models import TherapyComponent, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         items = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).prefetch_related('therapy__components')
         ids = []
         for item in items:
@@ -84,11 +100,10 @@ class ValueOptions:
         items = TherapyComponent.objects.filter(id__in=ids).all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapy_types_by_disease_code(disease_code):
-        from trials.models import Disease, TherapyComponentCategory, DiseaseRoundTherapyConnection
+    def therapy_types_by_disease_code(self, disease_code):
+        from trials.models import TherapyComponentCategory, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         items = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).prefetch_related('therapy__components__categories')
         ids = []
         for item in items:

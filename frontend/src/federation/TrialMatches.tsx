@@ -2,7 +2,7 @@
 // patient's trial matches grouped by `matchingType`, with a filter bar,
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
-// CB contract) or `personId` (CTOMOP federation path added in #102).
+// CB contract) or `personId` (PROMOP federation path added in #102).
 import { useEffect, useMemo, useState, useRef } from "react";
 
 function useDebounced<T>(value: T, delay: number): T {

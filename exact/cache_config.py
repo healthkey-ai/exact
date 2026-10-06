@@ -61,6 +61,7 @@ def build_caches(*, redis_url, debug, environment, force_redis=False, redis_ca_c
     """
     redis_url = (redis_url or "").strip()
     local = (debug or environment == "local") and not force_redis
+
     if not redis_url or local:
         return {"default": {"BACKEND": LOCMEM_BACKEND}}
 

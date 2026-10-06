@@ -4,9 +4,9 @@ PatientInfo resolver — supports two contract shapes.
 1. Inline payload: `{"patient_info": {...}}` in the request body. No DB
    lookup; PatientInfo is never persisted by this path. CancerBot
    depends on this contract — do not change.
-2. CTOMOP fetch: `?person_id=` query param or `person_id` in the body.
-   Looks up the patient from CTOMOP via `CtomopClient` and feeds the
-   row through `build_patient_info_from_ctomop_row` (#102). Gated behind
+2. PROMOP fetch: `?person_id=` query param or `person_id` in the body.
+   Looks up the patient from PROMOP via `PromopClient` and feeds the
+   row through `build_patient_info_from_promop_row` (#102). Gated behind
    `EXACT_ALLOW_PERSON_ID_LOOKUP` (off by default outside local/DEBUG) —
    see the authorization boundary below.
 
@@ -16,40 +16,65 @@ the migration without breaking).
 
 ## Authorization boundary
 
-The CTOMOP `person_id` path calls CTOMOP with a static service token
-(`CTOMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
-and CTOMOP does not enforce row-level authz for that token — so honoring
-an arbitrary `person_id` lets any authenticated caller enumerate other
-patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
-patients (it's stateless for patient data — see project memory
+The PROMOP `person_id` path calls PROMOP with EXACT's own service
+credential, which authenticates EXACT as a service (`urn:service|exact`)
+and is NOT bound to the authenticated caller. PROMOP does not enforce
+row-level authz for a service credential — so honoring an arbitrary
+`person_id` lets any authenticated caller enumerate other patients' PHI
+(IDOR, #150/#108). EXACT also has no model linking users to patients
+(it's stateless for patient data — see project memory
 `feedback_exact_no_own_db.md`), so there's nothing in-tree to verify
 against.
 
 Because no production caller uses this path (the federation host fetches
-the patient from CTOMOP `/patient-info/me/` under the end-user's own token
+the patient from PROMOP `/patient-info/me/` under the end-user's own token
 and forwards it inline), the path is gated OFF by default outside
 local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
 `person_id` while the gate is off gets a 403.
 
 Re-enabling it in production requires BOTH:
-- forwarding the caller's identity to CTOMOP (token exchange / pass-through
-  bearer or actor_iss/actor_sub — see hk-labs `ctomop_client.py`), AND
-- CTOMOP enforcing per-user authz (its `PatientUser`/consent models), or
+- a *verified* end-user identity reaching PROMOP: either the caller's own
+  bearer forwarded through, or a token exchanged for it — matched to
+  PROMOP's audience, token type and scopes. Asserting `actor_iss`/
+  `actor_sub` alongside a service credential is NOT one of the options:
+  PROMOP rejects unsigned actor claims from a service identity outright
+  (#448 / promop #147, #568), and EXACT sends no such field anywhere, AND
+- PROMOP enforcing per-user authz (its `PatientUser`/consent models), or
   using the self-scoped `/patient-info/me/` route.
 
-Tracked as #150/#108.
+Neither exists today, so the gate stays closed in production: the
+service-identity migration does not re-open this path.
+
+Tracked as #150/#108, #448.
 """
 import ast
 import datetime as dt
 import json
 import logging
+import re
 from math import isfinite
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
+from trials.services.omop.patient_languages import (
+    LANGUAGE_CAPABILITY_FIELDS,
+    _is_false,
+    _is_true,
+    language_skill_concept_ids_from_capabilities,
+)
+
+# Distinguishes "no person_id supplied" from a supplied-but-falsy one.
+_MISSING = object()
+# Bounded on purpose. A person_id is a database primary key, so bigint's range
+# is the honest ceiling — and the bound must be applied *before* int(), because
+# CPython refuses to convert a string of more than 4300 digits at all
+# (ValueError), which would escape the ValidationError below as a 500.
+_MAX_PERSON_ID = 9223372036854775807  # PostgreSQL bigint
+_DIGITS_ONLY = re.compile(r'[0-9]{1,19}')
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -64,7 +89,10 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     Resolution order:
       1. Inline `patient_info` payload (existing contract — unchanged).
-      2. `person_id` query param or body field — fetch from CTOMOP.
+      2. `person_id` query param or body field — fetch from PROMOP. A
+         malformed `person_id` is a 400; a well-formed one whose patient can't
+         be fetched raises `PatientContextUnavailable` (502). Neither ever
+         degrades into case 3.
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
@@ -74,12 +102,13 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
         return _build_in_memory(patient_info_data, strict=True)
 
     person_id = _extract_person_id(request)
-    if person_id:
-        # IDOR gate (#150/#108): the CTOMOP fetch uses a static service token
-        # not bound to the caller, and CTOMOP doesn't enforce row-level authz
-        # for it — so honoring an arbitrary person_id leaks other patients'
-        # PHI. Off by default outside local/DEBUG; reject rather than silently
-        # ignore so the disabled path can't masquerade as a no-patient search.
+    if person_id is not _MISSING:
+        # IDOR gate (#150/#108): the PROMOP fetch uses EXACT's own service
+        # credential, which is not bound to the caller, and PROMOP doesn't
+        # enforce row-level authz for a service identity — so honoring an
+        # arbitrary person_id leaks other patients' PHI. Off by default outside
+        # local/DEBUG; reject rather than silently ignore so the disabled path
+        # can't masquerade as a no-patient search.
         from django.conf import settings
         if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
             from rest_framework.exceptions import PermissionDenied
@@ -87,7 +116,7 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
                 'person_id lookup is disabled. Provide an inline patient_info '
                 'payload instead.'
             )
-        return _resolve_from_ctomop(person_id)
+        return _resolve_from_promop(person_id)
 
     return None
 
@@ -100,35 +129,178 @@ def _get_body_field(request, name: str) -> Any:
     return data.get(name)
 
 
-def _extract_person_id(request) -> Optional[Any]:
-    """Return person_id from query params first, then body. None if absent.
+def _extract_person_id(request) -> Any:
+    """Return the supplied person_id, or `_MISSING` when the caller named none.
+
+    Presence, not truthiness. A JSON body can carry `{"person_id": 0}`, and
+    `0` is falsy — reading this field with `or` turned that into "no patient
+    supplied", which meant a bad id was answered with a whole-corpus search
+    (and slipped past the 403 gate, since the gate only fires when a person_id
+    is present). An empty `?person_id=` is the same mistake in the query
+    string. Both are now *supplied but invalid*, and validation rejects them.
 
     The return is `Any` (not `str`) because the body path can carry a JSON
-    integer (e.g. `{"person_id": 9003}`) while the query-string path always
-    yields `str`. `CtomopClient.fetch_patient` coerces both to int before
-    constructing the URL.
+    integer while the query-string path always yields `str`.
     """
     query_params = getattr(request, 'query_params', None)
     if query_params:
-        pid = query_params.get('person_id') or query_params.get('personId')
-        if pid:
-            return pid
+        for key in ('person_id', 'personId'):
+            if key in query_params:
+                return query_params[key]
 
-    body_pid = _get_body_field(request, 'person_id') or _get_body_field(request, 'personId')
-    return body_pid or None
+    data = getattr(request, 'data', None)
+    if isinstance(data, dict):
+        for key in ('person_id', 'personId'):
+            if key in data:
+                return data[key]
+
+    return _MISSING
 
 
-def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
-    """Fetch the CTOMOP row and adapt it to a PatientInfo. None on any error."""
-    from trials.services.patient_info.ctomop_adapter import (
-        build_patient_info_from_ctomop_row,
+class PatientContextUnavailable(APIException):
+    """A well-formed `person_id` was named but its patient could not be fetched.
+
+    502 rather than 404: `fetch_patient` collapses every failure to None, and
+    this code deliberately does not take them apart. PROMOP's 404 would say the
+    patient doesn't exist — reporting that back would turn this route into a
+    patient-existence oracle, on a route whose whole problem is that a service
+    credential can read any patient (the IDOR the gate exists for, #150/#108).
+    One conservative code for "we could not get them", whatever the reason:
+    unreachable PROMOP, non-2xx, a body that isn't a row, or (since #448) no
+    usable credential. Operators diagnose the real cause from the WARNING the
+    client logs, which does distinguish them.
+
+    A malformed `person_id` is NOT this error — see `_reject_malformed_person_id`.
+    """
+    status_code = 502
+    default_detail = ('Could not fetch the requested patient from PROMOP. '
+                      'No trial results are returned for an unresolved patient.')
+    default_code = 'patient_context_unavailable'
+
+
+def _reject_malformed_person_id(person_id: Any) -> None:
+    """400 for a `person_id` that isn't a positive integer, before any fetch.
+
+    `PromopClient.fetch_patient` also rejects these — without a network call, as
+    a URL-injection guard — but it reports the rejection as None, which here
+    would read as "PROMOP could not give us the patient" and answer 502. Blaming
+    an upstream that was never called turns a permanently-unsatisfiable client
+    mistake into a 5xx: alert noise, and a retry loop in any client that retries
+    5xx. The shape check belongs to whoever can still tell the caller.
+
+    Checked by type, not by `int()`. A JSON body carries real types, and `int()`
+    *truncates* rather than refusing: `int(1.5)` is 1 and `int(True)` is 1, so
+    `{"person_id": 1.5}` would have quietly fetched and matched patient 1 — a
+    different, real patient's record. Anything that is not an integer, or an
+    all-digit string of at most bigint's 19 digits, is rejected rather than
+    rounded into somebody — or handed to an `int()` that refuses to convert it.
+    """
+    bad = ValidationError({'person_id': (
+        'Must be a positive integer no larger than 9223372036854775807.'
+    )})
+    if isinstance(person_id, bool):
+        # bool is a subclass of int; `True` would otherwise pass as patient 1.
+        raise bad
+    if isinstance(person_id, int):
+        value = person_id
+    elif isinstance(person_id, str) and _DIGITS_ONLY.fullmatch(person_id):
+        # Not str.isdigit(): that accepts non-ASCII digit characters, which
+        # int() then happily converts.
+        value = int(person_id)
+    else:
+        raise bad
+    if not 0 < value <= _MAX_PERSON_ID:
+        raise bad
+
+
+def _resolve_from_promop(person_id: Any) -> 'PatientInfo':
+    """Fetch the PROMOP row and adapt it to a PatientInfo.
+
+    Raises `PatientContextUnavailable` rather than returning None when the row
+    can't be fetched. Returning None here would be read by the caller as "this
+    request has no patient" — and a search with no patient answers with the
+    whole corpus, unscored and unfiltered, which looks like a valid result
+    (#156). A caller that named a `person_id` asked about *that* patient; the
+    honest answer to "we couldn't get them" is an error, not every trial we
+    know. Failing closed on the credential (#448) would otherwise have created
+    exactly this: a dropped secret answering 200 with a full trial list.
+    """
+    from trials.services.patient_info.promop_adapter import (
+        build_patient_info_from_promop_row,
     )
-    from trials.services.patient_info.ctomop_client import CtomopClient
+    from trials.services.patient_info.promop_client import PromopClient
 
-    row = CtomopClient().fetch_patient(person_id)
+    _reject_malformed_person_id(person_id)
+    row = PromopClient().fetch_patient(person_id)
     if not row:
-        return None
-    return build_patient_info_from_ctomop_row(row)
+        raise PatientContextUnavailable()
+    return build_patient_info_from_promop_row(row)
+
+
+#: PROMOP's machine-readable language capability (promop #827), for the LEGACY path
+#: (#605, porting cb-like-trials #597/#607; fixes #591 on 2omop).
+#:
+#: PROMOP's ``languages_skills`` is a DISPLAY string, "English language: read,
+#: speak; Spanish language: speak", which can never equal a trial code like
+#: ``speak__en``. So a PROMOP patient who recorded any language failed every trial
+#: with a language requirement. The same record carries eight three-valued
+#: booleans; see ``exact_matching.patient_info.language_capability`` for the state
+#: model built from them (H = held codes, A = asked languages).
+_LEGACY_SKILLS = ('speak', 'write')   # the only capabilities trials are written in
+
+
+def _has_value(value):
+    return _is_true(value) or _is_false(value)
+
+
+def languages_skills_from_capabilities(data):
+    """Legacy H and A from PROMOP's eight capability booleans. Keeps the booleans.
+
+    Returns ``data`` unchanged when none of the eight names is present, so a
+    caller that sends CB codes and no booleans is unaffected. Otherwise returns a
+    copy in which:
+
+    * if any boolean has a value (parses as true or false), ``languages_skills``
+      is rebuilt from the True speak/write ones as ``<skill>__<lang>`` codes
+      (``None`` when there are none), and ``languages_asked`` lists the languages
+      with at least one valued boolean. The booleans win over codes sent beside
+      them;
+    * if all of them are NULL or blank, ``languages_skills`` is dropped only when
+      it is PROMOP's display string (it contains ':', which no CB code does), so
+      codes a caller sent alongside a form's empty fields survive.
+
+    The eight booleans are left in place for the OMOP builder
+    (``language_skill_concept_ids_from_capabilities``), which reads the same
+    values; the model-field filter drops them afterwards.
+    """
+    present = [name for name in LANGUAGE_CAPABILITY_FIELDS if name in data]
+    if not present:
+        return data
+    out = dict(data)
+    if not any(_has_value(data[name]) for name in present):
+        current = out.get('languages_skills')
+        if isinstance(current, str) and ':' in current:
+            out['languages_skills'] = None
+        return out
+    held = sorted({
+        f'{skill}__{code}' for name in present
+        for code, skill in [LANGUAGE_CAPABILITY_FIELDS[name]]
+        if skill in _LEGACY_SKILLS and _is_true(data[name])
+    })
+    asked = sorted({LANGUAGE_CAPABILITY_FIELDS[name][0] for name in present if _has_value(data[name])})
+    out['languages_skills'] = ','.join(held) if held else None
+    out['languages_asked'] = ','.join(asked) if asked else None
+    return out
+
+
+def translate_language_capabilities(data):
+    """Both language translations from one read of the booleans (#605, CB #5350).
+
+    The legacy H/A first, which keeps the booleans, then the OMOP pairs, which
+    consume them under ``EXACT_OMOP_LANGUAGES`` + readiness. Each path reads its own
+    fields, so whichever path the readiness snapshot picks has its values.
+    """
+    return language_skill_concept_ids_from_capabilities(languages_skills_from_capabilities(data))
 
 
 def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
@@ -150,6 +322,9 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
 
     # Convert camelCase keys to snake_case if needed
     snake_data = _to_snake_case(data)
+    # PROMOP's language booleans -> legacy codes/asked languages and, on the OMOP
+    # path, concept pairs, before the field filter below drops them (#605, CB #5350).
+    snake_data = translate_language_capabilities(snake_data)
 
     # Filter to known model fields only
     model_fields = {f.name for f in PatientInfo._meta.get_fields() if hasattr(f, 'column')}
@@ -322,7 +497,7 @@ def _coerce_numerics(data: dict, model_cls):
 def _normalize_structured_json_fields(data: dict):
     """Enforce list-of-dicts shape on JSON fields whose consumers call `.get(...)` per item.
 
-    Bare-string items (legacy rows, malformed CTOMOP input) would otherwise crash
+    Bare-string items (legacy rows, malformed PROMOP input) would otherwise crash
     the matcher and trial-details renderer with `'str' object has no attribute 'get'`.
     """
     for key in ('later_therapies', 'supportive_therapies'):

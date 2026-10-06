@@ -1,4 +1,4 @@
-"""Shadow comparison: legacy therapy vs its OMOP mapping (#4446).
+"""Shadow comparison: legacy therapy + demographics vs their OMOP mapping (#4446).
 
 A read-only safety gate for the OMOP cutover. For each trial it:
   1. re-derives the expected omop_* values from the LEGACY columns (the same
@@ -11,14 +11,13 @@ A read-only safety gate for the OMOP cutover. For each trial it:
 Output feeds both cutover-readiness and the SME mapping review (top unmapped codes
 by trial frequency). No writes; no schema change.
 
-Ported from CancerBot (CB epic #4447). DIVERGENCE FROM CB: the CB version also
-shadow-compares the OMOP demographics columns (ethnicity/gender). EXACT has not
-yet ported the demographics OMOP machinery (a separate, later phase), so this
-copy is therapy-only. Re-add the demographics branch when EXACT ports it.
+Ported from CancerBot (CB epic #4447). Covers both therapy and demographics
+(ethnicity/gender) omop columns (#4447 PR 2).
 """
 from collections import Counter
 
 from trials.services.omop.therapy_concept_mapper import build_omop_columns
+from trials.services.omop.demographics import build_omop_demographics
 
 
 def _differs(stored, computed):
@@ -37,14 +36,18 @@ def compare_trial(trial):
     unmapped: {legacy_column: [codes]} legacy codes with no OMOP concept.
     """
     t_values, t_unmapped = build_omop_columns(trial)
+    d_values, d_unmapped = build_omop_demographics(trial)
 
     drift = {}
-    for col, computed in t_values.items():
+    for col, computed in {**t_values, **d_values}.items():
         stored = getattr(trial, col)
         if _differs(stored, computed):
             drift[col] = (stored, computed)
 
-    return drift, dict(t_unmapped)
+    unmapped = dict(t_unmapped)
+    if d_unmapped:
+        unmapped['ethnicity_required'] = d_unmapped
+    return drift, unmapped
 
 
 def compare_corpus(queryset):

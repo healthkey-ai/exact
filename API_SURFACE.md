@@ -121,6 +121,7 @@ trial-search request.
 | `sponsor` | string | Filter by sponsor name |
 | `register` | string | Filter by trial register (e.g. `clinicaltrials.gov`) |
 | `trialType` | string | Filter by trial-type code |
+| `trialPurpose` | string, repeatable | Filter by trial-purpose code (`treatment`, `screening`, …), case-insensitive. Several purposes are a union — a trial matching any of them comes back: repeat the param (`?trialPurpose=treatment&trialPurpose=supportive_care`) or pass one comma-separated value. Trials whose purpose was never extracted are not returned. |
 | `validatedOnly` | boolean | Only return manually validated trials |
 | `distance` | number | Maximum distance from patient location |
 | `distanceUnits` | `km` \| `miles` | Units for `distance` (default `km`) |
@@ -385,10 +386,12 @@ Requests with `limit` < 1, > 200, non-integer, or empty return
 
 | Status | When |
 |---|---|
-| `400 Bad Request` | Validation error in request body or query params |
+| `400 Bad Request` | Validation error in request body or query params — including a `person_id` that isn't a positive integer. **Supplying the key at all counts as naming a patient**: `?person_id=` and `{"person_id": null}` are rejected rather than treated as "no patient". Omit the key entirely to search without one |
 | `401 Unauthorized` | Missing or invalid auth token |
+| `403 Forbidden` | `person_id` lookup while `EXACT_ALLOW_PERSON_ID_LOOKUP` is off (the default outside local/DEBUG, #150/#108) — send an inline `patientInfo` payload instead |
 | `404 Not Found` | Record not found |
 | `500 Internal Server Error` | Unexpected server error |
+| `502 Bad Gateway` | A `person_id` was named but PROMOP could not supply the patient. No trial results are returned for an unresolved patient (#448) |
 
 Error body:
 ```json

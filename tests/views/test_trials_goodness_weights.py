@@ -53,6 +53,9 @@ def _call_get_queryset(view, qs):
     Returns the captured calls to with_goodness_score_optimized.
     """
     with patch('trials.api.trials_views.Trial') as MockTrial:
+        # get_queryset's base is `Trial.objects.select_related('trial_type')`
+        # (trial_type N+1 fix); wire that entry point to the mock qs.
+        MockTrial.objects.select_related.return_value = qs
         MockTrial.objects.all.return_value = qs
         try:
             view.get_queryset()

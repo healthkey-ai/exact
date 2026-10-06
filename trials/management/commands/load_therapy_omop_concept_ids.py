@@ -1,8 +1,9 @@
 """Load OMOP concept_ids onto the therapy vocab models from the curated mapping.
 
 Reads docs/omop/mapping/therapy_omop_mapping.csv (CB code -> OMOP concept_id,
-produced + curated against CTOMOP, see that dir) and:
-- sets omop_concept_id on Therapy / TherapyComponent / TherapyComponentCategory (#4451);
+produced + curated against PROMOP, see that dir) and:
+- sets omop_concept_id on Therapy / TherapyComponent (#4451; the category level
+  is not OMOP-mapped — decision A, #4502);
 - upserts OmopConcept(concept_id -> concept_name, vocabulary_id) so the API can
   resolve the concept_ids in trial omop_* columns to OMOP titles;
 - upserts TherapyOmopMapping (the per-row cb<->OMOP crosswalk, #4476) for EVERY
@@ -11,7 +12,14 @@ produced + curated against CTOMOP, see that dir) and:
 
 For the vocab-model omop_concept_id + OmopConcept writes, only rows with a
 concept_id and an accepted match type are loaded; `no_omop` (procedures /
-non-drug) and `needs_review` rows are skipped. The crosswalk table keeps them.
+non-drug) and `needs_review` rows do not write a concept_id. `crosswalk_only`
+(category / drug-class type rows) and `deferred` (component codes not yet
+authored in the vocab) carry a concept_id in the CSV but are AUDIT-only (#4580)
+— recorded in the crosswalk, never written as a runtime vocab mapping. If a
+row's vocab object previously had a concept_id (stale from a prior accepted run
+— null-cid `needs_review`/`no_omop` OR a `crosswalk_only`/`deferred` transition),
+it is cleared to NULL so the backfill does not propagate the old value into
+trial omop_* columns. The crosswalk table records all rows regardless.
 
 Ported from CancerBot (CB epic #4447). The mapping CSV is vendored from CB so
 EXACT can populate vocab concept_ids in single-DB / local runs.
@@ -26,17 +34,26 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from trials.models import (
-    Therapy, TherapyComponent, TherapyComponentCategory, OmopConcept, TherapyOmopMapping,
+    Therapy, TherapyComponent, OmopConcept, TherapyOmopMapping,
 )
 
+# Drug-class "types" (category level) are not OMOP-mapped — decision A, #4502.
+# The vocab omop_concept_id + trial omop_therapy_types_* columns are gone; only
+# regimen + component carry concept_ids. Any stray `category` CSV row is still
+# recorded in the TherapyOmopMapping crosswalk (audit) but loads no vocab value.
 LEVEL_MODEL = {
     'regimen': Therapy,
     'component': TherapyComponent,
-    'category': TherapyComponentCategory,
 }
 DEFAULT_CSV = os.path.join(settings.BASE_DIR, 'docs', 'omop', 'mapping', 'therapy_omop_mapping.csv')
-# match types that carry a CTOMOP-verified concept_id
+# match types that carry a PROMOP-verified concept_id loaded as a runtime vocab mapping
 ACCEPTED = {'auto', 'curated', 'llm'}
+# Recorded in the crosswalk for audit but NOT runtime-applicable (#4580): they carry a
+# concept_id in the CSV, but any vocab omop_concept_id for the code must be cleared so it
+# is never a runtime mapping / backfilled into trials — relevant for a `deferred` component
+# whose code exists in the vocab. A dedicated set (not "any non-accepted") so --exclude-llm
+# can't inadvertently clear a valid llm mapping.
+CROSSWALK_ONLY = {'crosswalk_only', 'deferred'}
 
 
 class Command(BaseCommand):
@@ -56,6 +73,7 @@ class Command(BaseCommand):
 
         updated = Counter()      # level -> rows set
         unchanged = Counter()    # already had the value
+        cleared = Counter()      # level -> stale concept_ids nulled (needs_review/no_omop/crosswalk_only/deferred)
         missing_code = Counter()  # code not found in vocab table
         skipped = 0
         concepts = 0             # distinct OmopConcept rows upserted
@@ -84,6 +102,19 @@ class Command(BaseCommand):
 
                 if row['match'] not in accepted or cid is None:
                     skipped += 1
+                    # Clear any stale concept_id left from a previous accepted mapping so the
+                    # backfill can't propagate a wrong/dropped OMOP concept into trial omop_*
+                    # columns. Clear when the row (a) transitions to needs_review/no_omop
+                    # (cid is None), or (b) is crosswalk_only/deferred — recorded for audit
+                    # but must never be a runtime vocab mapping even though the CSV still
+                    # carries its concept_id.
+                    model = LEVEL_MODEL.get(row['level'])
+                    if model is not None and (cid is None or row['match'] in CROSSWALK_ONLY):
+                        obj = model.objects.filter(code=row['cb_code']).first()
+                        if obj is not None and obj.omop_concept_id is not None:
+                            cleared[row['level']] += 1
+                            if not dry_run:
+                                model.objects.filter(pk=obj.pk).update(omop_concept_id=None)
                     continue
 
                 # OmopConcept (concept_id -> title/vocab): keyed by concept_id, so it
@@ -101,7 +132,10 @@ class Command(BaseCommand):
                             },
                         )
 
-                model = LEVEL_MODEL[row['level']]
+                model = LEVEL_MODEL.get(row['level'])
+                if model is None:  # non-vocab level (e.g. dropped `category`) — crosswalk only
+                    skipped += 1
+                    continue
                 obj = model.objects.filter(code=row['cb_code']).first()
                 if obj is None:
                     missing_code[row['level']] += 1
@@ -118,12 +152,25 @@ class Command(BaseCommand):
                     # it has; EXACT keeps the same write for consistency.)
                     model.objects.filter(pk=obj.pk).update(omop_concept_id=cid)
 
+        # Rebuild the flat component → category lookup so OMOP type matching
+        # is consistent with the concept_ids just written. The loader uses
+        # QuerySet.update(), which bypasses signals, so the sync must be explicit.
+        from trials.services.omop.component_category_lookup import sync_component_category_lookup
+        lookup_result = sync_component_category_lookup(dry_run=dry_run)
+
         prefix = '[dry-run] ' if dry_run else ''
-        for level in ('regimen', 'component', 'category'):
+        for level in ('regimen', 'component'):
             self.stdout.write(
                 f"{prefix}{level:10s} set={updated[level]:3d} unchanged={unchanged[level]:3d} "
                 f"code_not_found={missing_code[level]:3d}"
             )
-        self.stdout.write(f"{prefix}total set={sum(updated.values())} skipped(no-concept/review)={skipped}")
+        if sum(cleared.values()):
+            self.stdout.write(f"{prefix}stale concept_ids cleared: {dict(cleared)}")
+        self.stdout.write(f"{prefix}total set={sum(updated.values())} cleared={sum(cleared.values())} skipped(no-concept/review)={skipped}")
         self.stdout.write(f"{prefix}OmopConcept rows upserted={concepts}")
         self.stdout.write(f"{prefix}TherapyOmopMapping (crosswalk) rows upserted={crosswalk}")
+        self.stdout.write(
+            f"{prefix}ComponentCategoryOmopLookup: total={lookup_result['total']} "
+            f"added={lookup_result['added']} updated={lookup_result['updated']} "
+            f"removed={lookup_result['removed']} unchanged={lookup_result['unchanged']}"
+        )

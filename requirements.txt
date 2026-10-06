@@ -41,6 +41,9 @@ pytest-django==4.11.1
 pytest-factoryboy==2.8.1
 pytest-split==0.10.0
 
+# Local matcher package (exact_matching)
+-e ./matcher_app
+
 # Portal token verification (accounts.providers.phr): JWKS fetch, RS256 decode.
 # firebase-admin pulls both in transitively; pinned here because this code
 # imports them directly and must not break when that dependency changes.

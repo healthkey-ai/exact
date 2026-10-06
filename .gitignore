@@ -52,9 +52,16 @@ scripts/cache/
 *.csv
 !scripts/evaluator/ground_truth.csv
 !docs/omop/mapping/therapy_omop_mapping.csv
+!docs/omop/mapping/language_omop_mapping.csv
 
 # Local-only management commands and tests
 trials/management/commands/evaluate_ethalon_live.py
 tests/management/test_evaluate_ethalon_live.py
 scripts/evaluator/evaluate_live.sh
 republish_latest.sh
+
+# exact_matching package build artifacts
+matcher_app/*.egg-info/
+matcher_app/**/*.egg-info/
+matcher_app/build/
+matcher_app/dist/

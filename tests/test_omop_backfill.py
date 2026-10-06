@@ -43,22 +43,30 @@ def test_map_codes_to_concept_ids_empty():
     assert map_codes_to_concept_ids(Therapy, []) == ([], [])
 
 
-def test_build_omop_columns_all_six_levels():
+def test_build_omop_columns_regimen_component_and_supportive_levels():
+    # Drug-class "types" are not OMOP-mapped (#4502). Regimen + component + supportive
+    # (cb#4590) ARE mapped; supportive resolves via TherapyComponent concept_ids.
     Therapy.objects.create(code='reg_r', title='reg r', omop_concept_id=1)
     Therapy.objects.create(code='reg_x', title='reg x', omop_concept_id=2)
     TherapyComponent.objects.create(code='comp_r', title='comp r', omop_concept_id=3)
-    TherapyComponentCategory.objects.create(code='cat_r', title='cat r', omop_concept_id=4)
+    Therapy.objects.create(code='sup_r', title='sup r', omop_concept_id=5)
     trial = TrialFactory(
         therapies_required=['reg_r'],
         therapies_excluded=['reg_x'],
         therapy_components_required=['comp_r'],
-        therapy_types_required=['cat_r'],
+        supportive_therapies_required=['sup_r'],
+        therapy_types_required=['cat_r'],  # legacy type column — ignored by the OMOP mapper
     )
     values, unmapped = build_omop_columns(trial)
     assert values['omop_therapies_required'] == ['1']
     assert values['omop_therapies_excluded'] == ['2']
     assert values['omop_therapy_components_required'] == ['3']
-    assert values['omop_therapy_types_required'] == ['4']
+    # supportive is now OMOP-mapped via Therapy (regimen) concept_ids (cb#4590)
+    assert values['omop_supportive_therapies_required'] == ['5']
+    assert values['omop_supportive_therapies_excluded'] == []
+    # types are not OMOP-mapped — no omop_therapy_types_* key is produced
+    assert 'omop_therapy_types_required' not in values
+    assert 'omop_therapy_types_excluded' not in values
     # untouched legacy columns map to empty
     assert values['omop_therapy_components_excluded'] == []
     assert unmapped == {}
@@ -223,6 +231,46 @@ def test_dry_run_does_not_write_crosswalk(tmp_path):
         w.writerow(['regimen', 'zz_vrd', 'ZZ VRd', '111', 'RVD', 'RxNorm', 'auto'])
     call_command('load_therapy_omop_concept_ids', csv=str(csv_path), dry_run=True, stdout=StringIO())
     assert TherapyOmopMapping.objects.count() == 0
+
+
+def test_clears_stale_concept_id_on_needs_review_transition(tmp_path):
+    """P2-1 regression: concept_id set by a previous accepted run must be
+    nulled when the row transitions to needs_review, not left stale."""
+    t = Therapy.objects.create(code='zz_bort_maint', title='ZZ Bort Maint', omop_concept_id=1336825)
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_bort_maint', 'ZZ Bort Maint', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    t.refresh_from_db()
+    assert t.omop_concept_id is None
+
+
+def test_clears_stale_concept_id_on_no_omop_transition(tmp_path):
+    """no_omop rows (procedures) also clear a stale concept_id."""
+    tc = TherapyComponent.objects.create(code='zz_asct_comp', title='ZZ ASCT', omop_concept_id=999)
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['component', 'zz_asct_comp', 'ZZ ASCT', '', '', '', 'no_omop'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), stdout=StringIO())
+    tc.refresh_from_db()
+    assert tc.omop_concept_id is None
+
+
+def test_dry_run_does_not_clear_stale_concept_id(tmp_path):
+    """--dry-run must not clear the stale concept_id."""
+    t = Therapy.objects.create(code='zz_bort_maint2', title='ZZ Bort Maint 2', omop_concept_id=1336825)
+    csv_path = tmp_path / 'm.csv'
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['level', 'cb_code', 'cb_title', 'omop_concept_id', 'omop_name', 'omop_vocab', 'match'])
+        w.writerow(['regimen', 'zz_bort_maint2', 'ZZ Bort Maint 2', '', '', '', 'needs_review'])
+    call_command('load_therapy_omop_concept_ids', csv=str(csv_path), dry_run=True, stdout=StringIO())
+    t.refresh_from_db()
+    assert t.omop_concept_id == 1336825  # unchanged in dry-run
 
 
 def test_backfill_command_populates_trial_columns():

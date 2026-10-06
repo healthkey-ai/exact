@@ -5,7 +5,7 @@ matching engine for clinical trials. It connects to an external database that
 holds the trial catalog and reference data — EXACT does not own or manage that
 data.
 
-Patient profiles are passed inline with each API request. They can also be retrieved from an external database that has a PatientInfo table in the form implemented by [CTOMOP](https://github.com/healthkey-ai/ctomop), which exposes a flat projection of a patient record from underlying OMOP tables.
+Patient profiles are passed inline with each API request. They can also be retrieved from an external database that has a PatientInfo table in the form implemented by [PROMOP](https://github.com/healthkey-ai/promop), which exposes a flat projection of a patient record from underlying OMOP tables.
 
 > **[API_SURFACE.md](API_SURFACE.md)** — full REST API reference (endpoints, patient context schema, query params, response shapes).
 
@@ -18,6 +18,7 @@ Patient profiles are passed inline with each API request. They can also be retri
 | [docs/evaluator.md](docs/evaluator.md) | Evaluating EXACT results against ground truth |
 | [docs/setup.md](docs/setup.md) | Local development setup |
 | [API_SURFACE.md](API_SURFACE.md) | REST API reference |
+| [docs/promop-service-identity.md](docs/promop-service-identity.md) | PRomop credentials, service identity, and the fail-closed rules |
 
 ## Running trial search for patients
 
