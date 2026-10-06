@@ -1,4 +1,5 @@
-from math import log10
+from decimal import Decimal
+from math import isfinite, log10
 
 import inflection
 from django.db import models
@@ -12,6 +13,7 @@ from exact_matching.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED
 from exact_matching.patient_info.language_capability import asked_languages
 from exact_matching.patient_info.convertors.base_convertor import BaseConvertor
 from exact_matching.patient_info.convertors.serum_calcium_convertor import SerumCalciumConvertor
+from exact_matching.patient_info.convertors.egfr_calculator import EgfrCalculator
 from exact_matching.patient_info.convertors.serum_creatinine_convertor import SerumCreatinineConvertor
 from exact_matching.trial_details.configs import *
 from exact_matching.therapies_mapper import *
@@ -99,6 +101,92 @@ BULKY_DISEASE_CRITERIA_SOURCES = {
     'bulky_spleen_20cm_gt': ['spleen_size'],
     'bulky_spleen_20cm_gte': ['spleen_size'],
 }
+
+
+# `None` is a MEANINGFUL supplied value here (an unresolved aggregate), so
+# "was it supplied at all?" needs a marker that is not None.
+_NOT_SUPPLIED = object()
+
+
+# The derivations that end in a terminal `return False` meaning "I could not
+# work it out". Named explicitly rather than derived from "the value is None",
+# because the two are very different sets.
+#
+# `_provided_fields` holds EVERY key the caller named, and EXACT's own
+# serializer emits `vars(instance)` — for a myeloma patient with no CRAB or IMWG
+# inputs that is dozens of mapped attributes serialised as explicit `null`. A
+# client that reads a record and posts it back therefore "names" all of them.
+# Without this list the matcher seam fires for all 36 `bool_restriction`
+# attributes, and a measured round-trip moved 11 of them from `matched` to
+# `unknown` — including `meets_crab`, where a trial the base branch excluded
+# becomes a candidate. Widening to those is the open half of #502 and wants a
+# corpus measurement of its own.
+EXPLICIT_UNKNOWN_FIELDS = frozenset({
+    'renal_adequacy_status',
+    'hepatic_adequacy_status',
+    'haematological_adequacy_status',
+    'tnbc_status',
+    'metastatic_status',
+})
+
+
+def explicitly_unknown(patient_info, name):
+    """True when the caller NAMED one of `EXPLICIT_UNKNOWN_FIELDS` as null.
+
+    Those derivations end in a terminal `return False` for "I could not work it
+    out". For a matcher that is the worst answer available: `False` is an
+    assertion, it reaches `not_matched`, `match_score_and_status()`
+    short-circuits the trial to `not_eligible` and the SQL prefilter removes it
+    — so a caller saying "we do not know" silently DELETED trials from the
+    patient's results.
+
+    Consulted by those five derivations AND by the two `bool_restriction`
+    handlers in the matcher, which see every attribute of that type; the name
+    list above is what keeps the seam to the five.
+
+    Keyed on provenance rather than on the value. Twelve other
+    `bool_restriction` attributes already sit at None for any patient who simply
+    never supplied them, so a bare None cannot mean "unknown" here.
+
+    One known gap, inert today: `_coerce_numerics`/`_coerce_dates` write None
+    for unparseable input before provenance is captured, so `platelet_count:
+    "abc"` would read as caller-asserted null. None of the five is a numeric or
+    date column, so nothing reaches it.
+    """
+    if name not in EXPLICIT_UNKNOWN_FIELDS:
+        return False
+
+    return (name in getattr(patient_info, '_provided_fields', ())
+            and getattr(patient_info, name, None) is None)
+
+
+
+
+def _as_reading(value):
+    """A number we can compare against a threshold, or None.
+
+    `_coerce_numerics` only touches strings, so a JSON payload can still put a
+    list, dict or bool in a numeric column, and those reach the comparisons
+    intact. The old truthiness checks absorbed the falsy ones by accident — `[]`
+    simply skipped the branch — so replacing them with `is not None` turns that
+    into `TypeError: '<' not supported between 'float' and 'list'`, raised inside
+    `normalize_patient_info`. The inline path answers 400 "Could not build
+    patient context" and the person_id path 500: the search fails and EVERY
+    trial is hidden, which is the exact harm this file is trying to remove.
+
+    Non-finite values are excluded for the same reason they are dangerous rather
+    than merely odd: `Decimal('nan')` survives coercion and every comparison
+    against NaN is False, so a NaN creatinine walked through the screen as
+    "adequate"; infinity clears every threshold outright.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    try:
+        if not isfinite(value):
+            return None
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    return value
 
 
 class PatientInfoAttributes:
@@ -675,15 +763,69 @@ class PatientInfoAttributes:
         return None
 
     @cached_property
+    def _screening_egfr(self):
+        """The eGFR this screen should be decided on (#502).
+
+        Read the field and you get whatever `normalize` has filled in SO FAR.
+        It derives the eGFR one line BELOW the point it copies this status out,
+        so for every patient whose eGFR is calculated rather than stated the
+        field was still empty here: the derivation fell through to its "inputs
+        missing" branch and answered False. That is not one unmet criterion —
+        `match_score_and_status()` short-circuits the trial to `not_eligible`
+        and the SQL prefilter drops it. Measured on the base branch: a patient
+        with a derived eGFR of 129.93 and a clearance of 110, both far above the
+        threshold, was removed from trials. Computing the value HERE removes the
+        ordering dependency rather than reordering two lines and hoping.
+
+        When the record states an eGFR and the labs imply a different one, screen
+        on the worse of the two. Disagreement means one of them is stale, and on
+        a prefilter the optimistic reading is the one that offers a trial the
+        protocol excludes. It also settles a contradiction the base branch
+        shipped: a caller echoing an old derived eGFR back alongside fresh
+        creatinine was published with the RECALCALCULATED 21.94 in the field and
+        `renal_adequacy_status: True` beside it, because the status was read
+        before the recalculation landed.
+
+        Nothing consults this after normalization: `renal_adequacy_status` is
+        read exactly once (`normalize.py`), stored as a field, and every later
+        consumer — `get_value` included — reads the field.
+        """
+        supplied = _as_reading(self.patient_info.estimated_glomerular_filtration_rate)
+        derived = _as_reading(EgfrCalculator.call(self.patient_info))
+
+        if supplied is None:
+            return derived
+        if derived is None:
+            return supplied
+        return min(supplied, derived)
+
+    def _unknown_or_false(self, name):
+        """The answer for "I could not work it out" on a field the caller named.
+
+        `None` when they said null (unknown), the legacy `False` otherwise, so
+        a patient who simply never supplied the inputs is unaffected.
+        """
+        return None if explicitly_unknown(self.patient_info, name) else False
+
+    @cached_property
     def renal_adequacy_status(self):
-        if self.patient_info.estimated_glomerular_filtration_rate and self.patient_info.estimated_glomerular_filtration_rate < 60:
+        # `is not None`, not truthiness: ZERO is falsy, so `if egfr and ... < 60`
+        # skipped the check for the worst value either measure can carry and,
+        # with the other measure adequate, fell through to `True` — a trial
+        # offered to a patient with effectively no renal function. Measured on
+        # the base branch, both halves: eGFR 0 with clearance 110, and clearance
+        # 0 with eGFR 90, each answered `True`.
+        egfr = self._screening_egfr
+        clearance = _as_reading(self.patient_info.creatinine_clearance_rate)
+
+        if egfr is not None and egfr < 60:
             return False
 
-        if self.patient_info.creatinine_clearance_rate and self.patient_info.creatinine_clearance_rate < 60:
+        if clearance is not None and clearance < 60:
             return False
 
-        if self.patient_info.estimated_glomerular_filtration_rate is None or self.patient_info.creatinine_clearance_rate is None:
-            return False
+        if egfr is None or clearance is None:
+            return self._unknown_or_false('renal_adequacy_status')
 
         return True
 
@@ -694,7 +836,7 @@ class PatientInfoAttributes:
         alt_uln = self.get_uln_value('liver_enzyme_levels_alt')
 
         if bilirubin_total_uln is None or ast_uln is None or alt_uln is None:
-            return False
+            return self._unknown_or_false('hepatic_adequacy_status')
 
         return (
             bilirubin_total_uln <= HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX
@@ -709,7 +851,7 @@ class PatientInfoAttributes:
         hemoglobin = self.get_value('hemoglobin_level')
 
         if anc is None or platelet_count is None or hemoglobin is None:
-            return False
+            return self._unknown_or_false('haematological_adequacy_status')
 
         return (
             float(anc) >= HAEMATOLOGICAL_ADEQUACY_ANC_MIN
@@ -764,6 +906,14 @@ class PatientInfoAttributes:
         - tp53Mutation in molecular_markers OR
         - p53_ihc >= 50%
         """
+        provided = getattr(self.patient_info, '_provided_tp53_disruption', _NOT_SUPPLIED)
+
+        # An explicit TRUE carries information the markers may not: the source
+        # knows of a disruption this record does not spell out. Nothing below
+        # can contradict it, so take it and stop.
+        if provided is True:
+            return True
+
         cytogenic = self.patient_info.cytogenic_markers or ''
         molecular = self.patient_info.molecular_markers or ''
 
@@ -771,13 +921,45 @@ class PatientInfoAttributes:
         molecular_list = [m.strip() for m in molecular.split(',') if m.strip()]
 
         if 'del17p13' in cytogenic_list or 'del17p13' in molecular_list or 'tp53Mutation' in molecular_list:
-            return True
+            return self._tp53_contradiction() if provided is False else True
 
         # p53 IHC overexpression (>= 50%) is a TP53-disruption surrogate (CB).
         if self.patient_info.p53_ihc is not None and self.patient_info.p53_ihc >= 50:
-            return True
+            return self._tp53_contradiction() if provided is False else True
+
+        # Nothing above found positive evidence.
+        #
+        # An explicit NULL means the aggregate was not resolved upstream, which
+        # is not evidence of absence — so it yields unknown rather than the
+        # `False` this derivation would otherwise return. That is the point of
+        # honouring the aggregate at all.
+        if provided is None:
+            return None
 
         return False
+
+    def _tp53_contradiction(self):
+        """Only reached when the caller said FALSE and the markers say TRUE.
+
+        Resolved as unknown rather than as either side, because the `False` is
+        not reliably an assertion. `tp53_disruption` is a field EXACT DERIVES
+        (`normalize.py`) and `PatientInfoSerializer.to_representation` emits it
+        verbatim, so a caller that reads a patient record and sends it back
+        carries EXACT's own derivation on the wire. Measured: a record with no
+        markers serialises `tp53_disruption: False`, and echoing that back
+        alongside `tp53Mutation` used to silence the marker entirely.
+
+        `None` dominates `False` in both directions of harm. Against a trial
+        that EXCLUDES TP53-disrupted patients, `False` reads as `matched` and
+        offers the trial outright; `None` reads as `unknown` and leaves it a
+        candidate to be resolved. Against one that REQUIRES the disruption,
+        `False` reads as `not_matched` and denies the patient a trial their own
+        markers qualify them for; `None` again leaves it open.
+
+        So a contradiction is surfaced as a gap rather than silently decided in
+        favour of whichever side happened to arrive last.
+        """
+        return None
 
     def profile_completeness(self) -> int | None:
         disease_code = self.disease_code

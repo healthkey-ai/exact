@@ -21,18 +21,6 @@ if [ -z "$TRIALS_DATABASE_URL" ]; then
     exit 0
 fi
 
-# Move the password out of argv before any psql call (#403). psql invocations
-# below use "$PSQL_DSN"; the credential travels in PGPASSWORD, which
-# /proc/<pid>/environ keeps owner-only, instead of in a world-readable argv.
-# psql_dsn_split covers the URI form this deployment uses and REFUSES (exits
-# non-zero, aborting the container start) on a `?password=` query or keyword
-# conninfo rather than passing a credentialed string through as if it were
-# clean -- a silent pass would make the sentence above false exactly where it
-# mattered.
-# shellcheck source=docker/psql_dsn.sh
-source "$(dirname "${BASH_SOURCE[0]}")/psql_dsn.sh"
-psql_dsn_split "$TRIALS_DATABASE_URL"
-
 case "${TRIALS_DATABASE_INIT_FROM_BACKUP,,}" in
     1|true|yes|on) ;;
     *)
@@ -41,6 +29,22 @@ case "${TRIALS_DATABASE_INIT_FROM_BACKUP,,}" in
         exit 0
         ;;
 esac
+
+# Move the password out of argv before any psql call (#403). psql invocations
+# below use "$PSQL_DSN"; the credential travels in PGPASSWORD, which
+# /proc/<pid>/environ keeps owner-only, instead of in a world-readable argv.
+# psql_dsn_split rewrites the URI form this deployment uses, and REFUSES (exits
+# non-zero, aborting the container start) any DSN it cannot hand back without a
+# credential in it -- a query or keyword password, or an authority password
+# under a scheme it does not rewrite -- rather than passing a credentialed
+# string through as if it were clean. A DSN it cannot rewrite but that carries
+# no credential (keyword conninfo, an unfamiliar scheme) passes through
+# untouched: refusing those would abort container start over nothing. The check
+# runs on the value about to be used, not on the branch taken, so a shape the
+# rewrite declines is examined rather than waved past.
+# shellcheck source=docker/psql_dsn.sh
+source "$(dirname "${BASH_SOURCE[0]}")/psql_dsn.sh"
+psql_dsn_split "$TRIALS_DATABASE_URL"
 
 log "Checking trials database status..."
 
@@ -70,7 +74,16 @@ if [ -z "$table_ref" ]; then
     # Absent from public, but visible through search_path elsewhere? Then this
     # database is not the fresh one it looks like, and dropping public would be
     # destroying a schema we never inspected.
-    if [ -n "$(psql "$PSQL_DSN" -tAXc "SELECT to_regclass('trials_trial')" 2>/dev/null | tr -d '[:space:]')" ]; then
+    # Same rule as the probes above, which this one broke: its status was
+    # discarded and its stderr thrown away, so a transient failure produced an
+    # empty string, read as "nothing outside public", and fell through to
+    # DROP SCHEMA. A failed probe is not evidence of anything.
+    unqualified="$(psql "$PSQL_DSN" -tAXc "SELECT to_regclass('trials_trial')" 2>&1)" || {
+        log "ERROR: could not probe for trials_trial outside schema public — refusing to restore."
+        log "       psql: ${unqualified}"
+        exit 1
+    }
+    if [ -n "${unqualified//[[:space:]]/}" ]; then
         log "ERROR: trials_trial resolves outside schema public — refusing to restore."
         exit 1
     fi

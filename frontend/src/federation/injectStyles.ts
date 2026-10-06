@@ -3,6 +3,7 @@
 // a missing one fails visibly inside the remote and doesn't poison the
 // host. Mirrors SoC's `injectStyles.ts`.
 import css from "./exact.css?inline";
+import { layerRemoteCss } from "./cssLayer";
 
 let injected = false;
 
@@ -11,7 +12,7 @@ export function injectStyles(): void {
   injected = true;
   const style = document.createElement("style");
   style.setAttribute("data-mf", "exact-remote");
-  style.textContent = css;
+  style.textContent = layerRemoteCss(css);
   document.head.appendChild(style);
 }
 

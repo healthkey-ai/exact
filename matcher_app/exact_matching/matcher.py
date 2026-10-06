@@ -1132,6 +1132,22 @@ class UserToTrialAttrMatcher:
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None:
             trial_attr_value = False
+        # NOTE on the explicit-unknown seam (dev #502): `explicitly_unknown` is
+        # NOT consulted here, and that is deliberate rather than an omission.
+        # #4832 below already answers this case, and it answers it for EVERY
+        # bool_restriction: an unresolved value is `unknown`, not `not_matched`.
+        # Measured over an AST truth table across the five `EXPLICIT_UNKNOWN_FIELDS`
+        # x {trial requires True/False/None} x {value None/False/True} x {named
+        # or not} — 36 rows — an `explicitly_unknown` guard here changed the
+        # verdict in ZERO of them, because a named null and an un-named null both
+        # leave `ctx.is_blank` true and both already fall through to 'unknown'.
+        #
+        # Provenance still matters one layer down, in the derivations themselves
+        # (`_unknown_or_false` in patient_info_attributes): there it separates
+        # "the caller said they do not know" (None) from "the caller never
+        # supplied the inputs" (legacy False), which is a distinction the blank
+        # check cannot make. This handler sees the finished value and cannot
+        # recover it.
         value = False if ctx.value is None else ctx.value
         if value is True:
             return 'matched'
@@ -1151,6 +1167,10 @@ class UserToTrialAttrMatcher:
             return 'not_matched'
 
     def _match_type_inversed_bool_restriction(self, ctx):
+        # No explicit-unknown seam here, deliberately: no attribute in
+        # `USER_TO_TRIAL_ATTRS_MAPPING` is of this type, so a copy of the guard
+        # from `_match_type_bool_restriction` would be unreachable and untested.
+        # None of the five fields it serves is inversed.
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
         if trial_attr_value is None:
             trial_attr_value = False

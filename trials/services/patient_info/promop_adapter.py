@@ -539,7 +539,7 @@ def build_patient_info_from_promop_row(row: dict):
     for col, val in row.items():
         if col in SKIP_COLUMNS:
             continue
-        if val is None:
+        if val is None and col != 'tp53_disruption':
             continue
         if col in JSON_FIELDS and isinstance(val, str):
             try:
