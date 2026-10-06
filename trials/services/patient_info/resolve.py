@@ -50,7 +50,9 @@ Tracked as #150/#108, #448.
 import ast
 import datetime as dt
 import json
+import logging
 import re
+from math import isfinite
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -78,6 +80,9 @@ if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
 
 
+logger = logging.getLogger(__name__)
+
+
 def resolve_patient_info(request) -> Optional['PatientInfo']:
     """
     Build an in-memory PatientInfo instance from the request.
@@ -93,7 +98,8 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
     """
     patient_info_data = _get_body_field(request, 'patient_info')
     if patient_info_data:
-        return _build_in_memory(patient_info_data)
+        # The one caller that is a client, so the one that gets 400s.
+        return _build_in_memory(patient_info_data, strict=True)
 
     person_id = _extract_person_id(request)
     if person_id is not _MISSING:
@@ -297,8 +303,16 @@ def translate_language_capabilities(data):
     return language_skill_concept_ids_from_capabilities(languages_skills_from_capabilities(data))
 
 
-def _build_in_memory(data: dict) -> 'PatientInfo':
-    """Build an unsaved PatientInfo from a dict, compute derived fields."""
+def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
+    """Build an unsaved PatientInfo from a dict, compute derived fields.
+
+    `strict` refuses a malformed value instead of falling back to the
+    derivation. It is a property of the HTTP boundary, not of this helper, so
+    it defaults OFF and exactly one caller turns it on: the inline payload in
+    `resolve_patient_info`, where the caller is a client and 400 is the right
+    answer. The CTOMOP adapter and the management commands leave it off —
+    there a raise blames the wrong party (see below).
+    """
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
 
@@ -326,6 +340,73 @@ def _build_in_memory(data: dict) -> 'PatientInfo':
     _normalize_structured_json_fields(filtered)
 
     pi = PatientInfo(**filtered)
+    # Which fields the CALLER named, as opposed to which happen to hold a value.
+    # Every field below has `default=False`, so "key absent" and "key present,
+    # value null" both arrive as a falsy field and the derivations cannot tell
+    # them apart — an explicit "we do not know" became a confirmed "no". This is
+    # the shared form of the marker #488 added for `tp53_disruption` alone.
+    #
+    # Captured from `filtered`, which keeps None values.
+    #
+    # This helper is NOT inline-payload-only — the CTOMOP/PROMOP adapter and
+    # four management commands reach it too, and there a null is EXACT's own
+    # stored derivation rather than anyone's assertion. What keeps those apart
+    # today is `ctomop_adapter`, which strips None from the row before calling
+    # in; nothing here enforces it. If that strip is ever widened the way
+    # `tp53_disruption` is already exempted from it, upstream nulls would start
+    # reading as caller assertions.
+    pi._provided_fields = frozenset(filtered)
+    if 'tp53_disruption' in filtered:
+        value = filtered['tp53_disruption']
+        if value is not None and type(value) is not bool and strict:
+            # The inline path only: a client sent something that is not an
+            # aggregate, and 400 names the right party.
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError(
+                {'patient_info': {'tp53_disruption': 'Expected a boolean or null.'}}
+            )
+        if value is None or type(value) is bool:
+            # An explicit aggregate is supplied by the caller (including
+            # unknown). Retain it across normalization and later
+            # attribute-service instances.
+            pi._provided_tp53_disruption = value
+        else:
+            # Anything else is not an aggregate we can trust, so no provenance
+            # is recorded and the legacy derivation runs — exactly what these
+            # values did before the aggregate was honoured at all, since
+            # `normalize` overwrote the field unconditionally.
+            #
+            # Deliberately not a ValidationError. This helper is shared: the
+            # CTOMOP adapter and four management commands
+            # (`search_trials_for_patients`, `explain_trial_match`,
+            # `probe_eligibility`, `compare_trials`) all reach it, so a raise
+            # here turns a malformed UPSTREAM row into a client 400 —
+            # `trials_views._resolve_patient_info` re-raises `APIException`
+            # unchanged, and its own comment says a person_id-path failure
+            # must surface as 500 "rather than masking it as a misleading
+            # 400". In a batch command it is not a 400 at all, it is a
+            # traceback. It also breaks the contract this function documents
+            # and implements next door: `_coerce_dates`, `_coerce_numerics`
+            # ("CB API can send \"10.20\"") and `_coerce_json_fields` all
+            # accept loose input, and the module docstring says of the inline
+            # path "CancerBot depends on this contract — do not change".
+            #
+            # Reached only with `strict` off, i.e. from the CTOMOP adapter or
+            # a management command. Raising there blames the wrong party: the
+            # value came from UPSTREAM, and `trials_views._resolve_patient_info`
+            # re-raises `APIException` unchanged while its own comment says a
+            # person_id-path failure must surface as 500 "rather than masking
+            # it as a misleading 400". In a batch command it is not a 400 at
+            # all, it is a traceback that ends the run.
+            #
+            # Falling back is also what these values did before the aggregate
+            # was honoured at all, since `normalize` overwrote the field
+            # regardless — the status quo, not new leniency.
+            logger.warning(
+                'Ignoring tp53_disruption of unsupported type %s for person_id '
+                '%s; falling back to the marker derivation.',
+                type(value).__name__, data.get('person_id', '<inline>'),
+            )
 
     # Attach M2M as synthetic attributes so matchers can read them
     if pre_existing_ids:
@@ -360,13 +441,47 @@ def _coerce_numerics(data: dict, model_cls):
         if not hasattr(f, 'column') or f.name not in data:
             continue
         val = data[f.name]
-        if not isinstance(val, str) or val == '':
+        if not isinstance(val, str):
             continue
+        # '' used to short-circuit here (`or val == ''`), which left a `str`
+        # sitting in a numeric column: the first comparison against a threshold
+        # raises TypeError from inside request resolution, the search fails, and
+        # every trial is hidden. `creatinine_clearance_rate: ""` does exactly
+        # that on the base branch via `meets_crab_r_renal_insufficiency`.
+        # Letting it reach the branches below turns it into None — an empty
+        # string is an ABSENT reading, and None is how this file spells that.
+        # Non-numeric columns are untouched: they match no branch and keep ''.
         if isinstance(f, IntegerField):
             try:
                 data[f.name] = int(val)
             except (ValueError, TypeError):
-                data[f.name] = None
+                try:
+                    # "40.5" is a stated measurement and `int()` refuses it.
+                    # This module's own docstring says CB sends decimal strings,
+                    # so discarding one throws away a reading the caller gave us
+                    # — for eGFR that silently hands the screen to the derived
+                    # value instead.
+                    #
+                    # `float`, NOT `int(float(...))`. Truncating would make the
+                    # quoted and unquoted forms of the same number mean different
+                    # things across all 31 IntegerField columns, several of which
+                    # are physiologically fractional: "990.9"/"9.95" for the FLC
+                    # pair floors to 990/9, a ratio of 110 against a true 99.59,
+                    # which trips `meets_slim` and republishes a smoldering
+                    # patient as active. Floor is also biased on every ceiling
+                    # criterion ("2.9" vs `ecog_max=2` becomes a match). Nothing
+                    # enforces the column type here — `PatientInfo` is a plain
+                    # object, and `normalize` already writes a float 129.93 into
+                    # this very "IntegerField".
+                    coerced = float(val)
+                    if not isfinite(coerced):
+                        # "inf" parses where int() refused it. Infinity clears
+                        # every ceiling criterion and reads as adequate renal
+                        # function; it is not a measurement.
+                        raise ValueError(val)
+                    data[f.name] = coerced
+                except (ValueError, TypeError, OverflowError):
+                    data[f.name] = None
         elif isinstance(f, FloatField):
             try:
                 data[f.name] = float(val)

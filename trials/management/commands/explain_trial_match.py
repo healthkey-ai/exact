@@ -14,15 +14,16 @@ This makes it easy to see EXACTLY which attribute causes:
 Usage:
     python manage.py explain_trial_match \\
       --person-id 20494 \\
-      --trial-id 18141 \\
-      --source-db-url "$PATIENT_DATABASE_URL"
+      --trial-id 18141
+      # Reads PATIENT_DATABASE_URL from the environment. Do not pass
+      # --source-db-url with a password in it: the shell expands it before
+      # exec, so the credential lands in this process's argv (#403).
 
     # Optionally pass explicit patient name to match reference data entry:
     python manage.py explain_trial_match \\
       --person-id 20494 \\
       --name "Charlotte Walker" \\
       --trial-id 18141 \\
-      --source-db-url "$PATIENT_DATABASE_URL" \\
       --cb-data scripts/reference_patients_data.json
 """
 import json

@@ -6,3 +6,14 @@ dist/
 .vite/
 .env.local
 .env.*.local
+
+# `tsc -b` emits these next to their sources when the node tsconfig is built
+# (running the type-check does it). They are build output, and vite.config.js
+# is worse than clutter: vite prefers it over vite.config.ts, so a stale copy
+# silently becomes the config that `npm run dev` and `npm run build:spa` use
+# while edits to the maintained .ts are ignored.
+vite.config.js
+vite.config.d.ts
+vite.remote.config.js
+vite.remote.config.d.ts
+
