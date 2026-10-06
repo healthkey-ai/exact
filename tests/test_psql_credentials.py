@@ -609,6 +609,12 @@ class TestTheShellTwinAgreesWithPython:
         'host=h password=s3cr3t',
         'host=h PassWord=s3cr3t',            # libpq rejects it; argv still shows it
         'host=h sslpassword=s3cr3t',
+        # An empty sibling must not exempt the one that has a value. The bash
+        # exemption used to match the trailing empty `sslpassword=` and return
+        # the whole string, secret included.
+        'host=h password=s3cr3t sslpassword=',
+        'host=h sslpassword= password=s3cr3t',
+        "host=h password=s3cr3t sslpassword=''",
         '\npostgresql://u:s3cr3t@h/db',      # a newline hid this from the check
         'postgresql://u@h/db?password%20=s3cr3t',   # libpq rejects; argv shows it
         'postgresql://u@h/db?PASSWORD=s3cr3t',
@@ -627,6 +633,8 @@ class TestTheShellTwinAgreesWithPython:
         # `?password=${SECRET}` with SECRET unset.
         'postgresql://u@h/db?password=',
         'host=h password=',
+        'host=h sslpassword=',
+        "host=h password=''",
         "host=h options='-c ?password=x'",   # `?` in a value is not a query
         'postgresql://u@h/dbname password=s3cr3t',  # libpq: that is the dbname
     ]

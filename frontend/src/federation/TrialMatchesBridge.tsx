@@ -28,7 +28,7 @@ import axios, { type AxiosInstance } from "axios";
 import { createBridgeComponent } from "@module-federation/bridge-react/v19";
 
 import TrialMatches from "./TrialMatches";
-import { normalizeCtomopRow } from "./api";
+import { normalizePromopRow } from "./api";
 import {
   hasUsableSessionKey,
   joinBaseUrl,
@@ -296,7 +296,7 @@ function TrialMatchesBridgeRoot({
         if (cancelled) return;
         // The inline path does no normalisation of its own — receptor statuses
         // to codes, TNM strings to short codes — so run EXACT's normaliser.
-        const normalized = await normalizeCtomopRow(exact, row);
+        const normalized = await normalizePromopRow(exact, row);
         if (!cancelled) setLoad({ status: "ready", patientInfo: normalized });
       } catch (error) {
         // A resolution that moved on is not a failure to report to whoever is
