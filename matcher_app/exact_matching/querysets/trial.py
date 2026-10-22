@@ -19,6 +19,7 @@ import datetime as dt
 
 from exact_matching.constants import TRIAL_SCORE_MAX
 from exact_matching.enums import PriorTherapyLines
+from exact_matching.therapy_history import history_is_complete
 from exact_matching.patient_info.configs import (
     USER_TO_TRIAL_ATTRS_MAPPING,
     THERAPY_LINES_ATTRS_UNDERSCORED,
@@ -160,7 +161,11 @@ def _omop_therapy_ids(ctx):
 
 
 def _filter_prior_therapy(scope, value, ctx):
-    scope = scope.eligible_for_prior_therapy(value)
+    # Counts are exact only when the patient confirmed the list is complete
+    # (#5483); otherwise only a provable maximum violation may exclude.
+    scope = scope.eligible_for_prior_therapy(
+        value, count_is_exact=history_is_complete(ctx['patient_info']),
+    )
     # Apply the therapy-related-things filter ONLY ONCE per
     # filter_by_patient_info call; ctx tracks the flag.
     if ctx['has_no_prior_therapy'] and not ctx['is_therapies_filter_applied']:
@@ -1121,7 +1126,7 @@ class TrialQuerySet(models.QuerySet):
         flipi_score = PatientInfoFlipyScore.scope_by_options(flipi_score_options)
         return self.eligible_for_min_max_value(attr_min_name, attr_max_name, flipi_score)
 
-    def eligible_for_prior_therapy(self, prior_therapy):
+    def eligible_for_prior_therapy(self, prior_therapy, count_is_exact=True):
         if prior_therapy is None or prior_therapy == '':
             return self
 
@@ -1139,6 +1144,11 @@ class TrialQuerySet(models.QuerySet):
         else:
             int_value = None
 
+        if not count_is_exact and int_value is not None:
+            # Lower bound: a minimum cannot be enforced (more lines may exist), and
+            # a maximum can only be used when the patient is provably above it.
+            return self.eligible_for_min_max_value(
+                None, 'therapy_lines_count_max', int_value, skip_blank=False)
         return self.eligible_for_min_max_value('therapy_lines_count_min', 'therapy_lines_count_max', int_value, skip_blank=False)
 
     def eligible_for_genetic_mutations(self, genetic_mutations):

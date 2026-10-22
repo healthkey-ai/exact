@@ -123,6 +123,28 @@ class TestTrialQuerySet:
         assert list(Trial.objects.eligible_for_prior_therapy(prior_therapy).order_by('id')) == [t1, t3, t6, t9]
 
     @pytest.mark.django_db
+    def test_eligible_for_prior_therapy_lower_bound(self):
+        """An unconfirmed history only filters where the patient is provably over the maximum (#5483).
+
+        A minimum cannot exclude (more lines may exist) and a maximum cannot include
+        (the count is a lower bound), so only `count > max` may drop a trial.
+        """
+        t1 = TrialFactory(therapy_lines_count_min=None, therapy_lines_count_max=None)
+        t2 = TrialFactory(therapy_lines_count_max=0)
+        t3 = TrialFactory(therapy_lines_count_min=2)
+        t4 = TrialFactory(therapy_lines_count_max=1)
+        t5 = TrialFactory(therapy_lines_count_min=2, therapy_lines_count_max=1)
+
+        # One recorded line, completeness not confirmed: the max=0 trial is the
+        # only provable contradiction; the min=2 trial stays (more lines may exist).
+        eligible = Trial.objects.eligible_for_prior_therapy('One line', count_is_exact=False)
+        assert list(eligible.order_by('id')) == [t1, t3, t4, t5]
+
+        # Confirmed history keeps the exact comparison.
+        exact = Trial.objects.eligible_for_prior_therapy('One line', count_is_exact=True)
+        assert list(exact.order_by('id')) == [t1, t4]
+
+    @pytest.mark.django_db
     def test_eligible_for_required_and_excluded_lists(self):
         t1 = TrialFactory(therapies_required=[], therapies_excluded=[])  # always eligible
         t2 = TrialFactory(therapies_required=['val1', 'val2'], therapies_excluded=['val3', 'val4'])
