@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
+from exact_matching.therapy_history import history_is_complete
 from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE
 from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
@@ -827,11 +828,23 @@ class UserToTrialAttrMatcher:
             return 'matched'
         elif ctx.is_blank:
             return 'unknown'
-        elif trial_attr_value_min is not None and value < trial_attr_value_min:
-            return 'not_matched'
-        elif trial_attr_value_max is not None and value > trial_attr_value_max:
-            return 'not_matched'
+        elif history_is_complete(self.patient_info):
+            if trial_attr_value_min is not None and value < trial_attr_value_min:
+                return 'not_matched'
+            elif trial_attr_value_max is not None and value > trial_attr_value_max:
+                return 'not_matched'
+            else:
+                return 'matched'
         else:
+            # The recorded count is a lower bound: more lines may exist.
+            # Exceeding the trial's maximum is still provable; being under it is
+            # not, and falling short of a minimum is not a refusal either.
+            if trial_attr_value_max is not None and value > trial_attr_value_max:
+                return 'not_matched'
+            if trial_attr_value_min is not None and value < trial_attr_value_min:
+                return 'unknown'
+            if trial_attr_value_max is not None:
+                return 'unknown'
             return 'matched'
 
     def _match_genetic_mutations(self, ctx):
