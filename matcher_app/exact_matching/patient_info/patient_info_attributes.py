@@ -269,7 +269,16 @@ class PatientInfoAttributes:
         if attr_name == 'pre_existing_condition_categories':
             if self.patient_info.no_pre_existing_conditions is True:
                 return ['none']
-            elif hasattr(self.patient_info, '_pre_existing_condition_categories'):
+            # A host may hand the codes over without a related manager: CB's PROMOP
+            # surface seeds this memo from `PatientRecord.preexisting_conditions`,
+            # because a PROMOP record has no PatientInfo row to query. Read the memo
+            # BEFORE requiring a manager — an earlier version only read it inside the
+            # manager branch, so a surface that provided codes was answered `[]` and a
+            # populated exclusion read as unknown (cancerbot#5497).
+            codes = getattr(self.patient_info, '_pre_existing_condition_codes_cache', None)
+            if codes is not None:
+                return list(codes)
+            if hasattr(self.patient_info, '_pre_existing_condition_categories'):
                 return [c.code for c in self.patient_info._pre_existing_condition_categories]
             # Host-agnostic seam (CB, QR4d PIA drain): CB's PatientInfo exposes a
             # Django related manager, not a pre-populated `_pre_existing_condition_
@@ -281,10 +290,8 @@ class PatientInfoAttributes:
             # prefetched and unprefetched PatientInfo.
             related = getattr(self.patient_info, 'pre_existing_condition_categories', None)
             if related is not None and hasattr(related, 'values_list'):
-                codes = getattr(self.patient_info, '_pre_existing_condition_codes_cache', None)
-                if codes is None:
-                    codes = list(related.values_list('category__code', flat=True))
-                    self.patient_info._pre_existing_condition_codes_cache = codes
+                codes = list(related.values_list('category__code', flat=True))
+                self.patient_info._pre_existing_condition_codes_cache = codes
                 return list(codes)
             return []
 
