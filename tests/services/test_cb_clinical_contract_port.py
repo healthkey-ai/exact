@@ -191,3 +191,60 @@ def test_swallowing_tri_state(value, required):
     assert UserToTrialAttrMatcher(trial, patient).attr_match_status('able_to_swallow_tablets_capsules') == expected
     pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
     assert pool.exists() is (expected != 'not_matched')
+
+
+def test_inline_zero_boolean_is_normalised_so_matcher_and_sql_agree():
+    from trials.services.patient_info.resolve import _build_in_memory
+
+    patient = _build_in_memory({'able_to_swallow_tablets_capsules': 0}, strict=True)
+    assert patient.able_to_swallow_tablets_capsules is False
+    trial = Trial.objects.create(
+        disease='multiple myeloma', able_to_swallow_tablets_capsules_required=True)
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status(
+        'able_to_swallow_tablets_capsules') == 'not_matched'
+    pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
+    assert pool.exists() is False
+
+    one = _build_in_memory({'able_to_swallow_tablets_capsules': 1}, strict=True)
+    assert one.able_to_swallow_tablets_capsules is True
+    assert UserToTrialAttrMatcher(trial, one).attr_match_status(
+        'able_to_swallow_tablets_capsules') == 'matched'
+
+
+@pytest.mark.parametrize('attribute,other', [
+    ('prothrombin_time_uln', 'prothrombin_time_uln_max'),
+    ('activated_partial_thromboplastin_time_uln', 'activated_partial_thromboplastin_time_uln_max'),
+])
+def test_inline_non_finite_float_is_absent_not_a_measurement(attribute, other):
+    from trials.services.patient_info.resolve import _build_in_memory
+
+    trial = Trial.objects.create(disease='multiple myeloma', **{other: 1.5})
+    from decimal import Decimal
+    for value in ('NaN', 'inf', '-inf', float('nan'), float('inf'), Decimal('NaN')):
+        patient = _build_in_memory({attribute: value}, strict=True)
+        assert getattr(patient, attribute) is None
+        assert UserToTrialAttrMatcher(trial, patient).attr_match_status(attribute) == 'unknown'
+        pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
+        assert pool.exists() is True
+
+
+def test_inline_non_finite_decimal_is_absent_not_a_measurement():
+    from trials.services.patient_info.resolve import _build_in_memory
+
+    patient = _build_in_memory({'white_blood_cell_count': 'NaN'}, strict=True)
+    assert patient.white_blood_cell_count is None
+
+
+def test_inline_non_boolean_is_refused_with_a_400():
+    from rest_framework.exceptions import ValidationError
+
+    from trials.services.patient_info.resolve import _build_in_memory
+
+    with pytest.raises(ValidationError) as excinfo:
+        _build_in_memory({'able_to_swallow_tablets_capsules': 'false'}, strict=True)
+    assert 'able_to_swallow_tablets_capsules' in str(excinfo.value)
+
+    # The PROMOP adapter and management commands deliberately share this
+    # helper with strict off: a malformed upstream row must not become a 400.
+    patient = _build_in_memory({'able_to_swallow_tablets_capsules': 'false'})
+    assert patient.able_to_swallow_tablets_capsules == 'false'
