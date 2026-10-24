@@ -18,6 +18,7 @@ from trials.services.patient_info.promop_adapter import (
 )
 from trials.services.trial_details.trial_attributes import TrialAttributes
 from trials.services.patient_info.resolve import _build_in_memory
+from trials.api.patient_info_serializers import GraphPatientInfoSerializer, PatientInfoSerializer
 
 
 def _federated_builder(row):
@@ -78,6 +79,27 @@ def test_null_direct_value_uses_canonical_unit_not_stale_unit(target, source, un
     assert row[target] == 12 * scale
     if unit is not None:
         assert row[f'{target}_units'] == unit
+
+
+@pytest.mark.parametrize('target,source,unit,scale', FALLBACKS)
+@pytest.mark.parametrize('blank', ['', '  '])
+def test_blank_direct_value_uses_canonical_fallback(target, source, unit, scale, blank):
+    row = normalize_promop_row({target: blank, source: 12})
+    assert row[target] == 12 * scale
+    if unit is not None:
+        assert row[f'{target}_units'] == unit
+
+
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('builder', BUILDERS)
+@pytest.mark.parametrize('direct', ['', '  ', 0])
+def test_blank_and_zero_direct_values_through_dto(disease, builder, direct):
+    patient = builder({
+        'disease': disease, 'hemoglobin_level': direct, 'hemoglobin_g_dl': 12,
+        'lactate_dehydrogenase_level': direct, 'ldh_u_l': 300,
+    })
+    assert patient.hemoglobin_level == (0 if direct == 0 else 12)
+    assert patient.lactate_dehydrogenase_level == (0 if direct == 0 else 300)
 
 
 @pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', '1e309', '1e308', '1e1000000', True, []])
@@ -169,6 +191,30 @@ def test_condition_codes_reach_matcher_without_database_access(codes, builder):
     patient = builder({'preexisting_conditions': codes})
     assert PatientInfoAttributes(patient).get_value('pre_existing_condition_categories') == codes
     assert patient._pre_existing_condition_codes_cache is not codes
+    for serializer in (PatientInfoSerializer, GraphPatientInfoSerializer):
+        assert serializer(patient).data['preExistingConditionCategories'] == codes
+
+
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_malformed_source_item_does_not_erase_known_condition_codes(builder):
+    patient = builder({'preexisting_conditions': ['diabetes', None, '', 123]})
+    assert PatientInfoAttributes(patient).get_value('pre_existing_condition_categories') == ['diabetes']
+    assert GraphPatientInfoSerializer(patient).data['preExistingConditionCategories'] == ['diabetes']
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('builder', BUILDERS)
+@pytest.mark.parametrize('source_codes', [[], ['source-category']])
+def test_legacy_category_pk_input_keeps_precedence_over_source_codes(builder, source_codes):
+    from tests.factories import PreExistingConditionCategoryFactory
+
+    category = PreExistingConditionCategoryFactory(code='native-category')
+    patient = builder({
+        'pre_existing_condition_categories': [category.pk],
+        'preexisting_conditions': source_codes,
+    })
+    assert PatientInfoAttributes(patient).get_value('pre_existing_condition_categories') == ['native-category']
+    assert GraphPatientInfoSerializer(patient).data['preExistingConditionCategories'] == ['native-category']
 
 
 @pytest.mark.django_db

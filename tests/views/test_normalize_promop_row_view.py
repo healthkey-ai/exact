@@ -147,6 +147,17 @@ class TestNormalizePromopRowHttp:
         assert response.data['stage'] == 'III'
         assert response.data['tumor_grade'] == '20'
 
+    def test_finite_canonical_values_are_json_numbers_not_strings(self, authed_client):
+        response = authed_client.post('/normalize-promop-row/', {
+            'hemoglobin_g_dl': 12.5, 'wbc_count_thousand_per_ul': 7.5,
+        }, format='json')
+        assert response.status_code == 200
+        wire = response.json()
+        assert wire['hemoglobin_level'] == 12.5
+        assert wire['white_blood_cell_count'] == 7500
+        assert isinstance(wire['hemoglobin_level'], (int, float))
+        assert isinstance(wire['white_blood_cell_count'], (int, float))
+
     @pytest.mark.parametrize('disease', [
         'multiple myeloma', 'follicular lymphoma', 'breast cancer',
         'chronic lymphocytic leukemia', 'mantle cell lymphoma',

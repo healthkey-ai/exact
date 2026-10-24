@@ -25,7 +25,7 @@ writes to PROMOP or persists patient data.
 | `pd_l1_tumor_cels` | `pd_l1_tumor_cells` | Same percentage; matcher name retains its historical typo |
 
 For these fallbacks, reliable direct values take precedence, including zero.
-When a direct value is absent/null, its canonical fallback also supplies the
+When a direct value is absent/null/blank text, its canonical fallback also supplies the
 corresponding unit: a stale direct unit must not reinterpret the fallback.
 Malformed/non-finite canonical readings remain unknown. This assumes the
 named canonical source units; it does not repair upstream ingest-unit errors.
@@ -54,6 +54,11 @@ codes through the inline builder's `pre_existing_condition_categories` PK
 lookup. Empty lists remain unknown unless the separate asserted-none flag
 settles that state. This does not change precedence for contradictory
 `no_pre_existing_conditions` inputs (CB #5501).
+If a caller also supplies the legacy category-PK input, that explicit native
+input retains its existing precedence; an empty source list must not hide
+its categories. Without PK input, non-string/blank elements are ignored
+without discarding known source codes. Graph serialization uses the same
+category-code reader as matching so those codes are not lost in responses.
 
 ## Remaining CB surface inventory
 

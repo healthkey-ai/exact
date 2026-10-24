@@ -439,8 +439,12 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     # Both person_id and normalize-promop-row -> inline federation inputs
     # reach this boundary. Source category codes are not category primary keys.
     codes = snake_data.get('preexisting_conditions')
-    if isinstance(codes, (list, tuple)) and all(isinstance(code, str) for code in codes):
-        pi._pre_existing_condition_codes_cache = list(codes)
+    if not pre_existing_ids and isinstance(codes, (list, tuple)):
+        # Preserve the existing explicit category-PK contract if both input
+        # shapes are supplied. A malformed element must not erase known codes.
+        pi._pre_existing_condition_codes_cache = [
+            code for code in codes if isinstance(code, str) and code.strip()
+        ]
 
     # Newly supported canonical creatinine can activate eGFR recalculation.
     # Retain a valid supplied source reading on these PatientRecord-shaped

@@ -298,7 +298,9 @@ def _normalize_canonical_labs(row):
         row['white_blood_cell_count'] = _canonical_lab_value(row['wbc_count_thousand_per_ul'], 1000)
         row['white_blood_cell_count_units'] = 'CELLS/UL'
     for target, source, unit, scale in _LAB_FALLBACKS:
-        if row.get(target) is None and row.get(source) is not None:
+        direct = row.get(target)
+        missing_direct = direct is None or (isinstance(direct, str) and not direct.strip())
+        if missing_direct and row.get(source) is not None:
             row[target] = _canonical_lab_value(row[source], scale)
             if unit is not None:
                 row[f'{target}_units'] = unit
