@@ -67,7 +67,7 @@ def test_null_direct_value_uses_canonical_unit_not_stale_unit(target, source, un
         assert row[f'{target}_units'] == unit
 
 
-@pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', True, []])
+@pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', '1e1000000', True, []])
 def test_bad_canonical_values_remain_unknown(bad):
     row = normalize_promop_row({'platelet_count_thousand_per_ul': bad})
     assert row.get('platelet_count') is None
@@ -119,6 +119,31 @@ def test_creatinine_fallback_retains_mg_dl_unit():
     patient = build_patient_info_from_promop_row({'serum_creatinine_mg_dl': 1})
     assert patient.serum_creatinine_level == 1
     assert patient.serum_creatinine_level_units == 'MG/DL'
+
+
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('egfr', [0, 40, 85, '40'])
+@pytest.mark.parametrize('source', ['egfr_ml_min_173m2', 'estimated_glomerular_filtration_rate'])
+def test_source_egfr_survives_creatinine_derivation(disease, egfr, source):
+    patient = build_patient_info_from_promop_row({
+        'disease': disease, 'gender': 'M', 'patient_age': 20,
+        source: egfr, 'serum_creatinine_mg_dl': 0.8,
+    })
+    assert patient.estimated_glomerular_filtration_rate == int(egfr)
+    trial = Trial(estimated_glomerular_filtration_rate_min=60)
+    # Existing numeric-zero blankness is tracked separately in #509. This
+    # adapter fix must retain the actual zero rather than publish derived 129.93.
+    expected = 'unknown' if int(egfr) == 0 else ('matched' if int(egfr) >= 60 else 'not_matched')
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status('estimated_glomerular_filtration_rate') == expected
+
+
+def test_invalid_source_egfr_does_not_block_valid_derivation():
+    patient = build_patient_info_from_promop_row({
+        'gender': 'M', 'patient_age': 20,
+        'estimated_glomerular_filtration_rate': 'not a number',
+        'serum_creatinine_mg_dl': 0.8,
+    })
+    assert patient.estimated_glomerular_filtration_rate > 60
 
 
 @pytest.mark.parametrize('codes', [[], ['diabetes'], ['diabetes', 'cardiac_disease']])

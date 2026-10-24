@@ -30,6 +30,11 @@ corresponding unit: a stale direct unit must not reinterpret the fallback.
 Malformed/non-finite canonical readings remain unknown. This assumes the
 named canonical source units; it does not repair upstream ingest-unit errors.
 
+On this PROMOP path, a valid supplied eGFR (direct or canonical, including
+zero) survives normalization even when the creatinine fallback enables a
+fresh eGFR calculation. Without a valid source eGFR, existing derivation
+still runs. The generic inline-payload normalizer is unchanged.
+
 WBC is the exception: CB documents its populated alias as an unreliable,
 unscaled copy. A non-null canonical WBC source therefore wins over that alias.
 Old payloads without a canonical WBC reading retain their direct value/unit.
