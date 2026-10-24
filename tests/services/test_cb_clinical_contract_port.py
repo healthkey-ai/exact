@@ -123,10 +123,73 @@ def test_sct_date_is_computed_without_patient_persistence(days, expected, eligib
     assert pool.exists() is eligible
 
 
+@pytest.mark.parametrize('prior_therapy', ['None', 'One line', 'Two lines', 'More than two lines of therapy', '', None])
+@pytest.mark.parametrize('days', [10, 60, None])
+def test_sct_date_cleanup_matches_explicit_no_prior_therapy(prior_therapy, days):
+    from trials.services.patient_info.normalize import normalize_patient_info
+
+    date = dt.date.today() - dt.timedelta(days=days) if days is not None else None
+    patient = PatientInfo(
+        disease='multiple myeloma', prior_therapy=prior_therapy,
+        stem_cell_transplant_date=date,
+    )
+    normalize_patient_info(patient)
+
+    # Explicit "no therapy" clears stale SCT input, just as CB's cleanup does.
+    # An unanswered history must not erase an independently supplied source date.
+    cleared = prior_therapy == 'None'
+    assert patient.stem_cell_transplant_date == (None if cleared else date)
+    if cleared:
+        assert patient.stem_cell_transplant_history == 'None'
+    assert PatientInfoAttributes(patient).get_value('day_since_stem_cell_transplant') == (
+        None if cleared else days
+    )
+
+    trial = Trial.objects.create(disease='multiple myeloma', day_since_stem_cell_transplant_required=30)
+    expected = 'unknown' if cleared or days is None else ('matched' if days >= 30 else 'not_matched')
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status('day_since_stem_cell_transplant') == expected
+    pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
+    assert pool.exists() is (expected != 'not_matched')
+
+
 def test_blank_sct_date_is_unknown():
     patient = PatientInfo(disease='multiple myeloma', stem_cell_transplant_date='')
     attrs = PatientInfoAttributes(patient)
     assert attrs.get_value('day_since_stem_cell_transplant') is None
+
+
+def test_promop_zero_therapy_lines_clears_sct_date_through_the_real_adapter():
+    from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
+
+    date = dt.date.today() - dt.timedelta(days=10)
+    patient = build_patient_info_from_promop_row({
+        'disease': 'multiple myeloma',
+        'therapy_lines_count': 0,
+        'sct_date': date.isoformat(),
+    })
+    # The adapter derives prior_therapy='None'; normalization must not leave the
+    # source date behind, or the SQL and per-trial paths disagree with CB.
+    assert patient.prior_therapy == 'None'
+    assert patient.stem_cell_transplant_date is None
+    trial = Trial.objects.create(disease='multiple myeloma', day_since_stem_cell_transplant_required=30)
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status('day_since_stem_cell_transplant') == 'unknown'
+    pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
+    assert pool.exists() is True
+
+
+def test_promop_existing_therapy_keeps_sct_date_through_the_real_adapter():
+    from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
+
+    date = dt.date.today() - dt.timedelta(days=60)
+    patient = build_patient_info_from_promop_row({
+        'disease': 'multiple myeloma',
+        'therapy_lines_count': 1,
+        'sct_date': date.isoformat(),
+    })
+    assert patient.prior_therapy == 'One line'
+    assert patient.stem_cell_transplant_date == date
+    trial = Trial.objects.create(disease='multiple myeloma', day_since_stem_cell_transplant_required=30)
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status('day_since_stem_cell_transplant') == 'matched'
 
 
 def test_new_clinical_attributes_are_grouped_and_false_swallowing_is_hidden():
