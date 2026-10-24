@@ -54,7 +54,7 @@ class TrialSerializer(serializers.ModelSerializer):
         if search_type == 'eligible' or getattr(instance, 'match_score', None) == 100:
             attrs_to_fill_in = []
         else:
-            attrs_to_fill_in = instance.attrs_to_fill_in(counts)
+            attrs_to_fill_in = instance.attrs_to_fill_in(counts, patient_info=patient_info)
 
         response['attributesToFillIn'] = attrs_to_fill_in
         response['matchScore'] = getattr(instance, 'match_score', None)

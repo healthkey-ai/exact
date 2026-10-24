@@ -202,11 +202,14 @@ psql_dsn_split() {
         # Same rule as the query form: an empty value carries nothing. `''` is
         # how libpq spells an empty value in conninfo, and it is equally not a
         # credential.
-        if [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*=[[:space:]]*$ ]]; then
-            :
-        elif [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*=\'\'([[:space:]]|$) ]]; then
-            :
-        elif [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*= ]]; then
+        #
+        # The empty case must not exempt a sibling. Matching "the string ends
+        # in `sslpassword=`" and then returning let
+        # `password=secret sslpassword=` through with the secret still in the
+        # DSN — the exemption was on the whole string, not on the empty
+        # occurrence. Refuse when ANY occurrence has a value.
+        if [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*=[^[:space:]\'] ]] \
+            || [[ "$guard_target" =~ (^|[[:space:]])(password|sslpassword)[[:space:]]*=\'[^\'] ]]; then
             _psql_dsn_refuse "keyword conninfo carries password=" || return 1
         fi
     fi

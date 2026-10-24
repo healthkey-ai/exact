@@ -20,3 +20,24 @@ from exact.settings import *  # noqa: E402,F401,F403
 CACHES = {
     "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
 }
+
+# Same reasoning for the PROMOP credentials: `exact.settings` reads them from the
+# environment and from BASE_DIR/.env, so a developer who has configured a real
+# local promop (as .env.example instructs) would otherwise have those values
+# reach any test that builds a client without passing every field explicitly —
+# turning assertions about what EXACT sends into assertions about their shell.
+# A test that wants a credential passes one; tests of the unconfigured fallbacks
+# delete the setting.
+PROMOP_BASE = ""
+PROMOP_SERVICE_TOKEN = ""
+PROMOP_OAUTH_CLIENT_ID = ""
+PROMOP_OAUTH_CLIENT_SECRET = ""
+PROMOP_OAUTH_SCOPE = ""
+PROMOP_OAUTH_TOKEN_URL = ""
+PROMOP_API_BASE = ""
+PROMOP_VOCAB_BASE = ""
+PROMOP_VOCAB_SERVICE_TOKEN = ""
+PROMOP_VOCAB_OAUTH_CLIENT_ID = ""
+PROMOP_VOCAB_OAUTH_CLIENT_SECRET = ""
+PROMOP_VOCAB_OAUTH_SCOPE = ""
+PROMOP_VOCAB_OAUTH_TOKEN_URL = ""

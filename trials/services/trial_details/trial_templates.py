@@ -40,8 +40,15 @@ class TrialTemplates:
             'trialEligibilityAttributes': [],
         }
 
+        # Keys are the statuses `attr_match_status()` returns. The mismatch key
+        # carried a SPACE while the matcher has always returned an underscore,
+        # so the lookup never hit: every mismatch fell through to the default
+        # weight of 5 in `order_weight` and sorted BELOW the criteria the
+        # patient already satisfies — the inversion of what a view called
+        # `potential_attributes_first_view` exists to do. CB fixed the same typo
+        # in #4669 and the fix was never ported down.
         mapping_for_order = {
-            'not matched': 1,
+            'not_matched': 1,
             'unknown': 2,
             'matched': 3
         }
@@ -58,7 +65,12 @@ class TrialTemplates:
                 return 0, ''
             return mapping_for_order.get(value['matchingType'], 5), value['label']
 
-        therapy_match_statuses = service.therapy_related_things_match_status()
+        # No patient context (#318): the detail view still renders the trial's
+        # criteria, but per-criterion match status is meaningless — leave it
+        # 'unknown' rather than run the matcher against a None patient (500) or a
+        # fabricated one (misleading favourable match). Mirrors the serializer,
+        # which already reports matchScore/matchingType as None without a patient.
+        therapy_match_statuses = service.therapy_related_things_match_status() if patient_info is not None else {}
 
         for field in details.values():
             if not isinstance(field, dict):
@@ -75,16 +87,22 @@ class TrialTemplates:
                 elif field_name in THERAPIES_ATTRS:
                     if field['value'] == []:
                         continue  # skip — active column (legacy or OMOP) has no criteria
-                    field['matchingType'] = therapy_match_statuses[field_name]["status"]
-                    field['uvalue'] = therapy_match_statuses[field_name]["values"]
-                    # OMOP code + title for the OMOP-mapped levels (regimen/component);
-                    # absent for legacy/type criteria. See therapy_related_things_match_status.
-                    if 'omopConcepts' in therapy_match_statuses[field_name]:
-                        field['omopConcepts'] = therapy_match_statuses[field_name]['omopConcepts']
+                    if field_name in therapy_match_statuses:
+                        field['matchingType'] = therapy_match_statuses[field_name]["status"]
+                        field['uvalue'] = therapy_match_statuses[field_name]["values"]
+                        # OMOP code + title for the OMOP-mapped levels (regimen/component);
+                        # absent for legacy/type criteria. See therapy_related_things_match_status.
+                        if 'omopConcepts' in therapy_match_statuses[field_name]:
+                            field['omopConcepts'] = therapy_match_statuses[field_name]['omopConcepts']
+                    else:
+                        field['matchingType'] = 'unknown'  # no patient (#318)
                     out['trialEligibilityAttributes'].append(field)
                 elif not self._trial_attributes.is_blank(field_name, field['value'], field.get('search_type')):
                     if field['ufield']:
-                        field['matchingType'] = service.attr_match_status(AttributeNames.get_by_camel_case(field['ufield']))
+                        # No patient (#318): can't evaluate a patient-relative field.
+                        field['matchingType'] = (
+                            service.attr_match_status(AttributeNames.get_by_camel_case(field['ufield']))
+                            if patient_info is not None else 'unknown')
                     else:
                         field['matchingType'] = 'matched'
                     field_label = field['label']

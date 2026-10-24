@@ -176,7 +176,7 @@ class TestDrfTokenAuthGated:
 
 
 class TestPersonIdLookupGated:
-    """The server-side `?person_id=` resolver is a PHI IDOR (CTOMOP service
+    """The server-side `?person_id=` resolver is a PHI IDOR (PROMOP service
     token unbound to the caller, no row-level authz). It's gated behind
     EXACT_ALLOW_PERSON_ID_LOOKUP, defaulting OFF outside local/DEBUG and
     failing closed on an unset ENVIRONMENT (#150/#108)."""

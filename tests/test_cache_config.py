@@ -117,3 +117,18 @@ class TestSettingsDoesNotHardcodeLocmem:
         ), 'CACHES must be resolved via build_caches(), not a hard-coded LocMemCache.'
         assert 'build_caches(' in source, \
             'settings.py must resolve CACHES through build_caches().'
+
+
+class TestConceptGraphCacheRetired:
+    """The concept-graph DB cache (#234/#240) was retired with the API+cache
+    surface (#251, replaced by the local vocab mirror). build_caches must no
+    longer emit the alias — a regression guard so the retired DB-cache /
+    createcachetable path can't quietly return."""
+
+    @pytest.mark.parametrize('kwargs', [
+        dict(redis_url='', debug=False, environment='staging'),
+        dict(redis_url='rediss://h:6379', debug=False, environment='production'),
+        dict(redis_url='redis://localhost:6379', debug=True, environment='dev'),
+    ])
+    def test_no_concept_graph_alias(self, kwargs):
+        assert 'concept_graph' not in build_caches(**kwargs)
