@@ -22,7 +22,7 @@ import json
 import logging
 import re
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 
 from trials.services.therapy_match_profile import omop_therapy_enabled
@@ -258,6 +258,49 @@ OUTCOME_MAP = {
 }
 
 
+# CB's PatientRecord read seams (trials/matching/promop_surface.py). Keep each
+# fallback's value and unit together; direct zero readings are real answers.
+_LAB_FALLBACKS = (
+    ('platelet_count', 'platelet_count_thousand_per_ul', 'CELLS/UL', 1000),
+    ('hemoglobin_level', 'hemoglobin_g_dl', 'G/DL', 1),
+    ('lactate_dehydrogenase_level', 'ldh_u_l', None, 1),
+    ('liver_enzyme_levels_alt', 'alt_u_l', None, 1),
+    ('liver_enzyme_levels_ast', 'ast_u_l', None, 1),
+    ('liver_enzyme_levels_alp', 'alkaline_phosphatase_u_l', None, 1),
+    ('creatinine_clearance_rate', 'creatinine_clearance_ml_min', None, 1),
+    ('estimated_glomerular_filtration_rate', 'egfr_ml_min_173m2', None, 1),
+    ('serum_calcium_level', 'serum_calcium_mg_dl', 'MG/DL', 1),
+    ('serum_creatinine_level', 'serum_creatinine_mg_dl', 'MG/DL', 1),
+    ('serum_bilirubin_level_total', 'bilirubin_total_mg_dl', 'MG/DL', 1),
+    ('pd_l1_tumor_cels', 'pd_l1_tumor_cells', None, 1),
+)
+
+
+def _canonical_lab_value(value, scale):
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        value = Decimal(str(value)) * scale
+    except (InvalidOperation, ValueError):
+        return None
+    return value if value.is_finite() else None
+
+
+def _normalize_canonical_labs(row):
+    # WBC's populated legacy alias can itself be thousands/µL. When the
+    # canonical source is supplied, use it rather than trusting that alias.
+    # Keep EXACT's per-L matcher contract unchanged: the paired CELLS/UL unit
+    # lets get_value() perform the conversion to EXACT's configured basis.
+    if row.get('wbc_count_thousand_per_ul') is not None:
+        row['white_blood_cell_count'] = _canonical_lab_value(row['wbc_count_thousand_per_ul'], 1000)
+        row['white_blood_cell_count_units'] = 'CELLS/UL'
+    for target, source, unit, scale in _LAB_FALLBACKS:
+        if row.get(target) is None and row.get(source) is not None:
+            row[target] = _canonical_lab_value(row[source], scale)
+            if unit is not None:
+                row[f'{target}_units'] = unit
+
+
 def normalize_promop_row(row: dict) -> dict:
     """Normalize a raw PROMOP patient_info row to EXACT's internal value format.
 
@@ -382,17 +425,13 @@ def normalize_promop_row(row: dict) -> dict:
         row['genetic_mutations'] = normalized
 
     # ── Lab value fallbacks (PROMOP uses renamed columns) ─────────────
-    if not row.get('hemoglobin_level') and row.get('hemoglobin_g_dl') is not None:
-        row['hemoglobin_level'] = row['hemoglobin_g_dl']
+    _normalize_canonical_labs(row)
 
     if not row.get('absolute_neutrophile_count') and row.get('anc_thousand_per_ul') is not None:
         row['absolute_neutrophile_count'] = row['anc_thousand_per_ul'] * 1000
 
     if not row.get('absolute_lymphocyte_count') and row.get('alc_thousand_per_ul') is not None:
         row['absolute_lymphocyte_count'] = row['alc_thousand_per_ul'] * 1000
-
-    if not row.get('lactate_dehydrogenase_level') and row.get('ldh_u_l') is not None:
-        row['lactate_dehydrogenase_level'] = row['ldh_u_l']
 
     # ── Therapy fields ─────────────────────────────────────────────────────────
     _EMPTY_CID = (None, '', 0, '0')
@@ -560,4 +599,11 @@ def build_patient_info_from_promop_row(row: dict):
         cleaned[col] = val
 
     # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info
-    return _build_in_memory(cleaned)
+    patient = _build_in_memory(cleaned)
+    # PROMOP supplies category CODES, not the category PKs accepted by the
+    # legacy inline builder. Seed the same request-local memo as CB's surface
+    # without a category lookup or patient persistence.
+    codes = row.get('preexisting_conditions')
+    if isinstance(codes, (list, tuple)) and all(isinstance(code, str) for code in codes):
+        patient._pre_existing_condition_codes_cache = list(codes)
+    return patient
