@@ -24,6 +24,7 @@ import re
 from datetime import date
 from decimal import Decimal, DecimalException
 from functools import lru_cache
+from math import isfinite
 
 from trials.services.therapy_match_profile import omop_therapy_enabled
 
@@ -281,9 +282,11 @@ def _canonical_lab_value(value, scale):
         return None
     try:
         value = Decimal(str(value)) * scale
-    except (DecimalException, ValueError):
+        # DRF serializes Decimals through float. A Decimal can be finite yet
+        # overflow that wire representation and make strict JSON rendering fail.
+        return value if value.is_finite() and isfinite(value) else None
+    except (DecimalException, ValueError, OverflowError):
         return None
-    return value if value.is_finite() else None
 
 
 def _normalize_canonical_labs(row):

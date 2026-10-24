@@ -174,6 +174,19 @@ class TestNormalizePromopRowHttp:
         pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
         assert not pool.exists()
 
+    @pytest.mark.parametrize('source,target,value', [
+        ('platelet_count_thousand_per_ul', 'platelet_count', '1e309'),
+        ('platelet_count_thousand_per_ul', 'platelet_count', '1e308'),
+        ('wbc_count_thousand_per_ul', 'white_blood_cell_count', '1e309'),
+        ('ldh_u_l', 'lactate_dehydrogenase_level', '1e309'),
+        ('ldh_u_l', 'lactate_dehydrogenase_level', '1e1000000'),
+    ])
+    def test_canonical_overflow_still_renders_valid_json(self, authed_client, source, target, value):
+        response = authed_client.post('/normalize-promop-row/', {source: value}, format='json')
+        assert response.status_code == 200
+        assert response.json()[target] is None
+        assert response.json()[source] == value
+
     def test_non_dict_body_returns_400(self, authed_client):
         response = authed_client.post(
             '/normalize-promop-row/',

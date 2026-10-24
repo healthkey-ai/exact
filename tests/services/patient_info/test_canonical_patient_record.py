@@ -80,7 +80,7 @@ def test_null_direct_value_uses_canonical_unit_not_stale_unit(target, source, un
         assert row[f'{target}_units'] == unit
 
 
-@pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', '1e1000000', True, []])
+@pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', '1e309', '1e308', '1e1000000', True, []])
 def test_bad_canonical_values_remain_unknown(bad):
     row = normalize_promop_row({'platelet_count_thousand_per_ul': bad})
     assert row.get('platelet_count') is None
