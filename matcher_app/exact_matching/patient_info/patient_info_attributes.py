@@ -27,13 +27,12 @@ HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX = 1.5
 HEPATIC_ADEQUACY_AST_ULN_MAX = 2.5
 HEPATIC_ADEQUACY_ALT_ULN_MAX = 2.5
 
-# Haematological adequacy thresholds, expressed in each field's stored scale so
-# they line up with how trials state their own limits (e.g. platelet_count_min).
-# ANC is stored per-uL (1500 = 1500/uL); platelet_count is stored in 10^9/L i.e.
-# thousands/uL (100 = 100,000/uL); hemoglobin in g/dL. Fixed clinical defaults,
-# mirroring the patient-side renal_adequacy_status pattern.
-HAEMATOLOGICAL_ADEQUACY_ANC_MIN = 1500
-HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN = 100
+# CB #4392 / #5378 defaults, in the units returned by get_value(): ANC and
+# platelets in cells/µL, hemoglobin in g/dL. The old platelet cutoff of 100
+# belonged to a thousands/µL scale and cannot be applied to cells/µL readings.
+# Trial-specific overrides are separate work (#630).
+HAEMATOLOGICAL_ADEQUACY_ANC_MIN = 1000
+HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN = 75000
 HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN = 9
 
 # Fixed LDH ULN used by the MIPI scores when no per-lab ULN is available (mirrors
