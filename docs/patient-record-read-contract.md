@@ -39,6 +39,17 @@ Ordinary legacy inline payloads without those canonical renal-source columns
 retain their existing normalization behavior. No private/trusted marker is
 accepted from a client; source values remain ordinary untrusted clinical input.
 
+The preserved value is the **published** eGFR, which the direct
+`estimatedGlomerularFiltrationRateMin/Max` criteria read. The aggregate
+`renal_adequacy_status` is a different question and keeps its existing
+conservative rule: it screens on the worse of the supplied and the derived
+eGFR. A supplied eGFR of 90 beside a creatinine implying ~20 therefore publishes
+90 and satisfies an explicit eGFR threshold, while the adequacy flag stays
+negative. That asymmetry predates this port on the CB side and is intentional;
+it is not a second source of truth. Negative or otherwise out-of-band values
+are passed through as readings here, as they already are on the direct path;
+range guards are tracked in #632.
+
 WBC is the exception: CB documents its populated alias as an unreliable,
 unscaled copy. A non-blank canonical WBC source therefore wins over that alias,
 including one that cannot be parsed — the alias may be the 1000x-low copy, so
