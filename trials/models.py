@@ -413,6 +413,7 @@ class Trial(TimeStampMixin):
     no_mental_health_disorder_required = models.BooleanField(blank=True, null=True, db_index=True)
     no_concomitant_medication_required = models.BooleanField(blank=True, null=True, db_index=True)
     caregiver_availability_required = models.BooleanField(blank=True, null=True, db_index=True)
+    able_to_swallow_tablets_capsules_required = models.BooleanField(blank=True, null=True, db_index=True, help_text="Is it required that patients are able to swallow tablets or capsules?")
 
     concomitant_medications_excluded = models.JSONField(blank=True, null=True, default=list)
     concomitant_medications_washout_period_duration = models.IntegerField(blank=True, null=True)
@@ -507,6 +508,10 @@ class Trial(TimeStampMixin):
     red_blood_cell_count_min = models.IntegerField(blank=True, null=True)
     red_blood_cell_count_max = models.IntegerField(blank=True, null=True)
     white_blood_cell_count_min = models.IntegerField(blank=True, null=True)
+    prothrombin_time_uln_min = models.FloatField(blank=True, null=True, help_text="What is a minimum prothrombin time ratio to ULN required to participate?")
+    prothrombin_time_uln_max = models.FloatField(blank=True, null=True, help_text="What is a maximum prothrombin time ratio to ULN required to participate?")
+    activated_partial_thromboplastin_time_uln_min = models.FloatField(blank=True, null=True, help_text="What is a minimum activated partial thromboplastin time ratio to ULN required to participate?")
+    activated_partial_thromboplastin_time_uln_max = models.FloatField(blank=True, null=True, help_text="What is a maximum activated partial thromboplastin time ratio to ULN required to participate?")
     white_blood_cell_count_max = models.IntegerField(blank=True, null=True)
     absolute_neutrophile_count_min = models.IntegerField(blank=True, null=True)
     absolute_neutrophile_count_max = models.IntegerField(blank=True, null=True)

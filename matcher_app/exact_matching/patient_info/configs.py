@@ -297,7 +297,6 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "disease": "MM",
         "searchable": True,
         "is_computed_value": True,
-        "under_user_control": True,
         "attr": "measurable_disease_imwg_required",
     },
     # MM-specific END
@@ -338,7 +337,7 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "protein_expressions": {
         "type": ATTR_MAPPING_TYPE_COMPUTED,
         "custom_search": True,
-        "disease": ["CLL", "MCL"],
+        "disease": ["CLL", "MCL", "FL"],
         "attr": ["protein_expressions_required", "protein_expressions_excluded"],
         "uvalue_function": {
             "protein_expressions_required":
@@ -932,6 +931,17 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
                 lambda patient_info: patient_info.stem_cell_transplant_history,
         }
     },
+    "day_since_stem_cell_transplant": {
+        "type": "value",
+        "computed_value_type": "int",
+        "is_computed_value": True,
+        "custom_search": True,
+        "searchable": True,
+        "allow_blank_values": True,
+        "disease": ["MM", "FL"],
+        "attr": "day_since_stem_cell_transplant_required",
+        "attrs_to_compute": ("stem_cell_transplant_date",),
+    },
     "relapse_count": {
         "type": "min_max_value",
         "searchable": True,
@@ -966,6 +976,18 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "units_convertor": BaseConvertor,
         "default_unit": "cells/UL",
         "user_input_units_attr": "platelet_count_units",
+    },
+    "prothrombin_time_uln": {
+        "type": "min_max_value",
+        "searchable": True,
+        "attr": "prothrombin_time_uln",
+        "equal_bounds_are_ceiling": True,
+    },
+    "activated_partial_thromboplastin_time_uln": {
+        "type": "min_max_value",
+        "searchable": True,
+        "attr": "activated_partial_thromboplastin_time_uln",
+        "equal_bounds_are_ceiling": True,
     },
     "white_blood_cell_count": {
         "type": "min_max_value",
@@ -1215,6 +1237,12 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "under_user_control": True,
         "attr": "caregiver_availability_required",
     },
+    "able_to_swallow_tablets_capsules": {
+        "type": "bool_restriction",
+        "searchable": True,
+        "false_is_not_a_restriction": True,
+        "attr": "able_to_swallow_tablets_capsules_required",
+    },
     "contraceptive_use": {
         "type": "bool_restriction",
         "searchable": True,
@@ -1413,4 +1441,3 @@ _apply_attrs_mapping_overrides()
 # I'm not using tobacco -- covered
 # I'm not using non-prescription drugs recreationally -- covered
 # I have no geographic (occupational, environmental, infectious disease) exposure risk -- covered
-

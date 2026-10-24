@@ -79,6 +79,9 @@ class UserToTrialAttrsMapper:
             value_attribute_name = _trial_column(user_attribute_name, trial_attribute_name)
             if getattr(trial_obj, value_attribute_name) is None:
                 return
+            if (trial_attr_meta.get("false_is_not_a_restriction")
+                    and getattr(trial_obj, value_attribute_name) is False):
+                return
 
             if value_attribute_name in TRIAL_ATTRS_JSON_AS_A_LIST:
                 if getattr(trial_obj, value_attribute_name) == []:
@@ -122,7 +125,7 @@ class UserToTrialAttrsMapper:
                 return True
 
             is_under_user_control = 'under_user_control' in trial_attr_meta and trial_attr_meta['under_user_control'] is True
-            if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "tnbc_status"]:
+            if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status"]:
                 if isinstance(trial_attr_name, list):
                     if all_is_not_true(trial=trial, attrs=trial_attr_name):
                         continue  # skip
@@ -489,6 +492,8 @@ class UserToTrialAttrsMapper:
 
             else:
                 if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status", "tp53_disruption", "btk_inhibitor_refractory", "bcl2_inhibitor_refractory", "measurable_disease_iwcll", "hepatomegaly", "autoimmune_cytopenias_refractory_to_steroids", "lymphadenopathy", "splenomegaly", "bone_marrow_involvement"]:
+                    sql_check = "IS NOT TRUE"
+                elif trial_attr_meta.get("false_is_not_a_restriction"):
                     sql_check = "IS NOT TRUE"
                 elif trial_attr_meta["type"] == "str_value":
                     sql_check = {'cond': ['IS NULL', "= ''"], 'type': 'OR'}

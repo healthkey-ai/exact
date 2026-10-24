@@ -1,3 +1,4 @@
+import datetime as dt
 from decimal import Decimal
 from math import isfinite, log10
 
@@ -266,6 +267,13 @@ class PatientInfoAttributes:
         return is_blank
 
     def get_value(self, attr_name):
+        if attr_name == 'day_since_stem_cell_transplant':
+            transplant_date = self.patient_info.stem_cell_transplant_date
+            today = dt.date.today()
+            if transplant_date is None or transplant_date > today:
+                return None
+            return (today - transplant_date).days
+
         if attr_name == 'pre_existing_condition_categories':
             if self.patient_info.no_pre_existing_conditions is True:
                 return ['none']
@@ -629,7 +637,7 @@ class PatientInfoAttributes:
     @cached_property
     def measurable_disease_imwg_serum_m_protein_is_high(self):
         # Serum M-protein (Yes if ≥ 0.5 g/dL)
-        if self.is_attr_blank('monoclonal_protein_serum'):
+        if self.patient_info.monoclonal_protein_serum is None:
             return None
 
         return self.patient_info.monoclonal_protein_serum >= 0.5
@@ -637,7 +645,7 @@ class PatientInfoAttributes:
     @cached_property
     def measurable_disease_imwg_serum_m_urine_is_high(self):
         # Urine M-protein (Yes if ≥ 200 mg/24h)
-        if self.is_attr_blank('monoclonal_protein_urine'):
+        if self.patient_info.monoclonal_protein_urine is None:
             return None
 
         return self.patient_info.monoclonal_protein_urine >= 200
@@ -648,10 +656,13 @@ class PatientInfoAttributes:
         if self.patient_info.kappa_flc is None or self.patient_info.lambda_flc is None:
             return None
 
+        if self.abnormal_kappa_lambda_ratio is None:
+            return None
+
         if not self.abnormal_kappa_lambda_ratio:
             return False
 
-        return self.patient_info.kappa_flc >= 10 or self.patient_info.lambda_flc >= 10
+        return self.patient_info.kappa_flc >= 100 or self.patient_info.lambda_flc >= 100
 
     @cached_property
     def measurable_disease_imwg(self):
@@ -665,12 +676,13 @@ class PatientInfoAttributes:
             if component is True:
                 return True
 
-        # All components None → no relevant lab data, result is unknown.
-        # Avoids the "shows No by default" UX bug (#4143 / #4156).
-        if all(c is None for c in components):
-            return None
+        # A negative OR result is definitive only when every component was
+        # evaluated. With some missing labs, the result remains unknown.
+        # Mirrors the upstream CB derivation and the stateless normalizer.
+        if all(c is False for c in components):
+            return False
 
-        return False
+        return None
 
     @cached_property
     def bmi(self):
