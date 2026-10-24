@@ -107,6 +107,26 @@ def test_sct_date_is_computed_without_patient_persistence(days, expected, eligib
     assert pool.exists() is eligible
 
 
+def test_blank_sct_date_is_unknown():
+    patient = PatientInfo(disease='multiple myeloma', stem_cell_transplant_date='')
+    attrs = PatientInfoAttributes(patient)
+    assert attrs.get_value('day_since_stem_cell_transplant') is None
+
+
+def test_new_clinical_attributes_are_grouped_and_false_swallowing_is_hidden():
+    from exact_matching.trial_details.configs import ATTR_FALSE_VALUE_IS_BLANK, ATTR_GROUP_MAPPING
+
+    assert ATTR_GROUP_MAPPING['daySinceStemCellTransplantRequired'] == 'treatment'
+    for field in (
+        'prothrombinTimeUlnMin', 'prothrombinTimeUlnMax',
+        'activatedPartialThromboplastinTimeUlnMin',
+        'activatedPartialThromboplastinTimeUlnMax',
+    ):
+        assert ATTR_GROUP_MAPPING[field] == 'labs'
+    assert ATTR_GROUP_MAPPING['ableToSwallowTabletsCapsulesRequired'] == 'behavior'
+    assert 'ableToSwallowTabletsCapsulesRequired' in ATTR_FALSE_VALUE_IS_BLANK
+
+
 @pytest.mark.parametrize('attribute', ['prothrombin_time_uln', 'activated_partial_thromboplastin_time_uln'])
 @pytest.mark.parametrize('value,expected,eligible', [(None, 'unknown', True), (1.0, 'matched', True), (1.5, 'matched', True), (1.6, 'not_matched', False)])
 def test_clotting_bound_pair_is_a_ceiling(attribute, value, expected, eligible):

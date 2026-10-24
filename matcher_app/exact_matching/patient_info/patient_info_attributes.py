@@ -270,7 +270,7 @@ class PatientInfoAttributes:
         if attr_name == 'day_since_stem_cell_transplant':
             transplant_date = self.patient_info.stem_cell_transplant_date
             today = dt.date.today()
-            if transplant_date is None or transplant_date > today:
+            if not isinstance(transplant_date, dt.date) or transplant_date > today:
                 return None
             return (today - transplant_date).days
 
