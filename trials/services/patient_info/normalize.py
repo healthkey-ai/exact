@@ -89,6 +89,7 @@ def _normalize_therapy_lines(pi) -> None:
         pi.supportive_therapy_date = None
         if pi.prior_therapy == 'None':
             pi.stem_cell_transplant_history = 'None'
+            pi.stem_cell_transplant_date = None
 
 
 def _normalize_treatment_refractory_status(pi) -> None:
