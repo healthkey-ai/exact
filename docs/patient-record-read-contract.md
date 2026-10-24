@@ -42,9 +42,12 @@ accepted from a client; source values remain ordinary untrusted clinical input.
 WBC is the exception: CB documents its populated alias as an unreliable,
 unscaled copy. A non-null canonical WBC source therefore wins over that alias.
 Old payloads without a canonical WBC reading retain their direct value/unit.
-The adapter emits a coherent cells/µL pair; `get_value()` still converts to
-EXACT's existing cells/L comparison basis. This port does **not** change the
-WBC trial-threshold contract or introduce a cells/µL sane range on cells/L.
+In this path a reading must also survive the matcher's own unit conversion.
+EXACT compares WBC on its documented cells/L basis, so a finite cells/µL
+source value can still overflow to infinity when converted. A conversion that
+leaves the finite range is reported as unknown rather than published or
+compared; ordinary values are unaffected. The cells/L contract itself is not
+changed.
 
 `preexisting_conditions` is a list of category **codes**, not category PKs.
 The DTO boundary seeds `_pre_existing_condition_codes_cache` on the request-local

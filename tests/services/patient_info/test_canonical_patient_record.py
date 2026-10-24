@@ -265,3 +265,55 @@ def test_canonical_platelets_do_not_introduce_false_adequacy(disease, builder):
     assert UserToTrialAttrMatcher(
         Trial(haematological_adequacy_required=True), patient,
     ).attr_match_status('haematological_adequacy_status') == 'not_matched'
+
+
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_reading_that_overflows_on_unit_conversion_is_unknown(disease, builder):
+    """`1e303` cells/uL is finite; EXACT's cells/L basis is not (#627 review).
+
+    The source reading passes the adapter's finite check and the unit
+    conversion then produces infinity, which strict JSON rendering cannot
+    publish and which clears every threshold it is compared against.
+    """
+    from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
+
+    patient = builder({
+        'disease': disease, 'wbc_count_thousand_per_ul': '1e300',
+    })
+    assert patient.white_blood_cell_count == 1e303
+    assert PatientInfoAttributes(patient).get_value('white_blood_cell_count') is None
+
+    trial = Trial(disease=disease, white_blood_cell_count_min=1000)
+    assert UserToTrialAttrMatcher(
+        trial, patient,
+    ).attr_match_status('white_blood_cell_count') == 'unknown'
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_overflowing_reading_renders_trial_details_as_json(disease, builder):
+    """Trial Details is where an infinity would become an error response."""
+    from rest_framework.renderers import JSONRenderer
+    from trials.services.trial_details.trial_templates import TrialTemplates
+
+    patient = builder({
+        'disease': disease, 'wbc_count_thousand_per_ul': '1e300',
+    })
+    trial = Trial.objects.create(disease=disease, white_blood_cell_count_min=1000)
+    payload = TrialTemplates(trial, patient_info=patient).potential_attributes_first_view(None)
+    JSONRenderer().render(payload)
+    assert not any(
+        attr.get('uvalue') is not None and not isinstance(attr.get('uvalue'), (int, float, str, list, dict, bool))
+        for attr in payload['trialEligibilityAttributes']
+    )
+
+
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_ordinary_wbc_conversion_stays_a_reading(disease, builder):
+    patient = builder({
+        'disease': disease, 'wbc_count_thousand_per_ul': 7.5,
+    })
+    assert PatientInfoAttributes(patient).get_value('white_blood_cell_count') == 7_500_000_000

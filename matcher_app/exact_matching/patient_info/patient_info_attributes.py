@@ -162,6 +162,29 @@ def explicitly_unknown(patient_info, name):
 
 
 
+def _finite_after_conversion(converted, original):
+    """A unit conversion that leaves the finite range is not a reading.
+
+    The canonical-value guard rejects a SOURCE reading it cannot represent,
+    but a later unit conversion can still overflow: `1e303` cells/µL is a
+    finite float, and the matcher's cells/L basis multiplies it by 10^6 into
+    infinity. Publishing that infinity makes `uvalue` unrenderable by strict
+    JSON encoders and clears any threshold it is compared against, so the
+    answer is unknown — the same treatment `_as_reading` gives a stored
+    non-finite value.
+
+    Anything that is not a number is returned untouched: a failed conversion
+    hands back the original value, and changing what that callers sees would
+    be a separate behaviour change.
+    """
+    if isinstance(converted, bool) or not isinstance(converted, (int, float, Decimal)):
+        return original
+    try:
+        return converted if isfinite(converted) else None
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+
+
 def _as_reading(value):
     """A number we can compare against a threshold, or None.
 
@@ -327,7 +350,10 @@ class PatientInfoAttributes:
         if "units_convertor" in trial_attr_meta:
             from_unit = getattr(self.patient_info, trial_attr_meta["user_input_units_attr"])
             to_unit = trial_attr_meta["default_unit"]
-            user_attr_value = trial_attr_meta["units_convertor"].call(user_attr_value, from_unit, to_unit)
+            user_attr_value = _finite_after_conversion(
+                trial_attr_meta["units_convertor"].call(user_attr_value, from_unit, to_unit),
+                user_attr_value,
+            )
 
         if "value_overrides" in trial_attr_meta:
             conditional_attr_value = self.get_value(trial_attr_meta["value_overrides"]["conditional_attr_name"])
