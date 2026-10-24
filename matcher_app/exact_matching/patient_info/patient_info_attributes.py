@@ -1029,6 +1029,7 @@ class PatientInfoAttributes:
             self.patient_info.first_line_outcome = None
 
             self.patient_info.stem_cell_transplant_history = 'None'
+            self.patient_info.stem_cell_transplant_date = None
             return
 
     # ---------------------------------------------------------------------
