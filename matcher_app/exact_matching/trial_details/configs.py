@@ -268,6 +268,7 @@ SUBFORM_ATTRS_MAPPING = {
     'hr_statuses_required': ['estrogen_receptor_status', 'progesterone_receptor_status'],
     'tnbc_status': ['estrogen_receptor_status', 'progesterone_receptor_status', 'her2_status'],
     'measurable_disease_imwg': ['monoclonal_protein_serum', 'monoclonal_protein_urine', 'kappa_flc', 'lambda_flc'],
+    'day_since_stem_cell_transplant': ['stem_cell_transplant_date'],
 }
 
 ATTR_OPTIONS_MAPPING = {

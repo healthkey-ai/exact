@@ -12,6 +12,22 @@ from trials.services.patient_info.patient_info import PatientInfo
 pytestmark = pytest.mark.django_db
 
 
+@pytest.mark.parametrize('trial_field,patient_field,sources', [
+    ('daySinceStemCellTransplantRequired', 'daySinceStemCellTransplant', {'stemCellTransplantDate'}),
+    ('measurableDiseaseImwgRequired', 'measurableDiseaseImwg',
+     {'monoclonalProteinSerum', 'monoclonalProteinUrine', 'kappaFLC', 'lambdaFLC'}),
+])
+def test_final_details_preserve_computed_readonly_and_source_subforms(trial_field, patient_field, sources):
+    from trials.services.trial_details.trial_attributes import TrialAttributes
+    patient = PatientInfo(disease='multiple myeloma')
+    trial = Trial.objects.create(disease='multiple myeloma',
+        day_since_stem_cell_transplant_required=30, measurable_disease_imwg_required=True)
+    field = TrialAttributes(trial, patient_info=patient).details()[trial_field]
+    assert field['ufield'] == patient_field
+    assert field['ureadonly'] is True
+    assert {source['name'] for source in field['subform_details']} == sources
+
+
 @pytest.mark.parametrize('days,expected', [(10, 'not_matched'), (60, 'matched'), (-1, 'unknown'), (None, 'unknown')])
 def test_promop_sct_source_survives_real_adapter(days, expected):
     from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
