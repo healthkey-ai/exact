@@ -289,18 +289,29 @@ def _canonical_lab_value(value, scale):
         return None
 
 
+def _is_blank_text(value):
+    return isinstance(value, str) and not value.strip()
+
+
 def _normalize_canonical_labs(row):
     # WBC's populated legacy alias can itself be thousands/µL. When the
     # canonical source is supplied, use it rather than trusting that alias.
     # Keep EXACT's per-L matcher contract unchanged: the paired CELLS/UL unit
     # lets get_value() perform the conversion to EXACT's configured basis.
-    if row.get('wbc_count_thousand_per_ul') is not None:
-        row['white_blood_cell_count'] = _canonical_lab_value(row['wbc_count_thousand_per_ul'], 1000)
+    #
+    # An empty string is how a form spells "no value", not a canonical
+    # reading: it must not delete a direct value that was already usable.
+    # Any other supplied canonical value still wins even when unparseable —
+    # the alias is then untrustworthy (it may be the 1000x-low copy), so the
+    # honest answer is unknown rather than a number that could be 10^3 wrong.
+    canonical_wbc = row.get('wbc_count_thousand_per_ul')
+    if canonical_wbc is not None and not _is_blank_text(canonical_wbc):
+        row['white_blood_cell_count'] = _canonical_lab_value(canonical_wbc, 1000)
         row['white_blood_cell_count_units'] = 'CELLS/UL'
     for target, source, unit, scale in _LAB_FALLBACKS:
         direct = row.get(target)
-        missing_direct = direct is None or (isinstance(direct, str) and not direct.strip())
-        if missing_direct and row.get(source) is not None:
+        missing_direct = direct is None or _is_blank_text(direct)
+        if missing_direct and row.get(source) is not None and not _is_blank_text(row.get(source)):
             row[target] = _canonical_lab_value(row[source], scale)
             if unit is not None:
                 row[f'{target}_units'] = unit

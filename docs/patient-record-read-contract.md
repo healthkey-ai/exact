@@ -40,7 +40,10 @@ retain their existing normalization behavior. No private/trusted marker is
 accepted from a client; source values remain ordinary untrusted clinical input.
 
 WBC is the exception: CB documents its populated alias as an unreliable,
-unscaled copy. A non-null canonical WBC source therefore wins over that alias.
+unscaled copy. A non-blank canonical WBC source therefore wins over that alias,
+including one that cannot be parsed — the alias may be the 1000x-low copy, so
+the honest answer is unknown. A blank/whitespace canonical WBC is treated as
+"no canonical reading" and leaves an existing direct value/unit intact.
 Old payloads without a canonical WBC reading retain their direct value/unit.
 In this path a reading must also survive the matcher's own unit conversion.
 EXACT compares WBC on its documented cells/L basis, so a finite cells/µL

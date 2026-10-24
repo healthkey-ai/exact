@@ -124,6 +124,44 @@ def test_old_payload_without_canonical_columns_keeps_direct_labs():
     assert normalize_promop_row(dict(row)) == row
 
 
+@pytest.mark.parametrize('blank', ['', '  '])
+def test_blank_canonical_wbc_does_not_delete_a_direct_reading(blank):
+    row = normalize_promop_row({
+        'white_blood_cell_count': 7_500_000_000,
+        'white_blood_cell_count_units': 'CELLS/L',
+        'wbc_count_thousand_per_ul': blank,
+    })
+    assert row['white_blood_cell_count'] == 7_500_000_000
+    assert row['white_blood_cell_count_units'] == 'CELLS/L'
+
+
+@pytest.mark.parametrize('malformed', ['NaN', 'abc', '1e309'])
+def test_unusable_canonical_wbc_never_falls_back_to_the_untrusted_alias(malformed):
+    """The alias may be the 1000x-low copy, so an unparseable canonical
+    source must read unknown rather than publish a number that could be 10^3
+    wrong."""
+    row = normalize_promop_row({
+        'white_blood_cell_count': 7.5,
+        'white_blood_cell_count_units': 'CELLS/L',
+        'wbc_count_thousand_per_ul': malformed,
+    })
+    assert row['white_blood_cell_count'] is None
+    assert row['white_blood_cell_count_units'] == 'CELLS/UL'
+
+
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_blank_canonical_wbc_keeps_direct_value_through_dto(disease, builder):
+    patient = builder({
+        'disease': disease,
+        'white_blood_cell_count': 7_500_000_000,
+        'white_blood_cell_count_units': 'CELLS/L',
+        'wbc_count_thousand_per_ul': '',
+    })
+    assert patient.white_blood_cell_count == 7_500_000_000
+    assert PatientInfoAttributes(patient).get_value('white_blood_cell_count') == 7_500_000_000
+
+
 @pytest.mark.parametrize('disease', DISEASES)
 @pytest.mark.parametrize('builder', BUILDERS)
 def test_real_builder_keeps_canonical_values_for_every_disease(disease, builder):
