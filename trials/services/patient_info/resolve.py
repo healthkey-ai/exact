@@ -436,7 +436,24 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     pi._pre_existing_condition_categories = categories
     pi._concomitant_medications = concomitant_ids
 
+    # Both person_id and normalize-promop-row -> inline federation inputs
+    # reach this boundary. Source category codes are not category primary keys.
+    codes = snake_data.get('preexisting_conditions')
+    if isinstance(codes, (list, tuple)) and all(isinstance(code, str) for code in codes):
+        pi._pre_existing_condition_codes_cache = list(codes)
+
+    # Newly supported canonical creatinine can activate eGFR recalculation.
+    # Retain a valid supplied source reading on these PatientRecord-shaped
+    # inputs, including zero; ordinary legacy inline normalization is unchanged.
+    from exact_matching.patient_info.patient_info_attributes import _as_reading
+    has_source_renal_labs = any(
+        snake_data.get(field) is not None
+        for field in ('egfr_ml_min_173m2', 'serum_creatinine_mg_dl')
+    )
+    supplied_egfr = _as_reading(pi.estimated_glomerular_filtration_rate) if has_source_renal_labs else None
     normalize_patient_info(pi)
+    if supplied_egfr is not None:
+        pi.estimated_glomerular_filtration_rate = supplied_egfr
     return pi
 
 

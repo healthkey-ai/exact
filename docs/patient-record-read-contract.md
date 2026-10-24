@@ -30,10 +30,14 @@ corresponding unit: a stale direct unit must not reinterpret the fallback.
 Malformed/non-finite canonical readings remain unknown. This assumes the
 named canonical source units; it does not repair upstream ingest-unit errors.
 
-On this PROMOP path, a valid supplied eGFR (direct or canonical, including
-zero) survives normalization even when the creatinine fallback enables a
-fresh eGFR calculation. Without a valid source eGFR, existing derivation
-still runs. The generic inline-payload normalizer is unchanged.
+For inputs carrying canonical renal-source columns, a valid supplied eGFR
+(direct or canonical, including zero) survives normalization even when the
+creatinine fallback enables a fresh eGFR calculation. Both the server-side
+PROMOP builder and normalize-promop-row -> inline federation use this DTO
+boundary. Without a valid source eGFR, existing derivation still runs.
+Ordinary legacy inline payloads without those canonical renal-source columns
+retain their existing normalization behavior. No private/trusted marker is
+accepted from a client; source values remain ordinary untrusted clinical input.
 
 WBC is the exception: CB documents its populated alias as an unreliable,
 unscaled copy. A non-null canonical WBC source therefore wins over that alias.
@@ -43,8 +47,9 @@ EXACT's existing cells/L comparison basis. This port does **not** change the
 WBC trial-threshold contract or introduce a cells/µL sane range on cells/L.
 
 `preexisting_conditions` is a list of category **codes**, not category PKs.
-The adapter seeds `_pre_existing_condition_codes_cache` on the request-local
-patient after construction, as CB's surface does. It must not send these
+The DTO boundary seeds `_pre_existing_condition_codes_cache` on the request-local
+patient, as CB's surface does, for both the PROMOP builder and federation inline
+path. It must not send these
 codes through the inline builder's `pre_existing_condition_categories` PK
 lookup. Empty lists remain unknown unless the separate asserted-none flag
 settles that state. This does not change precedence for contradictory

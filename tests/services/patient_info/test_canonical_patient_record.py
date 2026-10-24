@@ -1,9 +1,11 @@
 """PatientRecord -> real DTO/matcher regression coverage for #627."""
 from decimal import Decimal
+import json
 
 import pytest
 from django.db.models.expressions import RawSQL
 from django.test import override_settings
+from rest_framework.renderers import JSONRenderer
 
 from exact_matching.matcher import UserToTrialAttrMatcher
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
@@ -15,6 +17,17 @@ from trials.services.patient_info.promop_adapter import (
     normalize_promop_row,
 )
 from trials.services.trial_details.trial_attributes import TrialAttributes
+from trials.services.patient_info.resolve import _build_in_memory
+
+
+def _federated_builder(row):
+    # Exercise the actual authenticated view and JSON serialization separately
+    # below; this helper reproduces its wire payload -> strict inline boundary.
+    normalized = normalize_promop_row(dict(row))
+    return _build_in_memory(json.loads(JSONRenderer().render(normalized)), strict=True)
+
+
+BUILDERS = (build_patient_info_from_promop_row, _federated_builder)
 
 
 DISEASES = (
@@ -90,8 +103,9 @@ def test_old_payload_without_canonical_columns_keeps_direct_labs():
 
 
 @pytest.mark.parametrize('disease', DISEASES)
-def test_real_builder_keeps_canonical_values_for_every_disease(disease):
-    patient = build_patient_info_from_promop_row({
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_real_builder_keeps_canonical_values_for_every_disease(disease, builder):
+    patient = builder({
         'disease': disease, 'wbc_count_thousand_per_ul': 7.5,
         'platelet_count_thousand_per_ul': 150, 'alt_u_l': 20,
         'ast_u_l': 21, 'alkaline_phosphatase_u_l': 22,
@@ -124,8 +138,9 @@ def test_creatinine_fallback_retains_mg_dl_unit():
 @pytest.mark.parametrize('disease', DISEASES)
 @pytest.mark.parametrize('egfr', [0, 40, 85, '40'])
 @pytest.mark.parametrize('source', ['egfr_ml_min_173m2', 'estimated_glomerular_filtration_rate'])
-def test_source_egfr_survives_creatinine_derivation(disease, egfr, source):
-    patient = build_patient_info_from_promop_row({
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_source_egfr_survives_creatinine_derivation(disease, egfr, source, builder):
+    patient = builder({
         'disease': disease, 'gender': 'M', 'patient_age': 20,
         source: egfr, 'serum_creatinine_mg_dl': 0.8,
     })
@@ -137,18 +152,21 @@ def test_source_egfr_survives_creatinine_derivation(disease, egfr, source):
     assert UserToTrialAttrMatcher(trial, patient).attr_match_status('estimated_glomerular_filtration_rate') == expected
 
 
-def test_invalid_source_egfr_does_not_block_valid_derivation():
-    patient = build_patient_info_from_promop_row({
+@pytest.mark.parametrize('bad', ['not a number', [], {}, True, 'NaN', 'Infinity'])
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_invalid_source_egfr_does_not_block_valid_derivation(bad, builder):
+    patient = builder({
         'gender': 'M', 'patient_age': 20,
-        'estimated_glomerular_filtration_rate': 'not a number',
+        'estimated_glomerular_filtration_rate': bad,
         'serum_creatinine_mg_dl': 0.8,
     })
     assert patient.estimated_glomerular_filtration_rate > 60
 
 
 @pytest.mark.parametrize('codes', [[], ['diabetes'], ['diabetes', 'cardiac_disease']])
-def test_condition_codes_reach_matcher_without_database_access(codes):
-    patient = build_patient_info_from_promop_row({'preexisting_conditions': codes})
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_condition_codes_reach_matcher_without_database_access(codes, builder):
+    patient = builder({'preexisting_conditions': codes})
     assert PatientInfoAttributes(patient).get_value('pre_existing_condition_categories') == codes
     assert patient._pre_existing_condition_codes_cache is not codes
 
@@ -156,8 +174,9 @@ def test_condition_codes_reach_matcher_without_database_access(codes):
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
 @pytest.mark.parametrize('disease', DISEASES)
-def test_canonical_platelets_agree_across_pool_verdict_counts_and_details(disease):
-    patient = build_patient_info_from_promop_row({
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_canonical_platelets_agree_across_pool_verdict_counts_and_details(disease, builder):
+    patient = builder({
         'disease': disease, 'platelet_count_thousand_per_ul': 150,
     })
     trial = Trial.objects.create(disease=disease, platelet_count_min=160000)
@@ -177,11 +196,26 @@ def test_canonical_platelets_agree_across_pool_verdict_counts_and_details(diseas
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('disease', DISEASES)
-def test_real_condition_codes_enforce_exclusions_in_pool_and_verdict(disease):
-    patient = build_patient_info_from_promop_row({
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_real_condition_codes_enforce_exclusions_in_pool_and_verdict(disease, builder):
+    patient = builder({
         'disease': disease, 'preexisting_conditions': ['diabetes'],
     })
     trial = Trial.objects.create(disease=disease, pre_existing_conditions_excluded=['diabetes'])
     assert UserToTrialAttrMatcher(trial, patient).attr_match_status('pre_existing_condition_categories') == 'not_matched'
     pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
     assert not pool.exists()
+
+
+@pytest.mark.parametrize('disease', DISEASES)
+@pytest.mark.parametrize('builder', BUILDERS)
+def test_canonical_platelets_do_not_introduce_false_adequacy(disease, builder):
+    patient = builder({
+        'disease': disease, 'platelet_count_thousand_per_ul': 50,
+        'absolute_neutrophile_count': 2000, 'hemoglobin_level': 12,
+    })
+    assert patient.platelet_count == 50000
+    assert patient.haematological_adequacy_status is False
+    assert UserToTrialAttrMatcher(
+        Trial(haematological_adequacy_required=True), patient,
+    ).attr_match_status('haematological_adequacy_status') == 'not_matched'

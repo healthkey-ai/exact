@@ -570,9 +570,7 @@ def build_patient_info_from_promop_row(row: dict):
     what the API would produce.
     """
     from trials.services.patient_info.resolve import _build_in_memory
-    from trials.services.patient_info.resolve import _coerce_numerics
     from trials.services.patient_info.resolve import translate_language_capabilities
-    from trials.services.patient_info.patient_info import PatientInfo
 
     row = normalize_promop_row(row)
     # Language booleans -> legacy codes/asked and OMOP pairs BEFORE the None-stripping
@@ -601,19 +599,4 @@ def build_patient_info_from_promop_row(row: dict):
         cleaned[col] = val
 
     # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info
-    # A canonical creatinine fallback can activate the normalizer's derived
-    # eGFR. Preserve the supplied (direct or canonical) source reading instead
-    # of letting that calculation replace it, including an explicit zero.
-    # Reuse the DTO boundary's numeric validation before restoring the value.
-    supplied_egfr = {'estimated_glomerular_filtration_rate': cleaned.get('estimated_glomerular_filtration_rate')}
-    _coerce_numerics(supplied_egfr, PatientInfo)
-    patient = _build_in_memory(cleaned)
-    if supplied_egfr['estimated_glomerular_filtration_rate'] is not None:
-        patient.estimated_glomerular_filtration_rate = supplied_egfr['estimated_glomerular_filtration_rate']
-    # PROMOP supplies category CODES, not the category PKs accepted by the
-    # legacy inline builder. Seed the same request-local memo as CB's surface
-    # without a category lookup or patient persistence.
-    codes = row.get('preexisting_conditions')
-    if isinstance(codes, (list, tuple)) and all(isinstance(code, str) for code in codes):
-        patient._pre_existing_condition_codes_cache = list(codes)
-    return patient
+    return _build_in_memory(cleaned)
