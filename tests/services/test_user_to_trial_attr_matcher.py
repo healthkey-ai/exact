@@ -385,11 +385,8 @@ class TestUserToTrialAttrMatcher:
         lab values must show as Potential ('unknown'), not Ineligible
         ('not_matched'), against a trial requiring measurable_disease_imwg.
 
-        Even when labs ARE present but the patient doesn't qualify (real False),
-        the matcher should still return 'unknown' because measurable_disease_imwg
-        is a derived/computed field the user cannot directly answer — surfacing
-        the trial as Potential is the desired UX. The under_user_control flag
-        in configs.py is what enforces this.
+        CB's upstream contract keeps partial negative labs unknown; a complete
+        negative evaluation is not_matched, not a patient-controlled nonanswer.
         """
         # Patient with all IMWG lab inputs blank → measurable_disease_imwg=None.
         pi = PatientInfo(
@@ -416,12 +413,10 @@ class TestUserToTrialAttrMatcher:
         assert pi.measurable_disease_imwg is True
         assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'matched'
 
-        # Patient has labs but doesn't qualify (real False) → still 'unknown'
-        # because under_user_control prefers Potential over hard-reject on a
-        # derived value the user couldn't have answered themselves.
+        # A low serum value alone cannot rule out the other missing components.
         pi.monoclonal_protein_serum = 0.1  # below 0.5 g/dL threshold
         normalize_patient_info(pi)
-        assert pi.measurable_disease_imwg is False
+        assert pi.measurable_disease_imwg is None
         assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'unknown'
 
     @pytest.mark.django_db
@@ -434,8 +429,8 @@ class TestUserToTrialAttrMatcher:
         """
         # Patient with serum=0 + urine=0 + no FLC → serum and urine
         # components produce real False (was None pre-fix), FLC stays None.
-        # Outer function: components=[False, False, None] → not-all-None →
-        # derived value is False, not None.
+        # Outer function: components=[False, False, None] remains unknown;
+        # the zero measurements themselves still produce real False components.
         pi = PatientInfo(
             disease='multiple myeloma',
             monoclonal_protein_serum=0,
@@ -444,11 +439,10 @@ class TestUserToTrialAttrMatcher:
             lambda_flc=None,
         )
         normalize_patient_info(pi)
-        assert pi.measurable_disease_imwg is False
+        assert pi.measurable_disease_imwg is None
 
-        # End-to-end: matcher must still bucket this as 'unknown' against
-        # a requiring trial because measurable_disease_imwg is under user
-        # control (#54 contract preserved by this PR).
+        # End-to-end: missing FLC evidence retains Potential, without using
+        # under_user_control to hide a definitive negative derivation.
         trial_requires = TrialFactory(measurable_disease_imwg_required=True)
         assert UserToTrialAttrMatcher(trial_requires, pi).attr_match_status('measurable_disease_imwg') == 'unknown'
 

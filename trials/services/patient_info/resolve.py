@@ -56,7 +56,7 @@ from math import isfinite
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
-from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from django.db.models import BooleanField, DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
 from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
@@ -334,10 +334,31 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     _coerce_dates(filtered, PatientInfo)
     # Coerce numeric strings into proper numeric types (CB API can send "10.20" etc.)
     _coerce_numerics(filtered, PatientInfo)
+    # Normalise JSON 0/1 to bool so the matcher and the SQL pool agree on a
+    # boolean restriction (see _coerce_booleans).
+    _coerce_booleans(filtered, PatientInfo)
     # Coerce string-encoded lists/dicts for JSONField columns (CB can send "[{...}]" as str)
     _coerce_json_fields(filtered, PatientInfo)
     # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
     _normalize_structured_json_fields(filtered)
+
+    if strict:
+        # A non-boolean in a boolean column used to survive into the matcher:
+        # `0` is not `False`, so the matcher called a required True "not_matched"
+        # while the SQL pool counted the trial as unconstrained and kept it.
+        # 0/1 are normalised above; anything else is malformed input from the
+        # client and gets the 400 that names the right party.
+        bad_booleans = {
+            f.name: 'Expected a boolean or null.'
+            for f in PatientInfo._meta.get_fields()
+            if isinstance(f, BooleanField) and hasattr(f, 'column')
+            and f.name in filtered
+            and f.name != 'tp53_disruption'  # has its own explicit contract below
+            and filtered[f.name] is not None
+            and type(filtered[f.name]) is not bool
+        }
+        if bad_booleans:
+            raise ValidationError({'patient_info': bad_booleans})
 
     pi = PatientInfo(**filtered)
     # Which fields the CALLER named, as opposed to which happen to hold a value.
@@ -361,7 +382,6 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
         if value is not None and type(value) is not bool and strict:
             # The inline path only: a client sent something that is not an
             # aggregate, and 400 names the right party.
-            from rest_framework.exceptions import ValidationError
             raise ValidationError(
                 {'patient_info': {'tp53_disruption': 'Expected a boolean or null.'}}
             )
@@ -441,6 +461,15 @@ def _coerce_numerics(data: dict, model_cls):
         if not hasattr(f, 'column') or f.name not in data:
             continue
         val = data[f.name]
+        # JSON parsers accept the `NaN`/`Infinity` literals, so a non-finite
+        # value can arrive as a float or Decimal rather than the string forms
+        # handled below. It is never a measurement; make it absent.
+        if isinstance(val, float) and not isfinite(val):
+            data[f.name] = None
+            continue
+        if isinstance(val, Decimal) and not val.is_finite():
+            data[f.name] = None
+            continue
         if not isinstance(val, str):
             continue
         # '' used to short-circuit here (`or val == ''`), which left a `str`
@@ -484,14 +513,48 @@ def _coerce_numerics(data: dict, model_cls):
                     data[f.name] = None
         elif isinstance(f, FloatField):
             try:
-                data[f.name] = float(val)
+                coerced = float(val)
+                if not isfinite(coerced):
+                    # PostgreSQL orders NaN above every number, so a NaN ceiling
+                    # check excludes a trial that the Python matcher (`nan > x`
+                    # is False) calls satisfied. `inf` does the same in reverse.
+                    # Neither is a measurement; make them absent, like ''.
+                    raise ValueError(val)
+                data[f.name] = coerced
             except (ValueError, TypeError):
                 data[f.name] = None
         elif isinstance(f, DecimalField):
             try:
-                data[f.name] = Decimal(val)
+                parsed = Decimal(val)
             except (InvalidOperation, TypeError):
                 data[f.name] = None
+            else:
+                # Decimal('NaN') is constructible but every comparison with it
+                # raises InvalidOperation; absent is the only safe spelling.
+                data[f.name] = parsed if parsed.is_finite() else None
+
+
+def _coerce_booleans(data: dict, model_cls):
+    """Normalise JSON integers 0/1 to bool for BooleanField columns.
+
+    JSON clients (and some serialisers) send integers where the column wants a
+    boolean. `0` is not `False` in Python, so leaving it as an int made the
+    matcher call a required `True` "not_matched" while the SQL pool saw a
+    non-blank value and kept the trial — the search and the verdict disagreed.
+    0/1 are the only integer encodings accepted here; other values are refused
+    by the strict HTTP boundary rather than silently reinterpreted.
+    """
+    for f in model_cls._meta.get_fields():
+        if not hasattr(f, 'column') or not isinstance(f, BooleanField) or f.name not in data:
+            continue
+        if f.name == 'tp53_disruption':
+            # 0/1 are deliberately NOT booleans here: the tp53 aggregate has its
+            # own contract (test_promop_tp53_contract) that distinguishes an
+            # upstream non-boolean from a client's malformed one.
+            continue
+        value = data[f.name]
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value in (0, 1):
+            data[f.name] = bool(value)
 
 
 def _normalize_structured_json_fields(data: dict):

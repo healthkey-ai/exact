@@ -319,7 +319,8 @@ class TrialAttributes:
             return 'select'
         return str(field_type)
 
-    def get_field(self, field, value, user_field, user_value, subform_details, units_data):
+    def get_field(self, field, value, user_field, user_value, subform_details, units_data,
+                  user_readonly=False):
 
         field_name = self.get_field_name(field)
 
@@ -328,7 +329,7 @@ class TrialAttributes:
         if subform_details:
             extra_attrs['subform_details'] = subform_details
 
-        ureadonly = subform_details is not None
+        ureadonly = user_readonly or subform_details is not None
 
         type = ATTR_TYPE_MAPPING.get(field_name)
         options = self.get_options(field_name)
@@ -398,6 +399,9 @@ class TrialAttributes:
             units_data = {}
             if attr_name in user_details:
                 user_data = user_details[attr_name]
+                # Port CB's patient-attribute resolution: patient and trial
+                # names may differ (e.g. measurable_disease_imwg_required).
+                subform_details = user_data.get('subform_details') or subform_attrs.get(attr_name)
                 user_field = AttributeNames.get_by_snake_case(user_data['ufield'])
                 user_value = user_data['uvalue']
 
@@ -410,7 +414,10 @@ class TrialAttributes:
                             'uunitsOptions': ValueOptions.to_value_and_label(units_details['options']),
                         }
 
-                field = self.get_field(attr, attr_value, user_field, user_value, subform_details, units_data)
+                field = self.get_field(
+                    attr, attr_value, user_field, user_value, subform_details, units_data,
+                    user_readonly=user_data['ureadonly'],
+                )
                 out[field['name']] = field
                 out[field['name']]['search_type'] = user_data.get('search_type')
             elif attr_name in ATTR_NAME_ALWAYS_INCLUDED:

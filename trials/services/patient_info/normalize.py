@@ -243,7 +243,7 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         # real clinical signal — well below the 0.26 abnormal threshold —
         # not missing data (#81).
         if ratio is None:
-            return False
+            return None
         if not (ratio < 0.26 or ratio > 1.65):
             return False
         return pi.kappa_flc >= 100 or pi.lambda_flc >= 100
@@ -253,12 +253,8 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         if component is True:
             pi.measurable_disease_imwg = True
             return
-    # All components None → no relevant lab data, result is unknown.
-    # Avoids the "shows No by default" UX bug (#4143 / #4156).
-    if all(c is None for c in components):
-        pi.measurable_disease_imwg = None
-        return
-    pi.measurable_disease_imwg = False
+    # CB's three-valued OR: a negative result needs every component evaluated.
+    pi.measurable_disease_imwg = False if all(c is False for c in components) else None
 
 
 def _normalize_last_treatment(pi) -> None:

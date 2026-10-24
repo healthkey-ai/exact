@@ -71,6 +71,7 @@ class _AttrMatchCtx:
 _CUSTOM_SEARCH_NAMED_HANDLERS = {
     'pre_existing_condition_categories': '_match_pre_existing_condition_categories',
     'stem_cell_transplant_history': '_match_stem_cell_transplant_history',
+    'day_since_stem_cell_transplant': '_match_day_since_stem_cell_transplant',
     'concomitant_medications': '_match_concomitant_medications',
     'stage': '_match_stage',
     'disease': '_match_disease',
@@ -609,6 +610,14 @@ class UserToTrialAttrMatcher:
             return 'not_matched'
         else:
             return 'matched'
+
+    def _match_day_since_stem_cell_transplant(self, ctx):
+        required_days = self.trial.day_since_stem_cell_transplant_required
+        if required_days is None:
+            return 'matched'
+        if ctx.is_blank:
+            return 'unknown'
+        return 'matched' if ctx.value >= required_days else 'not_matched'
 
     def _match_stem_cell_transplant_history(self, ctx):
         trial_attr_sct_history_required = getattr(self.trial, 'stem_cell_transplant_history_required')
@@ -1243,7 +1252,11 @@ class UserToTrialAttrMatcher:
         trial_attr_value_min = getattr(self.trial, attr_min_name)
         trial_attr_value_max = getattr(self.trial, attr_max_name)
 
-        abs_vals_match_res = min_max_match(trial_attr_value_min, trial_attr_value_max, ctx.value, ctx.is_blank, sane_range=ctx.meta.get("sane_range"))
+        abs_vals_match_res = min_max_match(
+            trial_attr_value_min, trial_attr_value_max, ctx.value, ctx.is_blank,
+            sane_range=ctx.meta.get("sane_range"),
+            equal_bounds_are_ceiling=ctx.meta.get("equal_bounds_are_ceiling", False),
+        )
         if "uln_attr_min" in ctx.meta and "uln_attr_max" in ctx.meta:
             trial_attr_value_uln_min = getattr(self.trial, ctx.meta["uln_attr_min"])
             trial_attr_value_uln_max = getattr(self.trial, ctx.meta["uln_attr_max"])

@@ -265,6 +265,11 @@ def normalize_promop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # PROMOP owns the source name; translate before the DTO drops unknown keys.
+    # Explicit null also wins over a stale internal alias supplied alongside it.
+    if 'sct_date' in row:
+        row['stem_cell_transplant_date'] = row['sct_date']
+
     # ── Receptor statuses ──────────────────────────────────────────────
     # Resolved via DB-backed LRU map; aliases handle PROMOP-specific labels
     # (e.g. "Equivocal" → her2_low, "Borderline" → er_plus_with_low_exp).

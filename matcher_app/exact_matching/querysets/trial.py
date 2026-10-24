@@ -233,6 +233,10 @@ _CUSTOM_SEARCH_DISPATCH = {
     'treatment_refractory_status': lambda s, v, _c: s.eligible_for_treatment_refractory_status(v),
     'pre_existing_condition_categories': lambda s, v, _c: s.eligible_for_pre_existing_condition(v),
     'stem_cell_transplant_history': lambda s, v, _c: s.eligible_for_stem_cell_transplant_history(v),
+    'day_since_stem_cell_transplant': lambda s, v, _c: s.filter(
+        Q(day_since_stem_cell_transplant_required__isnull=True)
+        | Q(day_since_stem_cell_transplant_required__lte=v)
+    ),
     'bcl2_inhibitor_refractory': lambda s, v, _c: s.eligible_for_bcl2_inhibitor_refractory(v),
     'btk_inhibitor_refractory': lambda s, v, _c: s.eligible_for_btk_inhibitor_refractory(v),
     'tp53_disruption': lambda s, v, _c: s.eligible_for_tp53_disruption(v),
@@ -1839,7 +1843,12 @@ class TrialQuerySet(models.QuerySet):
                 # excluding on the wrong scale (WBC guard, cb#4559). The helper has accepted it
                 # since #282; CB's retained orchestrator already passes it (QR4a/L1). ULN call
                 # takes no sane_range, matching CB.
-                scope = scope.eligible_for_min_max_value(attr_min_name, attr_max_name, user_attr_value, skip_blank=not allow_blank_values, sane_range=trial_attr_meta.get("sane_range"))
+                scope = scope.eligible_for_min_max_value(
+                    attr_min_name, attr_max_name, user_attr_value,
+                    skip_blank=not allow_blank_values,
+                    sane_range=trial_attr_meta.get("sane_range"),
+                    equal_bounds_are_ceiling=trial_attr_meta.get("equal_bounds_are_ceiling", False),
+                )
 
                 user_attr_value_uln = patient_info_attr.get_uln_value(user_attr)
                 if user_attr_value_uln:
