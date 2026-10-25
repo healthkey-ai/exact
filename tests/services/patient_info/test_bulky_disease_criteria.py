@@ -79,10 +79,16 @@ def test_fully_answered_subthreshold_sizes_are_a_confirmed_negative():
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
 def test_unanswered_source_keeps_the_trial_potential():
-    """The required criterion's own source is blank -> unknown."""
-    patient = _patient(largest_lesion_size=4, spleen_size=12)
+    """The required criterion's own source is blank -> unknown.
+
+    The lesion answer is ABOVE its threshold on purpose: the derived aggregate
+    is then non-empty, so only the per-criterion unknown set can tell
+    "this required node criterion was never answered" from "confirmed absent".
+    With the pre-#626 metadata this returned not_matched.
+    """
+    patient = _patient(largest_lesion_size=6, spleen_size=12)
     trial = Trial.objects.create(disease=MCL, bulky_disease_criteria_required=['bulky_node_5cm'])
-    assert PatientInfoAttributes(patient).bulky_disease_criteria is None
+    assert PatientInfoAttributes(patient).bulky_disease_criteria == 'bulky_lesion_5cm'
     assert _verdict(trial, patient) == 'unknown'
     assert _sql_potential(trial, patient) == 1
 
