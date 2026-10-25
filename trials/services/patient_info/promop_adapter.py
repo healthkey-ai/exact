@@ -306,6 +306,43 @@ def _is_blank_text(value):
     return isinstance(value, str) and not value.strip()
 
 
+#: PROMOP's canonical cytogenetic vocabulary -> CB's `CytogenicMarker.code`.
+#: The two overlap only on `hyperdiploidy`, and CB's matcher, its trial
+#: `cytogenic_markers_required/excluded` columns and the TP53 / high-risk MCL
+#: derivations all speak CB's codes, so a raw PROMOP string never matches
+#: (cancerbot#5483, exact#590). Mirrors CB's `promop_surface.CYTOGENETIC_MARKERS_TO_CB`.
+_CYTOGENETIC_MARKERS_TO_CB = {
+    'del17p': 'del17p13',
+    't(4;14)': 't414',
+    't(11;14)': 't1114',
+    't(14;16)': 't1416',
+    '1q_gain': '1q21Amplification',
+    '1q_amp': '1q21Amplification',
+    'hyperdiploidy': 'hyperdiploidy',
+    'MYC rearrangement': 'mycRearrangements',
+}
+
+
+def _cytogenetic_markers(value):
+    """PROMOP's marker summary in CB's vocabulary, comma-separated.
+
+    PROMOP stores `', '.join(canonical)` and a canonical value can itself carry
+    a comma (`t(4;14)`), so split on the separator rather than on every comma.
+    A value with no CB counterpart (an unrecognised import, or `del13q`) is
+    dropped: CB has no code for it, and the rest of the set stays exact. A
+    wholly unrecognised value returns '' so the criterion reads unknown rather
+    than "no markers".
+    """
+    if not value:
+        return ''
+    codes = []
+    for raw in str(value).split(', '):
+        code = _CYTOGENETIC_MARKERS_TO_CB.get(raw.strip())
+        if code and code not in codes:
+            codes.append(code)
+    return ','.join(codes)
+
+
 def _normalize_canonical_labs(row):
     # These counts' populated legacy aliases can themselves be thousands/µL
     # (WBC, ANC) or were filled without the ×1000 (ALC). When the canonical
@@ -379,11 +416,34 @@ def normalize_promop_row(row: dict) -> dict:
     if isinstance(val, str):
         row['ethnicity'] = resolve_code(val, 'Ethnicity')
 
+    # ── Cytogenetic markers — PROMOP's renamed column and vocabulary ────
+    # PROMOP's column is `cytogenetic_markers` (migration 0222); EXACT's field
+    # keeps CB's older `cytogenic_markers` spelling. The new name wins, the old
+    # one is still read for older payloads. Values are translated into CB's
+    # codes here, so the generic title resolver below must not touch this field.
+    cytogenetic_value = row.get('cytogenetic_markers')
+    if cytogenetic_value is None:
+        cytogenetic_value = row.get('cytogenic_markers')
+    if isinstance(cytogenetic_value, str) and cytogenetic_value.strip():
+        mapped = _cytogenetic_markers(cytogenetic_value)
+        if mapped:
+            # Either spelling can carry PROMOP's canonical vocabulary
+            # (CB reads both names through the same table).
+            row['cytogenic_markers'] = mapped
+        elif row.get('cytogenetic_markers') is not None:
+            # The canonical column is PROMOP's own vocabulary; an unrecognised
+            # value is unknown, not a display title to look up.
+            row['cytogenic_markers'] = ''
+        else:
+            # An older payload in EXACT's display-title form keeps resolving
+            # through the Marker table, exactly as before.
+            row['cytogenic_markers'] = resolve_code_csv(cytogenetic_value, 'Marker') or ''
+    row.pop('cytogenetic_markers', None)
+
     # ── Multi-value code fields — resolve CSV display names to codes ───
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     for _field, _model in [
-        ('cytogenic_markers',     'Marker'),
         ('molecular_markers',     'Marker'),
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
