@@ -97,7 +97,7 @@ These are explicit scope boundaries, not allowances to conceal new drift:
 | `disease` case/whitespace adapter | CB explicitly normalizes supported titles; not changed by this lab slice |
 | `gender` (`U -> UN`) | EXACT has its own gender normalization/unknown handling; not asserted equivalent here |
 | `patient_age` unknown-DOB sentinel guard | CB checks Person provenance; EXACT's flat row adapter does not establish the same provenance. Remains a known audit boundary, not a guessed age correction |
-| `cytogenic_markers` spelling and vocabulary | #590/#461; not duplicated in #627 |
+| `cytogenic_markers` spelling and vocabulary | PROMOP's `cytogenetic_markers` column and canonical vocabulary are translated into CB's codes on the PROMOP path (#590/#461). A payload already in EXACT's display-title form keeps resolving through the Marker table |
 | Supportive therapy text -> structured rows | Intentionally unresolved; CB treats it as type-incompatible, EXACT has existing text clearing; #231/#384 |
 | RBC | Not a canonical fallback in CB `_FIELD_MAPS`; existing host contract differs, outside #627 |
 | Direct bilirubin | No corresponding PatientRecord canonical source in the audited contract; do not substitute total bilirubin |
