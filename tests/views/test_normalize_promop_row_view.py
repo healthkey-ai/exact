@@ -147,6 +147,57 @@ class TestNormalizePromopRowHttp:
         assert response.data['stage'] == 'III'
         assert response.data['tumor_grade'] == '20'
 
+    def test_finite_canonical_values_are_json_numbers_not_strings(self, authed_client):
+        response = authed_client.post('/normalize-promop-row/', {
+            'hemoglobin_g_dl': 12.5, 'wbc_count_thousand_per_ul': 7.5,
+        }, format='json')
+        assert response.status_code == 200
+        wire = response.json()
+        assert wire['hemoglobin_level'] == 12.5
+        assert wire['white_blood_cell_count'] == 7500
+        assert isinstance(wire['hemoglobin_level'], (int, float))
+        assert isinstance(wire['white_blood_cell_count'], (int, float))
+
+    @pytest.mark.parametrize('disease', [
+        'multiple myeloma', 'follicular lymphoma', 'breast cancer',
+        'chronic lymphocytic leukemia', 'mantle cell lymphoma',
+    ])
+    def test_canonical_renal_and_condition_data_survive_federation_roundtrip(self, authed_client, disease):
+        from exact_matching.matcher import UserToTrialAttrMatcher
+        from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
+        from exact_matching.querysets.trial import TrialQuerySet
+        from trials.models import Trial
+        from trials.services.patient_info.resolve import _build_in_memory
+
+        response = authed_client.post('/normalize-promop-row/', {
+            'disease': disease, 'gender': 'M', 'patient_age': 20,
+            'egfr_ml_min_173m2': 40, 'serum_creatinine_mg_dl': 0.8,
+            'preexisting_conditions': ['diabetes'],
+        }, format='json')
+        assert response.status_code == 200
+        # The federated bridge sends this JSON response as inline patient_info,
+        # rather than calling the server-side PROMOP builder.
+        patient = _build_in_memory(response.json(), strict=True)
+        assert patient.estimated_glomerular_filtration_rate == 40
+        assert PatientInfoAttributes(patient).get_value('pre_existing_condition_categories') == ['diabetes']
+        trial = Trial.objects.create(disease=disease, estimated_glomerular_filtration_rate_min=60)
+        assert UserToTrialAttrMatcher(trial, patient).attr_match_status('estimated_glomerular_filtration_rate') == 'not_matched'
+        pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
+        assert not pool.exists()
+
+    @pytest.mark.parametrize('source,target,value', [
+        ('platelet_count_thousand_per_ul', 'platelet_count', '1e309'),
+        ('platelet_count_thousand_per_ul', 'platelet_count', '1e308'),
+        ('wbc_count_thousand_per_ul', 'white_blood_cell_count', '1e309'),
+        ('ldh_u_l', 'lactate_dehydrogenase_level', '1e309'),
+        ('ldh_u_l', 'lactate_dehydrogenase_level', '1e1000000'),
+    ])
+    def test_canonical_overflow_still_renders_valid_json(self, authed_client, source, target, value):
+        response = authed_client.post('/normalize-promop-row/', {source: value}, format='json')
+        assert response.status_code == 200
+        assert response.json()[target] is None
+        assert response.json()[source] == value
+
     def test_non_dict_body_returns_400(self, authed_client):
         response = authed_client.post(
             '/normalize-promop-row/',
