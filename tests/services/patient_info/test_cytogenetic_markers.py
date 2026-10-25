@@ -131,3 +131,28 @@ def test_dto_carries_the_mapped_codes_for_both_builders():
     assert patient.cytogenic_markers == 'del17p13,t414'
     inline = _build_in_memory({'disease': MM, 'cytogenic_markers': 'del17p13,t414'})
     assert inline.cytogenic_markers == 'del17p13,t414'
+
+
+def test_blank_canonical_value_clears_a_stale_old_name():
+    """The new name wins even when blank: CB would read unknown, not the alias."""
+    row = normalize_promop_row({
+        'cytogenetic_markers': '', 'cytogenic_markers': 'del17p13',
+    })
+    assert row['cytogenic_markers'] == ''
+    patient = _patient({'cytogenetic_markers': '', 'cytogenic_markers': 'del17p13'})
+    assert PatientInfoAttributes(patient).is_attr_blank('cytogenic_markers') is True
+
+
+def test_null_canonical_value_still_falls_back_to_the_old_name():
+    row = normalize_promop_row({
+        'cytogenetic_markers': None, 'cytogenic_markers': 'del17p',
+    })
+    assert row['cytogenic_markers'] == 'del17p13'
+
+
+def test_mixed_legacy_titles_and_canonical_tokens_both_resolve():
+    """An old payload may mix EXACT display titles with PROMOP tokens."""
+    row = normalize_promop_row({
+        'cytogenic_markers': 'hyperdiploidy, Del(17p13) Deletion',
+    })
+    assert row['cytogenic_markers'] == 'hyperdiploidy,del17p13'

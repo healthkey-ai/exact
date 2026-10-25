@@ -343,6 +343,24 @@ def _cytogenetic_markers(value):
     return ','.join(codes)
 
 
+def _cytogenetic_markers_with_legacy_titles(value):
+    """The translation above, plus EXACT's older Marker-title resolution.
+
+    A payload written against EXACT's own display titles (rather than PROMOP's
+    vocabulary) must keep resolving; an entry that is already a known canonical
+    token uses the table, the rest fall back to the Marker title lookup.
+    """
+    if not value:
+        return ''
+    codes = []
+    for raw in str(value).split(', '):
+        token = raw.strip()
+        code = _CYTOGENETIC_MARKERS_TO_CB.get(token) or resolve_code(token, 'Marker')
+        if code and code not in codes:
+            codes.append(code)
+    return ','.join(codes)
+
+
 def _normalize_canonical_labs(row):
     # These counts' populated legacy aliases can themselves be thousands/µL
     # (WBC, ANC) or were filled without the ×1000 (ALC). When the canonical
@@ -421,23 +439,17 @@ def normalize_promop_row(row: dict) -> dict:
     # keeps CB's older `cytogenic_markers` spelling. The new name wins, the old
     # one is still read for older payloads. Values are translated into CB's
     # codes here, so the generic title resolver below must not touch this field.
-    cytogenetic_value = row.get('cytogenetic_markers')
-    if cytogenetic_value is None:
-        cytogenetic_value = row.get('cytogenic_markers')
-    if isinstance(cytogenetic_value, str) and cytogenetic_value.strip():
-        mapped = _cytogenetic_markers(cytogenetic_value)
-        if mapped:
-            # Either spelling can carry PROMOP's canonical vocabulary
-            # (CB reads both names through the same table).
-            row['cytogenic_markers'] = mapped
-        elif row.get('cytogenetic_markers') is not None:
-            # The canonical column is PROMOP's own vocabulary; an unrecognised
-            # value is unknown, not a display title to look up.
-            row['cytogenic_markers'] = ''
-        else:
-            # An older payload in EXACT's display-title form keeps resolving
-            # through the Marker table, exactly as before.
-            row['cytogenic_markers'] = resolve_code_csv(cytogenetic_value, 'Marker') or ''
+    canonical_value = row.get('cytogenetic_markers')
+    legacy_value = row.get('cytogenic_markers')
+    if canonical_value is not None:
+        # The new name wins whenever it carries a value, INCLUDING a blank one:
+        # a blank canonical cell is "unknown", and it must not leave a stale
+        # value from the old name active (CB reads the new name the same way).
+        row['cytogenic_markers'] = _cytogenetic_markers(canonical_value)
+    elif legacy_value is not None:
+        # Either spelling may carry PROMOP's canonical vocabulary, but an older
+        # payload may also hold EXACT's display titles; keep both working.
+        row['cytogenic_markers'] = _cytogenetic_markers_with_legacy_titles(legacy_value)
     row.pop('cytogenetic_markers', None)
 
     # ── Multi-value code fields — resolve CSV display names to codes ───
