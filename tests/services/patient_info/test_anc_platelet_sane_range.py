@@ -68,8 +68,9 @@ def test_wbc_stays_unguarded_on_the_cells_per_litre_contract():
     (ANC_MIN, ANC_MAX, 2000, {ANC_MIN: 1_000_000}),
     # ANC maximum of 0 as a ceiling.
     (ANC_MIN, ANC_MAX, 2000, {ANC_MAX: 0}),
-    # Platelet minimum at 400 (old thousands/µL scale) as a floor.
-    (PLT_MIN, PLT_MAX, 100000, {PLT_MIN: 400}),
+    # Platelet minimum of 5000 (below the cells/µL band, i.e. an old-scale 5)
+    # as a floor that would exclude a 4000/µL patient if it were applied.
+    (PLT_MIN, PLT_MAX, 4000, {PLT_MIN: 5000}),
     # Platelet maximum at 400 as a ceiling.
     (PLT_MIN, PLT_MAX, 100000, {PLT_MAX: 400}),
 ])
@@ -112,7 +113,7 @@ def test_in_band_bounds_keep_deciding(attr_min, attr_max, value, trial_fields, e
     (1200, 100000, {ANC_MIN: 1500}, 'absolute_neutrophile_count', 'not_matched'),
     (2000, 100000, {ANC_MAX: 0}, 'absolute_neutrophile_count', 'matched'),
     (2000, 100000, {ANC_MAX: 1800}, 'absolute_neutrophile_count', 'not_matched'),
-    (2000, 100000, {PLT_MIN: 400}, 'platelet_count', 'matched'),
+    (2000, 4000, {PLT_MIN: 5000}, 'platelet_count', 'matched'),
     (2000, 80000, {PLT_MIN: 120000}, 'platelet_count', 'not_matched'),
     (2000, 100000, {PLT_MAX: 400}, 'platelet_count', 'matched'),
     (2000, 100000, {PLT_MAX: 90000}, 'platelet_count', 'not_matched'),
@@ -149,7 +150,7 @@ def test_mixed_valid_and_invalid_bounds_use_only_the_valid_one():
 @pytest.mark.parametrize('fields', [
     {'absolute_neutrophile_count_min': 1_000_000},
     {'absolute_neutrophile_count_max': 0},
-    {'platelet_count_min': 400},
+    {'platelet_count_min': 2_500_000},
     {'platelet_count_max': 400},
 ])
 def test_trial_aware_adequacy_ignores_an_old_scale_bound(fields):
