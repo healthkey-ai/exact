@@ -125,7 +125,7 @@ class UserToTrialAttrsMapper:
                 return True
 
             is_under_user_control = 'under_user_control' in trial_attr_meta and trial_attr_meta['under_user_control'] is True
-            if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status"]:
+            if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status", "hepatic_adequacy_status", "haematological_adequacy_status"]:
                 if isinstance(trial_attr_name, list):
                     if all_is_not_true(trial=trial, attrs=trial_attr_name):
                         continue  # skip
@@ -491,7 +491,7 @@ class UserToTrialAttrsMapper:
                 sql_query = f'(CASE WHEN {cases} THEN {then_value} END)'
 
             else:
-                if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status", "tp53_disruption", "btk_inhibitor_refractory", "bcl2_inhibitor_refractory", "measurable_disease_iwcll", "hepatomegaly", "autoimmune_cytopenias_refractory_to_steroids", "lymphadenopathy", "splenomegaly", "bone_marrow_involvement"]:
+                if (trial_attr_meta["type"] == "bool_restriction" and is_under_user_control) or user_attr in ["plasma_cell_leukemia", "progression", "treatment_refractory_status", "stem_cell_transplant_history", "abnormal_kappa_lambda_ratio", "meets_slim", "meets_crab", "bone_only_metastasis_status", "measurable_disease_by_recist_status", "measurable_disease_imwg", "tnbc_status", "tp53_disruption", "btk_inhibitor_refractory", "bcl2_inhibitor_refractory", "measurable_disease_iwcll", "hepatomegaly", "autoimmune_cytopenias_refractory_to_steroids", "lymphadenopathy", "splenomegaly", "bone_marrow_involvement", "hepatic_adequacy_status", "haematological_adequacy_status"]:
                     sql_check = "IS NOT TRUE"
                 elif trial_attr_meta.get("false_is_not_a_restriction"):
                     sql_check = "IS NOT TRUE"

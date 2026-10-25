@@ -118,3 +118,31 @@ def test_trial_details_show_the_criterion_as_unknown_not_failed():
     )
     details = TrialAttributes(trial, patient).get_user_details(subform_attrs={})
     assert details['hepatic_adequacy_required']['uvalue'] is None
+
+
+@pytest.mark.parametrize('attr,required_field', [
+    ('hepatic_adequacy_status', 'hepatic_adequacy_required'),
+    ('haematological_adequacy_status', 'haematological_adequacy_required'),
+])
+@pytest.mark.parametrize('required,expected_potential', [
+    (False, None),   # not a restriction: never a question to fill in
+    (None, None),
+    (True, 1),       # required and the patient is undecided -> potential
+])
+def test_potential_count_only_asks_when_the_trial_requires_it(
+    attr, required_field, required, expected_potential,
+):
+    from django.db.models.expressions import RawSQL
+
+    from exact_matching.user_to_trial_attrs_mapper import UserToTrialAttrsMapper
+
+    patient = build_patient_info_from_promop_row({'disease': MM})
+    trial = Trial.objects.create(disease=MM, **{required_field: required})
+    expression = UserToTrialAttrsMapper().potential_attrs_to_check(patient_info=patient)[attr]
+    value = Trial.objects.filter(pk=trial.pk).annotate(
+        potential=RawSQL(expression, []),
+    ).values_list('potential', flat=True).get()
+    assert value == expected_potential
+    # The matcher agrees that a non-requiring trial is satisfied either way.
+    expected_verdict = 'unknown' if required is True else 'matched'
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status(attr) == expected_verdict
