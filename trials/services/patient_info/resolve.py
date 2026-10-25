@@ -303,7 +303,7 @@ def translate_language_capabilities(data):
     return language_skill_concept_ids_from_capabilities(languages_skills_from_capabilities(data))
 
 
-def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
+def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields.
 
     `strict` refuses a malformed value instead of falling back to the
@@ -312,6 +312,13 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     `resolve_patient_info`, where the caller is a client and 400 is the right
     answer. The CTOMOP adapter and the management commands leave it off —
     there a raise blames the wrong party (see below).
+
+    `named_null_fields` is for a SOURCE that names a derived field but has no
+    column for it. A PROMOP record never carries an adequacy column, so its
+    missing inputs must read as "unknown" instead of the legacy False that
+    means "not adequate" (#5483, #621). Each name is included as an explicit
+    null (so the derivation sees a stated unknown) while a supplied value still
+    wins. Callers that do not pass it keep the legacy behaviour exactly.
     """
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
@@ -329,6 +336,14 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     # Filter to known model fields only
     model_fields = {f.name for f in PatientInfo._meta.get_fields() if hasattr(f, 'column')}
     filtered = {k: v for k, v in snake_data.items() if k in model_fields}
+
+    # A source with no column for a derived field still NAMES it. Record that
+    # as an explicit null BEFORE the coercions and normalization below, so the
+    # derivation answers unknown rather than legacy False. A supplied value
+    # keeps precedence.
+    for name in named_null_fields:
+        if name in model_fields:
+            filtered.setdefault(name, None)
 
     # Coerce date strings from JSON into proper date objects
     _coerce_dates(filtered, PatientInfo)
