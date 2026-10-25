@@ -981,7 +981,14 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "searchable": True,
         "attr": "absolute_neutrophile_count",
         "units_convertor": BaseConvertor,
+        # Canonical is cells/µL (CB #4764), matching the model's CELLS/UL
+        # default. `sane_range` treats a threshold outside the band as no
+        # constraint, so a trial whose ANC limit is still stored on the old
+        # scale cannot exclude a patient; it re-enables once re-extracted.
+        # Restored from CB in #632 — the band and the guard were closed as
+        # EXACT #380 but were missing on this baseline.
         "default_unit": "cells/UL",
+        "sane_range": (10, 200000),
         "user_input_units_attr": "absolute_neutrophile_count_units",
     },
     "platelet_count": {
@@ -989,7 +996,12 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "searchable": True,
         "attr": "platelet_count",
         "units_convertor": BaseConvertor,
+        # Canonical is cells/µL (CB #4764), matching the model's CELLS/UL
+        # default. Trial thresholds are bi-scaled while re-extraction runs;
+        # `sane_range` skips a threshold still outside the cells/µL band rather
+        # than comparing on the wrong scale. Restored from CB in #632.
         "default_unit": "cells/UL",
+        "sane_range": (10000, 2000000),
         "user_input_units_attr": "platelet_count_units",
     },
     "prothrombin_time_uln": {
@@ -1009,6 +1021,11 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "searchable": True,
         "attr": "white_blood_cell_count",
         "units_convertor": BaseConvertor,
+        # Deliberately unguarded in the EXACT contract: comparisons here are on
+        # cells/L, while CB's (100, 100000) band is cells/µL. A host whose data
+        # contract is CB's injects both the unit and CB's band through
+        # EXACT_ATTRS_MAPPING_OVERRIDES; copying the per-µL band here would
+        # disable the guard for every stand-alone EXACT comparison (#632).
         "default_unit": "cells/L",
         "user_input_units_attr": "white_blood_cell_count_units",
     },
