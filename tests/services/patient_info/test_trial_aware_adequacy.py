@@ -139,6 +139,34 @@ def test_haematological_missing_lab_stays_unknown():
 
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
+def test_looser_than_default_trial_limits_admit_the_patient():
+    """ANC 800 fails the default 1000 but a trial asking 500 admits it.
+
+    The stored aggregate boolean is False here, so filtering on it before the
+    trial-specific pass would drop the trial irrecoverably (CB #630).
+    """
+    patient = _patient({**ADEQUATE_LABS, 'absolute_neutrophile_count': 800})
+    trial = Trial.objects.create(
+        disease=MM, haematological_adequacy_required=True,
+        absolute_neutrophile_count_min=500,
+    )
+    assert PatientInfoAttributes(patient).haematological_adequacy_status is False
+    assert _haem(trial, patient) == 'matched'
+    assert _in_pool(trial, patient)
+
+
+@pytest.mark.django_db
+@override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
+def test_default_limits_still_reject_when_no_override_is_stated():
+    """The same patient is excluded by a trial that only relies on the defaults."""
+    patient = _patient({**ADEQUATE_LABS, 'absolute_neutrophile_count': 800})
+    trial = Trial.objects.create(disease=MM, haematological_adequacy_required=True)
+    assert _haem(trial, patient) == 'not_matched'
+    assert not _in_pool(trial, patient)
+
+
+@pytest.mark.django_db
+@override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
 def test_haematological_trial_details_uses_the_trial_verdict():
     patient = _patient({**ADEQUATE_LABS, 'absolute_neutrophile_count': 1200})
     trial = Trial.objects.create(

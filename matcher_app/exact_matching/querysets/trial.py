@@ -1158,6 +1158,13 @@ class TrialQuerySet(models.QuerySet):
         )
 
     def eligible_for_bool_requirement_value(self, attr_name, value, is_under_user_control=False):
+        # The saved adequacy Boolean represents DEFAULTS. Each trial's own lab
+        # cutoffs are applied together at the end of filter_by_patient_info, so
+        # filtering on the stored value here would drop a trial whose limits are
+        # looser than the defaults before that filter can admit it (CB #630).
+        if attr_name == 'haematological_adequacy_required':
+            return self
+
         if is_under_user_control:
             return self
 
