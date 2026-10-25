@@ -464,9 +464,16 @@ class UserToTrialAttrMatcher:
         """
         meta = self.mapping[patient_info_attr]
         prior_therapy = self.patient_info_attr.get_value('prior_therapy')
+        attr_value = self.patient_info_attr.get_value(patient_info_attr)
+        if patient_info_attr == 'hepatic_adequacy_status':
+            # The stored patient-level boolean uses default thresholds. A trial
+            # can override each ULN maximum, so matching must use the same
+            # per-trial verdict as Trial Details rather than the stored default
+            # (ported from CB, #630).
+            attr_value = self.patient_info_attr.hepatic_adequacy_status_for_trial(self.trial)
         ctx = _AttrMatchCtx(
             name=patient_info_attr,
-            value=self.patient_info_attr.get_value(patient_info_attr),
+            value=attr_value,
             is_blank=self.is_patient_info_attr_blank(patient_info_attr),
             meta=meta,
             has_no_prior_therapy=prior_therapy in ["None"],
@@ -1152,6 +1159,16 @@ class UserToTrialAttrMatcher:
     def _match_type_bool_restriction(self, ctx):
         under_user_control = "under_user_control" in ctx.meta and ctx.meta["under_user_control"] is True
         trial_attr_value = getattr(self.trial, ctx.trial_attr_name)
+        if ctx.name == 'haematological_adequacy_status':
+            # A trial can state its own ANC/platelet/Hb cutoffs; the stored
+            # patient-level boolean only encodes the defaults (ported from CB,
+            # #630, so the verdict matches Trial Details).
+            if trial_attr_value is not True:
+                return 'matched'
+            adequacy = self.patient_info_attr.haematological_adequacy_status_for_trial(self.trial)
+            if adequacy is None:
+                return 'unknown'
+            return 'matched' if adequacy else 'not_matched'
         if trial_attr_value is None:
             trial_attr_value = False
         # NOTE on the explicit-unknown seam (dev #502): `explicitly_unknown` is

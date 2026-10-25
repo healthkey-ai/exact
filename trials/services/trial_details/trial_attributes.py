@@ -798,6 +798,13 @@ class TrialAttributes:
 
         mapping = USER_TO_TRIAL_ATTRS_MAPPING
 
+        def user_value_for_trial(user_attr):
+            # A trial can state its own adequacy cutoffs; the stored patient-level
+            # boolean only encodes the defaults (ported from CB, #630).
+            if user_attr == 'haematological_adequacy_status':
+                return self._patient_info_attr.haematological_adequacy_status_for_trial(self._trial)
+            return self._patient_info_attr.get_value(user_attr)
+
         for user_attr in mapping.keys():
             trial_attr_meta = mapping[user_attr]
 
@@ -818,7 +825,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -831,7 +838,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -844,7 +851,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -856,7 +863,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -903,10 +910,13 @@ class TrialAttributes:
                 else:
                     attr_name = trial_attr_meta["attr"]
 
+                user_value = user_value_for_trial(user_attr)
+                if user_attr == 'hepatic_adequacy_status':
+                    user_value = self._patient_info_attr.hepatic_adequacy_status_for_trial(self._trial)
                 out[attr_name] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value),
                 }
                 if subform_details:
                     out[attr_name]['subform_details'] = subform_details

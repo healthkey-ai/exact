@@ -1,5 +1,5 @@
 import datetime as dt
-from decimal import Decimal
+from decimal import Context, Decimal
 from math import isfinite, log10
 
 import inflection
@@ -26,6 +26,26 @@ from exact_matching.user_to_trial_attrs_mapper import *
 HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX = 1.5
 HEPATIC_ADEQUACY_AST_ULN_MAX = 2.5
 HEPATIC_ADEQUACY_ALT_ULN_MAX = 2.5
+# Per-trial override: patient lab -> trial ULN maximum column -> default used
+# when the trial states no maximum for that lab (ported from CB, #630).
+HEPATIC_ADEQUACY_TRIAL_LIMITS = (
+    ('serum_bilirubin_level_total', 'serum_bilirubin_total_level_uln_max',
+     HEPATIC_ADEQUACY_BILIRUBIN_TOTAL_ULN_MAX),
+    ('liver_enzyme_levels_ast', 'liver_enzyme_level_ast_uln_max', HEPATIC_ADEQUACY_AST_ULN_MAX),
+    ('liver_enzyme_levels_alt', 'liver_enzyme_level_alt_uln_max', HEPATIC_ADEQUACY_ALT_ULN_MAX),
+)
+# ULN maximum columns are DecimalFields with max_digits=10. Match their bound
+# parameter precision before comparing ratios so float calculator noise cannot
+# split SQL filtering, Python matching, and the per-trial hepatic verdict.
+ULN_RATIO_CONTEXT = Context(prec=10)
+
+
+def normalize_uln_ratio(value):
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return ULN_RATIO_CONTEXT.create_decimal(value)
+    return ULN_RATIO_CONTEXT.create_decimal_from_float(float(value))
 
 # CB #4392 / #5378 defaults, in the units returned by get_value(): ANC and
 # platelets in cells/µL, hemoglobin in g/dL. The old platelet cutoff of 100
@@ -888,6 +908,25 @@ class PatientInfoAttributes:
             and alt_uln <= HEPATIC_ADEQUACY_ALT_ULN_MAX
         )
 
+    def hepatic_adequacy_status_for_trial(self, trial):
+        """Use explicit trial ULN maxima, falling back to defaults per lab."""
+        values = []
+        # Match the aggregate's completeness policy before comparing any lab;
+        # a high early value must not hide a later missing input.
+        for patient_attr, trial_attr, default_max in HEPATIC_ADEQUACY_TRIAL_LIMITS:
+            value_uln = normalize_uln_ratio(self.get_uln_value(patient_attr))
+            if value_uln is None:
+                return self._unknown_or_false('hepatic_adequacy_status')
+            values.append((value_uln, trial_attr, default_max))
+
+        for value_uln, trial_attr, default_max in values:
+            trial_max = getattr(trial, trial_attr, None)
+            max_uln = normalize_uln_ratio(default_max if trial_max is None else trial_max)
+            if value_uln > max_uln:
+                return False
+
+        return True
+
     @cached_property
     def haematological_adequacy_status(self):
         anc = self.get_value('absolute_neutrophile_count')
@@ -902,6 +941,47 @@ class PatientInfoAttributes:
             and float(platelet_count) >= HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN
             and float(hemoglobin) >= HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN
         )
+
+    def haematological_adequacy_status_for_trial(self, trial):
+        """Evaluate the Trial Details verdict with trial cutoffs overriding defaults."""
+        labs = (
+            ('absolute_neutrophile_count', HAEMATOLOGICAL_ADEQUACY_ANC_MIN),
+            ('platelet_count', HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN),
+            ('hemoglobin_level', HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN),
+        )
+
+        values = []
+        # Resolve completeness before comparing any cutoff: otherwise a low ANC
+        # could return False before the missing platelets are seen, while the
+        # same missing-input set in another order would remain unknown.
+        for attr, default_min in labs:
+            if self.is_attr_blank(attr):
+                return self._unknown_or_false('haematological_adequacy_status')
+            value = self.get_value(attr)
+            if value is None:
+                return self._unknown_or_false('haematological_adequacy_status')
+            values.append((attr, value, default_min))
+
+        for attr, value, default_min in values:
+            trial_min = getattr(trial, f'{attr}_min', None)
+            trial_max = getattr(trial, f'{attr}_max', None)
+            sane_range = self.mapping[attr].get('sane_range')
+            if sane_range is not None:
+                low, high = sane_range
+                if trial_min is not None and not low <= trial_min <= high:
+                    trial_min = None
+                if trial_max is not None and not low <= trial_max <= high:
+                    trial_max = None
+            if trial_min is None and trial_max is None:
+                trial_min = default_min
+
+            value = float(value)
+            if trial_min is not None and value < float(trial_min):
+                return False
+            if trial_max is not None and value > float(trial_max):
+                return False
+
+        return True
 
     @cached_property
     def refractory_status_from_therapy_lines(self):

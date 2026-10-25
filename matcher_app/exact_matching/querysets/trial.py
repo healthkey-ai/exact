@@ -1081,7 +1081,90 @@ class TrialQuerySet(models.QuerySet):
 
         return self
 
+    def eligible_for_hepatic_adequacy(self, patient_info_attr):
+        """Match required hepatic function against each trial's ULN maxima."""
+        from exact_matching.patient_info.patient_info_attributes import (
+            HEPATIC_ADEQUACY_TRIAL_LIMITS,
+            normalize_uln_ratio,
+        )
+
+        not_required = Q(hepatic_adequacy_required__isnull=True) | Q(hepatic_adequacy_required=False)
+        required_and_within_limits = Q(hepatic_adequacy_required=True)
+        for patient_attr, trial_attr, default_max in HEPATIC_ADEQUACY_TRIAL_LIMITS:
+            value_uln = normalize_uln_ratio(patient_info_attr.get_uln_value(patient_attr))
+            if value_uln is None:
+                return self.filter(not_required)
+
+            within_trial_limit = Q(**{f'{trial_attr}__gte': value_uln})
+            if value_uln <= default_max:
+                within_trial_limit |= Q(**{f'{trial_attr}__isnull': True})
+            required_and_within_limits &= within_trial_limit
+
+        return self.filter(not_required | required_and_within_limits)
+
+    def _eligible_for_haematological_adequacy(self, patient_info):
+        """Apply the computed adequacy requirement using each trial's cutoffs."""
+        from exact_matching.patient_info.patient_info_attributes import (
+            HAEMATOLOGICAL_ADEQUACY_ANC_MIN,
+            HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN,
+            HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN,
+            PatientInfoAttributes,
+        )
+
+        patient_info_attr = PatientInfoAttributes(patient_info)
+        # A PROMOP surface explicitly names a missing verdict as unknown.
+        # Keep required trials as potential rather than converting missing labs
+        # into a definite rejection. Native records retain their False.
+        if patient_info_attr.haematological_adequacy_status is None:
+            return self
+        adequate = Q()
+        labs = (
+            ('absolute_neutrophile_count', 'absolute_neutrophile_count_min', 'absolute_neutrophile_count_max', HAEMATOLOGICAL_ADEQUACY_ANC_MIN),
+            ('platelet_count', 'platelet_count_min', 'platelet_count_max', HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN),
+            ('hemoglobin_level', 'hemoglobin_level_min', 'hemoglobin_level_max', HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN),
+        )
+
+        for patient_attr, trial_min, trial_max, default_min in labs:
+            value = patient_info_attr.get_value(patient_attr)
+            if patient_info_attr.is_attr_blank(patient_attr) or value is None:
+                adequate &= Q(pk__in=[])
+                continue
+
+            sane_range = USER_TO_TRIAL_ATTRS_MAPPING[patient_attr].get('sane_range')
+            min_valid = Q(**{f'{trial_min}__isnull': False})
+            max_valid = Q(**{f'{trial_max}__isnull': False})
+            min_invalid = Q(**{f'{trial_min}__isnull': True})
+            max_invalid = Q(**{f'{trial_max}__isnull': True})
+            if sane_range is not None:
+                low, high = sane_range
+                min_valid &= Q(**{f'{trial_min}__gte': low, f'{trial_min}__lte': high})
+                max_valid &= Q(**{f'{trial_max}__gte': low, f'{trial_max}__lte': high})
+                min_invalid |= Q(**{f'{trial_min}__lt': low}) | Q(**{f'{trial_min}__gt': high})
+                max_invalid |= Q(**{f'{trial_max}__lt': low}) | Q(**{f'{trial_max}__gt': high})
+
+            # A valid authored bound replaces the default for that lab. When
+            # neither bound is usable, fall back to the default minimum.
+            meets_min = min_valid & Q(**{f'{trial_min}__lte': value})
+            meets_min |= min_invalid & max_valid
+            if value >= default_min:
+                meets_min |= min_invalid & max_invalid
+            meets_max = max_invalid | Q(**{f'{trial_max}__gte': value})
+            adequate &= meets_min & meets_max
+
+        return self.filter(
+            Q(haematological_adequacy_required__isnull=True)
+            | Q(haematological_adequacy_required=False)
+            | adequate
+        )
+
     def eligible_for_bool_requirement_value(self, attr_name, value, is_under_user_control=False):
+        # The saved adequacy Boolean represents DEFAULTS. Each trial's own lab
+        # cutoffs are applied together at the end of filter_by_patient_info, so
+        # filtering on the stored value here would drop a trial whose limits are
+        # looser than the defaults before that filter can admit it (CB #630).
+        if attr_name == 'haematological_adequacy_required':
+            return self
+
         if is_under_user_control:
             return self
 
@@ -1811,7 +1894,10 @@ class TrialQuerySet(models.QuerySet):
 
             elif trial_attr_meta["type"] == "bool_restriction":
                 under_user_control = "under_user_control" in trial_attr_meta and trial_attr_meta["under_user_control"] is True
-                scope = scope.eligible_for_bool_requirement_value(trial_attr_name, user_attr_value, under_user_control)
+                if user_attr == 'hepatic_adequacy_status':
+                    scope = scope.eligible_for_hepatic_adequacy(patient_info_attr)
+                else:
+                    scope = scope.eligible_for_bool_requirement_value(trial_attr_name, user_attr_value, under_user_control)
 
             elif trial_attr_meta["type"] == "inversed_bool_restriction":
                 scope = scope.eligible_for_inversed_bool_restriction_value(trial_attr_name, user_attr_value)
@@ -1863,7 +1949,10 @@ class TrialQuerySet(models.QuerySet):
             else:
                 raise Exception(f'type "{trial_attr_meta["type"]}" is not supported')
 
-            if add_traces:
+            # The Boolean haematology branch runs after the therapy fallback, so
+            # emit that event there instead of rewriting an earlier trace row
+            # (mirrors CB, #630).
+            if add_traces and user_attr != 'haematological_adequacy_status':
                 new_count = scope.count()
                 traces.append({
                     'attr': f'patient_info.{user_attr}',
@@ -1915,4 +2004,20 @@ class TrialQuerySet(models.QuerySet):
                     'dropped': count - new_count,
                 })
                 count = new_count
+        # Measure the split from the scope that actually reaches the adequacy
+        # filter: the OMOP component-only fallback above can narrow `scope`
+        # without updating `count`, and attributing those removals to
+        # haematology would misreport the trace row.
+        before_adequacy_count = scope.count() if add_traces else count
+        scope = scope._eligible_for_haematological_adequacy(patient_info)
+        if add_traces:
+            new_count = scope.count()
+            adequacy_trace = {
+                'attr': 'patient_info.haematological_adequacy_status',
+                'val': patient_info_attr.haematological_adequacy_status,
+                'records': new_count,
+                'dropped': before_adequacy_count - new_count,
+            }
+            if adequacy_trace['val'] is not None or adequacy_trace['dropped']:
+                traces.append(adequacy_trace)
         return scope, traces
