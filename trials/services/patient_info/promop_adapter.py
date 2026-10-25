@@ -588,6 +588,12 @@ def normalize_promop_row(row: dict) -> dict:
     return row
 
 
+#: Fields a PROMOP record NAMES but has no column for. CB's
+#: `PromopMatchingSurface._provided_fields` lists the same two: a patient
+#: without the supporting labs is undecided, not "not adequate" (#5483, #621).
+PROMOP_NAMED_NULL_FIELDS = ('hepatic_adequacy_status', 'haematological_adequacy_status')
+
+
 def build_patient_info_from_promop_row(row: dict):
     """Convert a PROMOP patient_info row into an in-memory PatientInfo.
 
@@ -625,5 +631,7 @@ def build_patient_info_from_promop_row(row: dict):
             val = float(val)
         cleaned[col] = val
 
-    # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info
-    return _build_in_memory(cleaned)
+    # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info.
+    # The adequacy fields are named even though PROMOP has no column for them,
+    # so missing liver/blood labs stay unknown instead of becoming a refusal.
+    return _build_in_memory(cleaned, named_null_fields=PROMOP_NAMED_NULL_FIELDS)
