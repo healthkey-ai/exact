@@ -56,6 +56,13 @@ including one that cannot be parsed — the alias may be the 1000x-low copy, so
 the honest answer is unknown. A blank/whitespace canonical WBC is treated as
 "no canonical reading" and leaves an existing direct value/unit intact.
 Old payloads without a canonical WBC reading retain their direct value/unit.
+
+ANC and ALC follow the same rule for the same reason (#628): CB reads ANC from
+`anc_thousand_per_ul` (the direct column is a co-populated copy of the same
+number, 1000x low) and ALC from `alc_thousand_per_ul` (the direct column was
+filled without the ×1000). Both scale by 1000 into cells/µL; ANC also pairs the
+`CELLS/UL` unit, which `get_value()` then converts to EXACT's configured basis.
+ALC has no unit field on either side.
 In this path a reading must also survive the matcher's own unit conversion.
 EXACT compares WBC on its documented cells/L basis, so a finite cells/µL
 source value can still overflow to infinity when converted. A conversion that
@@ -85,7 +92,7 @@ These are explicit scope boundaries, not allowances to conceal new drift:
 | --- | --- |
 | `stem_cell_transplant_date <- sct_date` | Existing clinical adapter from #624; derived days are matcher-owned |
 | PT/aPTT ULN and swallowing | Existing same-name source fields from #624 |
-| ANC and its paired unit; ALC | Existing fallbacks still have co-populated-alias scaling gaps: #628 |
+| ANC and its paired unit; ALC | Canonical thousands/µL source wins over the unscaled/unreliable alias for ANC and ALC too (#628) |
 | `disease` case/whitespace adapter | CB explicitly normalizes supported titles; not changed by this lab slice |
 | `gender` (`U -> UN`) | EXACT has its own gender normalization/unknown handling; not asserted equivalent here |
 | `patient_age` unknown-DOB sentinel guard | CB checks Person provenance; EXACT's flat row adapter does not establish the same provenance. Remains a known audit boundary, not a guessed age correction |

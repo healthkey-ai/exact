@@ -300,9 +300,16 @@ class TestLabValueFallbacks:
         result = _normalize_promop_row(_row(anc_thousand_per_ul=2.5))
         assert result['absolute_neutrophile_count'] == pytest.approx(2500.0)
 
-    def test_anc_existing_not_overridden(self):
+    def test_anc_existing_is_replaced_because_the_alias_is_unscaled(self):
+        """CB reads ANC from the canonical column (#628).
+
+        The direct column is a co-populated copy of the same thousands/µL
+        number, so keeping 1800 would compare a value 1000x below the
+        canonical 2500 cells/µL.
+        """
         result = _normalize_promop_row(_row(absolute_neutrophile_count=1800, anc_thousand_per_ul=2.5))
-        assert result['absolute_neutrophile_count'] == 1800
+        assert result['absolute_neutrophile_count'] == pytest.approx(2500.0)
+        assert result['absolute_neutrophile_count_units'] == 'CELLS/UL'
 
     def test_alc_fallback_scaled_by_1000(self):
         result = _normalize_promop_row(_row(alc_thousand_per_ul=1.5))
