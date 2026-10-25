@@ -55,8 +55,8 @@ HAEMATOLOGICAL_ADEQUACY_ANC_MIN = 1000
 HAEMATOLOGICAL_ADEQUACY_PLATELET_MIN = 75000
 HAEMATOLOGICAL_ADEQUACY_HEMOGLOBIN_MIN = 9
 
-# Fixed LDH ULN used by the MIPI scores when no per-lab ULN is available (mirrors
-# CB's MIPI_LDH_ULN). See _mipi_inputs. EXACT has no per-lab ULN field yet.
+# Fixed LDH ULN used by the MIPI scores when the patient carries no usable
+# per-lab ULN (mirrors CB's MIPI_LDH_ULN). See _mipi_inputs.
 MIPI_LDH_ULN = 250
 
 
@@ -1156,10 +1156,11 @@ class PatientInfoAttributes:
         input is missing or non-physiological (WBC and LDH must be > 0; ECOG 0 is a
         valid performance status and is NOT rejected).
 
-        ldh_uln is fixed at MIPI_LDH_ULN (250) here: EXACT's PatientInfo has no
-        per-lab ULN field, so CB's per-lab path (#4512) converges only when CB's
-        data drains onto this code. The WBC blank-unit fallback stays CELLS/L —
-        EXACT's data contract is per-L (see mipi_risk / CB #4559 host-difference).
+        ldh_uln is the patient/lab-specific LDH upper limit of normal (#4512),
+        falling back to the fixed MIPI_LDH_ULN (250) when unset or non-positive so
+        existing patients keep their previous score. The WBC blank-unit fallback
+        stays CELLS/L — EXACT's data contract is per-L (see mipi_risk / CB #4559
+        host-difference).
         """
         pi = self.patient_info
         age = pi.patient_age
@@ -1172,7 +1173,23 @@ class PatientInfoAttributes:
         if float(wbc) <= 0 or float(ldh) <= 0:
             return None
 
-        ldh_uln = MIPI_LDH_ULN
+        ldh_uln = _as_reading(getattr(pi, 'lactate_dehydrogenase_level_uln', None))
+        if ldh_uln is None or ldh_uln <= 0:
+            ldh_uln = MIPI_LDH_ULN
+        # The DTO may carry a Decimal from the PROMOP adapter; the scores are
+        # float arithmetic. A finite Decimal can still underflow to 0.0 (or
+        # overflow to inf) on that conversion, and either would corrupt the
+        # ratio, so re-check the value the formula actually receives.
+        ldh_uln = float(ldh_uln)
+        if not isfinite(ldh_uln) or ldh_uln <= 0:
+            ldh_uln = float(MIPI_LDH_ULN)
+        # A positive denominator is not enough: a tiny LDH over a huge ULN
+        # underflows the RATIO to 0.0, and log10(0) raises inside
+        # normalization. Fall back to the fixed ULN in that case, which is the
+        # score those patients had before a per-lab value existed.
+        if not isfinite(float(ldh) / ldh_uln) or float(ldh) / ldh_uln <= 0:
+            ldh_uln = float(MIPI_LDH_ULN)
+
         wbc_per_ul = float(BaseConvertor.call(
             wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/UL'
         ))

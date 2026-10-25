@@ -169,6 +169,9 @@ _FIELDS = [
     _f(DecimalField, 'monoclonal_protein_serum', decimal_places=2, max_digits=10),
     _f(DecimalField, 'monoclonal_protein_urine', decimal_places=2, max_digits=10),
     _f(IntegerField, 'lactate_dehydrogenase_level'),
+    # Per-lab LDH upper limit of normal (#631, CB #4512). MIPI divides LDH by
+    # it; absent or non-positive falls back to the fixed MIPI_LDH_ULN.
+    _f(IntegerField, 'lactate_dehydrogenase_level_uln'),
     _f(BooleanField, 'pulmonary_function_test_result', default=False),
     _f(BooleanField, 'bone_imaging_result', default=False),
     _f(IntegerField, 'clonal_plasma_cells'),
