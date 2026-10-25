@@ -167,6 +167,29 @@ def test_default_limits_still_reject_when_no_override_is_stated():
 
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
+def test_adequacy_trace_does_not_claim_other_filters_removals():
+    """The adequacy row reports only what the adequacy filter itself dropped."""
+    adequate = _patient(ADEQUATE_LABS)
+    inadequate = _patient({**ADEQUATE_LABS, 'absolute_neutrophile_count': 800})
+    Trial.objects.create(
+        disease=MM, code='requires-adequacy',
+        haematological_adequacy_required=True,
+    )
+    _, traces = Trial.objects.filter_by_patient_info(inadequate, add_traces=True)
+    row = [t for t in traces if t['attr'] == 'patient_info.haematological_adequacy_status']
+    assert len(row) == 1
+    # The patient is inadequate for the default limits, so this filter is the
+    # one that dropped the trial: one record before, none after.
+    assert row[0]['records'] == 0
+    assert row[0]['dropped'] == 1
+
+    _, adequate_traces = Trial.objects.filter_by_patient_info(adequate, add_traces=True)
+    rows = [t for t in adequate_traces if t['attr'] == 'patient_info.haematological_adequacy_status']
+    assert rows == [] or rows[0]['dropped'] == 0
+
+
+@pytest.mark.django_db
+@override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
 def test_haematological_trial_details_uses_the_trial_verdict():
     patient = _patient({**ADEQUATE_LABS, 'absolute_neutrophile_count': 1200})
     trial = Trial.objects.create(

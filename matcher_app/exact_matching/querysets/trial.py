@@ -2004,7 +2004,11 @@ class TrialQuerySet(models.QuerySet):
                     'dropped': count - new_count,
                 })
                 count = new_count
-        before_adequacy_count = count
+        # Measure the split from the scope that actually reaches the adequacy
+        # filter: the OMOP component-only fallback above can narrow `scope`
+        # without updating `count`, and attributing those removals to
+        # haematology would misreport the trace row.
+        before_adequacy_count = scope.count() if add_traces else count
         scope = scope._eligible_for_haematological_adequacy(patient_info)
         if add_traces:
             new_count = scope.count()
