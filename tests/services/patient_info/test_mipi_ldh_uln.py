@@ -43,6 +43,20 @@ def test_adapter_translates_the_promop_column():
     assert row['lactate_dehydrogenase_level_uln'] == 400
 
 
+def test_zero_direct_uln_wins_in_the_adapter_and_falls_back_in_mipi():
+    """A direct 0 is a value, not "missing", so it shadows the PROMOP column.
+
+    The MIPI fallback then treats the non-positive ULN as unusable, exactly as
+    CB does. PROMOP rows do not carry the direct key, so this only affects an
+    inline caller that supplies both.
+    """
+    row = normalize_promop_row({
+        'lactate_dehydrogenase_level_uln': 0, 'ldh_upper_limit_normal': 400,
+    })
+    assert row['lactate_dehydrogenase_level_uln'] == 0
+    assert _attrs(lactate_dehydrogenase_level_uln=0).mipi_risk == 'intermediate'
+
+
 def test_adapter_keeps_a_direct_uln_over_the_promop_column():
     row = normalize_promop_row({
         'lactate_dehydrogenase_level_uln': 300, 'ldh_upper_limit_normal': 400,
