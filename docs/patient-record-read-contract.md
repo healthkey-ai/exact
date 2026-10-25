@@ -6,7 +6,7 @@ scope of #627, not a claim of complete CB/EXACT behavioral equivalence.
 EXACT remains stateless: this path constructs a request-local DTO and never
 writes to PROMOP or persists patient data.
 
-## Canonical lab fallbacks (#627)
+## Canonical lab fallbacks (#627, #631)
 
 | Matcher field | PatientRecord source | Source unit / scale |
 | --- | --- | --- |
@@ -14,6 +14,7 @@ writes to PROMOP or persists patient data.
 | `platelet_count` | `platelet_count_thousand_per_ul` | Multiply by 1000, pair with `CELLS/UL` |
 | `hemoglobin_level` | `hemoglobin_g_dl` | `G/DL` |
 | `lactate_dehydrogenase_level` | `ldh_u_l` | U/L, unchanged |
+| `lactate_dehydrogenase_level_uln` | `ldh_upper_limit_normal` | U/L, unchanged; MIPI uses it, absent/non-positive falls back to 250 |
 | `liver_enzyme_levels_alt` | `alt_u_l` | U/L, unchanged |
 | `liver_enzyme_levels_ast` | `ast_u_l` | U/L, unchanged |
 | `liver_enzyme_levels_alp` | `alkaline_phosphatase_u_l` | U/L, unchanged |
@@ -97,7 +98,6 @@ These are explicit scope boundaries, not allowances to conceal new drift:
 | `gender` (`U -> UN`) | EXACT has its own gender normalization/unknown handling; not asserted equivalent here |
 | `patient_age` unknown-DOB sentinel guard | CB checks Person provenance; EXACT's flat row adapter does not establish the same provenance. Remains a known audit boundary, not a guessed age correction |
 | `cytogenic_markers` spelling and vocabulary | #590/#461; not duplicated in #627 |
-| `lactate_dehydrogenase_level_uln <- ldh_upper_limit_normal` | #631; DTO/input and MIPI derivation change together |
 | Supportive therapy text -> structured rows | Intentionally unresolved; CB treats it as type-incompatible, EXACT has existing text clearing; #231/#384 |
 | RBC | Not a canonical fallback in CB `_FIELD_MAPS`; existing host contract differs, outside #627 |
 | Direct bilirubin | No corresponding PatientRecord canonical source in the audited contract; do not substitute total bilirubin |
