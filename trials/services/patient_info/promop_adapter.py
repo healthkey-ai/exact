@@ -265,6 +265,8 @@ _LAB_FALLBACKS = (
     ('platelet_count', 'platelet_count_thousand_per_ul', 'CELLS/UL', 1000),
     ('hemoglobin_level', 'hemoglobin_g_dl', 'G/DL', 1),
     ('lactate_dehydrogenase_level', 'ldh_u_l', None, 1),
+    # Patient/lab-specific LDH upper limit of normal (#631, CB #4512).
+    ('lactate_dehydrogenase_level_uln', 'ldh_upper_limit_normal', None, 1),
     ('liver_enzyme_levels_alt', 'alt_u_l', None, 1),
     ('liver_enzyme_levels_ast', 'ast_u_l', None, 1),
     ('liver_enzyme_levels_alp', 'alkaline_phosphatase_u_l', None, 1),
