@@ -350,15 +350,27 @@ def _cytogenetic_markers_with_legacy_titles(value):
     vocabulary) must keep resolving; an entry that is already a known canonical
     token uses the table, the rest fall back to the Marker title lookup.
     """
+    def collect(tokens):
+        codes = []
+        for raw in tokens:
+            token = raw.strip()
+            code = _CYTOGENETIC_MARKERS_TO_CB.get(token) or resolve_code(token, 'Marker')
+            if code and code not in codes:
+                codes.append(code)
+        return codes
+
     if not value:
         return ''
-    codes = []
-    for raw in str(value).split(', '):
-        token = raw.strip()
-        code = _CYTOGENETIC_MARKERS_TO_CB.get(token) or resolve_code(token, 'Marker')
-        if code and code not in codes:
-            codes.append(code)
-    return ','.join(codes)
+    text = str(value)
+    tokens = [t for t in text.split(', ') if t.strip()]
+    codes = collect(tokens)
+    if len(codes) == len(tokens):
+        return ','.join(codes)
+    # An older payload separated its display titles with a bare comma. Split on
+    # every comma only as a fallback, because a canonical marker can contain
+    # one itself (`t(4;14)`), which the ', ' split above keeps intact.
+    legacy_codes = collect(t for t in text.split(',') if t.strip())
+    return ','.join(legacy_codes or codes)
 
 
 def _normalize_canonical_labs(row):

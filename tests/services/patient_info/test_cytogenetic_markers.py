@@ -156,3 +156,11 @@ def test_mixed_legacy_titles_and_canonical_tokens_both_resolve():
         'cytogenic_markers': 'hyperdiploidy, Del(17p13) Deletion',
     })
     assert row['cytogenic_markers'] == 'hyperdiploidy,del17p13'
+
+
+def test_legacy_titles_separated_by_a_bare_comma_still_resolve():
+    """The previous resolver split on every comma; do not lose that."""
+    row = normalize_promop_row({
+        'cytogenic_markers': 'Del(17p13) Deletion,t(4;14) Translocation',
+    })
+    assert row['cytogenic_markers'] == 'del17p13,t414'
