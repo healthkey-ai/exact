@@ -513,6 +513,21 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         "computed_value_type": "str",
         "disease": "MCL",
         "attr": ["bulky_disease_criteria_required"],
+        # Ported from CB (#626). Without these five keys the entry fell through
+        # to the generic computed-overlap branch, which cannot tell a confirmed
+        # negative (every source size answered, none reaching a threshold) from
+        # one that was never answered — and cannot see that a required criterion
+        # is undetermined because ITS source field is blank while another
+        # criterion is already satisfied. Both paths (matcher._match_criteria_count
+        # and user_to_trial_attrs_mapper._criteria_count_match_expressions) read
+        # this metadata; the attributes helpers it names already existed here.
+        "criteria_count_match": True,
+        "criteria_required_attr": "bulky_disease_criteria_required",
+        "criteria_derived": lambda patient_info: patient_info.bulky_disease_criteria,
+        "criteria_unknown_codes":
+            lambda pia, required: pia.bulky_disease_criteria_unknown_codes(required),
+        "criteria_all_unknown_codes":
+            lambda pia: pia.bulky_disease_criteria_all_unknown_codes(),
         "uvalue_function": {
             "bulky_disease_criteria_required":
                 lambda patient_info: patient_info.bulky_disease_criteria,
