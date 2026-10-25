@@ -1177,8 +1177,12 @@ class PatientInfoAttributes:
         if ldh_uln is None or ldh_uln <= 0:
             ldh_uln = MIPI_LDH_ULN
         # The DTO may carry a Decimal from the PROMOP adapter; the scores are
-        # float arithmetic.
+        # float arithmetic. A finite Decimal can still underflow to 0.0 (or
+        # overflow to inf) on that conversion, and either would corrupt the
+        # ratio, so re-check the value the formula actually receives.
         ldh_uln = float(ldh_uln)
+        if not isfinite(ldh_uln) or ldh_uln <= 0:
+            ldh_uln = float(MIPI_LDH_ULN)
 
         wbc_per_ul = float(BaseConvertor.call(
             wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/UL'

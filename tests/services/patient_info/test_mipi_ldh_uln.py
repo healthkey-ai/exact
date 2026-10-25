@@ -64,7 +64,12 @@ def test_high_uln_can_raise_the_bucket():
     assert attrs.mipi_simplified_risk == 'high'
 
 
-@pytest.mark.parametrize('uln', [None, 0, -5, 'not a number'])
+@pytest.mark.parametrize('uln', [
+    None, 0, -5, 'not a number',
+    Decimal('1e-1000'),   # finite Decimal that underflows to 0.0
+    Decimal('1e1000'),    # finite Decimal that cannot be a float
+    '1e309',
+])
 def test_unusable_uln_falls_back_to_the_fixed_default(uln):
     attrs = _attrs(lactate_dehydrogenase_level_uln=uln)
     assert attrs.mipi_risk == 'intermediate'
