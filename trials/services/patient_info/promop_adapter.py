@@ -276,6 +276,17 @@ _LAB_FALLBACKS = (
     ('pd_l1_tumor_cels', 'pd_l1_tumor_cells', None, 1),
 )
 
+# Counts whose DIRECT CB-parity column is an unreliable copy of the canonical
+# thousands/µL source, so the canonical value wins whenever it is supplied
+# (#627 for WBC, #628 for ANC/ALC). CB's `promop_surface._FIELD_MAPS` documents
+# each case: WBC's and ANC's direct columns are co-populated with the unscaled
+# 10³/µL number, and ALC's is filled without the ×1000.
+_CANONICAL_WINS = (
+    ('white_blood_cell_count', 'wbc_count_thousand_per_ul', 'CELLS/UL', 1000),
+    ('absolute_neutrophile_count', 'anc_thousand_per_ul', 'CELLS/UL', 1000),
+    ('absolute_lymphocyte_count', 'alc_thousand_per_ul', None, 1000),
+)
+
 
 def _canonical_lab_value(value, scale):
     if value is None or isinstance(value, bool):
@@ -294,8 +305,9 @@ def _is_blank_text(value):
 
 
 def _normalize_canonical_labs(row):
-    # WBC's populated legacy alias can itself be thousands/µL. When the
-    # canonical source is supplied, use it rather than trusting that alias.
+    # These counts' populated legacy aliases can themselves be thousands/µL
+    # (WBC, ANC) or were filled without the ×1000 (ALC). When the canonical
+    # source is supplied, use it rather than trusting that alias.
     # Keep EXACT's per-L matcher contract unchanged: the paired CELLS/UL unit
     # lets get_value() perform the conversion to EXACT's configured basis.
     #
@@ -304,10 +316,13 @@ def _normalize_canonical_labs(row):
     # Any other supplied canonical value still wins even when unparseable —
     # the alias is then untrustworthy (it may be the 1000x-low copy), so the
     # honest answer is unknown rather than a number that could be 10^3 wrong.
-    canonical_wbc = row.get('wbc_count_thousand_per_ul')
-    if canonical_wbc is not None and not _is_blank_text(canonical_wbc):
-        row['white_blood_cell_count'] = _canonical_lab_value(canonical_wbc, 1000)
-        row['white_blood_cell_count_units'] = 'CELLS/UL'
+    for target, source, unit, scale in _CANONICAL_WINS:
+        canonical = row.get(source)
+        if canonical is None or _is_blank_text(canonical):
+            continue
+        row[target] = _canonical_lab_value(canonical, scale)
+        if unit is not None:
+            row[f'{target}_units'] = unit
     for target, source, unit, scale in _LAB_FALLBACKS:
         direct = row.get(target)
         missing_direct = direct is None or _is_blank_text(direct)
@@ -442,12 +457,6 @@ def normalize_promop_row(row: dict) -> dict:
 
     # ── Lab value fallbacks (PROMOP uses renamed columns) ─────────────
     _normalize_canonical_labs(row)
-
-    if not row.get('absolute_neutrophile_count') and row.get('anc_thousand_per_ul') is not None:
-        row['absolute_neutrophile_count'] = row['anc_thousand_per_ul'] * 1000
-
-    if not row.get('absolute_lymphocyte_count') and row.get('alc_thousand_per_ul') is not None:
-        row['absolute_lymphocyte_count'] = row['alc_thousand_per_ul'] * 1000
 
     # ── Therapy fields ─────────────────────────────────────────────────────────
     _EMPTY_CID = (None, '', 0, '0')
