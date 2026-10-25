@@ -94,6 +94,19 @@ def test_missing_uln_key_behaves_like_the_fixed_default():
     assert _attrs().mipi_risk == 'intermediate'
 
 
+@pytest.mark.parametrize('ldh,uln', [
+    (Decimal('1e-100'), Decimal('1e308')),   # ratio underflows to 0.0
+    (Decimal('1e308'), Decimal('1e-300')),   # ratio overflows to inf
+])
+def test_extreme_ratio_falls_back_instead_of_raising(ldh, uln):
+    """log10(0) would raise ValueError during normalization."""
+    attrs = _attrs(
+        lactate_dehydrogenase_level=ldh, lactate_dehydrogenase_level_uln=uln,
+    )
+    assert attrs.mipi_risk in ('low', 'intermediate', 'high')
+    assert attrs.mipi_simplified_risk in ('low', 'intermediate', 'high')
+
+
 def test_mipi_c_follows_the_uln_through_mipi():
     patient = _patient(lactate_dehydrogenase_level_uln=400, ki67_proliferation_index=40)
     attrs = PatientInfoAttributes(patient)

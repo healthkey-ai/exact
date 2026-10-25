@@ -1183,6 +1183,12 @@ class PatientInfoAttributes:
         ldh_uln = float(ldh_uln)
         if not isfinite(ldh_uln) or ldh_uln <= 0:
             ldh_uln = float(MIPI_LDH_ULN)
+        # A positive denominator is not enough: a tiny LDH over a huge ULN
+        # underflows the RATIO to 0.0, and log10(0) raises inside
+        # normalization. Fall back to the fixed ULN in that case, which is the
+        # score those patients had before a per-lab value existed.
+        if not isfinite(float(ldh) / ldh_uln) or float(ldh) / ldh_uln <= 0:
+            ldh_uln = float(MIPI_LDH_ULN)
 
         wbc_per_ul = float(BaseConvertor.call(
             wbc, pi.white_blood_cell_count_units or 'CELLS/L', 'CELLS/UL'
