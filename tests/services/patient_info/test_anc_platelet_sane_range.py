@@ -62,14 +62,16 @@ def test_wbc_stays_unguarded_on_the_cells_per_litre_contract():
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
 @pytest.mark.parametrize('attr_min,attr_max,value,trial_fields', [
-    # Old-scale ANC minimum (1,000,000 cells/µL) must not exclude 2000/µL.
+    # Each bound is out of band AND would exclude the patient if applied: the
+    # only reason the trial survives is the guard.
+    # ANC minimum at 1,000,000/µL (old thousands/µL scale) as a floor.
     (ANC_MIN, ANC_MAX, 2000, {ANC_MIN: 1_000_000}),
-    # Old-scale ANC maximum (0 cells/µL).
+    # ANC maximum of 0 as a ceiling.
     (ANC_MIN, ANC_MAX, 2000, {ANC_MAX: 0}),
-    # Old-scale platelet maximum (400 thousands/µL) must not exclude 100000/µL.
+    # Platelet minimum at 400 (old thousands/µL scale) as a floor.
+    (PLT_MIN, PLT_MAX, 100000, {PLT_MIN: 400}),
+    # Platelet maximum at 400 as a ceiling.
     (PLT_MIN, PLT_MAX, 100000, {PLT_MAX: 400}),
-    # Old-scale platelet minimum.
-    (PLT_MIN, PLT_MAX, 100000, {PLT_MIN: 5}),
 ])
 def test_out_of_band_threshold_is_no_constraint(attr_min, attr_max, value, trial_fields):
     measured = 'absolute_neutrophile_count' if attr_min == ANC_MIN else 'platelet_count'
@@ -87,11 +89,14 @@ def test_out_of_band_threshold_is_no_constraint(attr_min, attr_max, value, trial
     (ANC_MIN, ANC_MAX, 2000, {ANC_MAX: 1800}, False),
     (PLT_MIN, PLT_MAX, 100000, {PLT_MIN: 120000}, False),
     (PLT_MIN, PLT_MAX, 100000, {PLT_MAX: 90000}, False),
-    # Exactly on the band edge is IN band, so the bound applies.
+    # Exactly on a band edge is IN band, so the bound applies — in both
+    # directions, which is what pins the inclusive comparison.
     (ANC_MIN, ANC_MAX, 2000, {ANC_MIN: 200000}, False),
+    (ANC_MIN, ANC_MAX, 2000, {ANC_MAX: 10}, False),
     (ANC_MIN, ANC_MAX, 2000, {ANC_MIN: 10}, True),
     (PLT_MIN, PLT_MAX, 100000, {PLT_MIN: 10000}, True),
-    (PLT_MIN, PLT_MAX, 100000, {PLT_MAX: 2000000}, True),
+    (PLT_MIN, PLT_MAX, 100000, {PLT_MAX: 10000}, False),
+    (PLT_MIN, PLT_MAX, 100000, {PLT_MIN: 2000000}, False),
 ])
 def test_in_band_bounds_keep_deciding(attr_min, attr_max, value, trial_fields, expected):
     measured = 'absolute_neutrophile_count' if attr_min == ANC_MIN else 'platelet_count'
@@ -102,31 +107,37 @@ def test_in_band_bounds_keep_deciding(attr_min, attr_max, value, trial_fields, e
 
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
-def test_matcher_agrees_with_the_guarded_pool():
-    patient = _patient(**_readings())
-    out_of_band = Trial.objects.create(
-        disease=MM, code='oob', absolute_neutrophile_count_min=1_000_000,
-    )
-    in_band = Trial.objects.create(
-        disease=MM, code='in-band', absolute_neutrophile_count_min=1500,
-    )
-    assert UserToTrialAttrMatcher(out_of_band, patient).attr_match_status(
-        'absolute_neutrophile_count') == 'matched'
-    assert UserToTrialAttrMatcher(in_band, patient).attr_match_status(
-        'absolute_neutrophile_count') == 'matched'
-    assert _in_pool(out_of_band, patient)
-    assert _in_pool(in_band, patient)
+@pytest.mark.parametrize('patient_anc,patient_plt,trial_fields,attr,expected', [
+    (2000, 100000, {ANC_MIN: 1_000_000}, 'absolute_neutrophile_count', 'matched'),
+    (1200, 100000, {ANC_MIN: 1500}, 'absolute_neutrophile_count', 'not_matched'),
+    (2000, 100000, {ANC_MAX: 0}, 'absolute_neutrophile_count', 'matched'),
+    (2000, 100000, {ANC_MAX: 1800}, 'absolute_neutrophile_count', 'not_matched'),
+    (2000, 100000, {PLT_MIN: 400}, 'platelet_count', 'matched'),
+    (2000, 80000, {PLT_MIN: 120000}, 'platelet_count', 'not_matched'),
+    (2000, 100000, {PLT_MAX: 400}, 'platelet_count', 'matched'),
+    (2000, 100000, {PLT_MAX: 90000}, 'platelet_count', 'not_matched'),
+])
+def test_matcher_and_pool_agree(patient_anc, patient_plt, trial_fields, attr, expected):
+    patient = _patient(**_readings(
+        absolute_neutrophile_count=patient_anc, platelet_count=patient_plt,
+    ))
+    trial = Trial.objects.create(disease=MM, **trial_fields)
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status(attr) == expected
+    assert _in_pool(trial, patient) is (expected != 'not_matched')
 
 
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
 def test_mixed_valid_and_invalid_bounds_use_only_the_valid_one():
     patient = _patient(**_readings(absolute_neutrophile_count=2000))
-    # Valid minimum, old-scale maximum: the maximum is ignored, the minimum counts.
+    # Valid minimum plus an old-scale MAXIMUM of 0, which would exclude the
+    # patient as a ceiling if the guard did not ignore it.
     trial = Trial.objects.create(
         disease=MM, absolute_neutrophile_count_min=1500,
-        absolute_neutrophile_count_max=1_000_000,
+        absolute_neutrophile_count_max=0,
     )
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status(
+        'absolute_neutrophile_count') == 'matched'
     assert _in_pool(trial, patient)
     # Same pair, but the patient misses the valid minimum.
     low = _patient(**_readings(absolute_neutrophile_count=1200))
@@ -135,13 +146,16 @@ def test_mixed_valid_and_invalid_bounds_use_only_the_valid_one():
 
 @pytest.mark.django_db
 @override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
-def test_trial_aware_adequacy_ignores_an_old_scale_bound():
+@pytest.mark.parametrize('fields', [
+    {'absolute_neutrophile_count_min': 1_000_000},
+    {'absolute_neutrophile_count_max': 0},
+    {'platelet_count_min': 400},
+    {'platelet_count_max': 400},
+])
+def test_trial_aware_adequacy_ignores_an_old_scale_bound(fields):
     """#630's adequacy pass reads the same sane_range metadata."""
-    patient = _patient(**_readings(absolute_neutrophile_count=2000))
-    trial = Trial.objects.create(
-        disease=MM, haematological_adequacy_required=True,
-        absolute_neutrophile_count_min=1_000_000,
-    )
+    patient = _patient(**_readings())
+    trial = Trial.objects.create(disease=MM, haematological_adequacy_required=True, **fields)
     assert UserToTrialAttrMatcher(trial, patient).attr_match_status(
         'haematological_adequacy_status') == 'matched'
     assert _in_pool(trial, patient)
@@ -156,3 +170,17 @@ def test_adequacy_still_rejects_a_genuinely_low_reading():
     assert UserToTrialAttrMatcher(trial, patient).attr_match_status(
         'haematological_adequacy_status') == 'not_matched'
     assert not _in_pool(trial, patient)
+
+
+@pytest.mark.django_db
+@override_settings(EXACT_OMOP_THERAPY=False, EXACT_OMOP_LANGUAGES=False)
+@pytest.mark.parametrize('attr_min,trial_fields', [
+    (ANC_MIN, {ANC_MIN: 1_000_000}),
+    (PLT_MIN, {PLT_MIN: 400}),
+])
+def test_blank_patient_keeps_the_trial_potential(attr_min, trial_fields):
+    """A blank reading is not a rejection, guarded bound or not."""
+    measured = 'absolute_neutrophile_count' if attr_min == ANC_MIN else 'platelet_count'
+    patient = _patient(**{**_readings(), measured: None})
+    trial = Trial.objects.create(disease=MM, **trial_fields)
+    assert _in_pool(trial, patient)
