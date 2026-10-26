@@ -74,6 +74,11 @@ def test_a_zero_lab_is_a_reading_not_missing_data():
         absolute_neutrophile_count_max=10000,
     )
     assert Trial.objects.filter(pk=unusable_min.pk)._eligible_for_haematological_adequacy(patient).exists()
+    # The per-trial verdict and the matcher must agree with the pre-filter: a
+    # trial that survives the SQL and then reports `not_matched` is the same
+    # search/detail split this issue exists to remove.
+    assert PatientInfoAttributes(patient).haematological_adequacy_status_for_trial(unusable_min) is True
+    assert UserToTrialAttrMatcher(unusable_min, patient).attr_match_status('haematological_adequacy_status') == 'matched'
 
     usable_min = TrialFactory(
         haematological_adequacy_required=True,
