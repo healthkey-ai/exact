@@ -1126,7 +1126,13 @@ class TrialQuerySet(models.QuerySet):
 
         for patient_attr, trial_min, trial_max, default_min in labs:
             value = patient_info_attr.get_value(patient_attr)
-            if patient_info_attr.is_attr_blank(patient_attr) or value is None:
+            # `None` is the only "no reading" state here. A zero (or any value
+            # outside the sane range) is a lab the patient actually has, and the
+            # bounds below decide it: a trial with no usable minimum admits it on
+            # the maximum, while a real minimum rejects it. Treating it as blank
+            # (`is_attr_blank`) turned every such trial into a rejection, which is
+            # not what the patient-level verdict or CB's copy does (#5523).
+            if value is None:
                 adequate &= Q(pk__in=[])
                 continue
 

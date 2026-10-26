@@ -52,6 +52,36 @@ def test_default_boundaries_and_unit_equivalence(anc, platelets, hb, expected, s
     assert PatientInfoAttributes(patient).haematological_adequacy_status is expected
 
 
+@pytest.mark.django_db
+def test_a_zero_lab_is_a_reading_not_missing_data():
+    """#5523: a zero ANC must be judged by the trial's bounds, not skipped.
+
+    With no usable minimum (the authored one sits outside the sane range) the
+    trial admits the patient on its maximum; the old `is_attr_blank` gate turned
+    the zero into "no reading" and rejected the trial outright.
+    """
+    from tests.factories import TrialFactory
+
+    patient = _build_in_memory({
+        'absolute_neutrophile_count': 0, 'absolute_neutrophile_count_units': 'CELLS/UL',
+        'platelet_count': 75000, 'platelet_count_units': 'CELLS/UL',
+        'hemoglobin_level': 9, 'hemoglobin_level_units': 'G/DL',
+    })
+
+    unusable_min = TrialFactory(
+        haematological_adequacy_required=True,
+        absolute_neutrophile_count_min=5,
+        absolute_neutrophile_count_max=10000,
+    )
+    assert Trial.objects.filter(pk=unusable_min.pk)._eligible_for_haematological_adequacy(patient).exists()
+
+    usable_min = TrialFactory(
+        haematological_adequacy_required=True,
+        absolute_neutrophile_count_min=1000,
+    )
+    assert not Trial.objects.filter(pk=usable_min.pk)._eligible_for_haematological_adequacy(patient).exists()
+
+
 @pytest.mark.parametrize('missing', ['absolute_neutrophile_count', 'platelet_count', 'hemoglobin_level'])
 def test_inline_explicit_unknown_is_unchanged(missing):
     data = {
