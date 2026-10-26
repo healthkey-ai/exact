@@ -1013,7 +1013,12 @@ class UserToTrialAttrMatcher:
         min_count = getattr(self.trial, min_count_attr, None) if min_count_attr else None
         if not min_count or min_count < 1:
             min_count = 1
-        required = getattr(self.trial, trial_attr_meta["criteria_required_attr"], None) or []
+        # `required` is optional: an attribute may constrain only the excluded
+        # list (e.g. an exclusion-only Named-ORs attribute). Reading the key
+        # unconditionally raised KeyError before the SQL twin, which already
+        # treats required as optional, could run (#5521).
+        required_attr = trial_attr_meta.get("criteria_required_attr")
+        required = (getattr(self.trial, required_attr, None) or []) if required_attr else []
 
         sufficient_attr = trial_attr_meta.get("criteria_sufficient_any_attr")
         sufficient_any = getattr(self.trial, sufficient_attr, None) or [] if sufficient_attr else []
