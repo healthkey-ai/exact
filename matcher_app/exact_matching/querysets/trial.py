@@ -1131,7 +1131,7 @@ class TrialQuerySet(models.QuerySet):
             # read as "not entered" and every such trial was dropped — including
             # one whose authored minimum is unusable, where the valid maximum is
             # the only bound and a zero passes it. Judge the value instead; the
-            # sane-range rules above apply to the trial's thresholds (#5523).
+            # sane-range rules below apply to the trial's thresholds (#5523).
             if value is None:
                 adequate &= Q(pk__in=[])
                 continue
