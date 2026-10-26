@@ -172,12 +172,23 @@ def explicitly_unknown(patient_info, name):
     for unparseable input before provenance is captured, so `platelet_count:
     "abc"` would read as caller-asserted null. None of the five is a numeric or
     date column, so nothing reaches it.
+
+    A wrapper surface may expose `_provenance_value` so this reads the underlying
+    record instead of the surface's own derivation. Deriving here re-enters the
+    derivation that asked: `PatientRecordSurface` routes a null
+    `hepatic_adequacy_status` back into `PatientInfoAttributes`, whose
+    "could not work it out" branch landed here, and the second pass recursed
+    until Python's limit. CB carries the same guard in its copy of this module;
+    without it the packaged engine cannot run behind the packaged surface.
     """
     if name not in EXPLICIT_UNKNOWN_FIELDS:
         return False
+    if name not in getattr(patient_info, '_provided_fields', ()):
+        return False
 
-    return (name in getattr(patient_info, '_provided_fields', ())
-            and getattr(patient_info, name, None) is None)
+    provenance = getattr(type(patient_info), '_provenance_value', None)
+    value = provenance(patient_info, name) if provenance else getattr(patient_info, name, None)
+    return value is None
 
 
 

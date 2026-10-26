@@ -215,6 +215,35 @@ def test_an_attribute_the_record_does_not_carry_reads_as_unknown():
     assert PatientRecordSurface(_record()).meets_lugano is None
 
 
+def test_hepatic_adequacy_is_unknown_not_a_recursion_when_inputs_are_missing():
+    # The surface routes the null back into the engine, whose "could not work it out"
+    # branch asks whether the caller named it. Reading that through the surface
+    # re-enters the derivation and recursed until Python's limit.
+    surface = PatientRecordSurface(_record(patient_age=70))
+
+    assert surface.hepatic_adequacy_status is None
+
+
+def test_explicitly_unknown_reads_provenance_instead_of_the_derivation():
+    from exact_matching.patient_info.patient_info_attributes import explicitly_unknown
+
+    class Surface:
+        _provided_fields = frozenset({'hepatic_adequacy_status'})
+        asked_for_value = False
+
+        def _provenance_value(self, name):
+            return None
+
+        def __getattr__(self, name):
+            type(self).asked_for_value = True
+            raise AssertionError(f're-entered the derivation for {name}')
+
+    surface = Surface()
+
+    assert explicitly_unknown(surface, 'hepatic_adequacy_status') is True
+    assert surface.asked_for_value is False
+
+
 def test_private_probes_still_raise_so_the_matcher_memo_stays_honest():
     # A Django model raises AttributeError for an unknown column, and the surface must
     # pass that through: the matcher probes `hasattr(patient, '_cache')` before memoizing.
