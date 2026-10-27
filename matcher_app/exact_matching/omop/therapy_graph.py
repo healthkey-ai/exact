@@ -82,10 +82,10 @@ def derive_component_and_type_values(therapy_identifiers, patient_component_ids=
                 # (observation-only) return value.
                 try:
                     from exact_matching.omop.phase_t_metrics import record_regimen_unresolved
-                except ImportError:
+                except ModuleNotFoundError:
                     try:
                         from trials.services.omop.phase_t_metrics import record_regimen_unresolved
-                    except ImportError:
+                    except ModuleNotFoundError:
                         record_regimen_unresolved = None
                 if record_regimen_unresolved is not None:
                     record_regimen_unresolved(therapy_identifiers)
