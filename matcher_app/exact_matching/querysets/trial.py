@@ -1126,7 +1126,13 @@ class TrialQuerySet(models.QuerySet):
 
         for patient_attr, trial_min, trial_max, default_min in labs:
             value = patient_info_attr.get_value(patient_attr)
-            if patient_info_attr.is_attr_blank(patient_attr) or value is None:
+            # `None` is the only "no reading" state here. `is_attr_blank` treats
+            # a zero as blank for numeric fields, so a real (worst-case) count was
+            # read as "not entered" and every such trial was dropped — including
+            # one whose authored minimum is unusable, where the valid maximum is
+            # the only bound and a zero passes it. Judge the value instead; the
+            # sane-range rules below apply to the trial's thresholds (#5523).
+            if value is None:
                 adequate &= Q(pk__in=[])
                 continue
 

@@ -52,6 +52,57 @@ def test_default_boundaries_and_unit_equivalence(anc, platelets, hb, expected, s
     assert PatientInfoAttributes(patient).haematological_adequacy_status is expected
 
 
+#: One row per lab: its inline field, the unit field, a value that fails every
+#: default, an unusable authored minimum (below the sane band) and a usable one.
+ZERO_LABS = (
+    # lab, unit field, units, unusable min (below the band), usable min, valid max
+    ('absolute_neutrophile_count', 'absolute_neutrophile_count_units', 'CELLS/UL', 5, 1000, 150_000),
+    ('platelet_count', 'platelet_count_units', 'CELLS/UL', 5, 75000, 1_500_000),
+    ('hemoglobin_level', 'hemoglobin_level_units', 'G/DL', 0.5, 9, 20),
+)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize('lab,units_field,units,unusable_min,usable_min,valid_max', ZERO_LABS)
+def test_a_zero_lab_is_a_reading_not_missing_data(lab, units_field, units, unusable_min, usable_min, valid_max):
+    """#5523: a zero lab must be judged by the trial's bounds, not skipped.
+
+    With no usable minimum (the authored one sits outside the sane range) the
+    trial admits the patient on its maximum; the old `is_attr_blank` gate turned
+    the zero into "no reading" and rejected the trial outright.
+    """
+    from tests.factories import TrialFactory
+
+    labs = {
+        'absolute_neutrophile_count': 1000, 'absolute_neutrophile_count_units': 'CELLS/UL',
+        'platelet_count': 75000, 'platelet_count_units': 'CELLS/UL',
+        'hemoglobin_level': 9, 'hemoglobin_level_units': 'G/DL',
+    }
+    labs[lab] = 0
+    labs[units_field] = units
+    patient = _build_in_memory(labs)
+    attributes = PatientInfoAttributes(patient)
+
+    admitted = TrialFactory(
+        haematological_adequacy_required=True,
+        **{f'{lab}_min': unusable_min, f'{lab}_max': valid_max},
+    )
+    assert Trial.objects.filter(pk=admitted.pk)._eligible_for_haematological_adequacy(patient).exists()
+    # The per-trial verdict and the matcher must agree with the pre-filter: a
+    # trial that survives the SQL and then reports `not_matched` is the same
+    # search/detail split this issue exists to remove.
+    assert attributes.haematological_adequacy_status_for_trial(admitted) is True
+    assert UserToTrialAttrMatcher(admitted, patient).attr_match_status('haematological_adequacy_status') == 'matched'
+
+    rejected = TrialFactory(
+        haematological_adequacy_required=True,
+        **{f'{lab}_min': usable_min},
+    )
+    assert not Trial.objects.filter(pk=rejected.pk)._eligible_for_haematological_adequacy(patient).exists()
+    assert attributes.haematological_adequacy_status_for_trial(rejected) is False
+    assert UserToTrialAttrMatcher(rejected, patient).attr_match_status('haematological_adequacy_status') == 'not_matched'
+
+
 @pytest.mark.parametrize('missing', ['absolute_neutrophile_count', 'platelet_count', 'hemoglobin_level'])
 def test_inline_explicit_unknown_is_unchanged(missing):
     data = {

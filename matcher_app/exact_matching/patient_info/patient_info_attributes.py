@@ -966,8 +966,9 @@ class PatientInfoAttributes:
         # could return False before the missing platelets are seen, while the
         # same missing-input set in another order would remain unknown.
         for attr, default_min in labs:
-            if self.is_attr_blank(attr):
-                return self._unknown_or_false('haematological_adequacy_status')
+            # `is_attr_blank` treats a zero as blank for numeric fields, which
+            # would call a real (worst-case) reading "not entered". The verdict
+            # below compares it against the trial's cutoffs, as the queryset does.
             value = self.get_value(attr)
             if value is None:
                 return self._unknown_or_false('haematological_adequacy_status')
