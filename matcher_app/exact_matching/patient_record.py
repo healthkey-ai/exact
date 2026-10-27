@@ -309,6 +309,24 @@ def menopausal_status_code(value):
     return _MENOPAUSAL_STATUS_CODES.get(normalised)
 
 
+#: Fields whose PROMOP storage vocabulary differs from the matcher's. Both the
+#: packaged surface and a host that still owns its adapter dispatch through this
+#: map, so the crosswalk cannot drift between them (#5553).
+CATEGORICAL_CODES = {
+    **{
+        field: (lambda value, kind=kind: receptor_status_code(value, kind))
+        for field, kind in _RECEPTOR_FIELDS.items()
+    },
+    **{
+        field: (lambda value, field=field: tnm_stage_code(field, value))
+        for field in TNM_STAGE_CODES
+    },
+    'tumor_grade': tumor_grade_code,
+    'histologic_type': histologic_type_code,
+    'menopausal_status': menopausal_status_code,
+}
+
+
 def _derive_progression(surface):
     """Replicate CB's `PatientInfo.save` progression rule from meets_crab / meets_slim (both PROMOP-
     derived). 'active' if either CRAB/SLiM is met, 'smoldering' if both are explicitly not met, else
@@ -693,18 +711,9 @@ class PatientRecordSurface:
             # compute. No recursion: the derivations read input fields, never the derived field itself.
             direct = getattr(record, name, None)
             return direct if direct is not None else getattr(self._attributes_service(), name)
-        if name in _RECEPTOR_FIELDS:
-            # PROMOP stores the LOINC answer label; the matcher compares CB codes.
-            return receptor_status_code(getattr(record, name, None), _RECEPTOR_FIELDS[name])
-        if name in TNM_STAGE_CODES:
-            # Imported facts carry the display title; CB writes carry the code.
-            return tnm_stage_code(name, getattr(record, name, None))
-        if name == 'tumor_grade':
-            return tumor_grade_code(getattr(record, name, None))
-        if name == 'histologic_type':
-            return histologic_type_code(getattr(record, name, None))
-        if name == 'menopausal_status':
-            return menopausal_status_code(getattr(record, name, None))
+        if name in CATEGORICAL_CODES:
+            # PROMOP stores labels/titles; the matcher compares codes (#5553).
+            return CATEGORICAL_CODES[name](getattr(record, name, None))
         if name == 'progression':
             # CB computes progression in PatientInfo.save (not attributes_service); PROMOP has the
             # column but leaves it NULL. Prefer a populated value, else replicate CB's save logic.
