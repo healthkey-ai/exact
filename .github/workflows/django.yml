@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # apt is retried inside the step; this bounds a wedged runner. Worst case
+    # there is two apt attempts (~22m), so 30 leaves room for pip.
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -23,15 +26,40 @@ jobs:
           ${{ runner.os }}-pip-
     - name: Install system dependencies
       run: |
+        set -euo pipefail
+        # apt has hung this step for most of a job: in run 40485223864, test (1)
+        # spent 10:02:52 -> 10:42:36 (40 minutes) in here and then ran the tests
+        # in 31 seconds. Which of the two candidates it is -- a held dpkg lock or
+        # a broken IPv6 route -- is not proven, so cap the lock wait, force IPv4,
+        # retry once, and keep the log so the next occurrence answers that.
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        sudo apt-get -qq update && \
-        sudo apt-get -yqq install \
-          gcc \
-          libpq-dev \
-          gdal-bin \
-          libgdal-dev \
-          libgeos-dev \
-          postgresql-client
+        apt=(sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 300 apt-get
+             -o Acquire::Retries=3
+             -o Acquire::ForceIPv4=true
+             -o Acquire::http::Timeout=30
+             -o Acquire::https::Timeout=30
+             -o APT::Update::Error-Mode=any
+             -o DPkg::Lock::Timeout=120)
+        log=$(mktemp)
+        for attempt in 1 2; do
+          start=$SECONDS
+          rc=0
+          "${apt[@]}" -q update >>"$log" 2>&1 &&
+            "${apt[@]}" -yq install \
+              gcc \
+              libpq-dev \
+              gdal-bin \
+              libgdal-dev \
+              libgeos-dev \
+              postgresql-client >>"$log" 2>&1 || rc=$?
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          echo "::warning::apt attempt ${attempt} failed after $((SECONDS - start))s, rc=${rc}"
+          grep -iE 'lock|err:|fail|unable|could not' "$log" | tail -n 20 || true
+          tail -n 20 "$log"
+          sleep 15
+        done
+        echo "::error::apt failed after 2 attempts; the log above says why"
+        exit 1
     - name: Install Python dependencies
       # This job exists to fail fast on a bad `requirements.txt`, and to fill
       # `~/.cache/pip` before the three `test` jobs start — otherwise they
@@ -64,6 +92,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # Normal run is ~2 minutes. Worst case is two apt attempts (~22m) plus pip
+    # and the suite; the timeout is a ceiling, not a target.
+    timeout-minutes: 30
     needs: [build]
     strategy:
       matrix:
@@ -97,16 +128,41 @@ jobs:
           ${{ runner.os }}-pip-
     - name: Install system dependencies
       run: |
+        set -euo pipefail
+        # apt has hung this step for most of a job: in run 40485223864, test (1)
+        # spent 10:02:52 -> 10:42:36 (40 minutes) in here and then ran the tests
+        # in 31 seconds. Which of the two candidates it is -- a held dpkg lock or
+        # a broken IPv6 route -- is not proven, so cap the lock wait, force IPv4,
+        # retry once, and keep the log so the next occurrence answers that.
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        sudo apt-get -qq update && \
-        sudo apt-get -yqq install \
-          gcc \
-          libpq-dev \
-          gdal-bin \
-          libgdal-dev \
-          libgeos-dev \
-          libgeos-c1v5 \
-          postgresql-client
+        apt=(sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 300 apt-get
+             -o Acquire::Retries=3
+             -o Acquire::ForceIPv4=true
+             -o Acquire::http::Timeout=30
+             -o Acquire::https::Timeout=30
+             -o APT::Update::Error-Mode=any
+             -o DPkg::Lock::Timeout=120)
+        log=$(mktemp)
+        for attempt in 1 2; do
+          start=$SECONDS
+          rc=0
+          "${apt[@]}" -q update >>"$log" 2>&1 &&
+            "${apt[@]}" -yq install \
+              gcc \
+              libpq-dev \
+              gdal-bin \
+              libgdal-dev \
+              libgeos-dev \
+              libgeos-c1v5 \
+              postgresql-client >>"$log" 2>&1 || rc=$?
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          echo "::warning::apt attempt ${attempt} failed after $((SECONDS - start))s, rc=${rc}"
+          grep -iE 'lock|err:|fail|unable|could not' "$log" | tail -n 20 || true
+          tail -n 20 "$log"
+          sleep 15
+        done
+        echo "::error::apt failed after 2 attempts; the log above says why"
+        exit 1
     - name: Install Python dependencies
       # Its own, not `build`'s — see the comment there for what happened
       # when this job had no install step at all and ran on a cached
