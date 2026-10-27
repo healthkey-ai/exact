@@ -98,9 +98,20 @@ ATTR_LABEL_MAPPING = {
     'lymphadenopathyRequired': 'Lymphadenopathy Required',
     'splenomegalyRequired': 'Splenomegaly Required',
     'boneMarrowInvolvementRequired': 'Bone Marrow Involvement Required',
+    'myelomaRelatedDisordersExcluded': 'Myeloma Related Disorders Excluded',
+    'mgus': 'Monoclonal Gammopathy of Undetermined Significance (MGUS)',
+    'smolderingMultipleMyeloma': 'Smoldering Multiple Myeloma',
+    'waldenstromMacroglobulinemia': 'Waldenström Macroglobulinemia',
+    'igmMultipleMyeloma': 'IgM Multiple Myeloma',
+    'alAmyloidosis': 'Light-Chain (AL) Amyloidosis',
+    'poemsSyndrome': 'POEMS Syndrome',
 }
 
 ATTR_DEPS_MAPPING = {
+    'myelomaRelatedDisorders': [
+        'mgus', 'smolderingMultipleMyeloma', 'waldenstromMacroglobulinemia',
+        'igmMultipleMyeloma', 'alAmyloidosis', 'poemsSyndrome',
+    ],
     # Computed in PatientInfo.save() via PatientInfoAttributes
     'bmi': ['weight', 'height'],
     'meetsCRAB': ['serumCalciumLevel', 'creatinineClearanceRate', 'serumCreatinineLevel', 'hemoglobinLevel', 'boneLesions'],
@@ -128,6 +139,8 @@ ATTR_DEPS_MAPPING = {
 }
 
 ATTR_TYPE_MAPPING = {
+    'myelomaRelatedDisordersExcluded': 'multiselect',
+    'umyelomaRelatedDisorders': 'multiselect',
     'plannedTherapiesRequired': 'multiselect',
     'plannedTherapiesExcluded': 'multiselect',
     'plannedTherapies': 'multiselect',
@@ -233,6 +246,10 @@ def get_treatment_attrs(patient_info):
 
 
 SUBFORM_ATTRS_MAPPING = {
+    'myeloma_related_disorders_excluded': [
+        'mgus', 'smoldering_multiple_myeloma', 'waldenstrom_macroglobulinemia',
+        'igm_multiple_myeloma', 'al_amyloidosis', 'poems_syndrome',
+    ],
     'mutation_genes_required': ['genetic_mutations'],
     'mutation_variants_required': ['genetic_mutations'],
     'mutation_origins_required': ['genetic_mutations'],
@@ -295,6 +312,7 @@ GROUP_NAMES = {
 }
 
 ATTR_GROUP_MAPPING = {
+    'myelomaRelatedDisordersExcluded': 'disease',
     # 'trialId': 'general',
     'studyId': 'general',
     'register': 'general',

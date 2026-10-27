@@ -136,6 +136,7 @@ TRIAL_ATTRS_JSON_AS_A_LIST = (
     "high_risk_mcl_criteria_required",
     "high_risk_mcl_criteria_excluded",
     "high_risk_mcl_criteria_sufficient_any",
+    "myeloma_related_disorders_excluded",
 )
 
 USER_TO_TRIAL_ATTRS_MAPPING = {
@@ -647,6 +648,25 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
         }
     },
     # MCL-specific END
+
+    # MM-specific START
+    "myeloma_related_disorders": {
+        "type": ATTR_MAPPING_TYPE_COMPUTED,
+        "custom_search": True,
+        "is_computed_value": True,
+        "computed_value_type": "str",
+        "disease": "MM",
+        "attr": ["myeloma_related_disorders_excluded"],
+        "criteria_count_match": True,
+        "criteria_excluded_attr": "myeloma_related_disorders_excluded",
+        "criteria_derived": lambda patient_info: patient_info.myeloma_related_disorders,
+        "criteria_unknown_codes": lambda pia, required: pia.myeloma_related_disorders_unknown_codes(required),
+        "criteria_all_unknown_codes": lambda pia: pia.myeloma_related_disorders_all_unknown_codes(),
+        "uvalue_function": {
+            "myeloma_related_disorders_excluded": lambda patient_info: patient_info.myeloma_related_disorders,
+        }
+    },
+    # MM-specific END
 
     # BC-specific START
     "menopausal_status": {

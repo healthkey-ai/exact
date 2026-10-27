@@ -697,6 +697,7 @@ class Trial(TimeStampMixin):
     high_risk_mcl_criteria_excluded = models.JSONField(blank=True, null=False, default=list)
     high_risk_mcl_criteria_sufficient_any = models.JSONField(blank=True, null=False, default=list)
     high_risk_mcl_criteria_min_count = models.PositiveSmallIntegerField(blank=True, null=True, default=None)
+    myeloma_related_disorders_excluded = models.JSONField(blank=True, null=False, default=list)
 
     locations = models.ManyToManyField(
         'Location',
@@ -1243,6 +1244,10 @@ class MorphologicVariant(OptionsListMixin):
 
 
 class HighRiskMclCriteria(OptionsListMixin):
+    pass
+
+
+class MyelomaRelatedDisorder(OptionsListMixin):
     pass
 
 
