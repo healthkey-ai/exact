@@ -17,8 +17,8 @@ MYELOMA_RELATED_DISORDERS = [
 
 def seed(apps, schema_editor):
     Model = apps.get_model('trials', 'MyelomaRelatedDisorder')
-    for code, title, hint in MYELOMA_RELATED_DISORDERS:
-        Model.objects.update_or_create(code=code, defaults={'title': title, 'llm_hint': hint})
+    for code, title, _hint in MYELOMA_RELATED_DISORDERS:
+        Model.objects.update_or_create(code=code, defaults={'title': title})
 
 
 def unseed(apps, schema_editor):

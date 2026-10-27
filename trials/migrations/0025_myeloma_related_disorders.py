@@ -16,7 +16,6 @@ class Migration(migrations.Migration):
                 ('updated_at', models.DateTimeField(auto_now=True, db_index=True)),
                 ('code', models.TextField(db_index=True, unique=True)),
                 ('title', models.TextField(db_index=True, unique=True)),
-                ('llm_hint', models.TextField(blank=True, help_text='Hint for LLM to better understand the option', null=True)),
             ],
             options={
                 'abstract': False,
