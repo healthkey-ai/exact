@@ -160,12 +160,18 @@ _RECEPTOR_LABEL_CODES = {
     },
 }
 
-_RECEPTOR_STATUS_CODES = frozenset({
-    'er_minus', 'er_plus', 'er_plus_with_low_exp', 'er_plus_with_hi_exp',
-    'pr_minus', 'pr_plus', 'pr_plus_with_low_exp', 'pr_plus_with_hi_exp',
-    'her2_plus', 'her2_minus', 'her2_low',
-    'hr_minus', 'hr_plus', 'hr_plus_with_low_exp', 'hr_plus_with_hi_exp',
-})
+_RECEPTOR_CODES_BY_KIND = {
+    'er': frozenset({
+        'er_minus', 'er_plus', 'er_plus_with_low_exp', 'er_plus_with_hi_exp',
+    }),
+    'pr': frozenset({
+        'pr_minus', 'pr_plus', 'pr_plus_with_low_exp', 'pr_plus_with_hi_exp',
+    }),
+    'her2': frozenset({'her2_plus', 'her2_minus', 'her2_low'}),
+    'hr': frozenset({
+        'hr_minus', 'hr_plus', 'hr_plus_with_low_exp', 'hr_plus_with_hi_exp',
+    }),
+}
 
 
 def receptor_status_code(value, kind):
@@ -181,7 +187,9 @@ def receptor_status_code(value, kind):
     if not text:
         return None
     folded = text.casefold()
-    if folded in _RECEPTOR_STATUS_CODES:
+    # Only this field's own codes pass: a wrong-axis value (`pr_plus` in the ER
+    # column) is corrupt data, not an answer.
+    if folded in _RECEPTOR_CODES_BY_KIND.get(kind, ()):
         return folded
     return _RECEPTOR_LABEL_CODES.get(kind, {}).get(folded)
 

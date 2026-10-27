@@ -334,6 +334,9 @@ def test_progression_labels_map_to_codes_and_other_states_are_left_alone(stored,
     ('hr_status', 'hr_plus_with_hi_exp', 'hr_plus_with_hi_exp'),
     ('hr_status', 'Positive', 'hr_plus'),
     ('hr_status', 'Negative', 'hr_minus'),
+    # A code from another receptor axis is corrupt data, not an answer.
+    ('estrogen_receptor_status', 'pr_plus', None),
+    ('her2_status', 'er_minus', None),
 ])
 def test_receptor_labels_become_codes_and_equivocal_stays_unknown(field, stored, expected):
     surface = PatientRecordSurface(_record(**{field: stored}))
