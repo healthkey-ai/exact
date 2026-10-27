@@ -275,3 +275,21 @@ def test_refractory_status_labels_become_codes_never_a_refractory_assertion(stor
     surface = PatientRecordSurface(_record(treatment_refractory_status=stored))
 
     assert surface.treatment_refractory_status == expected
+
+
+@pytest.mark.parametrize('stored, expected', [
+    ('Active', 'active'),
+    ('active', 'active'),
+    ('Smoldering', 'smoldering'),
+    ('smoldering', 'smoldering'),
+    ('', ''),
+    (None, None),
+    # Different concepts, not spelling variants: leave them; the exact domain
+    # membership then reports them as unanswered.
+    ('Stable Disease', 'Stable Disease'),
+    ('Relapsed', 'Relapsed'),
+])
+def test_progression_labels_map_to_codes_and_other_states_are_left_alone(stored, expected):
+    surface = PatientRecordSurface(_record(progression=stored))
+
+    assert surface.progression == expected
