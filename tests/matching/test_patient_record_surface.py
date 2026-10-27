@@ -251,3 +251,27 @@ def test_private_probes_still_raise_so_the_matcher_memo_stays_honest():
 
     with pytest.raises(AttributeError):
         surface._cache
+
+
+@pytest.mark.parametrize('stored, expected', [
+    ('Not Refractory', 'notRefractory'),
+    ('notRefractory', 'notRefractory'),
+    ('Primary Refractory', 'primaryRefractory'),
+    ('primaryRefractory', 'primaryRefractory'),
+    ('Secondary Refractory', 'secondaryRefractory'),
+    ('Multi-Refractory', 'multiRefractory'),
+    ('multiRefractory', 'multiRefractory'),
+    ('Not Refractory (progression halted)', 'notRefractory'),
+    ('Refractory', None),
+    ('Unknown', None),
+    ('unknown', None),
+    ('', None),
+    (None, None),
+    ('Some future label', None),
+])
+def test_refractory_status_labels_become_codes_never_a_refractory_assertion(stored, expected):
+    # PROMOP stores the label; the matcher treats any unrecognised non-empty value
+    # as refractory, so the adapter must map or null it (#5552).
+    surface = PatientRecordSurface(_record(treatment_refractory_status=stored))
+
+    assert surface.treatment_refractory_status == expected

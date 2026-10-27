@@ -138,11 +138,62 @@ def _derive_progression(surface):
 #: matcher does not convert a None value); `supportive_therapies` (Text→list). (Group N is a no-op —
 #: the matcher coerces None→False for bool_restriction. The five Group-D re-derivations are handled
 #: separately via `_DERIVED_VIA_ATTRIBUTES` + `progression` below, not through _FIELD_MAPS.)
+
+#: PROMOP writes the *label* for refractory status; EXACT compares codes, and its
+#: matcher treats **any** other non-empty value as refractory
+#: (`matcher.py:756-775`). So an unrecognised label is not a harmless
+#: pass-through: `Unknown` and `Not Refractory` both currently read as
+#: "refractory". Unknown labels become None (unknown) rather than a clinical
+#: assertion (#5552).
+REFRACTORY_STATUS_TO_CB = {
+    'not refractory': 'notRefractory',
+    'not refractory (progression halted)': 'notRefractory',
+    'notrefractory': 'notRefractory',
+    'primary refractory': 'primaryRefractory',
+    'primaryrefractory': 'primaryRefractory',
+    'secondary refractory': 'secondaryRefractory',
+    'secondaryrefractory': 'secondaryRefractory',
+    'multi-refractory': 'multiRefractory',
+    'multi refractory': 'multiRefractory',
+    'multirefractory': 'multiRefractory',
+    # A bare `Refractory` has no code in EXACT's option list; mapping it to a
+    # subtype would invent one, and passing it through relies on the matcher's
+    # "any other value is refractory" fallback. It stays unknown until a generic
+    # refractory code is agreed.
+    'refractory': None,
+    'unknown': None,
+    '': None,
+}
+
+
+def refractory_status_code(value):
+    """PROMOP's refractory label → EXACT's code, or None for "unknown".
+
+    Already-canonical codes pass through. Anything unrecognised is treated as
+    unknown on purpose: the matcher's fallback turns an arbitrary string into a
+    positive refractory assertion.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    mapped = REFRACTORY_STATUS_TO_CB.get(text.casefold())
+    if mapped is not None or text.casefold() in ('unknown', ''):
+        return mapped
+    if text in REFRACTORY_STATUS_TO_CB.values():
+        return text
+    return None
+
+
 _FIELD_MAPS = {
     # SCT is already an OMOP-derived date on the pinned projection. Keep it
     # PROMOP-owned; the host attribute service derives days and handles future
     # dates as unknown. No stored verdict or CB date fallback crosses this seam.
     'stem_cell_transplant_date': lambda r: r.sct_date,
+    # PROMOP stores the label (`Not Refractory`, `Unknown`); EXACT expects the
+    # code and otherwise treats any non-empty value as refractory (#5552).
+    'treatment_refractory_status': lambda r: refractory_status_code(getattr(r, 'treatment_refractory_status', None)),
     # Group U — unit ×scale (10³/µL → cells/µL), value + its canonical unit as a coherent pair.
     #
     # WBC and ANC convert ALWAYS from the canonical `*_thousand_per_ul` column (×1000 → cells/µL) and
