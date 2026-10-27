@@ -120,7 +120,13 @@ PROGRESSION_CODES = {'active': 'active', 'smoldering': 'smoldering'}
 
 
 def progression_code(value):
-    """PROMOP progression label → EXACT code; unknown labels pass through unchanged."""
+    """PROMOP progression label → EXACT code; unknown labels pass through unchanged.
+
+    Known labels are compared case- and whitespace-insensitively. Unknown values —
+    including a non-string, which the inline JSON path can produce — are returned
+    as-is: the exact `value_domain` membership then rejects them, which is the
+    honest "unanswered", not a guess.
+    """
     if value is None:
         return None
     text = str(value).strip()

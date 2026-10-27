@@ -193,6 +193,14 @@ def test_progression_is_derived_from_crab_and_slim_when_the_record_has_none(crab
     assert surface.progression == expected
 
 
+def test_a_populated_label_wins_over_the_crab_derivation():
+    # The record value is authoritative; a non-equivalent label must not silently
+    # fall back to the derivation just because CRAB is set.
+    surface = PatientRecordSurface(_record(progression='Relapsed', meets_crab=True))
+
+    assert surface.progression == 'Relapsed'
+
+
 def test_a_populated_progression_wins_over_the_derivation():
     surface = PatientRecordSurface(_record(meets_crab=True, progression='smoldering'))
 
@@ -282,7 +290,12 @@ def test_refractory_status_labels_become_codes_never_a_refractory_assertion(stor
     ('active', 'active'),
     ('Smoldering', 'smoldering'),
     ('smoldering', 'smoldering'),
+    ('  ACTIVE  ', 'active'),
+    ('SmolDering', 'smoldering'),
     ('', ''),
+    # Non-strings (inline JSON) pass through; the domain guard rejects them.
+    (0, 0),
+    (False, False),
     (None, None),
     # Different concepts, not spelling variants: leave them; the exact domain
     # membership then reports them as unanswered.
@@ -293,3 +306,11 @@ def test_progression_labels_map_to_codes_and_other_states_are_left_alone(stored,
     surface = PatientRecordSurface(_record(progression=stored))
 
     assert surface.progression == expected
+
+
+def test_a_populated_label_wins_over_the_crab_derivation():
+    # The record value is authoritative; a non-equivalent label must not silently
+    # fall back to the derivation just because CRAB is set.
+    surface = PatientRecordSurface(_record(progression='Relapsed', meets_crab=True))
+
+    assert surface.progression == 'Relapsed'
