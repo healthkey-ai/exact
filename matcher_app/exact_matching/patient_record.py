@@ -111,6 +111,30 @@ def _age_unless_sentinel(record):
     return None if year_of_birth == UNKNOWN_YEAR_OF_BIRTH else record.patient_age
 
 
+#: PROMOP's progression column stores the display label (`Active`, `Smoldering`).
+#: EXACT's `value_domain` is the lowercase code, and membership is exact on
+#: purpose, so the label reads as "not answered" (#5550). Other PROMOP states
+#: (`Stable Disease`, `Relapsed`) are different concepts, not spelling variants,
+#: and stay untouched — the domain then reports them as unknown, which is honest.
+PROGRESSION_CODES = {'active': 'active', 'smoldering': 'smoldering'}
+
+
+def progression_code(value):
+    """PROMOP progression label → EXACT code; unknown labels pass through unchanged.
+
+    Known labels are compared case- and whitespace-insensitively. Unknown values —
+    including a non-string, which the inline JSON path can produce — are returned
+    as-is: the exact `value_domain` membership then rejects them, which is the
+    honest "unanswered", not a guess.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return value
+    return PROGRESSION_CODES.get(text.casefold(), value)
+
+
 def _derive_progression(surface):
     """Replicate CB's `PatientInfo.save` progression rule from meets_crab / meets_slim (both PROMOP-
     derived). 'active' if either CRAB/SLiM is met, 'smoldering' if both are explicitly not met, else
@@ -498,8 +522,9 @@ class PatientRecordSurface:
         if name == 'progression':
             # CB computes progression in PatientInfo.save (not attributes_service); PROMOP has the
             # column but leaves it NULL. Prefer a populated value, else replicate CB's save logic.
+            # A populated value is PROMOP's display label; map the two codes EXACT knows (#5550).
             direct = getattr(record, 'progression', None)
-            return direct if direct is not None else _derive_progression(self)
+            return progression_code(direct) if direct is not None else _derive_progression(self)
         try:
             return getattr(record, name)
         except AttributeError:
