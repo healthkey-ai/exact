@@ -8,8 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # apt is retried inside the step; this bounds a wedged runner. Worst case
-    # there is two apt attempts (~22m), so 30 leaves room for pip.
+    # apt is retried inside the step, which caps itself at 20m; this bounds a
+    # wedged runner.
     timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
@@ -27,38 +27,63 @@ jobs:
     - name: Install system dependencies
       run: |
         set -euo pipefail
-        # apt has hung this step for most of a job: in run 40485223864, test (1)
-        # spent 10:02:52 -> 10:42:36 (40 minutes) in here and then ran the tests
-        # in 31 seconds. Which of the two candidates it is -- a held dpkg lock or
-        # a broken IPv6 route -- is not proven, so cap the lock wait, force IPv4,
-        # retry once, and keep the log so the next occurrence answers that.
+        # apt has stalled this step for most of a job: in run 40485223864, test
+        # (1) spent 10:02:52 -> 10:42:36 (40 minutes) here and then ran the tests
+        # in 31 seconds, with no output at all because the calls used -qq. The
+        # same stall, caught with output enabled in CancerBot job 122379632179,
+        # timed out at rc=124 stopped mid-download on a 119 kB package, and its
+        # next attempt resumed at the sixth package rather than the first: apt
+        # keeps the .debs it already has, but its http timeout is
+        # inactivity-based, so a transfer that trickles never trips it, and
+        # default pipelining lets one stalled request block the queue. That is a
+        # hypothesis, not a proven cause, but it fits both jobs.
+        #
+        # So: turn pipelining off, and spend a fixed wall-clock budget on attempts
+        # instead of one long wait -- each attempt resumes where the last stopped.
+        budget=1200
+        deadline=$((SECONDS + budget))
+        start_all=$SECONDS
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        apt=(sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 300 apt-get
-             -o Acquire::Retries=3
+        apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get
+             -o Acquire::Retries=2
              -o Acquire::ForceIPv4=true
-             -o Acquire::http::Timeout=30
-             -o Acquire::https::Timeout=30
+             -o Acquire::http::Timeout=15
+             -o Acquire::https::Timeout=15
+             -o Acquire::http::Pipeline-Depth=0
              -o APT::Update::Error-Mode=any
              -o DPkg::Lock::Timeout=120)
         log=$(mktemp)
-        for attempt in 1 2; do
+        attempt=0
+        while [ $((deadline - SECONDS)) -ge 120 ] && [ "$attempt" -lt 6 ]; do
+          attempt=$((attempt + 1))
           start=$SECONDS
           rc=0
-          "${apt[@]}" -q update >>"$log" 2>&1 &&
-            "${apt[@]}" -yq install \
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$cap" -lt 1 ]; then break; fi
+          timeout --kill-after=20 "$cap" "${apt[@]}" -q update >>"$log" 2>&1 || rc=$?
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$rc" -eq 0 ] && [ "$cap" -ge 60 ]; then
+            timeout --kill-after=20 "$cap" "${apt[@]}" -yq install \
               gcc \
               libpq-dev \
               gdal-bin \
               libgdal-dev \
               libgeos-dev \
               postgresql-client >>"$log" 2>&1 || rc=$?
+          elif [ "$rc" -eq 0 ]; then
+            # No budget left to install: that is not a success.
+            rc=124
+          fi
           if [ "$rc" -eq 0 ]; then exit 0; fi
           echo "::warning::apt attempt ${attempt} failed after $((SECONDS - start))s, rc=${rc}"
           grep -iE 'lock|err:|fail|unable|could not' "$log" | tail -n 20 || true
           tail -n 20 "$log"
-          sleep 15
+          if [ $((deadline - SECONDS)) -lt 120 ] || [ "$attempt" -ge 6 ]; then break; fi
+          sleep $((attempt * 10))
         done
-        echo "::error::apt failed after 2 attempts; the log above says why"
+        echo "::error::apt failed after ${attempt} attempts in $((SECONDS - start_all))s; the log above says why"
         exit 1
     - name: Install Python dependencies
       # This job exists to fail fast on a bad `requirements.txt`, and to fill
@@ -92,8 +117,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # Normal run is ~2 minutes. Worst case is two apt attempts (~22m) plus pip
-    # and the suite; the timeout is a ceiling, not a target.
+    # Normal run is ~2 minutes. Worst case is the 20m apt budget plus pip and the
+    # suite; the timeout is a ceiling, not a target.
     timeout-minutes: 30
     needs: [build]
     strategy:
@@ -129,25 +154,45 @@ jobs:
     - name: Install system dependencies
       run: |
         set -euo pipefail
-        # apt has hung this step for most of a job: in run 40485223864, test (1)
-        # spent 10:02:52 -> 10:42:36 (40 minutes) in here and then ran the tests
-        # in 31 seconds. Which of the two candidates it is -- a held dpkg lock or
-        # a broken IPv6 route -- is not proven, so cap the lock wait, force IPv4,
-        # retry once, and keep the log so the next occurrence answers that.
+        # apt has stalled this step for most of a job: in run 40485223864, test
+        # (1) spent 10:02:52 -> 10:42:36 (40 minutes) here and then ran the tests
+        # in 31 seconds, with no output at all because the calls used -qq. The
+        # same stall, caught with output enabled in CancerBot job 122379632179,
+        # timed out at rc=124 stopped mid-download on a 119 kB package, and its
+        # next attempt resumed at the sixth package rather than the first: apt
+        # keeps the .debs it already has, but its http timeout is
+        # inactivity-based, so a transfer that trickles never trips it, and
+        # default pipelining lets one stalled request block the queue. That is a
+        # hypothesis, not a proven cause, but it fits both jobs.
+        #
+        # So: turn pipelining off, and spend a fixed wall-clock budget on attempts
+        # instead of one long wait -- each attempt resumes where the last stopped.
+        budget=1200
+        deadline=$((SECONDS + budget))
+        start_all=$SECONDS
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        apt=(sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=30 300 apt-get
-             -o Acquire::Retries=3
+        apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get
+             -o Acquire::Retries=2
              -o Acquire::ForceIPv4=true
-             -o Acquire::http::Timeout=30
-             -o Acquire::https::Timeout=30
+             -o Acquire::http::Timeout=15
+             -o Acquire::https::Timeout=15
+             -o Acquire::http::Pipeline-Depth=0
              -o APT::Update::Error-Mode=any
              -o DPkg::Lock::Timeout=120)
         log=$(mktemp)
-        for attempt in 1 2; do
+        attempt=0
+        while [ $((deadline - SECONDS)) -ge 120 ] && [ "$attempt" -lt 6 ]; do
+          attempt=$((attempt + 1))
           start=$SECONDS
           rc=0
-          "${apt[@]}" -q update >>"$log" 2>&1 &&
-            "${apt[@]}" -yq install \
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$cap" -lt 1 ]; then break; fi
+          timeout --kill-after=20 "$cap" "${apt[@]}" -q update >>"$log" 2>&1 || rc=$?
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$rc" -eq 0 ] && [ "$cap" -ge 60 ]; then
+            timeout --kill-after=20 "$cap" "${apt[@]}" -yq install \
               gcc \
               libpq-dev \
               gdal-bin \
@@ -155,13 +200,18 @@ jobs:
               libgeos-dev \
               libgeos-c1v5 \
               postgresql-client >>"$log" 2>&1 || rc=$?
+          elif [ "$rc" -eq 0 ]; then
+            # No budget left to install: that is not a success.
+            rc=124
+          fi
           if [ "$rc" -eq 0 ]; then exit 0; fi
           echo "::warning::apt attempt ${attempt} failed after $((SECONDS - start))s, rc=${rc}"
           grep -iE 'lock|err:|fail|unable|could not' "$log" | tail -n 20 || true
           tail -n 20 "$log"
-          sleep 15
+          if [ $((deadline - SECONDS)) -lt 120 ] || [ "$attempt" -ge 6 ]; then break; fi
+          sleep $((attempt * 10))
         done
-        echo "::error::apt failed after 2 attempts; the log above says why"
+        echo "::error::apt failed after ${attempt} attempts in $((SECONDS - start_all))s; the log above says why"
         exit 1
     - name: Install Python dependencies
       # Its own, not `build`'s — see the comment there for what happened
