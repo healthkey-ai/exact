@@ -109,3 +109,13 @@ class TestMyelomaRelatedDisordersQueryset:
             .values_list('id', flat=True)
         )
         assert t.id in ids
+
+    @pytest.mark.django_db
+    def test_filter_by_patient_info_uses_the_dispatch(self):
+        t = TrialFactory(disease='multiple myeloma', myeloma_related_disorders_excluded=['mgus'])
+
+        present, _ = Trial.objects.filter_by_patient_info(_patient(mgus=True))
+        unknown, _ = Trial.objects.filter_by_patient_info(_patient())
+
+        assert t.id not in set(present.values_list('id', flat=True))
+        assert t.id in set(unknown.values_list('id', flat=True))
