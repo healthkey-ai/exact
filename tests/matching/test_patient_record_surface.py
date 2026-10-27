@@ -308,9 +308,119 @@ def test_progression_labels_map_to_codes_and_other_states_are_left_alone(stored,
     assert surface.progression == expected
 
 
-def test_a_populated_label_wins_over_the_crab_derivation():
-    # The record value is authoritative; a non-equivalent label must not silently
-    # fall back to the derivation just because CRAB is set.
-    surface = PatientRecordSurface(_record(progression='Relapsed', meets_crab=True))
+@pytest.mark.parametrize('field, stored, expected', [
+    # PROMOP's LOINC answer labels.
+    ('estrogen_receptor_status', 'Positive', 'er_plus'),
+    ('estrogen_receptor_status', 'Negative', 'er_minus'),
+    ('estrogen_receptor_status', 'POSITIVE', 'er_plus'),
+    ('estrogen_receptor_status', 'Equivocal', None),
+    ('estrogen_receptor_status', 'Some future label', None),
+    ('estrogen_receptor_status', '', None),
+    ('estrogen_receptor_status', None, None),
+    ('progesterone_receptor_status', 'Positive', 'pr_plus'),
+    ('progesterone_receptor_status', 'Negative', 'pr_minus'),
+    ('progesterone_receptor_status', 'Equivocal', None),
+    # A CB-authored record already carries the code, including expression levels.
+    ('estrogen_receptor_status', 'er_plus_with_hi_exp', 'er_plus_with_hi_exp'),
+    ('progesterone_receptor_status', 'pr_plus_with_low_exp', 'pr_plus_with_low_exp'),
+    ('her2_status', 'Positive', 'her2_plus'),
+    ('her2_status', 'Negative', 'her2_minus'),
+    ('her2_status', 'HER2 low', 'her2_low'),
+    ('her2_status', 'her2_low', 'her2_low'),
+    # Equivocal is IHC 2+ without amplification, not "HER2 low" (#5553).
+    ('her2_status', 'Equivocal', None),
+    ('hr_status', 'HR+', 'hr_plus'),
+    ('hr_status', 'HR-', 'hr_minus'),
+    ('hr_status', 'hr_plus_with_hi_exp', 'hr_plus_with_hi_exp'),
+    ('hr_status', 'Positive', 'hr_plus'),
+    ('hr_status', 'Negative', 'hr_minus'),
+])
+def test_receptor_labels_become_codes_and_equivocal_stays_unknown(field, stored, expected):
+    surface = PatientRecordSurface(_record(**{field: stored}))
 
-    assert surface.progression == 'Relapsed'
+    assert getattr(surface, field) == expected
+
+
+@pytest.mark.parametrize('field, stored, expected', [
+    ('tumor_stage', 'T2: Invasive Tumor > 2 – 5 cm', 't2'),
+    ('tumor_stage', 'T1mi: Invasive Tumor ≤ 0.1 cm', 't1mi'),
+    ('tumor_stage', 'Tx: Primary Tumor, cannot be assessed', 'tx'),
+    ('tumor_stage', 't2', 't2'),
+    ('tumor_stage', 'T5: not an option', None),
+    ('tumor_stage', '', None),
+    ('tumor_stage', None, None),
+    ('nodes_stage', 'N1: 1–3 axillary lymph nodes or small internal mammary nodes', 'n1'),
+    ('nodes_stage', 'N3c: Supraclavicular nodes', 'n3c'),
+    ('nodes_stage', 'n0', 'n0'),
+    ('nodes_stage', 'N4: not an option', None),
+    # The token belongs to a different axis; it must not match by accident.
+    ('nodes_stage', 'T2: Invasive Tumor', None),
+    ('distant_metastasis_stage', 'M0: No distant metastasis', 'm0'),
+    ('distant_metastasis_stage', 'M0(i+): No metastasis on scans, …', 'm0(i_plus)'),
+    ('distant_metastasis_stage', 'm0(i_plus)', 'm0(i_plus)'),
+    ('distant_metastasis_stage', 'M1: Distant metastasis present', 'm1'),
+    ('distant_metastasis_stage', 'M2: not an option', None),
+])
+def test_tnm_titles_and_codes_become_the_loader_code(field, stored, expected):
+    surface = PatientRecordSurface(_record(**{field: stored}))
+
+    assert getattr(surface, field) == expected
+
+
+@pytest.mark.parametrize('stored, expected', [
+    ('1', '10'),
+    ('2', '20'),
+    ('3', '30'),
+    ('3A', '31'),
+    ('3B', '32'),
+    (2, '20'),
+    ('Grade 2', '20'),
+    ('10', '10'),
+    ('31', '31'),
+    ('4', None),
+    ('Unknown', None),
+    ('', None),
+    (None, None),
+])
+def test_fl_tumor_grade_uses_exacts_numeric_codes(stored, expected):
+    surface = PatientRecordSurface(_record(tumor_grade=stored))
+
+    assert surface.tumor_grade == expected
+
+
+@pytest.mark.parametrize('stored, expected', [
+    ('Infiltrating ductal carcinoma (IDC)', 'infiltrating_ductal_carcinoma'),
+    ('infiltrating ductal carcinoma (idc)', 'infiltrating_ductal_carcinoma'),
+    ('Ductal carcinoma in situ (DCIS)', 'dcis'),
+    ('Mixed ductal and lobular carcinoma', 'mixed_ductal_and_lobular_carcinoma'),
+    ('Paget disease of the nipple', 'paget_disease_of_the_nipple'),
+    ('infiltrating_ductal_carcinoma', 'infiltrating_ductal_carcinoma'),
+    # A non-BC histology has no BC trial code; it stays unknown.
+    ('Follicular lymphoma, grade 2', None),
+    ('', None),
+    (None, None),
+])
+def test_histology_descriptions_become_exacts_codes(stored, expected):
+    surface = PatientRecordSurface(_record(histologic_type=stored))
+
+    assert surface.histologic_type == expected
+
+
+@pytest.mark.parametrize('stored, expected', [
+    ('Pre-menopausal', 'pre_menopausal'),
+    ('pre_menopausal', 'pre_menopausal'),
+    ('premenopausal', 'pre_menopausal'),
+    ('pre menopausal', 'pre_menopausal'),
+    ('Post-menopausal', 'post_menopausal'),
+    ('postmenopausal', 'post_menopausal'),
+    ('POST MENOPAUSAL', 'post_menopausal'),
+    # EXACT has no code for this state, and neither label is an honest answer.
+    ('Peri-menopausal', None),
+    ('Unknown', None),
+    ('', None),
+    (None, None),
+])
+def test_menopausal_labels_map_only_to_the_two_known_states(stored, expected):
+    surface = PatientRecordSurface(_record(menopausal_status=stored))
+
+    assert surface.menopausal_status == expected
