@@ -147,6 +147,7 @@ def _derive_progression(surface):
 #: assertion (#5552).
 REFRACTORY_STATUS_TO_CB = {
     'not refractory': 'notRefractory',
+    'not refractory (progression halted)': 'notRefractory',
     'notrefractory': 'notRefractory',
     'primary refractory': 'primaryRefractory',
     'primaryrefractory': 'primaryRefractory',
@@ -155,7 +156,11 @@ REFRACTORY_STATUS_TO_CB = {
     'multi-refractory': 'multiRefractory',
     'multi refractory': 'multiRefractory',
     'multirefractory': 'multiRefractory',
-    'refractory': 'refractory',
+    # A bare `Refractory` has no code in EXACT's option list; mapping it to a
+    # subtype would invent one, and passing it through relies on the matcher's
+    # "any other value is refractory" fallback. It stays unknown until a generic
+    # refractory code is agreed.
+    'refractory': None,
     'unknown': None,
     '': None,
 }
