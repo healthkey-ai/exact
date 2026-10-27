@@ -77,6 +77,14 @@ _FIELDS = [
     _f(BooleanField, 'plasma_cell_leukemia', default=False),
     _f(TextField, 'progression'),
     _f(BooleanField, 'measurable_disease_imwg'),
+    # Current-diagnosis MM conditions for the exclusion Named-ORs (#5521).
+    # None = unknown, False = No, True = Yes.
+    _f(BooleanField, 'mgus'),
+    _f(BooleanField, 'smoldering_multiple_myeloma'),
+    _f(BooleanField, 'waldenstrom_macroglobulinemia'),
+    _f(BooleanField, 'igm_multiple_myeloma'),
+    _f(BooleanField, 'al_amyloidosis'),
+    _f(BooleanField, 'poems_syndrome'),
     # Lymphoma-specific
     _f(TextField, 'gelf_criteria_status'),
     _f(IntegerField, 'flipi_score'),
@@ -345,6 +353,10 @@ class PatientInfo:
     def mutation_interpretations(self):
         from trials.services.patient_info.genetic_mutations import GeneticMutations
         return GeneticMutations.mutation_interpretations(self.genetic_mutations)
+
+    @property
+    def myeloma_related_disorders(self):
+        return self.attributes_service.myeloma_related_disorders
 
     @property
     def abnormal_kappa_lambda_ratio(self):

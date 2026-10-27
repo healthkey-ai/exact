@@ -122,6 +122,18 @@ BULKY_DISEASE_CRITERIA_SOURCES = {
     'bulky_spleen_20cm_gte': ['spleen_size'],
 }
 
+# Per-condition source for the MM exclusion Named-ORs attribute (CB #5521).
+# Each condition is one independent current-diagnosis nullable boolean, so its
+# absence is confirmed only when that one field is answered.
+MYELOMA_RELATED_DISORDERS_SOURCES = {
+    'mgus': ['mgus'],
+    'smoldering_multiple_myeloma': ['smoldering_multiple_myeloma'],
+    'waldenstrom_macroglobulinemia': ['waldenstrom_macroglobulinemia'],
+    'igm_multiple_myeloma': ['igm_multiple_myeloma'],
+    'al_amyloidosis': ['al_amyloidosis'],
+    'poems_syndrome': ['poems_syndrome'],
+}
+
 
 # `None` is a MEANINGFUL supplied value here (an unresolved aggregate), so
 # "was it supplied at all?" needs a marker that is not None.
@@ -1455,6 +1467,27 @@ class PatientInfoAttributes:
 
         return ','.join(criteria) if criteria else None
 
+    @cached_property
+    def myeloma_related_disorders(self):
+        """Current-diagnosis MM conditions the patient answered Yes to.
+
+        ``none`` is a display sentinel, emitted only when all six conditions are
+        answered and all are False. A partial answer with no Yes stays blank
+        (Unknown), so an unanswered condition never reads as a confirmed No.
+        """
+        pi = self.patient_info
+        codes = [
+            code
+            for code, sources in MYELOMA_RELATED_DISORDERS_SOURCES.items()
+            if getattr(pi, sources[0], None) is True
+        ]
+        if not codes and all(
+            getattr(pi, sources[0], None) is not None
+            for sources in MYELOMA_RELATED_DISORDERS_SOURCES.values()
+        ):
+            return 'none'
+        return ','.join(codes) if codes else None
+
     def _criteria_source_blank(self, source):
         """Whether a single source token backing a derived criterion is blank."""
         if source == '_mipi_risk':
@@ -1506,3 +1539,10 @@ class PatientInfoAttributes:
 
     def bulky_disease_criteria_all_unknown_codes(self):
         return self._criteria_unknown_codes(BULKY_DISEASE_CRITERIA_SOURCES.keys(), BULKY_DISEASE_CRITERIA_SOURCES)
+
+    def myeloma_related_disorders_unknown_codes(self, required_codes):
+        return self._criteria_unknown_codes(required_codes, MYELOMA_RELATED_DISORDERS_SOURCES)
+
+    def myeloma_related_disorders_all_unknown_codes(self):
+        return self._criteria_unknown_codes(
+            MYELOMA_RELATED_DISORDERS_SOURCES.keys(), MYELOMA_RELATED_DISORDERS_SOURCES)

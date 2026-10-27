@@ -280,6 +280,7 @@ _CUSTOM_SEARCH_DISPATCH = {
     'extranodal_sites': lambda s, v, _c: s.eligible_for_extranodal_sites(_as_list_stripped(v)),
     'bulky_disease_criteria': lambda s, v, _c: s.eligible_for_bulky_disease_criteria(_csv_stripped(v)),
     'high_risk_mcl_criteria': lambda s, v, _c: s.eligible_for_high_risk_mcl_criteria(_csv_stripped(v)),
+    'myeloma_related_disorders': lambda s, v, _c: s.eligible_for_myeloma_related_disorders(_csv_stripped(v)),
 }
 
 
@@ -1767,6 +1768,17 @@ class TrialQuerySet(models.QuerySet):
         ).exclude(
             Q(high_risk_mcl_criteria_excluded__has_any_keys=values)
         )
+
+    def eligible_for_myeloma_related_disorders(self, codes: list[str]) -> models.QuerySet:
+        """Drop trials whose exclusion list contains a condition the patient has.
+
+        An unanswered condition is not in the patient's code set, so the trial
+        stays in the list and the matcher reports it Potential instead.
+        """
+        if codes is None or codes == []:
+            return self
+        values = [str(x).strip() for x in codes]
+        return self.exclude(myeloma_related_disorders_excluded__has_any_keys=values)
 
     def eligible_for_tp53_disruption(self, tp53_disruption: bool) -> models.QuerySet:
         """

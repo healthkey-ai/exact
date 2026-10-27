@@ -19,7 +19,8 @@ class ValueOptions:
         # would serve the pre-#63 shape (missing those 40 keys), letting
         # the cached blob drift from fresh `all_options()` output until
         # the 1h TTL expires.
-        return 'ValueOptions.all_options.v2'
+        # v3: #5521 adds the MM MyelomaRelatedDisorder vocabulary keys.
+        return 'ValueOptions.all_options.v3'
 
     @staticmethod
     def to_value_and_label(data):
@@ -902,6 +903,12 @@ class ValueOptions:
         return {x.code: x.title for x in items}
 
     @property
+    def myeloma_related_disorders(self):
+        from trials.models import MyelomaRelatedDisorder
+        items = MyelomaRelatedDisorder.objects.order_by('id')
+        return {x.code: x.title for x in items}
+
+    @property
     def er_statuses(self):
         from trials.models import EstrogenReceptorStatus
         items = EstrogenReceptorStatus.objects.order_by('id')
@@ -1405,5 +1412,11 @@ class ValueOptions:
             },
             'highRiskMclCriteria': {
                 'options': self.to_value_and_label(self.high_risk_mcl_criteria)
+            },
+            'myelomaRelatedDisorders': {
+                'options': self.to_value_and_label(self.myeloma_related_disorders)
+            },
+            'myelomaRelatedDisordersExcluded': {
+                'options': self.to_value_and_label(self.myeloma_related_disorders)
             },
         }
