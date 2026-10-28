@@ -272,7 +272,15 @@ class PatientInfoAttributes:
             return False
         is_blank = False
         user_attr_value = self.get_value(attr_name)
-        if attr_name in ('genetic_mutations', 'supportive_therapies', 'later_therapies') and user_attr_value == []:
+        # Empty JSON collections and legacy empty strings are unanswered for
+        # these list-valued attributes. SCT is included on purpose: ['None'] is
+        # an explicit "no SCT" answer, but [] / '' means the patient was not
+        # asked, and treating that as filled lets an exclusion-only trial turn
+        # an unknown history into a confirmed match (#5435, CB-ahead).
+        if attr_name in (
+            'stem_cell_transplant_history', 'genetic_mutations',
+            'supportive_therapies', 'later_therapies',
+        ) and (user_attr_value == [] or user_attr_value == ''):
             return True
         if user_attr_value is None:
             is_blank = True
