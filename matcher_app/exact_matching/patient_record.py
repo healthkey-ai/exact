@@ -539,6 +539,13 @@ _FIELD_MAPS = {
         lambda r: _prefer_direct(r, 'hemoglobin_level', r.hemoglobin_g_dl),
     'hemoglobin_level_units':
         lambda r: r.hemoglobin_level_units if r.hemoglobin_level is not None else 'g/dL',
+    # albumin — canonical `albumin_g_dl`; the legacy `albumin_level` column is
+    # filled only by the loose concept-name map, so prefer it when present and
+    # fall back to the LOINC-coded canonical column, same unit (#5555).
+    'albumin_level':
+        lambda r: _prefer_direct(r, 'albumin_level', r.albumin_g_dl),
+    'albumin_level_units':
+        lambda r: r.albumin_level_units if r.albumin_level is not None else 'g/dL',
     'serum_calcium_level':
         lambda r: _prefer_direct(r, 'serum_calcium_level', r.serum_calcium_mg_dl),
     'serum_calcium_level_units':
