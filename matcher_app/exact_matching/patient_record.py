@@ -451,6 +451,21 @@ _FIELD_MAPS = {
         lambda r: _prefer_direct(r, 'platelet_count', _scaled(r.platelet_count_thousand_per_ul, 1000)),
     'platelet_count_units':
         lambda r: r.platelet_count_units if r.platelet_count is not None else 'CELLS/UL',
+    # RBC. PROMOP's canonical column is million/µL (`rbc_million_per_ul`); the
+    # legacy `red_blood_cell_count` column is the same number copied by
+    # `_LAB_FIELD_ALIASES`, but its unit defaults to CELLS/L. Pairing the number
+    # with that unit is a scale mismatch (#5555). The trial thresholds are
+    # authored on the million/µL scale (`10*12/L`), and CB's convertor treats
+    # `10*6/uL` as identity with it.
+    # Prefer the direct/legacy column: PROMOP preserves pending user edits there
+    # while the canonical column still holds the pre-edit value. Fall back to the
+    # canonical column when the direct one is empty. Both hold million/µL.
+    'red_blood_cell_count':
+        lambda r: _prefer_direct(r, 'red_blood_cell_count', r.rbc_million_per_ul),
+    'red_blood_cell_count_units':
+        lambda r: '10*6/uL'
+        if (r.red_blood_cell_count is not None or r.rbc_million_per_ul is not None)
+        else r.red_blood_cell_count_units,
     # absolute_lymphocyte_count (MCL/CLL lymphocytosis, cells/µL) — ×1000 from the 10³/µL source, no
     # *_units field. Deliberately NOT _prefer_direct here (#4825): the PROMOP `absolute_lymphocyte_count`
     # column is unreliable — `_get_cll_data` (patient_record_service, LOINC 731-0) copies the Measurement's
