@@ -1326,7 +1326,11 @@ def _sct_has_mapped_items(pi_vals, excluded_list):
 
 
 def _concomitant_has_mapped_items(pi_vals, excluded_list):
-    if not isinstance(pi_vals, (list, tuple)):
+    if isinstance(pi_vals, str):
+        # CB stores the multi-select as a comma-separated string; search already
+        # splits it, and the matcher must see the same items (#5554).
+        pi_vals = [x.strip() for x in pi_vals.split(',') if x.strip()]
+    elif not isinstance(pi_vals, (list, tuple)):
         pi_vals = [pi_vals]
 
     if pi_vals == ['None']:
