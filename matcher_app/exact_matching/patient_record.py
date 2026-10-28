@@ -135,6 +135,198 @@ def progression_code(value):
     return PROGRESSION_CODES.get(text.casefold(), value)
 
 
+#: PROMOP's receptor vocabulary is the LOINC answer list (`Positive`, `Negative`,
+#: `Equivocal` — promop migrations 0196/0197). The matcher compares CB's
+#: `*_plus` / `*_minus` codes, so the label is not an answer. `Positive` maps to
+#: the generic parent only: the label carries no expression level, and inventing
+#: `*_with_hi_exp` would be clinical detail PROMOP did not record. `Equivocal`
+#: establishes neither direction and is **not** `her2_low`; it stays unknown
+#: (#5553). A CB-authored record can already hold the code (`er_plus`,
+#: `hr_plus_with_hi_exp`, …); those pass through unchanged.
+_RECEPTOR_FIELDS = {
+    'estrogen_receptor_status': 'er',
+    'progesterone_receptor_status': 'pr',
+    'her2_status': 'her2',
+    'hr_status': 'hr',
+}
+
+_RECEPTOR_LABEL_CODES = {
+    'er': {'positive': 'er_plus', 'negative': 'er_minus'},
+    'pr': {'positive': 'pr_plus', 'negative': 'pr_minus'},
+    'her2': {'positive': 'her2_plus', 'negative': 'her2_minus', 'her2 low': 'her2_low'},
+    'hr': {
+        'positive': 'hr_plus', 'hr+': 'hr_plus',
+        'negative': 'hr_minus', 'hr-': 'hr_minus',
+    },
+}
+
+_RECEPTOR_CODES_BY_KIND = {
+    'er': frozenset({
+        'er_minus', 'er_plus', 'er_plus_with_low_exp', 'er_plus_with_hi_exp',
+    }),
+    'pr': frozenset({
+        'pr_minus', 'pr_plus', 'pr_plus_with_low_exp', 'pr_plus_with_hi_exp',
+    }),
+    'her2': frozenset({'her2_plus', 'her2_minus', 'her2_low'}),
+    'hr': frozenset({
+        'hr_minus', 'hr_plus', 'hr_plus_with_low_exp', 'hr_plus_with_hi_exp',
+    }),
+}
+
+
+def receptor_status_code(value, kind):
+    """PROMOP receptor label → CB/EXACT code, or None when it establishes none.
+
+    A known code passes through (a CB-authored record). A label maps only when
+    it is unambiguous; everything else — `Equivocal`, free text, an unknown
+    subtype — becomes None rather than a clinical guess.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    folded = text.casefold()
+    # Only this field's own codes pass: a wrong-axis value (`pr_plus` in the ER
+    # column) is corrupt data, not an answer.
+    if folded in _RECEPTOR_CODES_BY_KIND.get(kind, ()):
+        return folded
+    return _RECEPTOR_LABEL_CODES.get(kind, {}).get(folded)
+
+
+#: EXACT's staging options are the loader's lower-case codes (`t2`, `n1`,
+#: `m0(i_plus)`); the loader writes the display title with the code as its
+#: prefix. CB's own writes store the code, imported OMOP facts carry the title,
+#: so both are accepted and anything outside the list stays unknown (#5553).
+TNM_STAGE_CODES = {
+    'tumor_stage': frozenset({
+        'tx', 't0', 'tis', 't1', 't1mi', 't1a', 't1b', 't1c',
+        't2', 't3', 't4', 't4a', 't4b', 't4c', 't4d',
+    }),
+    'nodes_stage': frozenset({
+        'nx', 'n0', 'n1', 'n1mi', 'n1a', 'n1b', 'n1c',
+        'n2', 'n2a', 'n2b', 'n3', 'n3a', 'n3b', 'n3c',
+    }),
+    'distant_metastasis_stage': frozenset({'m0', 'm0(i_plus)', 'm1'}),
+}
+
+
+def tnm_stage_code(field, value):
+    """PROMOP's T/N/M value → EXACT's option code, or None.
+
+    Reads the token before the first colon (`T2: Invasive Tumor …` → `t2`) and
+    normalises `+` to `_plus` so the `M0(i+)` title lands on the loader's
+    `m0(i_plus)` code. An unrecognised value is unknown, never passed through.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if ':' in text:
+        text = text.split(':', 1)[0].strip()
+    code = text.casefold().replace('+', '_plus')
+    return code if code in TNM_STAGE_CODES[field] else None
+
+
+#: FL grade vocabulary: PROMOP normalises to `1`/`2`/`3`/`3A`/`3B` (and can
+#: emit them from a stored title), EXACT's option codes are numeric (#5553).
+TUMOR_GRADE_CODES = {
+    '1': '10', '2': '20', '3': '30', '3a': '31', '3b': '32',
+    '10': '10', '20': '20', '30': '30', '31': '31', '32': '32',
+}
+
+
+def tumor_grade_code(value):
+    """PROMOP grade → EXACT's numeric code, or None when it is not a grade."""
+    if value is None:
+        return None
+    text = str(value).strip().casefold()
+    if not text:
+        return None
+    if text.startswith('grade'):
+        text = text[len('grade'):].strip()
+    return TUMOR_GRADE_CODES.get(text)
+
+
+#: BC histology: PROMOP stores the OMOP/FHIR description, EXACT compares the
+#: loader's code. Titles are the exact `LoadBcOptions.load_histologic_types`
+#: labels (case/whitespace-insensitive); a code already passes through.
+HISTOLOGIC_TYPE_CODES = {
+    'infiltrating ductal carcinoma (idc)': 'infiltrating_ductal_carcinoma',
+    'ductal carcinoma in situ (dcis)': 'dcis',
+    'infiltrating lobular carcinoma (ilc)': 'infiltrating_lobular_carcinoma',
+    'lobular carcinoma in situ (lcis)': 'lcis',
+    'mixed ductal and lobular carcinoma': 'mixed_ductal_and_lobular_carcinoma',
+    'mucinous (colloid) carcinoma': 'mucinous_colloid_carcinoma',
+    'tubular carcinoma': 'tubular_carcinoma',
+    'medullary carcinoma': 'medullary_carcinoma',
+    'papillary carcinoma': 'papillary_carcinoma',
+    'metaplastic carcinoma': 'metaplastic_carcinoma',
+    'paget disease of the nipple': 'paget_disease_of_the_nipple',
+    'inflammatory carcinoma': 'inflammatory_carcinoma',
+}
+
+_HISTOLOGIC_TYPE_CODE_VALUES = frozenset(HISTOLOGIC_TYPE_CODES.values())
+
+
+def histologic_type_code(value):
+    """PROMOP histology description → EXACT's code, or None when unmatched.
+
+    A description EXACT has no option for (a non-BC histology, a local variant)
+    stays unknown; mapping it loosely would assert a subtype the trial did not
+    select.
+    """
+    if value is None:
+        return None
+    text = ' '.join(str(value).split())
+    if not text:
+        return None
+    folded = text.casefold()
+    if folded in _HISTOLOGIC_TYPE_CODE_VALUES:
+        return folded
+    return HISTOLOGIC_TYPE_CODES.get(folded)
+
+
+#: EXACT has two menopausal codes. PROMOP stores a free-text label
+#: (`Pre-menopausal`); separators are normalised before the exact lookup, so
+#: `peri-menopausal` and any other state remain unresolved rather than being
+#: forced into pre/post (#5553).
+_MENOPAUSAL_STATUS_CODES = {
+    'premenopausal': 'pre_menopausal',
+    'postmenopausal': 'post_menopausal',
+}
+
+
+def menopausal_status_code(value):
+    """PROMOP menopausal label → EXACT's code, or None for any other state."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalised = ''.join(ch for ch in text.casefold() if ch not in ' -_')
+    return _MENOPAUSAL_STATUS_CODES.get(normalised)
+
+
+#: Fields whose PROMOP storage vocabulary differs from the matcher's. Both the
+#: packaged surface and a host that still owns its adapter dispatch through this
+#: map, so the crosswalk cannot drift between them (#5553).
+CATEGORICAL_CODES = {
+    **{
+        field: (lambda value, kind=kind: receptor_status_code(value, kind))
+        for field, kind in _RECEPTOR_FIELDS.items()
+    },
+    **{
+        field: (lambda value, field=field: tnm_stage_code(field, value))
+        for field in TNM_STAGE_CODES
+    },
+    'tumor_grade': tumor_grade_code,
+    'histologic_type': histologic_type_code,
+    'menopausal_status': menopausal_status_code,
+}
+
+
 def _derive_progression(surface):
     """Replicate CB's `PatientInfo.save` progression rule from meets_crab / meets_slim (both PROMOP-
     derived). 'active' if either CRAB/SLiM is met, 'smoldering' if both are explicitly not met, else
@@ -519,6 +711,9 @@ class PatientRecordSurface:
             # compute. No recursion: the derivations read input fields, never the derived field itself.
             direct = getattr(record, name, None)
             return direct if direct is not None else getattr(self._attributes_service(), name)
+        if name in CATEGORICAL_CODES:
+            # PROMOP stores labels/titles; the matcher compares codes (#5553).
+            return CATEGORICAL_CODES[name](getattr(record, name, None))
         if name == 'progression':
             # CB computes progression in PatientInfo.save (not attributes_service); PROMOP has the
             # column but leaves it NULL. Prefer a populated value, else replicate CB's save logic.
