@@ -218,7 +218,8 @@ class RequestEvaluation:
                 if self._batch_bytes + added_bytes > _BATCH_BYTES:
                     raise ContractError('predicate_batch_budget')
                 documents = json.loads(encoded)
-                if (len(documents) != len(_FIELDS) or not all(type(item) is dict for item in documents) or
+                if (len(documents) != len(_FIELDS) or not all(
+                        type(item) is dict and type(item.get('field')) is str for item in documents) or
                         {item.get('field') for item in documents} != _FIELDS):
                     raise ContractError('predicate_inventory')
                 dependencies, companions = {}, {}

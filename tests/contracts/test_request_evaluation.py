@@ -209,7 +209,8 @@ def test_all_55_validated_even_when_disease_does_not_apply():
         evaluation.evaluate([row])
 
 
-@pytest.mark.parametrize('mutation', ['missing', 'duplicate', 'unknown', 'wrong_binding', 'dependency'])
+@pytest.mark.parametrize('mutation', ['missing', 'duplicate', 'unknown', 'wrong_binding', 'dependency',
+                                     'list_field', 'object_field'])
 def test_invalid_batch_fails_whole_operation(mutation):
     row = TrialFactory()
     evaluation, _ = session()
@@ -225,6 +226,8 @@ def test_invalid_batch_fails_whole_operation(mutation):
             docs[-1] = deepcopy(docs[0])
         elif mutation == 'unknown':
             docs[-1]['field'] = 'not_a_criterion'
+        elif mutation in ('list_field', 'object_field'):
+            docs[-1]['field'] = [] if mutation == 'list_field' else {}
         elif mutation == 'dependency':
             # Genomic sibling dependencies must agree across the batch.
             doc = next(item for item in docs if item['field'] == 'mutation_genes_required')
