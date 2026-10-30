@@ -320,6 +320,10 @@ class _FieldReader:
             allowed = {column, 'value_as_string'} if column == 'value_as_concept_id' else {column}
             if nonnull - allowed:
                 return None, _system('unavailable', 'physical_answer_kind_conflict')
+            if column == 'value_as_concept_id':
+                if answer[column] == '0' or (answer[column] is None
+                                             and answer['value_as_string'] not in (None, '')):
+                    return None, _system('unavailable', 'physical_answer_unmapped')
             if answer[column] is not None:
                 if question['unit'] != answer['unit_source_value']:
                     return None, _system('unavailable', 'physical_answer_unit_conflict')
@@ -338,8 +342,6 @@ class _FieldReader:
         if value is None:
             return _Truth(reasons=('physical_answer_missing',))
         if answer['kind'] == 'concept':
-            if value == '0':
-                return _system('unavailable', 'physical_answer_unmapped')
             return _Truth(value == answer['concept']['concept_id'])
         if answer['match'] == 'comma_joined_member':
             return _Truth(answer['value'] in [item.strip() for item in value.split(',')])

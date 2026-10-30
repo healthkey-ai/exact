@@ -368,6 +368,27 @@ def test_concept_answer_keeps_writer_display_but_rejects_zero_mapping():
     assert evaluate(predicate, evidence(predicate['field'], [fact])).status == 'unavailable'
 
 
+@pytest.mark.parametrize('reverse', [True, False])
+@pytest.mark.parametrize('unmapped_id', ['0', None])
+def test_unmapped_concept_answer_cannot_be_hidden_by_another_selected_answer(reverse, unmapped_id):
+    from .fixtures import binding_claims, bound_answer
+    predicate = trial('her2_statuses_required')
+    bound = bound_answer('concept')
+    predicate['native'][0]['terms'] = [{'kind': 'coded_result',
+                                      'association': 'same_observation', **bound}]
+    predicate['answer_bindings'] = [binding_claims(bound)]
+    mapped = physical(bound['question'], bound['answer']['concept']['concept_id'],
+                      column='value_as_concept_id')
+    unmapped = physical(bound['question'], unmapped_id, column='value_as_concept_id', identity='unmapped', row='2')
+    unmapped['answer']['value_as_string'] = 'Exact Synthetic Display Title'
+    facts = [mapped, unmapped]
+    if reverse:
+        facts.reverse()
+    result = evaluate(predicate, evidence(predicate['field'], facts))
+    assert result.status == 'unavailable'
+    assert result.reasons == ('physical_answer_unmapped',)
+
+
 def test_multiselect_matches_declared_exact_literal_not_substring():
     from .fixtures import binding_claims
     predicate = trial('staging_modalities_required')
