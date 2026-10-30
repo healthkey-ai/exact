@@ -50,7 +50,7 @@ TIMESTAMP = {'type': 'string', 'format': 'date-time'}
 FIELDS = enum(*(item.field for item in CRITERIA))
 ROLE = enum('required', 'excluded', 'sufficient_any')
 CLINICAL_STATE = enum('unanswered', 'present', 'asserted_none', 'negative',
-                      'indeterminate', 'conflict', 'cleared')
+                      'indeterminate', 'conflict', 'cleared', 'mixed')
 FACT_STATE = enum('unanswered', 'present', 'asserted_none', 'negative', 'indeterminate', 'cleared')
 
 CONCEPT_PROPERTIES = {
@@ -59,6 +59,8 @@ CONCEPT_PROPERTIES = {
 }
 DEFS = {
     'Concept': obj(CONCEPT_PROPERTIES, optional=('concept_class_id',)),
+    'EventFieldConcept': obj({**CONCEPT_PROPERTIES, 'concept_name': TEXT},
+                             optional=('concept_class_id', 'concept_name')),
     'Question': obj({
         **CONCEPT_PROPERTIES, 'source_value': TEXT,
         'omop_table': enum('measurement', 'observation'),
@@ -249,7 +251,7 @@ DEFS['OmopFact'] = obj({
                    'value_source_value': nullable(STRING)}),
     'parent': obj({'table': const('measurement'), 'row_id': ID, 'person_key': TEXT,
                    'event_field_name': const('measurement.measurement_id'),
-                   'event_field_concept': ref('Concept')}),
+                   'event_field_concept': ref('EventFieldConcept')}),
 }, optional=('answer', 'parent'))
 DEFS['RecordAssertion'] = obj({
     **FACT_BASE, 'kind': const('patient_record'), 'record_id': ID,

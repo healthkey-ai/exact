@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 
 from .inventory import CRITERIA, MCL_GROUP
 from .schemas import schema_for
@@ -222,7 +223,17 @@ def _patient(document):
             if 'parent' in fact:
                 parent = fact['parent']
                 require(parent['person_key'] == document['person_key'], 'cross_person_parent')
-                require(parent['event_field_concept']['vocabulary_id'] == 'CDM', 'event_field_identity')
+                event = parent['event_field_concept']
+                require(event['vocabulary_id'] == 'CDM', 'event_field_identity')
+                # Actual PROMOP accepts the legacy table.column code, or Athena's
+                # CDM### identity resolved by its column name. Do not require a
+                # fabricated table.column code on a genuine Athena concept.
+                require(event['concept_code'] == parent['event_field_name']
+                        or (re.fullmatch(r'CDM[0-9]+', event['concept_code']) is not None
+                            and event.get('concept_name') == parent['event_field_name']),
+                        'event_field_column_conflict')
+                require('concept_name' not in event or event['concept_name'] == parent['event_field_name'],
+                        'event_field_column_conflict')
                 target = physical.get((parent['table'], parent['row_id']))
                 require(target is not None and target is not fact, 'parent_missing_or_self')
                 require('parent' not in target, 'nested_genomic_parent')
@@ -258,6 +269,23 @@ def _patient(document):
         return
     state = document['state']
     selected = [by_id[identity] for identity in document['current']]
+    if selected and all(fact['kind'] == 'language_capability' for fact in selected):
+        require(document['field'] == 'languages_skills_required', 'language_capability_field')
+        by_pair = {}
+        for fact in selected:
+            pair = (fact['language_concept_id'], fact['skill_concept_id'])
+            by_pair.setdefault(pair, set()).add(fact['state'])
+        # Independent skills/languages may legitimately differ. A contradiction
+        # on the SAME pair is conflict; differing independent states are mixed,
+        # not a clinical language verdict or an assertion of missing skills.
+        states = {fact['state'] for fact in selected}
+        expected = ('conflict' if any(len(values) > 1 for values in by_pair.values())
+                    else 'mixed' if len(states) > 1 else next(iter(states)))
+        require(state == expected, 'language_aggregate_state')
+        if state == 'negative':
+            require(document['completeness'] != 'unknown', 'negative_scope_unknown')
+        return
+    require(state != 'mixed', 'mixed_state_requires_independent_capabilities')
     if state == 'unanswered':
         require(all(fact['state'] == 'unanswered' for fact in selected), 'unanswered_has_current_evidence')
     elif state == 'conflict':

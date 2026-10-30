@@ -202,7 +202,7 @@ def test_source_only_linked_genomics_is_preserved_not_promoted_to_an_approved_ta
         validate(document, 'TrialPredicate', context=context())
 
 
-@pytest.mark.parametrize('mutation', ['person', 'parent_person', 'parent_table', 'orphan', 'event_type', 'event_name', 'self'])
+@pytest.mark.parametrize('mutation', ['person', 'parent_person', 'parent_table', 'orphan', 'event_type', 'event_name', 'event_code', 'self'])
 def test_linked_components_cannot_cross_person_event_table_or_parent(mutation):
     evidence = linked_genomics()
     child = evidence['facts'][1]
@@ -218,6 +218,8 @@ def test_linked_components_cannot_cross_person_event_table_or_parent(mutation):
         child['parent']['event_field_concept']['vocabulary_id'] = 'LOINC'
     if mutation == 'event_name':
         child['parent']['event_field_name'] = 'observation.observation_id'
+    if mutation == 'event_code':
+        child['parent']['event_field_concept']['concept_code'] = 'observation.observation_id'
     if mutation == 'self':
         child['parent']['row_id'] = child['row_id']
     with pytest.raises(ContractError):
@@ -384,6 +386,36 @@ def test_language_capabilities_preserve_asked_state_without_moving_the_pair_buil
     validate(evidence, 'PatientEvidence', context=context())
     fact['state'] = 'indeterminate'
     with pytest.raises(ContractError, match='language_capability_state'):
+        validate(evidence, 'PatientEvidence', context=context())
+
+
+@pytest.mark.parametrize('other_value,other_state', [(False, 'negative'), (None, 'unanswered')])
+def test_independent_language_capabilities_can_be_mixed_without_false_conflict(other_value, other_state):
+    evidence = patient('languages_skills_required')
+    speak = evidence['facts'][0]
+    for key in ('projection', 'value'):
+        del speak[key]
+    speak.update(kind='language_capability', language_concept_id='990000001',
+                 skill_concept_id='990000002', value=True, state='present')
+    write = deepcopy(speak)
+    write.update(evidence_id='write-edit', skill_concept_id='990000003',
+                 field_name='synthetic_write', value=other_value, state=other_state)
+    evidence.update(facts=[speak, write], current=[speak['evidence_id'], write['evidence_id']], state='mixed')
+    validate(evidence, 'PatientEvidence', context=context())
+    evidence['state'] = 'conflict'
+    with pytest.raises(ContractError, match='language_aggregate_state'):
+        validate(evidence, 'PatientEvidence', context=context())
+    write['skill_concept_id'] = speak['skill_concept_id']
+    validate(evidence, 'PatientEvidence', context=context())
+
+
+def test_athena_cdm_column_name_binding_is_not_rejected_as_a_legacy_code_mismatch():
+    evidence = linked_genomics()
+    event = evidence['facts'][1]['parent']['event_field_concept']
+    event.update(concept_code='CDM114', concept_name='measurement.measurement_id')
+    validate(evidence, 'PatientEvidence', context=context())
+    event['concept_name'] = 'observation.observation_id'
+    with pytest.raises(ContractError, match='event_field_column_conflict'):
         validate(evidence, 'PatientEvidence', context=context())
 
 

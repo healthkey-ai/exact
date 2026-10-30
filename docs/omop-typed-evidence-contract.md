@@ -165,7 +165,7 @@ the independent approved mapping and certified release gates still apply
 
 | Dimension | Values |
 |---|---|
-| Clinical state | `unanswered`, `present`, `asserted_none`, `negative`, `indeterminate`, `conflict`, `cleared` |
+| Clinical state | `unanswered`, `present`, `asserted_none`, `negative`, `indeterminate`, `conflict`, `cleared`; independent language capabilities may be `mixed` |
 | Evidence availability | `available`, `unavailable`, `unsupported`, `missing_mapping` |
 | Declared scope completeness | `unknown`, `partial`, `complete` |
 
@@ -201,9 +201,19 @@ Evidence variants:
    pair-builder exception remains unchanged: only held speak/write capabilities
    produce pairs; any known capability marks its language asked. Moving pair
    production requires an explicit producer/consumer change, not this contract.
+   Different independent skills with different states have aggregate `mixed`,
+   not `conflict`; contradictory current answers for the same language/skill
+   pair have `conflict`. This is structural grouping, not an eligibility verdict.
 4. **Derived evidence:** owner, algorithm version, input evidence references and
    typed result. Cycles/missing inputs are invalid. No formula runs here. Stored
    PROMOP-derived fields must not be replaced by a second formula (#657).
+
+Event-field references must agree with `measurement.measurement_id`: either the
+legacy table.column concept code or an Athena `CDM###` code whose declared concept
+name resolves that column. An explicit Observation-column code does not become a
+Measurement reference merely because `vocabulary_id='CDM'`. Verifying the real
+concept row/name/standard status against the vocabulary is still #662, not trust
+in a client-supplied name.
 
 ### PROMOP semantics checked in source
 
