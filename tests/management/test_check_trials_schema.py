@@ -195,7 +195,7 @@ def test_split_router_checks_only_catalog_and_forbids_external_migrations(isolat
 
     monkeypatch.setattr(schema_contract.router, 'db_for_read', lambda _: 'trials')
     monkeypatch.setattr(schema_contract, 'connections', {'trials': isolated_catalog})
-    with patch('django.conf.settings.DATABASES', {'default': {}, 'trials': {}}):
+    with patch('django.conf.settings.DATABASES', {'default': {'NAME': 'auth'}, 'trials': {'NAME': 'catalog'}}):
         result = schema_contract.require_trials_schema()
         assert result['alias'] == 'trials'
         assert result['database_identity']['transaction_read_only'] == 'on'
@@ -203,3 +203,28 @@ def test_split_router_checks_only_catalog_and_forbids_external_migrations(isolat
         assert db_router.db_for_read(SchemaFixture) is None  # fixture is not a trials model
         assert db_router.allow_migrate('trials', 'trials') is False
         assert db_router.allow_migrate('default', 'trials') is False
+
+
+@pytest.mark.parametrize('default,catalog', [
+    ({'NAME': 'catalog', 'HOST': 'localhost'}, {'NAME': 'catalog', 'HOST': '127.0.0.1', 'PORT': '5432'}),
+    ({'NAME': 'catalog', 'HOST': 'LOCALHOST.'}, {'NAME': 'catalog', 'HOST': '::1'}),
+    ({'NAME': 'catalog', 'USER': 'auth_owner', 'OPTIONS': {'options': '-c search_path=auth'}},
+     {'NAME': 'catalog', 'USER': 'catalog_reader', 'OPTIONS': {'options': '-c search_path=public'}}),
+    ({'NAME': 'catalog', 'OPTIONS': {'host': '/cloudsql/instance'}},
+     {'NAME': 'catalog', 'HOST': '/cloudsql/instance', 'PORT': 5432}),
+])
+def test_shared_auth_catalog_database_is_refused_without_connecting(default, catalog):
+    with patch('django.conf.settings.DATABASES', {'default': default, 'trials': catalog}), \
+         patch.object(schema_contract, 'connections') as connections:
+        with pytest.raises(CommandError, match='same configured database'):
+            call_command('check_trials_schema', configuration_only=True)
+        connections.__getitem__.assert_not_called()
+
+
+def test_distinct_auth_catalog_configuration_can_be_checked_without_connecting():
+    with patch('django.conf.settings.DATABASES', {'default': {'NAME': 'auth'}, 'trials': {'NAME': 'catalog'}}), \
+         patch.object(schema_contract, 'connections') as connections:
+        output = StringIO()
+        call_command('check_trials_schema', configuration_only=True, stdout=output)
+        assert 'OK' in output.getvalue()
+        connections.__getitem__.assert_not_called()

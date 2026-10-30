@@ -21,6 +21,16 @@ repair of CB-owned storage. Turn these flags off before serving requests.
 The existing opt-in administrative commands do not establish ownership or grant
 permission to change a CB catalog.
 
+The auth `default` database must be separate and EXACT-owned; the external
+catalog role must be read-only. The configuration preflight also rejects known
+same-database configurations (including normalized localhost/loopback, default
+ports and common socket URL forms), independently of users and search_path.
+Otherwise ordinary auth migrations could write into CB even when trials-app
+migrations are disabled. This comparison is a no-connection safety heuristic,
+not proof of physical identity or ownership: arbitrary DNS aliases/proxies and
+some socket configurations remain outside its guarantee. Operators must verify
+the actual endpoints and role permissions before deployment.
+
 The second command follows the same router as ORM reads and checks every current
 concrete trials model, including automatic through models. It requires one routed
 catalog alias and PostgreSQL/PostGIS. It compares the resolved relation/column

@@ -31,6 +31,13 @@ def check_catalog_configuration():
             'Read-only catalog startup refuses: ' + ', '.join(unsafe)
             + '. Initialize an explicitly owned copy separately, then disable write/tolerance flags.'
         )
+    from trials.db_compat import _same_database
+    if _same_database(settings.DATABASES.get('default', {}), settings.DATABASES['trials']):
+        raise CatalogSchemaError(
+            'The default auth database and external trials catalog resolve to the same '
+            'configured database. Use a separate EXACT-owned auth database and a '
+            'read-only catalog role; bootstrap migrations must not write to CB.'
+        )
 
 
 def _expected_typmod(db_type):
