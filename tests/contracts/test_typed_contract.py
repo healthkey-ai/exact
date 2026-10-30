@@ -552,3 +552,36 @@ def test_flat_long_derivation_graph_does_not_depend_on_python_recursion_limit():
     derived[-1]['inputs'] = [derived[0]['evidence_id']]
     with pytest.raises(ContractError, match='derivation_cycle'):
         validate(document, 'PatientEvidence', context=context())
+
+
+@pytest.mark.parametrize('availability', ['unavailable', 'unsupported', 'missing_mapping'])
+@pytest.mark.parametrize('state', ['negative', 'asserted_none', 'conflict'])
+def test_unavailable_capability_does_not_excuse_unsupported_clinical_claims(availability, state):
+    document = patient()
+    document.update(availability=availability, state=state, completeness='unknown',
+                    facts=[], current=[], issues=['synthetic-capability-gap'])
+    with pytest.raises(ContractError):
+        validate(document, 'PatientEvidence', context=context())
+
+
+@pytest.mark.parametrize('field', ['mutation_origins_required', 'mutation_interpretations_required'])
+def test_native_genomics_qualifiers_require_the_actual_string_component_writer(field):
+    document = trial(field)
+    term = document['native'][0]['terms'][0]
+    term['qualifier'] = bound_answer('concept')
+    document['answer_bindings'] = [binding_claims(term['qualifier'])]
+    with pytest.raises(ContractError):
+        validate(document, 'TrialPredicate', context=context())
+
+
+def test_a_mixed_fact_collection_cannot_attach_language_capability_to_her2():
+    document = patient('her2_statuses_required')
+    language = deepcopy(document['facts'][0])
+    for key in ('projection', 'value'):
+        del language[key]
+    language.update(evidence_id='language', kind='language_capability',
+                    language_concept_id='990000001', skill_concept_id='990000002', value=True)
+    document['facts'].append(language)
+    document['current'].append('language')
+    with pytest.raises(ContractError):
+        validate(document, 'PatientEvidence', context=context())

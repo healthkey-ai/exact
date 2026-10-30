@@ -139,6 +139,7 @@ def _trial(document, context):
     for term in terms:
         if spec.operator in ('bound_origin', 'bound_interpretation'):
             require('qualifier' in term, 'bound_qualifier_missing')
+            require(term['qualifier']['answer']['kind'] == 'string', 'genomics_component_writer_requires_string')
         elif spec.operator == 'genomic_subject':
             require('qualifier' not in term, 'unexpected_bound_qualifier')
     if spec.group_fields and spec.field.startswith('mutation_'):
@@ -245,6 +246,7 @@ def _patient(document):
         if fact['kind'] in ('patient_record', 'derived'):
             require((fact['state'] == 'cleared') == (fact['value']['kind'] == 'clear'), 'clear_value_state')
         if fact['kind'] == 'language_capability':
+            require(document['field'] == 'languages_skills_required', 'language_capability_field')
             expected = ('unanswered' if fact['value'] is None else
                         'present' if fact['value'] is True else 'negative')
             require(fact['state'] == expected, 'language_capability_state')
@@ -272,7 +274,6 @@ def _patient(document):
                 stack.extend((source, False) for source in fact['inputs'])
     if document['availability'] != 'available':
         require(bool(document['issues']), 'unavailable_reason_missing')
-        return
     state = document['state']
     selected = [by_id[identity] for identity in document['current']]
     if selected and all(fact['kind'] == 'language_capability' for fact in selected):
