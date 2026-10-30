@@ -37,6 +37,10 @@ This inventory distinguishes those proposals from actual requirements and host
 wiring at the revisions above. In particular, the old patient-side draft's
 PATCH-to-OMOP description is superseded by PROMOP's PatientRecord-first document.
 
+Related contracts: [PatientRecord read contract](patient-record-read-contract.md),
+[CB/EXACT attestation seam](adr/0003-cb-exact-convergence-attestation-seam.md), and
+[patient expansion ownership](adr/0004-patient-expansion-tell-dont-ask.md).
+
 ## Executable schemas and validation
 
 `matcher_app/exact_matching/contracts/` contains:

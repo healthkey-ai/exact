@@ -65,11 +65,11 @@ passed inline per request; nothing is persisted.
 | `PatientInfo` | In-memory patient profile (unmanaged — never persisted) |
 | `Location` / `LocationTrial` | Geographic trial sites (PostGIS) |
 | `Therapy` / `TherapyComponent` / `TherapyComponentCategory` | Therapy taxonomy |
-| `Marker` / `MarkerCategory` | Biomarker taxonomy |
+| `MolecularMarker` / `CytogenicMarker` | Current CB biomarker taxonomy; retired generic marker declarations are historical only |
 | `ConcomitantMedication` | Medication taxonomy |
 | `PreExistingConditionCategory` | Comorbidity categories |
 | `TrialType` / `TrialTypeDiseaseConnection` | Trial-type taxonomy by disease |
-| `RawDataItem` | Raw ingested trial data before extraction |
+| `RawDataItem` (historical, not a runtime model) | CB/ETL-owned raw ingestion storage; physical legacy storage is not deleted by its state-only retirement |
 
 ---
 
