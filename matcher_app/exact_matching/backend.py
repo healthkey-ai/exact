@@ -40,9 +40,24 @@ _WEIGHT_FIELDS = (
 class ExactMatcher:
     version = f"exact-{__version__}"
 
+    def __init__(self, *, evaluation=None):
+        # Optional host-internal per-request session. No client payload or global
+        # flag can create authenticated evidence here; #662 owns that boundary.
+        self._evaluation = evaluation
+
+    def _require_patient_binding(self, patient):
+        if self._evaluation is not None and not self._evaluation.is_bound_to(patient.as_patient_info()):
+            from exact_matching.contracts import ContractError
+            raise ContractError('request_patient_binding')
+
     def search(self, trials: QuerySet, patient, prefs) -> QuerySet:
         pi = patient.as_patient_info()
-        qs, _traces = trials.filtered_trials(
+        self._require_patient_binding(patient)
+        if self._evaluation is not None:
+            pi = self._evaluation.patient_info
+        geo_point = pi.geo_point if self._evaluation is not None else patient.geo_point
+        select = trials.candidate_trials if self._evaluation is not None else trials.filtered_trials
+        qs, _traces = select(
             search_options=prefs.query_params,
             study_info=prefs.study_info,
             patient_info=pi,
@@ -51,15 +66,19 @@ class ExactMatcher:
         )
         if "distance" not in qs.query.annotations:
             qs = qs.with_distance_optimized(
-                patient.geo_point,
+                geo_point,
                 recruitment_status=prefs.recruitment_status,
             )
         weights = {f: getattr(prefs, f, 25.0) for f in _WEIGHT_FIELDS}
         qs = qs.with_goodness_score_optimized(
             **weights,
-            geo_point=patient.geo_point,
+            geo_point=geo_point,
             recruitment_status=prefs.recruitment_status,
         )
+        if self._evaluation is not None:
+            from exact_matching.request_evaluation import EvaluatedTrials
+            finalized = EvaluatedTrials(qs, self._evaluation, search_type=prefs.search_type)
+            return finalized.ordered(lambda trial: self._evaluation.result_for(trial.pk).score, reverse=True)
         return qs
 
     # --- per-trial explain: documented contract, NOT view-wired yet (P0 follow-up). ---
@@ -74,9 +93,15 @@ class ExactMatcher:
     # today, so there is no live break. high_risk_breakdown runs the package's own
     # matcher, so it is host-uniform already.
     def match_status(self, trial, patient):
+        if self._evaluation is not None:
+            self._require_patient_binding(patient)
+            return self._evaluation.evaluate([trial])[0].status
         return trial.matching_type(patient_info=patient.as_patient_info())
 
     def attrs_to_fill_in(self, trial, patient, counts: dict):
+        if self._evaluation is not None:
+            self._require_patient_binding(patient)
+            return list(self._evaluation.evaluate([trial])[0].missing_attributes)
         # Off the OMOP path the call stays exactly what it was: CB's
         # Trial.attrs_to_fill_in(self, counts) takes no patient_info, so passing
         # one would raise TypeError in a CB host. Consequence: via this backend,
@@ -89,6 +114,10 @@ class ExactMatcher:
         return trial.attrs_to_fill_in(counts, patient_info=patient_info)
 
     def high_risk_breakdown(self, trial, patient):
+        if self._evaluation is not None:
+            self._require_patient_binding(patient)
+            self._evaluation.evaluate([trial])
+            return self._evaluation.high_risk_breakdown(trial.pk)
         from exact_matching.matcher import UserToTrialAttrMatcher
         return UserToTrialAttrMatcher(
             trial, patient.as_patient_info()

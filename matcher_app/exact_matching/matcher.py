@@ -209,12 +209,22 @@ def _resolve_omop_concepts(concept_id_values, release_id=None):
 
 
 class UserToTrialAttrMatcher:
-    def __init__(self, trial: 'Trial', patient_info: 'PatientInfo', data=None) -> None:
+    def __init__(self, trial: 'Trial', patient_info: 'PatientInfo', data=None, *, attribute_verdicts=None) -> None:
         self.trial = trial
         self.patient_info = patient_info
         self.mapping = USER_TO_TRIAL_ATTRS_MAPPING
         self.patient_info_attr = PatientInfoAttributes(patient_info)
         self.disease_code: Optional[str] = self.get_disease_code_from_trial(trial)
+        # Already evaluated CLINICAL statuses only. System unavailable/unsupported
+        # belongs to the request result, never a patient unknown or implicit match.
+        from types import MappingProxyType
+        verdicts = dict(attribute_verdicts) if attribute_verdicts is not None else {}
+        if not verdicts.keys() <= self.mapping.keys():
+            raise ValueError('attribute_verdict_keys')
+        if any(type(value) is not str or value not in ('matched', 'not_matched', 'unknown')
+               for value in verdicts.values()):
+            raise ValueError('attribute_verdict_status')
+        self._attribute_verdicts = MappingProxyType(verdicts)
         # Matcher data-access port (E1.2b): therapy regimen/component/category
         # reads go through this. Default = EXACT's Django models (1:1); a host
         # like CB injects its own. See exact_matching.data_port.
@@ -462,6 +472,8 @@ class UserToTrialAttrMatcher:
         Unknown types raise the same Exception messages the
         pre-refactor megamethod did (#28).
         """
+        if patient_info_attr in self._attribute_verdicts:
+            return self._attribute_verdicts[patient_info_attr]
         meta = self.mapping[patient_info_attr]
         prior_therapy = self.patient_info_attr.get_value('prior_therapy')
         attr_value = self.patient_info_attr.get_value(patient_info_attr)
