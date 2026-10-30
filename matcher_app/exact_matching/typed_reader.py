@@ -304,6 +304,14 @@ class _FieldReader:
                 and fact['concept_id'] == question['concept_id']
                 and fact['source_value'] == question['source_value']]
 
+    @staticmethod
+    def _operand_state(facts):
+        # V1 does not say whether this state denies the observation/subject or
+        # describes its negative clinical result. Do not guess the polarity.
+        if any(fact['state'] in ('negative', 'asserted_none') for fact in facts):
+            return _system('unsupported', 'physical_state_binding_missing')
+        return None
+
     def _value(self, question, facts=None):
         values = []
         column = {'number': 'value_as_number', 'string': 'value_as_string',
@@ -313,6 +321,9 @@ class _FieldReader:
         for fact in self._question_facts(question, facts):
             if fact['state'] in ('cleared', 'unanswered', 'indeterminate'):
                 continue
+            state_failure = self._operand_state((fact,))
+            if state_failure is not None:
+                return None, state_failure
             answer = fact['answer']
             nonnull = {key for key in ('value_as_number', 'value_as_string', 'value_as_concept_id')
                        if answer[key] is not None}
@@ -362,6 +373,11 @@ class _FieldReader:
                 if subject['table'] != 'measurement':
                     return _system('unsupported', 'genomic_parent_binding_missing')
                 parent_id = subject['row_id']
+            parent = self.by_physical[('measurement', parent_id)]
+            state_failure = self._operand_state((subject, parent))
+            if state_failure is not None:
+                results.append(state_failure)
+                continue
             components = [fact for fact in self.physical
                           if fact.get('parent', {}).get('row_id') == parent_id]
             if term['kind'] == 'finding':

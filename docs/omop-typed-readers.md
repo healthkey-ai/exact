@@ -12,6 +12,8 @@ authenticated by #662 and exported by CB #5616 / PROMOP #2124 before live use.
 Each immutable `CriterionResult` contains the source `field`, a `status` and
 value-free diagnostic `reasons`. `satisfied` / `violated` refer to the **constraint**
 polarity; matching an excluded predicate means `violated`.
+The MCL group result uses the explicit aggregate key `high_risk_mcl`, not another
+source field from the 55-entry inventory.
 
 | Status | Meaning |
 |---|---|
@@ -123,6 +125,30 @@ read superseded physical evidence. Derived evidence lacks an output binding and
 returns `derived_output_binding_missing`. Missing physical parents are system
 unavailable, including a selected child whose parent is superseded. Claims of
 `completeness=complete` alone are not per-target negative coverage.
+
+### V1 negative-state ambiguity and scope identities
+
+Q/R/G claims have an additional support boundary: a **used physical question
+answer, genomic subject or parent** with `state=negative/asserted_none` returns
+`unsupported: physical_state_binding_missing`. V1 does not distinguish denying
+the observation/subject from describing its negative clinical result. This gate
+does not negate an arbitrary answer and does not apply to unrelated operands.
+The approved representation still supports physical `present` observations with
+an exact negative-status literal/concept and linked `absent` status; subject-only
+existence does not impose a positive-result filter. A's explicit negative about
+the exact target, R rules using A, and L's false capabilities retain their own
+semantics. This is a narrowed supported subset of v1 claims, not new clinical
+polarity or an assertion that all negative results should be false.
+
+`source_companions.disease` preserves a raw Trial authoring label; the patient's
+`scope.disease_key` is an opaque identity. Their string equality/inequality is not
+a disease identity mapping. Person/disease/index scope authorization and binding
+remain host/#662 responsibilities before runtime use. Plain native conditions
+assert only their exact target; disease-sensitive `index_disease/association` and
+activity qualifiers already return `condition_context_binding_missing`. The
+reader neither applies those predicates across disease scopes nor invents a
+universal disease restriction on plain comorbidities. Likewise language
+field-name-to-ID authenticity belongs to producer binding/#662, not guessed IDs.
 
 ## Snapshot and work limits
 

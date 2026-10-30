@@ -474,3 +474,119 @@ def test_reader_never_imports_host_models_or_changes_settings():
             assert not (node.module or '').startswith(('django', 'trials', 'omop_core'))
         if isinstance(node, ast.Import):
             assert all(not item.name.startswith(('django', 'trials', 'omop_core')) for item in node.names)
+
+
+def test_whole_snapshot_and_single_predicate_byte_budgets():
+    document = patient()
+    document['facts'][0]['value']['value'] = 'x' * 1_000_001
+    with pytest.raises(ContractError, match='reader_document_budget'):
+        ClaimsEvaluation(context(), [document])
+    predicate = trial('her2_statuses_required')
+    predicate['provenance']['issuer'] = 'x' * 1_000_001
+    with pytest.raises(ContractError, match='reader_document_budget'):
+        ClaimsEvaluation(context(), []).evaluate(predicate)
+
+
+def test_total_cache_byte_budget_and_mcl_budget_failure_return_no_partial_verdict(monkeypatch):
+    import exact_matching.typed_reader as module
+    from exact_matching.contracts.validation import canonical
+    predicate = trial('her2_statuses_required')
+    monkeypatch.setattr(module, '_SESSION_BYTES', len(canonical(predicate).encode()) + 1)
+    session = ClaimsEvaluation(context(), [])
+    session.evaluate(predicate)
+    with pytest.raises(ContractError, match='reader_session_budget'):
+        session.evaluate(trial('hr_statuses_required'))
+    assert len(session._cache) == 1
+    monkeypatch.setattr(module, '_SESSION_BYTES', 16_000_000)
+    with pytest.raises(ContractError, match='evaluation_budget'):
+        ClaimsEvaluation(context(), [], max_evaluations=1).mcl_group(mcl_documents())
+
+
+@pytest.mark.parametrize('state', ['negative', 'asserted_none'])
+@pytest.mark.parametrize('field', ['her2_statuses_required', 'tumor_stages_excluded',
+                                  'bulky_disease_criteria_required'])
+def test_ambiguous_physical_state_cannot_supply_scalar_answer_or_rule_value(state, field):
+    predicate = trial(field)
+    term = predicate['native'][0]['terms'][0]
+    if term['kind'] == 'rule':
+        term = term['predicate']
+        fact = physical(term['question'], 10, column='value_as_number')
+    else:
+        fact = physical(term['question'], term['answer']['value'])
+    fact['state'] = state
+    result = evaluate(predicate, evidence(field, [fact], state=state))
+    assert result.status == 'unsupported'
+    assert result.reasons == ('physical_state_binding_missing',)
+
+
+@pytest.mark.parametrize('state', ['negative', 'asserted_none'])
+@pytest.mark.parametrize('field', ['mutation_genes_required', 'mutation_origins_required',
+                                  'cytogenic_markers_required'])
+def test_ambiguous_genomic_subject_parent_or_status_state_is_not_inferred(state, field):
+    predicate, document = genomic_case(field)
+    document['state'] = state
+    for fact in document['facts']:
+        fact['state'] = state
+    result = evaluate(predicate, document)
+    assert result.status == 'unsupported'
+    assert result.reasons == ('physical_state_binding_missing',)
+
+
+def test_subject_only_presence_survives_a_negative_assay_result_without_inventing_positive_status():
+    predicate, document = genomic_case('mutation_genes_required')
+    parent = document['facts'][0]
+    absent = linked(parent, question(source='genomics:status'), 'absent', identity='absent', row='5')
+    document['facts'].append(absent)
+    document['current'].append('absent')
+    assert evaluate(predicate, document).status == 'satisfied'
+
+
+def test_exact_negative_coded_literal_is_supported_as_a_present_physical_observation():
+    predicate = trial('her2_statuses_required')
+    term = predicate['native'][0]['terms'][0]
+    term['answer']['value'] = 'Negative'
+    predicate['answer_bindings'][0]['title'] = 'Negative'
+    fact = physical(term['question'], 'Negative')
+    assert evaluate(predicate, evidence(predicate['field'], [fact])).status == 'satisfied'
+
+
+def test_negative_unrelated_physical_operands_do_not_create_a_system_blocker():
+    predicate = trial('her2_statuses_required')
+    fact = physical(question(source='unrelated-question'), 'not a requested answer')
+    fact['state'] = 'negative'
+    result = evaluate(predicate, evidence(predicate['field'], [fact], state='negative'))
+    assert result.status == 'patient_unknown'
+
+
+def test_mcl_ambiguous_numeric_state_blocks_but_exact_target_assertion_negative_is_false():
+    predicates = mcl_documents()
+    for predicate in predicates[1:]:
+        predicate.update(state='unconstrained', native=[])
+    document = mcl_evidence([10, 0, 0])[0]
+    document['state'] = 'negative'
+    document['facts'][0]['state'] = 'negative'
+    assert ClaimsEvaluation(context(), [document]).mcl_group(predicates).status == 'unsupported'
+    predicates[0]['native'][0]['terms'][0]['predicate'] = {
+        'kind': 'assertion', 'concept': concept(), 'state': 'encoded_by_concept',
+    }
+    fact = omop_fact()
+    fact.update(table='condition_occurrence', concept_id=concept()['concept_id'], state='negative')
+    del fact['answer']
+    document = evidence(MCL_GROUP[0], [fact], state='negative')
+    assert ClaimsEvaluation(context(), [document]).mcl_group(predicates).status == 'violated'
+
+
+def test_plain_condition_is_not_an_index_disease_relation_and_raw_labels_are_not_opaque_keys():
+    predicate = trial('pre_existing_conditions_excluded')
+    predicate['source_companions']['disease'] = 'raw-trial-authoring-label'
+    fact = omop_fact()
+    fact.update(table='condition_occurrence', concept_id=concept()['concept_id'])
+    del fact['answer']
+    document = evidence(predicate['field'], [fact])
+    document['scope']['disease_key'] = 'opaque-authenticated-elsewhere-key'
+    assert evaluate(predicate, document).status == 'violated'
+    term = predicate['native'][0]['terms'][0]
+    term.update(index_disease=concept(), association='index_malignancy')
+    result = evaluate(predicate, document)
+    assert result.status == 'unsupported'
+    assert result.reasons == ('condition_context_binding_missing',)
