@@ -16,8 +16,6 @@ from django.core.serializers.json import DjangoJSONEncoder
 from .contracts import ContractError
 from .contracts.inventory import CRITERIA, MCL_GROUP
 from .contracts.validation import canonical
-from .matcher import UserToTrialAttrMatcher
-from .patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
 from .typed_reader import ClaimsEvaluation, CriterionResult
 from .utils import disease_attr_applies
 
@@ -81,6 +79,7 @@ def _groups():
     (even those skip_in_counts in SQL), and one unit for the four genomic axes.
     Fail on config drift rather than silently dropping a typed field.
     """
+    from .patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
     groups = {}
     for attr, meta in USER_TO_TRIAL_ATTRS_MAPPING.items():
         fields = meta['attr']
@@ -269,6 +268,7 @@ class RequestEvaluation:
                            for item in result.criteria if item.field in MCL_GROUP]}
 
     def _evaluate_trial(self, trial):
+        from .matcher import UserToTrialAttrMatcher
         documents = {item['field']: item for item in self.predicates_for(trial.pk)}
         fields = {field: self._reader.evaluate(item) for field, item in documents.items()}
         matcher = UserToTrialAttrMatcher(trial, self.patient_info)

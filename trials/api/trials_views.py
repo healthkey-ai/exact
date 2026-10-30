@@ -319,7 +319,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         if sort == 'matchScore':
             return finalized.ordered(lambda row: evaluation.result_for(row.pk).score, reverse=True)
         if sort == 'distance':
-            return finalized.ordered(lambda row: row.distance.m if row.distance is not None else None)
+            return finalized.ordered(lambda row: row.distance.m if getattr(row, 'distance', None) is not None else None)
         field, reverse = {
             'status': ('status_code', False), 'phase': ('phase_code_min', False),
             'updated': ('last_update_date', True), 'enrollment': ('enrollment_count', True),

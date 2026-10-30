@@ -192,3 +192,44 @@ def test_query_count_does_not_grow_per_trial(runtime):
     with CaptureQueriesContext(connection) as second:
         assert runtime.invoke().status_code == 200
     assert len(second) == len(first)
+
+
+@pytest.mark.parametrize('action', ['search', 'graph'])
+def test_distance_sort_without_patient_coordinates_is_null_not_500(runtime, action):
+    row = TrialFactory(disease='breast cancer')
+    response = runtime.invoke(action, params='?sort=distance')
+    assert response.status_code == 200, response.data
+    rows = response.data['trials' if action == 'graph' else 'results']
+    assert rows[0]['trialId'] == row.pk
+
+
+def test_backend_selection_uses_same_copied_patient_as_evaluation(runtime):
+    breast = TrialFactory(disease='breast cancer')
+    TrialFactory(disease='mantle cell lymphoma')
+    evaluation = runtime.resolver(None, runtime.patient)
+    runtime.patient.disease = 'mantle cell lymphoma'
+    patient = SimpleNamespace(as_patient_info=lambda: runtime.patient, geo_point=None)
+    prefs = SimpleNamespace(query_params={}, study_info=StudyPreferences(), search_type='all', recruitment_status=None)
+    finalized = ExactMatcher(evaluation=evaluation).search(Trial.objects.all(), patient, prefs)
+    assert [row.pk for row in finalized] == [breast.pk]
+    assert evaluation.result_for(breast.pk).status == 'eligible'
+
+
+def test_backend_distance_and_goodness_use_snapshot_geography(runtime):
+    from django.contrib.gis.geos import Point
+    from exact_matching.querysets.trial import TrialQuerySet
+    TrialFactory(disease='breast cancer')
+    evaluation = runtime.resolver(None, runtime.patient)
+    external = Point(-100, 30)
+    patient = SimpleNamespace(as_patient_info=lambda: runtime.patient, geo_point=external)
+    prefs = SimpleNamespace(query_params={}, study_info=StudyPreferences(), search_type='all', recruitment_status=None)
+    seen = []
+    original = TrialQuerySet.with_goodness_score_optimized
+
+    def capture(self, *args, **kwargs):
+        seen.append(kwargs['geo_point'])
+        return original(self, *args, **kwargs)
+
+    with patch.object(TrialQuerySet, 'with_goodness_score_optimized', capture):
+        ExactMatcher(evaluation=evaluation).search(Trial.objects.all(), patient, prefs)
+    assert seen == [None]

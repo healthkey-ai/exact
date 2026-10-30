@@ -53,6 +53,9 @@ class ExactMatcher:
     def search(self, trials: QuerySet, patient, prefs) -> QuerySet:
         pi = patient.as_patient_info()
         self._require_patient_binding(patient)
+        if self._evaluation is not None:
+            pi = self._evaluation.patient_info
+        geo_point = pi.geo_point if self._evaluation is not None else patient.geo_point
         select = trials.candidate_trials if self._evaluation is not None else trials.filtered_trials
         qs, _traces = select(
             search_options=prefs.query_params,
@@ -63,13 +66,13 @@ class ExactMatcher:
         )
         if "distance" not in qs.query.annotations:
             qs = qs.with_distance_optimized(
-                patient.geo_point,
+                geo_point,
                 recruitment_status=prefs.recruitment_status,
             )
         weights = {f: getattr(prefs, f, 25.0) for f in _WEIGHT_FIELDS}
         qs = qs.with_goodness_score_optimized(
             **weights,
-            geo_point=patient.geo_point,
+            geo_point=geo_point,
             recruitment_status=prefs.recruitment_status,
         )
         if self._evaluation is not None:
