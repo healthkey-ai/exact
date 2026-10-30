@@ -233,3 +233,29 @@ def test_backend_distance_and_goodness_use_snapshot_geography(runtime):
     with patch.object(TrialQuerySet, 'with_goodness_score_optimized', capture):
         ExactMatcher(evaluation=evaluation).search(Trial.objects.all(), patient, prefs)
     assert seen == [None]
+
+
+def test_cached_context_cannot_be_rebound_to_another_patient(runtime):
+    from trials.services.matching.typed_runtime import resolve_evaluation, TypedMatchingUnavailable
+    request = APIRequestFactory().get('/api/v1/trials/')
+    resolve_evaluation(request, runtime.patient)
+    with pytest.raises(TypedMatchingUnavailable):
+        resolve_evaluation(request, PatientInfo(disease='mantle cell lymphoma'))
+    with pytest.raises(TypedMatchingUnavailable):
+        resolve_evaluation(request, runtime.patient)  # Request stays failed, no context switching back.
+    assert len(runtime.calls) == 1
+
+
+@pytest.mark.parametrize('action', ['list', 'search'])
+def test_typed_list_preserves_geography_keys_without_reading_legacy_stage(runtime, action):
+    from django.contrib.gis.geos import Point
+    from tests.factories import LocationFactory
+    from trials.models import LocationTrial
+    row = TrialFactory(disease='breast cancer', stages=['legacy-code-not-a-typed-display'])
+    location = LocationFactory(geo_point=Point(-96.8, 32.8))
+    LocationTrial.objects.create(trial=row, location=location, recruitment_status='RECRUITING')
+    response = runtime.invoke(action)
+    assert response.status_code == 200, response.data
+    item, = response.data['results']
+    assert item['stage'] is None  # No unreviewed OMOP -> legacy display conversion.
+    assert item['closestLocationGeoPoint'] == {'longitude': -96.8, 'latitude': 32.8}

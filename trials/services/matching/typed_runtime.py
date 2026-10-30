@@ -31,6 +31,10 @@ def resolve_evaluation(request, patient_info):
     if holder is not None:
         if isinstance(holder[0], APIException):
             raise holder[0]
+        if not holder[0].is_bound_to(patient_info):
+            failure = TypedMatchingUnavailable({'code': 'request_patient_binding'})
+            store._exact_typed_evaluation = (failure,)
+            raise failure
         return holder[0]
     try:
         resolver = getattr(settings, 'EXACT_TYPED_MATCHING_RESOLVER', None)

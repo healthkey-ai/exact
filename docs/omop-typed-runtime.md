@@ -56,7 +56,10 @@ reference, including its four therapy-line attributes (SQL skip-in-counts does
 not silently change this denominator).
 
 SCT history and elapsed-days remain separate score positions. An unrestricted
-companion is matched; elapsed minimum **0** is constrained. V1's constrained SCT
+companion in a validated **non-blocked** predicate is matched; elapsed minimum
+**0** is constrained. A blocked receipt can have unavailable/stale dependencies,
+so its null companion cannot certify an independent unrestricted day position.
+V1's constrained SCT
 route remains unsupported. Future supported SCT needs an explicit per-position
 reader contribution before an aggregate can score both positions; the
 orchestrator does not invent that clinical decomposition.
@@ -99,7 +102,10 @@ templates and graph consume the same final result. Typed presentation chooses
 its branch **before** legacy TrialTemplates/therapy display/explainer calls;
 there is no render-then-overwrite clinical pass. Migrated requirements are native
 predicates, not CB codes. Patient values without display bindings are left null,
-not reverse-translated or guessed. Both templates retain all system diagnostic
+not reverse-translated or guessed. The list keeps `stage=null` until a native
+display binding is supplied, rather than reading the legacy stage column;
+`closestLocationGeoPoint` still comes from the sorted location geometry.
+Both templates retain all system diagnostic
 rows, bypassing legacy empty/select-option suppression. Computed verdicts stay
 read-only; source/subform metadata resolves by patient attribute first and
 trial-field config second. System failures are never `attributesToFillIn` or the

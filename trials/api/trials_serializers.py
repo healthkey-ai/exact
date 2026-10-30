@@ -59,9 +59,15 @@ class TrialSerializer(serializers.ModelSerializer):
             response['attributesToFillIn'] = missing_attributes(result, counts)
             response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
             # Presentation only; no legacy clinical status or missing-attr inference.
-            response['location'] = [item.location.title for item in instance.sorted_locations_by_distance(
+            locations = instance.sorted_locations_by_distance(
                 evaluation.patient_info.geo_point, recruitment_status=self.context.get('recruitment_status'))
-                if item.location]
+            response['location'] = [item.location.title for item in locations if item.location]
+            closest = locations[0].location.geo_point if locations and locations[0].location else None
+            response['closestLocationGeoPoint'] = ({'latitude': closest.y, 'longitude': closest.x}
+                                                   if closest is not None else None)
+            # Retain the transport key, but never infer a native display label
+            # from the legacy CB-coded stage column or stringify an envelope.
+            response['stage'] = None
             distance = getattr(instance, 'distance', None)
             units = self.context.get('distance_units') or 'km'
             response['distance'] = (int((distance.mi if units == 'miles' else distance.km) + 0.5)

@@ -86,7 +86,11 @@ def test_known_scalar_violation_preserves_system_issues_and_scores_zero():
     assert result.system_issues
 
 
-def test_mcl_required_violation_is_not_final_when_sufficient_branch_passes():
+@pytest.mark.parametrize('order', [MCL_GROUP, (MCL_GROUP[1], MCL_GROUP[0], MCL_GROUP[2])])
+def test_mcl_required_violation_is_not_final_when_sufficient_branch_passes(monkeypatch, order):
+    from exact_matching.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
+    monkeypatch.setitem(USER_TO_TRIAL_ATTRS_MAPPING, 'high_risk_mcl_criteria', {
+        **USER_TO_TRIAL_ATTRS_MAPPING['high_risk_mcl_criteria'], 'attr': list(order)})
     row = TrialFactory(disease='mantle cell lymphoma')
     docs = {name: trial(name) for name in MCL_GROUP}
     facts = []
@@ -106,6 +110,14 @@ def test_mcl_required_violation_is_not_final_when_sufficient_branch_passes():
     group = next(item for item in result.attributes if item.attribute == 'high_risk_mcl_criteria')
     assert group.status == 'satisfied' and not group.known_violation
     assert result.status == 'eligible'
+
+
+def test_mcl_duplicate_config_member_cannot_silently_change_grouping(monkeypatch):
+    from exact_matching.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
+    monkeypatch.setitem(USER_TO_TRIAL_ATTRS_MAPPING, 'high_risk_mcl_criteria', {
+        **USER_TO_TRIAL_ATTRS_MAPPING['high_risk_mcl_criteria'], 'attr': [*MCL_GROUP, MCL_GROUP[0]]})
+    with pytest.raises(ContractError, match='mcl_score_inventory'):
+        session()
 
 
 def test_sct_unrestricted_day_does_not_inherit_history_system_gap():
@@ -198,6 +210,33 @@ def test_sliced_or_deferred_querysets_do_not_disguise_an_incomplete_catalog():
     with pytest.raises(ContractError, match='deferred_trial_snapshot'):
         evaluation.evaluate(Trial.objects.only('id'))
     assert not calls
+
+
+def test_blocked_sct_cannot_certify_null_day_as_unrestricted_with_missing_dependency():
+    row = TrialFactory()
+    document = trial('stem_cell_transplant_history_excluded')
+    document.update(state='blocked', native=None, reason='unavailable')
+    dependency = next(item for item in document['dependencies']
+                      if item['field'] == 'day_since_stem_cell_transplant_required')
+    dependency.update(state='unavailable', source_sha256=None, generation=None)
+    evaluation, _ = session({row.pk: predicates(stem_cell_transplant_history_excluded=document)},
+                            patient=PatientInfo(disease='multiple myeloma'))
+    by_attr = {item.attribute: item for item in evaluation.evaluate([row])[0].attributes}
+    assert by_attr['stem_cell_transplant_history'].status == 'unavailable'
+    assert by_attr['day_since_stem_cell_transplant'].status == 'unavailable'
+
+
+def test_finalized_queryset_has_one_candidate_select_not_two():
+    from django.db import connection
+    from django.test.utils import CaptureQueriesContext
+    from trials.models import Trial
+    row = TrialFactory(disease='breast cancer')
+    evaluation, _ = session()
+    with CaptureQueriesContext(connection) as queries:
+        finalized = EvaluatedTrials(Trial.objects.all(), evaluation)
+    candidates = [item['sql'] for item in queries if 'FROM "trials_trial"' in item['sql']]
+    assert len(candidates) == 1
+    assert [item.pk for item in finalized] == [row.pk]
 
 
 def test_all_55_validated_even_when_disease_does_not_apply():

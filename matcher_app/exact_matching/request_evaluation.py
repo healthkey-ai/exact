@@ -89,6 +89,11 @@ def _groups():
             groups[attr] = selected
     if set().union(*map(set, groups.values())) != _FIELDS:
         raise ContractError('score_inventory')
+    mcl = groups.get('high_risk_mcl_criteria', ())
+    if len(mcl) != len(MCL_GROUP) or set(mcl) != set(MCL_GROUP):
+        raise ContractError('mcl_score_inventory')
+    # Config order cannot turn required OR sufficient-any into conjunction.
+    groups['high_risk_mcl_criteria'] = MCL_GROUP
     groups['day_since_stem_cell_transplant'] = ('stem_cell_transplant_history_excluded',)
     return groups
 
@@ -114,6 +119,8 @@ def _sct_contribution(attr, predicate, result):
         constrained = (bool(companions['stem_cell_transplant_history_required']) or
                        bool(predicate['native'] and predicate['native'][0]['terms']))
     if predicate['state'] == 'blocked':
+        # Blocked validation permits unavailable/stale dependency receipts.
+        # A null companion here cannot certify an independent unrestricted unit.
         return result
     if not constrained:
         return CriterionResult(result.field, 'unconstrained')
