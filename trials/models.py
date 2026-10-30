@@ -102,6 +102,28 @@ class Disease(TimeStampMixin):
         return self.title
 
 
+class MolecularMarker(TimeStampMixin):
+    code = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    title = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    description = models.TextField(blank=True, null=True)
+
+    def __str__(self):
+        return self.title
+
+
+class CytogenicMarker(TimeStampMixin):
+    code = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    title = models.TextField(blank=False, null=False, db_index=True, unique=True)
+    description = models.TextField(blank=True, null=True)
+
+    class Meta:
+        verbose_name = 'cytogenetic marker'
+        verbose_name_plural = 'cytogenetic markers'
+
+    def __str__(self):
+        return self.title
+
+
 class Marker(TimeStampMixin):
     code = models.TextField(blank=False, null=False, db_index=True, unique=True)
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)

@@ -14,12 +14,13 @@ from exact_matching.patient_info.patient_info_attributes import PatientInfoAttri
 from exact_matching.querysets.trial import TrialQuerySet
 from trials.models import Trial
 from trials.services.patient_info.promop_adapter import (
+    UnsupportedPatientVocabulary,
     build_patient_info_from_promop_row,
     normalize_promop_row,
 )
 from trials.services.patient_info.resolve import _build_in_memory
 
-# The legacy display-title path resolves through the Marker table, so the
+# The display-title path resolves through the CB marker axis, so the
 # whole file is DB-bound.
 pytestmark = pytest.mark.django_db
 
@@ -67,24 +68,20 @@ def test_inner_commas_do_not_split_a_marker():
     assert row['cytogenic_markers'] == 't414,t1114,del17p13'
 
 
-def test_unmapped_markers_are_dropped_but_known_ones_survive():
-    row = normalize_promop_row({'cytogenetic_markers': 'del13q, del17p'})
-    assert row['cytogenic_markers'] == 'del17p13'
+def test_unmapped_markers_are_not_silently_dropped():
+    with pytest.raises(UnsupportedPatientVocabulary):
+        normalize_promop_row({'cytogenetic_markers': 'del13q, del17p'})
 
 
-def test_wholly_unknown_markers_stay_unknown_not_absent():
-    """'' reads as unknown; an absent field would read as "no markers"."""
-    row = normalize_promop_row({'cytogenetic_markers': 'del13q'})
-    assert row['cytogenic_markers'] == ''
-    patient = _patient({'cytogenetic_markers': 'del13q'})
-    assert PatientInfoAttributes(patient).is_attr_blank('cytogenic_markers') is True
+def test_wholly_unsupported_markers_are_explicitly_refused():
+    with pytest.raises(UnsupportedPatientVocabulary):
+        _patient({'cytogenetic_markers': 'del13q'})
 
 
-def test_legacy_display_titles_still_resolve_through_the_marker_table():
+def test_legacy_unknown_label_remains_unknown():
     """An older payload in EXACT's title form keeps its previous handling."""
     row = normalize_promop_row({'cytogenic_markers': 'Unknown/Other'})
-    # The resolver may return None for a title with no Marker row; either way
-    # the display-title path is used and nothing raises.
+    # An explicit unknown label does not assert negative evidence.
     assert row.get('cytogenic_markers') in (None, '', 'none')
 
 

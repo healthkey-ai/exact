@@ -39,19 +39,18 @@ _MOCK_LOOKUP = {
         'her2+': 'her2_plus',
         'positive': 'her2_plus',
         'negative': 'her2_minus',
-        'equivocal': 'her2_low',
     },
     'EstrogenReceptorStatus': {
-        'positive': 'er_plus_with_hi_exp',
+        'positive': 'er_plus',
         'negative': 'er_minus',
-        'borderline': 'er_plus_with_low_exp',
     },
     'ProgesteroneReceptorStatus': {},
     'HrStatus': {},
     'HrdStatus': {},
     'HistologicType': {},
     'Ethnicity': {},
-    'Marker': {},
+    'CytogenicMarker': {},
+    'MolecularMarker': {},
     'PlannedTherapy': {},
     'ConcomitantMedication': {},
     '_therapy': {},
@@ -71,9 +70,9 @@ class TestNormalizePromopRowView:
             'disease': 'Multiple Myeloma',
         })
         assert response.status_code == 200
-        # `equivocal` → `her2_low`; `Positive` → `er_plus_with_hi_exp`.
-        assert response.data['her2_status'] == 'her2_low'
-        assert response.data['estrogen_receptor_status'] == 'er_plus_with_hi_exp'
+        # Neither label supplies a low/high expression result.
+        assert response.data['her2_status'] is None
+        assert response.data['estrogen_receptor_status'] == 'er_plus'
         # Non-normalized fields pass through untouched.
         assert response.data['disease'] == 'Multiple Myeloma'
 

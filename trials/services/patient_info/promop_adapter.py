@@ -26,32 +26,36 @@ from decimal import Decimal, DecimalException
 from functools import lru_cache
 from math import isfinite
 
+from exact_matching.patient_record import receptor_status_code
+from rest_framework.exceptions import APIException
+from trials.services.patient_vocabulary import PatientVocabularyUnavailable, catalog_rows
 from trials.services.therapy_match_profile import omop_therapy_enabled
 
 
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=1)
-def _build_code_lookup():
-    """Load title→code mappings for every reference model from the trials DB.
+class UnsupportedPatientVocabulary(APIException):
+    status_code = 422
+    default_code = 'unsupported_patient_vocabulary'
+    default_detail = {
+        'code': default_code,
+        'detail': 'Unsupported or contradictory marker assessment. No matching results were produced.',
+    }
 
-    Returns a dict keyed by model class name, each value being a
-    {title_lower: code} dict for that model. lru_cache keeps it in memory
-    for the process lifetime (one DB load per command/process).
 
-    Therapy takes priority over TherapyComponent when titles collide so that
-    the full eligibility chain (Therapy → components → categories) fires
-    correctly from a single therapy code.
+@lru_cache(maxsize=32)
+def _build_code_lookup(model_name):
+    """Load only the requested reference, through the host's DB router.
 
-    PROMOP-specific aliases are injected for models whose canonical titles
-    differ from the display strings that PROMOP stores in patient_info.
+    Keep the model-keyed return shape for management-command compatibility.
+    Unrelated patient fields must not depend on every catalog being installed.
     """
     from trials.models import (
         Therapy, TherapyComponent,
         Her2Status, HrStatus, HrdStatus,
         HistologicType, EstrogenReceptorStatus, ProgesteroneReceptorStatus,
-        Ethnicity, PlannedTherapy, ConcomitantMedication, Marker,
+        Ethnicity, PlannedTherapy, ConcomitantMedication, CytogenicMarker, MolecularMarker,
         MutationGene, MutationCode, MutationOrigin, MutationInterpretation,
         TumorStage, NodesStage, DistantMetastasisStage, StagingModality,
         BinetStage, ProteinExpression, RichterTransformation, TumorBurden,
@@ -62,7 +66,7 @@ def _build_code_lookup():
         Therapy, TherapyComponent,
         Her2Status, HrStatus, HrdStatus,
         HistologicType, EstrogenReceptorStatus, ProgesteroneReceptorStatus,
-        Ethnicity, PlannedTherapy, ConcomitantMedication, Marker,
+        Ethnicity, PlannedTherapy, ConcomitantMedication, CytogenicMarker, MolecularMarker,
         MutationGene, MutationCode, MutationOrigin, MutationInterpretation,
         TumorStage, NodesStage, DistantMetastasisStage, StagingModality,
         BinetStage, ProteinExpression, RichterTransformation, TumorBurden,
@@ -75,61 +79,34 @@ def _build_code_lookup():
     # `.using('trials')` broke single-DB deployments (and the local dev
     # harness) with `ConnectionDoesNotExist` because the alias doesn't
     # exist there.
-    lookup = {}
-    for model in all_models:
-        lookup[model.__name__] = {
-            row['title'].lower().strip(): row['code']
-            for row in model.objects.values('title', 'code')
-        }
-
-    # Therapy overrides TherapyComponent when both share the same title so
-    # that the component→category chain resolves via a single Therapy code.
-    therapy_map = {**lookup['TherapyComponent'], **lookup['Therapy']}
-    lookup['_therapy'] = therapy_map
-
-    # ── PROMOP-specific aliases ──────────────────────────────────────────
-    # PROMOP stores display strings that differ from EXACT's canonical titles.
-    # Add aliases so the resolver can map them without touching the DB data.
-
-    # Her2Status: PROMOP sends "Negative" / "Positive" / "Equivocal";
-    # titles in DB are "HER2-" / "HER2+" / "HER2 low".
-    lookup['Her2Status'].update({
-        'negative':  'her2_minus',
-        'positive':  'her2_plus',
-        'equivocal': 'her2_low',   # IHC 2+ / equivocal → low expression
-    })
-
-    # EstrogenReceptorStatus: PROMOP sends "Positive" / "Negative" / "Borderline".
-    # Business rule: Positive → hi_exp subtype, Borderline → low_exp subtype.
-    lookup['EstrogenReceptorStatus'].update({
-        'positive':   'er_plus_with_hi_exp',
-        'negative':   'er_minus',
-        'borderline': 'er_plus_with_low_exp',
-    })
-
-    # ProgesteroneReceptorStatus: same convention as ER.
-    lookup['ProgesteroneReceptorStatus'].update({
-        'positive':   'pr_plus_with_hi_exp',
-        'negative':   'pr_minus',
-        'borderline': 'pr_plus_with_low_exp',
-    })
-
-    # HrStatus / HrdStatus: simple positive / negative labels.
-    lookup['HrStatus'].update({'positive': 'hr_plus', 'negative': 'hr_minus'})
-    lookup['HrdStatus'].update({'positive': 'hrd_positive', 'negative': 'hrd_negative'})
-
-    # Ethnicity: PROMOP sends US-style census labels; Hispanic/Latino has no
-    # direct EXACT equivalent — map to 'other'.
-    lookup['Ethnicity'].update({
-        'caucasian/white':           'caucasian_or_european',
-        'white':                     'caucasian_or_european',
-        'black/african-american':    'african_or_black',
-        'black or african american': 'african_or_black',
-        'hispanic or latino':        'other',
-        'hispanic/latino':           'other',
-    })
-
-    return lookup
+    if model_name == '_therapy':
+        return {'_therapy': {
+            **_build_code_lookup('TherapyComponent')['TherapyComponent'],
+            **_build_code_lookup('Therapy')['Therapy'],
+        }}
+    models = {model.__name__: model for model in all_models}
+    model = models[model_name]
+    model_map = {}
+    rows = catalog_rows(model)
+    for row in rows:
+        for key in (row['title'], row['code']):
+            key = key.strip().casefold()
+            if key in model_map and model_map[key] != row['code']:
+                raise PatientVocabularyUnavailable()
+            model_map[key] = row['code']
+    aliases = {
+        'HrdStatus': {'positive': 'hrd_positive', 'negative': 'hrd_negative'},
+        'Ethnicity': {
+            'caucasian/white': 'caucasian_or_european',
+            'white': 'caucasian_or_european',
+            'black/african-american': 'african_or_black',
+            'black or african american': 'african_or_black',
+            'hispanic or latino': 'other',
+            'hispanic/latino': 'other',
+        },
+    }
+    model_map.update(aliases.get(model_name, {}))
+    return {model_name: model_map}
 
 
 def resolve_code(display: str, model_name: str) -> str | None:
@@ -142,11 +119,11 @@ def resolve_code(display: str, model_name: str) -> str | None:
     """
     if not display or not display.strip():
         return None
-    lookup = _build_code_lookup()
+    lookup = _build_code_lookup(model_name)
     model_map = lookup.get(model_name, {})
     s = display.strip()
     while s:
-        code = model_map.get(s.lower())
+        code = model_map.get(s.casefold())
         if code:
             return code
         s2 = re.sub(r'\s*\([^)]*\)\s*$', '', s).strip()
@@ -165,10 +142,10 @@ def resolve_therapy_code(display: str) -> str | None:
     """
     if not display or not display.strip():
         return None
-    therapy_map = _build_code_lookup()['_therapy']
+    therapy_map = _build_code_lookup('_therapy')['_therapy']
     s = display.strip()
     while s:
-        code = therapy_map.get(s.lower())
+        code = therapy_map.get(s.casefold())
         if code:
             return code
         s2 = re.sub(r'\s*\([^)]*\)\s*$', '', s).strip()
@@ -181,8 +158,8 @@ def resolve_therapy_code(display: str) -> str | None:
 def resolve_code_csv(display: str, model_name: str) -> str | None:
     """Resolve a comma-separated PROMOP display string to a comma-joined list of codes.
 
-    Used for multi-value patient fields (cytogenic_markers, molecular_markers,
-    planned_therapies, concomitant_medications). Items that cannot be resolved
+    Used for planned_therapies and concomitant_medications. Marker assessments
+    have a stricter all-token boundary below. Items that cannot be resolved here
     are silently dropped; returns None if nothing resolved.
     """
     if not display or not display.strip():
@@ -324,53 +301,57 @@ _CYTOGENETIC_MARKERS_TO_CB = {
 
 
 def _cytogenetic_markers(value):
-    """PROMOP's marker summary in CB's vocabulary, comma-separated.
-
-    PROMOP stores `', '.join(canonical)` and a canonical value can itself carry
-    a comma (`t(4;14)`), so split on the separator rather than on every comma.
-    A value with no CB counterpart (an unrecognised import, or `del13q`) is
-    dropped: CB has no code for it, and the rest of the set stays exact. A
-    wholly unrecognised value returns '' so the criterion reads unknown rather
-    than "no markers".
-    """
-    if not value:
-        return ''
-    codes = []
-    for raw in str(value).split(', '):
-        code = _CYTOGENETIC_MARKERS_TO_CB.get(raw.strip())
-        if code and code not in codes:
-            codes.append(code)
-    return ','.join(codes)
+    return _marker_assessment(value, 'CytogenicMarker', _CYTOGENETIC_MARKERS_TO_CB)
 
 
 def _cytogenetic_markers_with_legacy_titles(value):
-    """The translation above, plus EXACT's older Marker-title resolution.
+    """Backward-compatible spelling; both paths use the current CB axis."""
+    return _cytogenetic_markers(value)
 
-    A payload written against EXACT's own display titles (rather than PROMOP's
-    vocabulary) must keep resolving; an entry that is already a known canonical
-    token uses the table, the rest fall back to the Marker title lookup.
+
+def _marker_assessment(value, model_name, aliases=None):
+    """Resolve every token, never publish a successfully mapped subset.
+
+    This legacy summary cannot represent per-marker completeness (#660).
+    Refuse unsupported assessments rather than inventing negative evidence.
+    Only exact codes/titles are accepted; removing a parenthetical qualifier
+    would change clinical meaning (e.g. strict complex-karyotype criteria).
     """
-    def collect(tokens):
-        codes = []
-        for raw in tokens:
-            token = raw.strip()
-            code = _CYTOGENETIC_MARKERS_TO_CB.get(token) or resolve_code(token, 'Marker')
-            if code and code not in codes:
-                codes.append(code)
-        return codes
-
-    if not value:
+    if value is None or value == '':
         return ''
-    text = str(value)
-    tokens = [t for t in text.split(', ') if t.strip()]
-    codes = collect(tokens)
-    if len(codes) == len(tokens):
-        return ','.join(codes)
-    # An older payload separated its display titles with a bare comma. Split on
-    # every comma only as a fallback, because a canonical marker can contain
-    # one itself (`t(4;14)`), which the ', ' split above keeps intact.
-    legacy_codes = collect(t for t in text.split(',') if t.strip())
-    return ','.join(legacy_codes or codes)
+    if not isinstance(value, str):
+        raise UnsupportedPatientVocabulary()
+    text = value.strip()
+    if not text or text.casefold() in ('unknown', 'unknown/other'):
+        return ''
+    if text.casefold() == 'none':
+        return 'none'
+    # Split CSV only outside parentheses, preserving literal marker titles.
+    tokens, start, depth = [], 0, 0
+    for index, char in enumerate(text):
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+            if depth < 0:
+                raise UnsupportedPatientVocabulary()
+        elif char == ',' and depth == 0:
+            tokens.append(text[start:index].strip())
+            start = index + 1
+    tokens.append(text[start:].strip())
+    if depth or any(not token or token.casefold() in ('none', 'unknown', 'unknown/other')
+                    for token in tokens):
+        raise UnsupportedPatientVocabulary()
+    model_map = _build_code_lookup(model_name)[model_name]
+    codes = []
+    for token in tokens:
+        source = (aliases or {}).get(token, token)
+        code = model_map.get(source.casefold())
+        if not code:
+            raise UnsupportedPatientVocabulary()
+        if code not in codes:
+            codes.append(code)
+    return ','.join(codes)
 
 
 def _normalize_canonical_labs(row):
@@ -414,19 +395,26 @@ def normalize_promop_row(row: dict) -> dict:
         row['stem_cell_transplant_date'] = row['sct_date']
 
     # ── Receptor statuses ──────────────────────────────────────────────
-    # Resolved via DB-backed LRU map; aliases handle PROMOP-specific labels
-    # (e.g. "Equivocal" → her2_low, "Borderline" → er_plus_with_low_exp).
-    # Unknown / empty strings resolve to None → treated as unknown by matcher.
-    for _field, _model in [
-        ('her2_status',                  'Her2Status'),
-        ('estrogen_receptor_status',     'EstrogenReceptorStatus'),
-        ('progesterone_receptor_status', 'ProgesteroneReceptorStatus'),
-        ('hr_status',                    'HrStatus'),
-        ('hrd_status',                   'HrdStatus'),
+    # Reuse package semantics: Positive supplies no expression level, and
+    # Equivocal/Borderline are not an asserted low-expression result.
+    for _field, _kind, _model in [
+        ('her2_status', 'her2', 'Her2Status'),
+        ('estrogen_receptor_status', 'er', 'EstrogenReceptorStatus'),
+        ('progesterone_receptor_status', 'pr', 'ProgesteroneReceptorStatus'),
+        ('hr_status', 'hr', 'HrStatus'),
     ]:
         val = row.get(_field)
         if isinstance(val, str):
-            row[_field] = resolve_code(val, _model)
+            code = receptor_status_code(val, _kind)
+            if code is None and val.strip().casefold() not in (
+                '', 'equivocal', 'borderline', 'unknown', 'indeterminate',
+            ):
+                # Older EXACT payloads may carry an exact catalog title.
+                title_code = _build_code_lookup(_model)[_model].get(val.strip().casefold())
+                code = receptor_status_code(title_code, _kind)
+            row[_field] = code
+    if isinstance(row.get('hrd_status'), str):
+        row['hrd_status'] = resolve_code(row['hrd_status'], 'HrdStatus')
 
     # ── TNM staging — PROMOP stores full concept names, EXACT expects short codes ──
     # e.g. 'T1: Invasive Tumor ≤ 2 cm' → 't1', 'M0(i+): ...' → 'm0(i_plus)'
@@ -467,8 +455,9 @@ def normalize_promop_row(row: dict) -> dict:
     # ── Multi-value code fields — resolve CSV display names to codes ───
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
+    if 'molecular_markers' in row:
+        row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
     for _field, _model in [
-        ('molecular_markers',     'Marker'),
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
     ]:
