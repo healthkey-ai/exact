@@ -97,7 +97,7 @@ These are explicit scope boundaries, not allowances to conceal new drift:
 | `disease` case/whitespace adapter | CB explicitly normalizes supported titles; not changed by this lab slice |
 | `gender` (`U -> UN`) | EXACT has its own gender normalization/unknown handling; not asserted equivalent here |
 | `patient_age` unknown-DOB sentinel guard | CB checks Person provenance; EXACT's flat row adapter does not establish the same provenance. Remains a known audit boundary, not a guessed age correction |
-| `cytogenic_markers` spelling and vocabulary | PROMOP's `cytogenetic_markers` column and canonical vocabulary are translated into CB's codes on the PROMOP path (#590/#461). A payload already in EXACT's display-title form keeps resolving through the Marker table |
+| `cytogenic_markers` spelling and vocabulary | PROMOP's `cytogenetic_markers` column and canonical vocabulary are translated into CB's codes on the PROMOP path (#590/#461). Legacy titles/codes resolve against CB's `CytogenicMarker`, not the retired `Marker` table (#658) |
 | Supportive therapy text -> structured rows | Intentionally unresolved; CB treats it as type-incompatible, EXACT has existing text clearing; #231/#384 |
 | RBC | Not a canonical fallback in CB `_FIELD_MAPS`; existing host contract differs, outside #627 |
 | Direct bilirubin | No corresponding PatientRecord canonical source in the audited contract; do not substitute total bilirubin |
@@ -108,3 +108,44 @@ geography and schema metadata are outside the scalar fallback table. Related
 behavioral work: #626, #629, #630, #621 W3; cross-host regression gate:
 `cancerbot-org/cancerbot#5510`. No OMOP flag, CB dependency pin or deployment
 authorization changes as part of this contract.
+
+## Catalog/runtime repair (#658)
+
+The PROMOP adapter loads only the reference needed by a supplied field. Therapy
+resolution combines only `Therapy` and `TherapyComponent`. ER/PR/HR/HER2 reuse
+the package's `receptor_status_code`: generic Positive carries no expression
+level; Equivocal and Borderline do not establish low expression. Exact catalog
+titles for an expression-specific result still resolve. HRD stays separate.
+
+Marker titles/codes resolve against the separate, existing CB tables
+`trials_cytogenicmarker` and `trials_molecularmarker`, on their own axes. The
+standalone migration creates these current-model mirrors and copies an existing
+standalone taxonomy without deleting its legacy rows. The standalone seed loader
+retains its existing definitions, separated by category. Neither is a CB catalog
+repair or permission to run EXACT migrations against an external trials database.
+The 43 additional Trial fields belong to #659, not this repair.
+
+PROMOP marker normalization validates every token before publishing a set:
+
+- Blank/explicit Unknown remains unknown; standalone `none` asserts absence.
+- Duplicate tokens and many-to-one known aliases are deduplicated, not mistaken
+  for missing coverage. Known catalog codes preserve their canonical case and
+  survive repeated normalization.
+- An unsupported token, wrong-axis code, malformed assessment, or `none` mixed
+  with positive/unknown tokens returns **422 `unsupported_patient_vocabulary`**.
+  It never publishes a resolved subset or an empty negative assessment.
+- A needed catalog that is empty or lacks its required table/columns returns
+  **503 `patient_vocabulary_unavailable`**. Other database errors are not relabeled
+  as missing vocabulary. Error bodies contain no patient values.
+
+This applies to the normalizer endpoint and the server-side PROMOP builder,
+including search/details using that builder. It does not reinterpret arbitrary
+legacy inline `patient_info`. Resolving every token does **not** prove that every
+possible marker was tested: per-marker completeness and source capability remain
+the versioned contract/CB-first seam work in #660/#661. No OMOP flag is enabled.
+
+Myeloma-related-disorder options display the existing fixed six-code boolean-source
+contract, with the same labels as migration 0026. Matching still uses those six
+source booleans and preserves unknown versus negative; an empty/missing myeloma
+reference table no longer prevents unrelated details/options. No new disorder or
+OMOP mapping is inferred from this display-only contract.

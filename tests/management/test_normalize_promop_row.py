@@ -413,22 +413,19 @@ _MOCK_LOOKUP = {
         # PROMOP aliases injected by _build_code_lookup:
         'negative':  'her2_minus',
         'positive':  'her2_plus',
-        'equivocal': 'her2_low',
     },
     'EstrogenReceptorStatus': {
         'er+/hi exp': 'er_plus_with_hi_exp',
         'er-':        'er_minus',
         # PROMOP aliases:
-        'positive':   'er_plus_with_hi_exp',
+        'positive':   'er_plus',
         'negative':   'er_minus',
-        'borderline': 'er_plus_with_low_exp',
     },
     'ProgesteroneReceptorStatus': {
         'pr+/hi exp': 'pr_plus_with_hi_exp',
         'pr-':        'pr_minus',
-        'positive':   'pr_plus_with_hi_exp',
+        'positive':   'pr_plus',
         'negative':   'pr_minus',
-        'borderline': 'pr_plus_with_low_exp',
     },
     'HrStatus': {
         'hr+':    'hr_plus',
@@ -455,7 +452,8 @@ _MOCK_LOOKUP = {
         'hispanic/latino':           'other',
     },
     # Other models — empty for these unit tests
-    'Marker': {},
+    'CytogenicMarker': {},
+    'MolecularMarker': {},
     'PlannedTherapy': {},
     'ConcomitantMedication': {},
     '_therapy': {},
@@ -472,8 +470,8 @@ class TestReceptorStatusAliases:
     the alias injection in _build_code_lookup().
     """
 
-    def test_her2_equivocal_maps_to_low(self, _mock):
-        assert _normalize_promop_row(_row(her2_status='Equivocal'))['her2_status'] == 'her2_low'
+    def test_her2_equivocal_is_unknown(self, _mock):
+        assert _normalize_promop_row(_row(her2_status='Equivocal'))['her2_status'] is None
 
     def test_her2_positive_maps_to_plus(self, _mock):
         assert _normalize_promop_row(_row(her2_status='Positive'))['her2_status'] == 'her2_plus'
@@ -481,21 +479,21 @@ class TestReceptorStatusAliases:
     def test_her2_negative_maps_to_minus(self, _mock):
         assert _normalize_promop_row(_row(her2_status='Negative'))['her2_status'] == 'her2_minus'
 
-    def test_er_positive_maps_to_hi_exp(self, _mock):
+    def test_er_positive_maps_to_generic_positive(self, _mock):
         result = _normalize_promop_row(_row(estrogen_receptor_status='Positive'))
-        assert result['estrogen_receptor_status'] == 'er_plus_with_hi_exp'
+        assert result['estrogen_receptor_status'] == 'er_plus'
 
-    def test_er_borderline_maps_to_low_exp(self, _mock):
+    def test_er_borderline_is_unknown(self, _mock):
         result = _normalize_promop_row(_row(estrogen_receptor_status='Borderline'))
-        assert result['estrogen_receptor_status'] == 'er_plus_with_low_exp'
+        assert result['estrogen_receptor_status'] is None
 
     def test_er_negative(self, _mock):
         result = _normalize_promop_row(_row(estrogen_receptor_status='Negative'))
         assert result['estrogen_receptor_status'] == 'er_minus'
 
-    def test_pr_positive_maps_to_hi_exp(self, _mock):
+    def test_pr_positive_maps_to_generic_positive(self, _mock):
         result = _normalize_promop_row(_row(progesterone_receptor_status='Positive'))
-        assert result['progesterone_receptor_status'] == 'pr_plus_with_hi_exp'
+        assert result['progesterone_receptor_status'] == 'pr_plus'
 
     def test_pr_negative(self, _mock):
         result = _normalize_promop_row(_row(progesterone_receptor_status='Negative'))

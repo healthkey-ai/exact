@@ -4,6 +4,7 @@ from django.db.models import F
 from django.core.cache import cache
 
 from trials.models import *
+from trials.services.patient_vocabulary import catalog_rows
 
 
 def ordered_dict(data):
@@ -20,7 +21,8 @@ class ValueOptions:
         # the cached blob drift from fresh `all_options()` output until
         # the 1h TTL expires.
         # v3: #5521 adds the MM MyelomaRelatedDisorder vocabulary keys.
-        return 'ValueOptions.all_options.v3'
+        # v4: CB-owned marker axes; myeloma labels no longer require a table.
+        return 'ValueOptions.all_options.v4'
 
     @staticmethod
     def to_value_and_label(data):
@@ -307,21 +309,19 @@ class ValueOptions:
 
     @property
     def cytogenic_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import CytogenicMarker
 
-        category = MarkerCategory.objects.get(code='cytogenic')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = catalog_rows(CytogenicMarker)
 
-        return {'none': 'None', **{x.code: x.title for x in markers}}
+        return {'none': 'None', **{x['code']: x['title'] for x in markers}}
 
     @property
     def molecular_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import MolecularMarker
 
-        category = MarkerCategory.objects.get(code='molecular')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = catalog_rows(MolecularMarker)
 
-        return {'none': 'None', **{x.code: x.title for x in markers}}
+        return {'none': 'None', **{x['code']: x['title'] for x in markers}}
 
     @property
     def gelf_criteria_statuses(self):
@@ -904,9 +904,17 @@ class ValueOptions:
 
     @property
     def myeloma_related_disorders(self):
-        from trials.models import MyelomaRelatedDisorder
-        items = MyelomaRelatedDisorder.objects.order_by('id')
-        return {x.code: x.title for x in items}
+        # Display labels for the fixed six boolean-source contract in
+        # exact_matching.patient_info.patient_info_attributes. Identical to
+        # migration 0026, not a clinical vocabulary inferred from empty rows.
+        return {
+            'mgus': 'Monoclonal Gammopathy of Undetermined Significance (MGUS)',
+            'smoldering_multiple_myeloma': 'Smoldering Multiple Myeloma',
+            'waldenstrom_macroglobulinemia': 'Waldenström Macroglobulinemia',
+            'igm_multiple_myeloma': 'IgM Multiple Myeloma',
+            'al_amyloidosis': 'Light-Chain (AL) Amyloidosis',
+            'poems_syndrome': 'POEMS Syndrome',
+        }
 
     @property
     def er_statuses(self):
