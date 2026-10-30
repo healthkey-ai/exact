@@ -1,0 +1,6 @@
+level,cb_code,cb_title,omop_concept_id,omop_name,omop_vocab,match
+language,en,English,4180186,English language,SNOMED,curated
+language,es,Spanish,4182511,Spanish language,SNOMED,curated
+language,other,Other,,,,no_omop
+skill,speak,Speak,2100007853,Speaks language,HK-Language,curated
+skill,write,Write,2100007855,Writes language,HK-Language,curated

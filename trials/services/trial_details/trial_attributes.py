@@ -270,7 +270,7 @@ class TrialAttributes:
             return True
         elif value is False and field_name in ATTR_FALSE_VALUE_IS_BLANK:
             return True
-        elif self._context['gender'] == 'M' and field_name in ATTR_SKIP_FOR_MALE:
+        elif self._context.get('gender') == 'M' and field_name in ATTR_SKIP_FOR_MALE:
             return True
         return False
 
@@ -319,7 +319,8 @@ class TrialAttributes:
             return 'select'
         return str(field_type)
 
-    def get_field(self, field, value, user_field, user_value, subform_details, units_data):
+    def get_field(self, field, value, user_field, user_value, subform_details, units_data,
+                  user_readonly=False):
 
         field_name = self.get_field_name(field)
 
@@ -328,7 +329,7 @@ class TrialAttributes:
         if subform_details:
             extra_attrs['subform_details'] = subform_details
 
-        ureadonly = subform_details is not None
+        ureadonly = user_readonly or subform_details is not None
 
         type = ATTR_TYPE_MAPPING.get(field_name)
         options = self.get_options(field_name)
@@ -398,6 +399,9 @@ class TrialAttributes:
             units_data = {}
             if attr_name in user_details:
                 user_data = user_details[attr_name]
+                # Port CB's patient-attribute resolution: patient and trial
+                # names may differ (e.g. measurable_disease_imwg_required).
+                subform_details = user_data.get('subform_details') or subform_attrs.get(attr_name)
                 user_field = AttributeNames.get_by_snake_case(user_data['ufield'])
                 user_value = user_data['uvalue']
 
@@ -410,7 +414,10 @@ class TrialAttributes:
                             'uunitsOptions': ValueOptions.to_value_and_label(units_details['options']),
                         }
 
-                field = self.get_field(attr, attr_value, user_field, user_value, subform_details, units_data)
+                field = self.get_field(
+                    attr, attr_value, user_field, user_value, subform_details, units_data,
+                    user_readonly=user_data['ureadonly'],
+                )
                 out[field['name']] = field
                 out[field['name']]['search_type'] = user_data.get('search_type')
             elif attr_name in ATTR_NAME_ALWAYS_INCLUDED:
@@ -452,13 +459,13 @@ class TrialAttributes:
         }
 
         goodness_score = getattr(self._trial, 'goodness_score', None)
-        if goodness_score is None:
+        if goodness_score is None and self._patient_info is not None:  # #318: no patient → leave blank
             goodness_score = self._trial.get_goodness_score(self._patient_info)
         computed_fields['goodnessScore'] = {
           "name": "goodnessScore",
           "label": "goodness Score",
           "type": "string",
-          "value": str(goodness_score),
+          "value": '' if goodness_score is None else str(goodness_score),
           "options": None,
           "ureadonly": True,
           "ufield": None,
@@ -468,7 +475,7 @@ class TrialAttributes:
           "dependencies": []
         }
 
-        match_score = self._trial.get_match_score(self._patient_info)
+        match_score = self._trial.get_match_score(self._patient_info) if self._patient_info is not None else None  # #318
         match_score_value = '' if match_score is None else f'{str(match_score)}%'
         computed_fields['matchScore'] = {
           "name": "matchScore",
@@ -503,7 +510,7 @@ class TrialAttributes:
         }
 
         locations_name = self._trial.sorted_locations_by_distance(
-            self._patient_info.geo_point,
+            self._patient_info.geo_point if self._patient_info is not None else None,  # #318
             recruitment_status=recruitment_status
         )
         locations_name = [x.location.title for x in locations_name if x.location]
@@ -524,10 +531,11 @@ class TrialAttributes:
         return computed_fields
 
     def therapies(self, subform_attrs):
+        # Renders the trial's therapy criteria; patient values (uvalue) are None
+        # here and the per-criterion match status is filled in by the caller. Runs
+        # with or without a patient — without one the criteria still render and the
+        # caller marks them 'unknown' (#318), consistent with the other criteria.
         out = {}
-        if not self._patient_info:
-            return out
-
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
             active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
@@ -790,6 +798,13 @@ class TrialAttributes:
 
         mapping = USER_TO_TRIAL_ATTRS_MAPPING
 
+        def user_value_for_trial(user_attr):
+            # A trial can state its own adequacy cutoffs; the stored patient-level
+            # boolean only encodes the defaults (ported from CB, #630).
+            if user_attr == 'haematological_adequacy_status':
+                return self._patient_info_attr.haematological_adequacy_status_for_trial(self._trial)
+            return self._patient_info_attr.get_value(user_attr)
+
         for user_attr in mapping.keys():
             trial_attr_meta = mapping[user_attr]
 
@@ -810,7 +825,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -823,7 +838,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -836,7 +851,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -848,7 +863,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -895,10 +910,13 @@ class TrialAttributes:
                 else:
                     attr_name = trial_attr_meta["attr"]
 
+                user_value = user_value_for_trial(user_attr)
+                if user_attr == 'hepatic_adequacy_status':
+                    user_value = self._patient_info_attr.hepatic_adequacy_status_for_trial(self._trial)
                 out[attr_name] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value),
                 }
                 if subform_details:
                     out[attr_name]['subform_details'] = subform_details

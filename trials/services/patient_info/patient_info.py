@@ -40,6 +40,10 @@ _FIELDS = [
     _f(CharField, 'external_id', max_length=255),
     _f(TextField, 'status'),
     _f(TextField, 'languages_skills'),
+    # Languages the patient was asked about (en/es, comma-joined), from PROMOP's
+    # capability booleans; see exact_matching.patient_info.language_capability.
+    # None when unknown (#605).
+    _f(TextField, 'languages_asked'),
     # Disease block
     _f(IntegerField, 'patient_age'),
     _f(CharField, 'gender', max_length=2),
@@ -69,9 +73,18 @@ _FIELDS = [
     _f(TextField, 'cytogenic_markers'),
     _f(TextField, 'molecular_markers'),
     _f(JSONField, 'stem_cell_transplant_history', default=list),
+    _f(DateField, 'stem_cell_transplant_date'),
     _f(BooleanField, 'plasma_cell_leukemia', default=False),
     _f(TextField, 'progression'),
     _f(BooleanField, 'measurable_disease_imwg'),
+    # Current-diagnosis MM conditions for the exclusion Named-ORs (#5521).
+    # None = unknown, False = No, True = Yes.
+    _f(BooleanField, 'mgus'),
+    _f(BooleanField, 'smoldering_multiple_myeloma'),
+    _f(BooleanField, 'waldenstrom_macroglobulinemia'),
+    _f(BooleanField, 'igm_multiple_myeloma'),
+    _f(BooleanField, 'al_amyloidosis'),
+    _f(BooleanField, 'poems_syndrome'),
     # Lymphoma-specific
     _f(TextField, 'gelf_criteria_status'),
     _f(IntegerField, 'flipi_score'),
@@ -90,9 +103,30 @@ _FIELDS = [
     _f(TextField, 'second_line_outcome'),
     _f(TextField, 'later_therapy'),
     _f(JSONField, 'later_therapies', default=list),
-    # Component concept_ids supplied directly by CTOMOP (promop#189) under OMOP mode.
-    # None when the consumer has not sent them; used by component_category_lookup for types.
+    # Component concept_ids supplied directly by PROMOP (promop#189) under OMOP mode.
+    # None when the consumer has not sent them; used for component matching.
     _f(JSONField, 'therapy_component_ids', default=None),
+    # Drug-class "type" concept_ids pre-expanded by PROMOP (promop#370, ADR 0002).
+    # None when the consumer has not sent them; consumed as the patient's type
+    # match-values once OMOP therapy is on (#285 folded types into the base flag). Inert
+    # until then.
+    _f(JSONField, 'therapy_type_ids', default=None),
+    # (language, skill) concept pairs ("<language_concept_id>:<skill_concept_id>";
+    # CB #5350), built by resolve from PROMOP's english_*/spanish_* capability
+    # booleans (trials.services.omop.patient_languages). None when the payload
+    # carries neither the booleans nor the list; read only under EXACT_OMOP_LANGUAGES.
+    _f(JSONField, 'language_skill_concept_ids', default=None),
+    # Language concept ids the patient was ASKED about (any of the four capability
+    # booleans non-null), built alongside the pairs; None when not built. See the
+    # state model in trials/services/omop/patient_languages.py.
+    _f(JSONField, 'language_asked_concept_ids', default=None),
+    # Aggregate therapy-vocab release the patient's therapy_type_ids were derived
+    # against (promop VocabularyRelease pk as a decimal string; promop#394). One
+    # value for the whole class set (unanimous-of-lines else null). #286 Gate 1
+    # compares it == active_pinned_release(); inert until the patient-release gate
+    # is enforced (ADR 0002 §Gate 1). TextField (not Decimal) to keep the exact
+    # decimal string — resolve._coerce_numerics would coerce a DecimalField.
+    _f(TextField, 'therapy_release_id', default=None),
     _f(DateField, 'later_date'),
     _f(TextField, 'later_outcome'),
     _f(TextField, 'old_supportive_therapies'),
@@ -106,6 +140,8 @@ _FIELDS = [
     _f(CharField, 'absolute_neutrophile_count_units', default='CELLS/UL', max_length=10),
     _f(IntegerField, 'platelet_count'),
     _f(CharField, 'platelet_count_units', default='CELLS/UL', max_length=10),
+    _f(FloatField, 'prothrombin_time_uln'),
+    _f(FloatField, 'activated_partial_thromboplastin_time_uln'),
     _f(DecimalField, 'white_blood_cell_count', decimal_places=2, max_digits=10),
     _f(CharField, 'white_blood_cell_count_units', default='CELLS/L', max_length=10),
     _f(DecimalField, 'red_blood_cell_count', decimal_places=2, max_digits=10),
@@ -141,6 +177,9 @@ _FIELDS = [
     _f(DecimalField, 'monoclonal_protein_serum', decimal_places=2, max_digits=10),
     _f(DecimalField, 'monoclonal_protein_urine', decimal_places=2, max_digits=10),
     _f(IntegerField, 'lactate_dehydrogenase_level'),
+    # Per-lab LDH upper limit of normal (#631, CB #4512). MIPI divides LDH by
+    # it; absent or non-positive falls back to the fixed MIPI_LDH_ULN.
+    _f(IntegerField, 'lactate_dehydrogenase_level_uln'),
     _f(BooleanField, 'pulmonary_function_test_result', default=False),
     _f(BooleanField, 'bone_imaging_result', default=False),
     _f(IntegerField, 'clonal_plasma_cells'),
@@ -148,6 +187,7 @@ _FIELDS = [
     # Behavior block
     _f(BooleanField, 'consent_capability', default=True),
     _f(BooleanField, 'caregiver_availability_status', default=False),
+    _f(BooleanField, 'able_to_swallow_tablets_capsules'),
     _f(BooleanField, 'contraceptive_use', default=False),
     _f(BooleanField, 'no_pregnancy_or_lactation_status', default=True),
     _f(BooleanField, 'pregnancy_test_result', default=False),
@@ -313,6 +353,10 @@ class PatientInfo:
     def mutation_interpretations(self):
         from trials.services.patient_info.genetic_mutations import GeneticMutations
         return GeneticMutations.mutation_interpretations(self.genetic_mutations)
+
+    @property
+    def myeloma_related_disorders(self):
+        return self.attributes_service.myeloma_related_disorders
 
     @property
     def abnormal_kappa_lambda_ratio(self):

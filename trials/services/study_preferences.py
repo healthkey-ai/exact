@@ -26,7 +26,9 @@ class StudyPreferences:
 
     # Trial classification filters
     trial_type: Optional[str] = None
-    trial_purpose: Optional[str] = None
+    # Several purposes at once (CB #4663), like therapy_id above: accepts
+    # ?trialPurpose= one or more times. Empty means no filter.
+    trial_purpose: list[str] = field(default_factory=list)
     study_type: Optional[str] = None
 
     # Recruitment filter
@@ -72,16 +74,46 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         val = params.get(key)
         return val if val else None
 
-    def _int_list(key):
+    def _raw_list(key):
         if hasattr(params, 'getlist'):
-            raw = params.getlist(key)
-        elif key in params:
-            v = params[key]
-            raw = v if isinstance(v, list) else [v]
-        else:
-            raw = []
+            return params.getlist(key)
+        if key in params:
+            value = params[key]
+            return value if isinstance(value, list) else [value]
+        return []
+
+    def _str_list(key, limit=50):
+        """Repeated params and one comma-separated value both spell a list.
+
+        Repetition is the query-string convention, and what CB's
+        /trials/form-settings/ reads for its own `trial_purpose` param — but not
+        every caller can emit it, so one comma-separated value is accepted too.
+        Either way a caller holding the pre-#4663 single-value contract keeps
+        working.
+
+        Capped, because every code becomes another clause in the WHERE: the
+        purpose taxonomy has nine entries, so a longer list is junk, and an
+        unvalidated query string should not turn into thousands of them. CB
+        bounds the same field at 50.
+        """
+        codes = [
+            code.strip()
+            for value in _raw_list(key)
+            if value is not None  # or a dict-like caller's None becomes 'None'
+            for code in str(value).split(',')
+        ]
+        # Deduplicated the way the queryset matches them — case-insensitively,
+        # first spelling wins.
+        result, seen = [], set()
+        for code in codes:
+            if code and code.casefold() not in seen:
+                seen.add(code.casefold())
+                result.append(code)
+        return result[:limit]
+
+    def _int_list(key):
         result = []
-        for v in raw:
+        for v in _raw_list(key):
             try:
                 result.append(int(v))
             except (TypeError, ValueError):
@@ -97,7 +129,7 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         register=_str('register'),
         study_id=_str('studyId'),
         trial_type=_str('trialType'),
-        trial_purpose=_str('trialPurpose'),
+        trial_purpose=_str_list('trialPurpose'),
         study_type=_str('studyType'),
         recruitment_status=_str('recruitmentStatus'),
         country=_str('country'),

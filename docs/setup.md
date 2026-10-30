@@ -154,7 +154,7 @@ With the test trials seeded (step 5 above), run the CLI matching command:
 
 ```bash
 python manage.py search_trials_for_patients \
-  --patient-id <ctomop_person_id>
+  --patient-id <promop_person_id>
 ```
 
 To search for multiple patients and save results to CSV:
@@ -340,7 +340,7 @@ environment variables — never commit secret values to git.
   (`*serviceAccount*.json`, `*-firebase-adminsdk-*.json`, `*-sa-key.json`,
   `firebase-sa-key.json`), and private keys (`*.pem`, `*.key`).
 - **Production/staging:** secrets such as `SECRET_KEY`, database credentials,
-  `TRIALS_DATABASE_URL`, and `CTOMOP_SERVICE_TOKEN` come from the host
+  `TRIALS_DATABASE_URL`, and `PROMOP_SERVICE_TOKEN` come from the host
   platform's secret store (e.g. GCP Secret Manager) and are injected as
   environment variables at runtime — never from files in this repo.
 - **When CI deployment is added**, it should authenticate to the cloud
@@ -365,14 +365,27 @@ environment variables — never commit secret values to git.
 | `DATABASE_HOST` | `localhost` | PostgreSQL host |
 | `DATABASE_PORT` | `5432` | PostgreSQL port |
 | `TRIALS_DATABASE_URL` | _(unset)_ | External trials DB URL — enables split-database mode (`postgresql://user:pass@host:5432/db`) |
-| `TRIALS_DB_MIGRATE` | `false` | Apply `trials` migrations to the `trials` alias. Only for a copy you own — the external catalog's schema is not ours to change. Accepts the literal `true` only. |
-| `TRIALS_DB_TOLERATE_MISSING_COLUMNS` | `false` | **Stopgap, see #360.** Defer columns the trials corpus lacks, so a read-only consumer keeps working when the models drift ahead of it. Accepts `1/true/yes/on`. Applies only to the `trials` alias, and refuses to arm — logging why — when that alias is absent *or* addresses the same host, port and name as `default`. The guarantee, though, is that **nothing is deferred if the target database has a `django_migrations` table**: a database this project migrates is not a corpus, and its drift is an un-applied migration. A corpus that carries a stray `django_migrations` (one restored from a full dump of a Django-managed database, say) therefore cannot use this tolerance. Cannot help a `filter()` on an absent column: `?therapy_id=` still fails. |
+| `TRIALS_DB_MIGRATE` | `false` | Administrative migration opt-in for an explicitly owned copy only. Read-only matching startup rejects it; turn it off after separate authorized initialization. Never migrate CB-owned storage. Accepts literal `true` only. |
+| `TRIALS_DB_TOLERATE_MISSING_COLUMNS` | `false` | Legacy diagnostic stopgap (#360), not deployment compatibility. Strict split-catalog startup rejects this flag (#659); missing fields must pass `check_trials_schema`, never be hidden by deferral. The underlying diagnostic helper remains for existing management/test callers and does not grant permission to serve a drifted schema. |
 | `PATIENT_DATABASE_URL` | _(unset)_ | External patient DB URL — used by `search_trials_for_patients` CLI command |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL for Celery (only needed for async tasks) |
 | `GDAL_LIBRARY_PATH` | `/opt/homebrew/lib/libgdal.dylib` | Path to GDAL shared library |
 | `GEOS_LIBRARY_PATH` | `/opt/homebrew/lib/libgeos_c.dylib` | Path to GEOS shared library |
 | `ENVIRONMENT` | `local` | Environment name (`local` / `dev` / `staging` / `prod`) |
 | `ADD_SEARCH_TRIALS_TRACES` | `false` | Set to `true` to log detailed trial-search reasoning |
+| `PROMOP_BASE` | _(empty)_ | PRomop base URL for the patient client |
+| `PROMOP_SERVICE_TOKEN` | _(empty)_ | EXACT's own PRomop bearer token — used when no OAuth client is configured |
+| `PROMOP_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | PRomop OAuth2 client credentials; **both or neither** — half a pair refuses every patient request |
+| `PROMOP_OAUTH_SCOPE` | `patient/*.read` | Scope requested for the patient client. EXACT never writes — keep it read-only |
+| `PROMOP_OAUTH_TOKEN_URL` | `{PROMOP_BASE}/o/token/` | Token endpoint override |
+| `PROMOP_API_BASE` | _(empty)_ | PRomop API base; the fallback the vocabulary mirror uses before `PROMOP_BASE` |
+| `PROMOP_VOCAB_BASE` | falls back to `PROMOP_API_BASE` / `PROMOP_BASE` | Base URL for the vocabulary mirror |
+| `PROMOP_VOCAB_SERVICE_TOKEN` | _(empty)_ | Bearer for the vocabulary endpoints — set to the **same** named token as `PROMOP_SERVICE_TOKEN` so PRomop sees one service identity |
+| `PROMOP_VOCAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | _(empty)_ | Vocabulary OAuth2 credentials; both or neither. Wins over the static token when set — clear them to use the named token |
+| `PROMOP_VOCAB_OAUTH_SCOPE` | `system/*.read` | Scope for the vocabulary mirror |
+| `PROMOP_VOCAB_OAUTH_TOKEN_URL` | `{base}/o/token/` | Token endpoint override |
+| `EXACT_ALLOW_PERSON_ID_LOOKUP` | `true` in DEBUG/`local`, else `false` | Enables the server-side `?person_id=` lookup — a PHI IDOR outside local use (#150/#108) |
+
 | `PARTNER_AUTH_PROVIDERS` | Firebase + PHR | Comma-separated dotted paths of the token providers this deployment has. Set to the portal provider alone where there is no Firebase. |
 | `PHR_ISSUER` | `healthkey-phr` | The `iss` claim that routes a token to the portal provider. Not safely changeable after a deploy: `Identity.sub` is globally unique, so existing users would collide under a new issuer. |
 | `PHR_BASE_URL` | _(empty)_ | Portal base URL; derives `PHR_JWKS_URL`. Unset means portal **RS256** tokens never verify (fails closed). It no longer governs the introspection path — that has its own URL below, so an HS-family token can still verify with this unset. |
@@ -385,9 +398,20 @@ environment variables — never commit secret values to git.
 | `PHR_INTROSPECT_MAX_CALLS` | `300` | Ceiling on outbound introspection calls per interval, per process. DRF authenticates before it throttles, so `AnonRateThrottle` cannot reach that path — this is the only bound an anonymous caller runs into. Was `30` when a verified token was cached for a minute; since #404 removed that cache it bounds requests rather than sign-ins. |
 | `PHR_INTROSPECT_RATE_INTERVAL` | `60` | Window, in seconds, for `PHR_INTROSPECT_MAX_CALLS`. Clamped to a minimum of 1 — at `0` the window would restart on every call and remove the ceiling. |
 
+The `PROMOP_*` credentials are EXACT's *service identity* to PRomop; see
+[promop-service-identity.md](promop-service-identity.md) for which one each
+client uses, the read-only grant EXACT needs, and the rollout order.
+
 ---
 
 ## External trials database (production mode)
+
+Before serving an external catalog, run the mandatory read-only
+[`check_trials_schema` preflight](trials-catalog-schema.md). Docker and direct
+WSGI startup enforce it. Missing/incompatible modeled storage is a hard failure,
+not something OMOP flags or column deferral can hide. Matching startup requires
+the split-catalog migration/restore/tolerance flags to be off; initialize an
+explicitly owned development copy separately, with appropriate authorization.
 
 In production, EXACT is a **stateless matching engine** that reads trial data
 from an external database. It does not own or manage the trial schema — the
@@ -425,4 +449,3 @@ python manage.py migrate
 python manage.py seed_reference_data   # populates reference data locally
 python manage.py runserver
 ```
-
