@@ -364,6 +364,23 @@ class TrialQuerySet(models.QuerySet):
         #   and the attribute should be added to list of what makes it go
         #   from POTENTIAL to ELIGIBLE
 
+        query, study_traces = self.candidate_trials(
+            search_options, study_info, patient_info, add_traces, search_type,
+        )
+        if search_type in ['all', 'favorites', 'my_trials']:
+            return query, study_traces
+        query, patient_traces = query.filter_by_patient_info(patient_info, add_traces)
+        return query, list(study_traces) + list(patient_traces)
+
+    def candidate_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None):
+        """Unsliced study/search-mode scope, BEFORE patient eligibility filters.
+
+        This is not an eligibility result. A typed consumer must evaluate every
+        candidate (including scalar constraints) before final counts, ranking or
+        pagination. Existing callers still use filtered_trials. The incoming
+        queryset retains host visibility; saved-mode and geography rules below
+        are unchanged. No new backend or typed reader is activated here.
+        """
         query = self
 
         # therapy_id applies to all search paths (standard and admin). It is an
@@ -395,10 +412,7 @@ class TrialQuerySet(models.QuerySet):
             return query, []
 
         else:
-            query, study_traces = query.filter_by_study_info(study_info, add_traces, user_geo_point=patient_info.geo_point if patient_info else None)
-            query, patient_traces = query.filter_by_patient_info(patient_info, add_traces)
-
-            return query, list(study_traces) + list(patient_traces)
+            return query.filter_by_study_info(study_info, add_traces, user_geo_point=patient_info.geo_point if patient_info else None)
 
     def filter_for_admin(self, study_info, patient_info, apply_trial_purpose=True):
         traces = []

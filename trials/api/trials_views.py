@@ -163,6 +163,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         if patient_info is None:
             patient_info = self._resolve_patient_info()
 
+        from trials.services.matching.typed_runtime import resolve_evaluation
+        evaluation = resolve_evaluation(self.request, patient_info)
+        if evaluation is not None:
+            return self._get_typed_queryset(evaluation)
+
         # trial_type is a FK serialized on every trial via StringRelatedField
         # (list, search, detail); without select_related the serializer fetches
         # it once per row — an N+1 (ported from CB perf(trials) select_related
@@ -262,6 +267,72 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
+    def _get_typed_queryset(self, evaluation):
+        """SQL visibility/search first, complete final evaluation second, pages last."""
+        from datetime import date
+        from collections import Counter
+        from exact_matching.contracts import ContractError
+        from exact_matching.request_evaluation import EvaluatedTrials
+        from trials.services.matching.typed_runtime import attribute_counts, TypedMatchingUnavailable
+
+        patient_info = evaluation.patient_info
+        prefs = self._resolve_study_preferences()
+        params = self.request.query_params
+        search_type = params.get('type')
+        queryset = Trial.objects.select_related('trial_type')
+        if self.action != 'retrieve':
+            queryset, _ = queryset.candidate_trials(params, prefs, patient_info, search_type=search_type)
+        # Apply DRF text search to ORM, never to an already finalized sequence.
+        queryset = super().filter_queryset(queryset)
+        try:
+            weights = {field: float(params.get(param, 25.0)) for field, param in (
+                ('benefit_weight', 'benefitWeight'), ('patient_burden_weight', 'patientBurdenWeight'),
+                ('risk_weight', 'riskWeight'), ('distance_penalty_weight', 'distancePenaltyWeight'))}
+        except (TypeError, ValueError):
+            weights = dict.fromkeys(('benefit_weight', 'patient_burden_weight', 'risk_weight',
+                                     'distance_penalty_weight'), 25.0)
+        queryset = queryset.with_goodness_score_optimized(
+            **weights, geo_point=patient_info.geo_point, recruitment_status=prefs.recruitment_status)
+        if 'distance' not in queryset.query.annotations:
+            queryset = queryset.with_distance_optimized(patient_info.geo_point, recruitment_status=prefs.recruitment_status)
+        if params.get('sort') == 'status':
+            queryset = queryset.with_status_code()
+        queryset = queryset.prefetch_related(Prefetch(
+            'locationtrial_set', queryset=LocationTrial.objects.select_related('location')))
+        if self.action == 'retrieve':
+            # DRF get_object still does PK lookup + object permissions; its single
+            # authorized row is evaluated before serialization, even if violated.
+            return queryset
+        if search_type == 'favorites':
+            queryset = queryset.filter(favorite=True)
+        try:
+            finalized = EvaluatedTrials(queryset, evaluation, search_type=search_type)
+        except ContractError as error:
+            raise TypedMatchingUnavailable({'code': str(error)}) from error
+        self._typed_counts = attribute_counts(finalized, evaluation)
+        self._typed_status_counts = dict(Counter(evaluation.result_for(row.pk).status for row in finalized))
+        if self.action == 'list':
+            return finalized.ordered(
+                lambda row: (evaluation.result_for(row.pk).score, row.posted_date or date.min)
+                if evaluation.result_for(row.pk).score is not None else None, reverse=True)
+        sort = params.get('sort', 'goodnessScore')
+        if sort == 'matchScore':
+            return finalized.ordered(lambda row: evaluation.result_for(row.pk).score, reverse=True)
+        if sort == 'distance':
+            return finalized.ordered(lambda row: row.distance.m if row.distance is not None else None)
+        field, reverse = {
+            'status': ('status_code', False), 'phase': ('phase_code_min', False),
+            'updated': ('last_update_date', True), 'enrollment': ('enrollment_count', True),
+            'patientBurdenScore': ('patient_burden_score', False),
+        }.get(sort, ('goodness_score', True))
+        return finalized.ordered(lambda row: getattr(row, field, None), reverse=reverse)
+
+    def filter_queryset(self, queryset):
+        from exact_matching.request_evaluation import EvaluatedTrials
+        if isinstance(queryset, EvaluatedTrials):
+            return queryset  # SQL search already ran before final evaluation.
+        return super().filter_queryset(queryset)
+
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
@@ -284,6 +355,12 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             'search_type': search_type,
             'explain': self.request.query_params.get('explain', '').lower() == 'true',
         })
+        from trials.services.matching.typed_runtime import resolve_evaluation
+        holder = getattr(getattr(self.request, '_request', self.request), '_exact_typed_evaluation', None)
+        evaluation = None if holder and isinstance(holder[0], APIException) else resolve_evaluation(self.request, patient_info)
+        if evaluation is not None:
+            context['typed_evaluation'] = evaluation
+            context['counts'] = getattr(self, '_typed_counts', {})
         return context
 
     def list(self, request, *args, **kwargs):
@@ -302,7 +379,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # #4408: per-criterion high-risk MCL explainability (detail view only;
         # None for trials that gate on no high-risk criteria, or without a patient).
         patient_info = self._resolve_patient_info()
-        if patient_info is not None:
+        from trials.services.matching.typed_runtime import resolve_evaluation
+        evaluation = resolve_evaluation(self.request, patient_info)
+        if evaluation is not None:
+            data['highRiskMclCriteriaBreakdown'] = evaluation.high_risk_breakdown(instance.pk)
+        elif patient_info is not None:
             from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
             data['highRiskMclCriteriaBreakdown'] = (
                 UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
@@ -312,6 +393,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_paginated_response(self, data, extra_keys=None):
         assert self.paginator is not None
+        if hasattr(self, '_typed_status_counts'):
+            from exact_matching.request_evaluation import RESULT_SCHEMA
+            extra_keys = {**(extra_keys or {}), 'schema': RESULT_SCHEMA,
+                          'matchingCounts': self._typed_status_counts}
         return self.paginator.get_paginated_response(data, extra_keys=extra_keys)
 
     @action(methods=['get'], detail=False)
@@ -320,7 +405,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # The endpoint whose whole job is the count was the one still paying
         # for it: a country scope carries `.distinct()` from `by_location`, and
         # counting it row-wise measured 7.1s against 0.018s (#492).
-        return Response({'count': count_over_keys(queryset)})
+        data = {'count': count_over_keys(queryset)}
+        if hasattr(self, '_typed_status_counts'):
+            from exact_matching.request_evaluation import RESULT_SCHEMA
+            data.update(schema=RESULT_SCHEMA, matchingCounts=self._typed_status_counts)
+        return Response(data)
 
     @action(methods=['post'], detail=False, url_path='match')
     def match(self, request, *args, **kwargs):

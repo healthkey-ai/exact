@@ -1,9 +1,10 @@
-# Typed readers: #661 offline increment
+# Typed readers and gated request orchestration (#661)
 
-**Not runtime integration, clinical approval or readiness.** The new
+**Not clinical approval, authenticated evidence or activation readiness.** The
 `exact_matching.typed_reader.ClaimsEvaluation` evaluates supplied #660 claims in
-memory. No route imports it, no setting activates it, and no clinical score,
-eligibility list or deployment-ready receipt is produced. #661 remains open.
+memory. The [request continuation](omop-typed-runtime.md) now connects it to a
+bounded, off-by-default package/native runtime boundary. There is no production
+resolver, new dependency pin or live activation. #661 remains open.
 The existing `PatientRecordSurface` is not replaced. Claims must eventually be
 authenticated by #662 and exported by CB #5616 / PROMOP #2124 before live use.
 
@@ -161,9 +162,15 @@ most 55 evidence documents. Unique evaluations default to 10,000 and total cache
 predicate bytes to 16 MB. Exceeding a limit raises, never truncates a count/page.
 No patient, catalog or vocabulary query is made by this module.
 
-## Remaining runtime prerequisites: do not claim #661 complete
+## Runtime continuation and remaining prerequisites: do not claim #661 complete
 
 The static Astra design review and independent Codex consult both identified:
+
+The initial offline increment listed the items below as missing. The request
+continuation implements bounded native orchestration and the agreed Python score
+using upstream #5620's merged seams; see its separate scope/evidence document.
+CB host presentation/pin integration, authenticated exports/publication and
+target-environment/performance validation are not completed by that continuation.
 
 1. CB-owned behavior-preserving seams for unsliced conservative candidates and
    optional supplied patient-attribute verdicts. Host visibility, study filters,

@@ -549,6 +549,12 @@ EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', '
 # just a CB-code languages_skills reads as unknown.
 EXACT_OMOP_LANGUAGES = os.environ.get('EXACT_OMOP_LANGUAGES', '').lower() in ('1', 'true', 'yes', 'on')
 
+# #661 transport is wired for a future authenticated #662 server resolver only.
+# Not environment-activatable yet: no live all-55 producer/publication contract
+# is installed. Tests may inject a synthetic resolver; that is not readiness.
+EXACT_TYPED_MATCHING_ENABLED = False
+EXACT_TYPED_MATCHING_RESOLVER = None
+
 
 # ---------------------------------------------------------------------------
 # Firebase Admin SDK — backs FirebaseTokenProvider (verify_id_token).

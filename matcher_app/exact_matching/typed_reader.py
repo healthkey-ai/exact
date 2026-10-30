@@ -1,8 +1,8 @@
-"""Offline evaluation of v1 claims, NOT authenticated matching or readiness.
+"""Evaluation of v1 claims, NOT authenticated matching or readiness.
 
-No request route imports this module. #662 must authenticate producer receipts;
-#661's host orchestration/score seam is still required before runtime use. The
-reader never queries patient/catalog tables, expands concepts or derives scores.
+RequestEvaluation orchestrates these readers behind an off-by-default host
+boundary. #662 must authenticate producer receipts before live use. The reader
+never queries patient/catalog tables, expands concepts or derives scores.
 """
 from dataclasses import dataclass
 import json

@@ -51,6 +51,24 @@ class TrialSerializer(serializers.ModelSerializer):
         search_type = self.context.get('search_type')
         counts = self.context.get('counts') or {}
 
+        evaluation = self.context.get('typed_evaluation')
+        if evaluation is not None:
+            result = evaluation.result_for(instance.pk)
+            from trials.services.matching.typed_runtime import missing_attributes
+            response.update(result.summary())
+            response['attributesToFillIn'] = missing_attributes(result, counts)
+            response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
+            # Presentation only; no legacy clinical status or missing-attr inference.
+            response['location'] = [item.location.title for item in instance.sorted_locations_by_distance(
+                evaluation.patient_info.geo_point, recruitment_status=self.context.get('recruitment_status'))
+                if item.location]
+            distance = getattr(instance, 'distance', None)
+            units = self.context.get('distance_units') or 'km'
+            response['distance'] = (int((distance.mi if units == 'miles' else distance.km) + 0.5)
+                                    if distance is not None else None)
+            response['distanceUnits'] = units if distance is not None else None
+            return response
+
         if search_type == 'eligible' or getattr(instance, 'match_score', None) == 100:
             attrs_to_fill_in = []
         else:
@@ -171,6 +189,19 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         patient_info = self.context.get('patient_info')
         template = self.context.get('template')
         attrs_to_fill_in = self.context.get('attrs_to_fill_in', [])
+
+        evaluation = self.context.get('typed_evaluation')
+        if evaluation is not None:
+            from trials.services.matching.typed_runtime import details, evaluate, missing_attributes
+            result, = evaluate(evaluation, [instance])
+            presentation = details(evaluation, instance, template)
+            response.update(result.summary())
+            response['details'] = presentation['details']
+            response['groupNames'] = presentation['group_names']
+            response['attributesToFillIn'] = missing_attributes(result, self.context.get('counts') or {})
+            response['goodnessScore'] = getattr(instance, 'goodness_score', None)
+            response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
+            return response
 
         from trials.services.trial_details.trial_templates import TrialTemplates
         tt = TrialTemplates(instance, patient_info)
