@@ -34,17 +34,6 @@ class TimeStampMixin(models.Model):
         abstract = True
 
 
-class RawDataItem(TimeStampMixin):
-    record_id = models.CharField(unique=True, max_length=100)
-    source_name = models.CharField(max_length=50)
-    raw_data = models.TextField(blank=True, null=True)
-    old_raw_data = models.JSONField(default=dict, blank=True)
-    extracted_data = models.JSONField(default=dict, blank=True)
-
-    def __str__(self):
-        return f"{self.record_id} from '{self.source_name}'"
-
-
 class Country(TimeStampMixin):
     title = models.TextField(blank=False, null=False, db_index=True, unique=True)
     sort_key = models.IntegerField(blank=True, null=True)
@@ -122,39 +111,6 @@ class CytogenicMarker(TimeStampMixin):
 
     def __str__(self):
         return self.title
-
-
-class Marker(TimeStampMixin):
-    code = models.TextField(blank=False, null=False, db_index=True, unique=True)
-    title = models.TextField(blank=False, null=False, db_index=True, unique=True)
-    description = models.TextField(blank=True, null=True)
-
-    def __str__(self):
-        return self.title
-
-    categories = models.ManyToManyField(
-        'MarkerCategory',
-        blank=True,
-        through='MarkerCategoryConnection',
-        through_fields=('marker', 'category'),
-        related_name='category_markers'
-    )
-
-
-class MarkerCategory(TimeStampMixin):
-    code = models.TextField(blank=False, null=False, db_index=True, unique=True)
-    title = models.TextField(blank=False, null=False)
-
-    def __str__(self):
-        return self.title
-
-
-class MarkerCategoryConnection(TimeStampMixin):
-    marker = models.ForeignKey(Marker, models.CASCADE, blank=True, null=True)
-    category = models.ForeignKey(MarkerCategory, models.CASCADE, blank=True, null=True)
-
-    class Meta:
-        unique_together = ['marker', 'category']
 
 
 class ConcomitantMedication(TimeStampMixin):
@@ -489,6 +445,52 @@ class Trial(TimeStampMixin):
     # Populated by CB during trial sync: OMOP concept_ids of the intervention arm
     # (what therapy the trial is giving/testing). Used by ?therapy_id= search.
     omop_intervention_concept_ids = models.JSONField(blank=True, null=False, default=list)
+
+    # CB 0449 reserved storage only (#659). These are NOT active reader
+    # contracts or flat-concept-list declarations; legacy matching stays intact.
+    omop_pre_existing_conditions_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_stem_cell_transplant_history_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_cytogenic_markers_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_cytogenic_markers_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_molecular_markers_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_molecular_markers_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_histologic_types_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_estrogen_receptor_statuses_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_progesterone_receptor_statuses_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_her2_statuses_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_hrd_statuses_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_hr_statuses_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_tumor_stages_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_tumor_stages_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_nodes_stages_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_nodes_stages_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_distant_metastasis_stages_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_distant_metastasis_stages_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_staging_modalities_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_mutation_genes_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_mutation_variants_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_mutation_origins_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_mutation_interpretations_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_concomitant_medications_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_stages = models.JSONField(blank=True, default=list, db_default=[])
+    omop_binet_stages_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_protein_expressions_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_protein_expressions_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_richter_transformations_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_richter_transformations_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_tumor_burdens_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_disease_activities_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_morphologic_variants_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_morphologic_variants_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_disease_behaviors_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_disease_subtypes_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_mipi_risks_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_mipi_c_risks_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_extranodal_sites_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_bulky_disease_criteria_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_high_risk_mcl_criteria_required = models.JSONField(blank=True, default=list, db_default=[])
+    omop_high_risk_mcl_criteria_excluded = models.JSONField(blank=True, default=list, db_default=[])
+    omop_high_risk_mcl_criteria_sufficient_any = models.JSONField(blank=True, default=list, db_default=[])
     relapse_count_min = models.IntegerField(blank=True, null=True)
     relapse_count_max = models.IntegerField(blank=True, null=True)
     remission_duration_min = models.IntegerField(blank=True, null=True)
@@ -527,8 +529,10 @@ class Trial(TimeStampMixin):
     hemoglobin_level_max = models.DecimalField(decimal_places=2, max_digits=10, blank=True, null=True)
     platelet_count_min = models.IntegerField(blank=True, null=True)
     platelet_count_max = models.IntegerField(blank=True, null=True)
-    red_blood_cell_count_min = models.IntegerField(blank=True, null=True)
-    red_blood_cell_count_max = models.IntegerField(blank=True, null=True)
+    # Mirror CB's physical numeric(12,2), retaining fractional thresholds and
+    # existing large values. No unit conversion or criterion changes here.
+    red_blood_cell_count_min = models.DecimalField(decimal_places=2, max_digits=12, blank=True, null=True)
+    red_blood_cell_count_max = models.DecimalField(decimal_places=2, max_digits=12, blank=True, null=True)
     white_blood_cell_count_min = models.IntegerField(blank=True, null=True)
     prothrombin_time_uln_min = models.FloatField(blank=True, null=True, help_text="What is a minimum prothrombin time ratio to ULN required to participate?")
     prothrombin_time_uln_max = models.FloatField(blank=True, null=True, help_text="What is a maximum prothrombin time ratio to ULN required to participate?")

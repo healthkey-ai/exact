@@ -210,8 +210,16 @@ def test_search_and_details_refuse_unsupported_marker_input():
 @pytest.mark.django_db
 def test_standalone_migration_preserves_legacy_marker_rows():
     from importlib import import_module
-    from django.apps import apps
-    from trials.models import CytogenicMarker, Marker, MarkerCategory, MolecularMarker
+    from django.db.migrations.loader import MigrationLoader
+    from trials.models import CytogenicMarker, MolecularMarker
+
+    # These models intentionally left runtime in #659. Historical migration
+    # state retains them; state-only retirement must keep their physical rows.
+    apps = MigrationLoader(connection).project_state([
+        ('trials', '0027_cb_marker_catalogs'),
+    ]).apps
+    Marker = apps.get_model('trials', 'Marker')
+    MarkerCategory = apps.get_model('trials', 'MarkerCategory')
 
     marker = Marker.objects.create(code='fixture658', title='Fixture 658', description='preserved')
     category, _ = MarkerCategory.objects.get_or_create(code='cytogenic', defaults={'title': 'Cytogenic Markers'})

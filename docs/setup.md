@@ -365,8 +365,8 @@ environment variables — never commit secret values to git.
 | `DATABASE_HOST` | `localhost` | PostgreSQL host |
 | `DATABASE_PORT` | `5432` | PostgreSQL port |
 | `TRIALS_DATABASE_URL` | _(unset)_ | External trials DB URL — enables split-database mode (`postgresql://user:pass@host:5432/db`) |
-| `TRIALS_DB_MIGRATE` | `false` | Apply `trials` migrations to the `trials` alias. Only for a copy you own — the external catalog's schema is not ours to change. Accepts the literal `true` only. |
-| `TRIALS_DB_TOLERATE_MISSING_COLUMNS` | `false` | **Stopgap, see #360.** Defer columns the trials corpus lacks, so a read-only consumer keeps working when the models drift ahead of it. Accepts `1/true/yes/on`. Applies only to the `trials` alias, and refuses to arm — logging why — when that alias is absent *or* addresses the same host, port and name as `default`. The guarantee, though, is that **nothing is deferred if the target database has a `django_migrations` table**: a database this project migrates is not a corpus, and its drift is an un-applied migration. A corpus that carries a stray `django_migrations` (one restored from a full dump of a Django-managed database, say) therefore cannot use this tolerance. Cannot help a `filter()` on an absent column: `?therapy_id=` still fails. |
+| `TRIALS_DB_MIGRATE` | `false` | Administrative migration opt-in for an explicitly owned copy only. Read-only matching startup rejects it; turn it off after separate authorized initialization. Never migrate CB-owned storage. Accepts literal `true` only. |
+| `TRIALS_DB_TOLERATE_MISSING_COLUMNS` | `false` | Legacy diagnostic stopgap (#360), not deployment compatibility. Strict split-catalog startup rejects this flag (#659); missing fields must pass `check_trials_schema`, never be hidden by deferral. The underlying diagnostic helper remains for existing management/test callers and does not grant permission to serve a drifted schema. |
 | `PATIENT_DATABASE_URL` | _(unset)_ | External patient DB URL — used by `search_trials_for_patients` CLI command |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL for Celery (only needed for async tasks) |
 | `GDAL_LIBRARY_PATH` | `/opt/homebrew/lib/libgdal.dylib` | Path to GDAL shared library |
@@ -406,6 +406,13 @@ client uses, the read-only grant EXACT needs, and the rollout order.
 
 ## External trials database (production mode)
 
+Before serving an external catalog, run the mandatory read-only
+[`check_trials_schema` preflight](trials-catalog-schema.md). Docker and direct
+WSGI startup enforce it. Missing/incompatible modeled storage is a hard failure,
+not something OMOP flags or column deferral can hide. Matching startup requires
+the split-catalog migration/restore/tolerance flags to be off; initialize an
+explicitly owned development copy separately, with appropriate authorization.
+
 In production, EXACT is a **stateless matching engine** that reads trial data
 from an external database. It does not own or manage the trial schema — the
 external database must already have the correct tables and data.
@@ -442,4 +449,3 @@ python manage.py migrate
 python manage.py seed_reference_data   # populates reference data locally
 python manage.py runserver
 ```
-
