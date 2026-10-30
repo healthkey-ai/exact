@@ -57,6 +57,10 @@ PATCH-to-OMOP description is superseded by PROMOP's PatientRecord-first document
   complete dependency names, question/value types, physical literal/primary-binding
   consistency, count identity and same-person/parent references. It returns no
   clinical verdict and touches no database or remote schema/vocabulary.
+  The contracts extra includes the RFC3339 checker explicitly; invalid or
+  offset-free timestamps are not silently accepted by an optional-format fallback.
+  Evidence-reference cycle detection is iterative: a flat reference graph is not
+  limited by Python's recursion depth or mistaken for deeply nested JSON.
 
 ```python
 from exact_matching.contracts import MatchingContractContext, validate, schema_for

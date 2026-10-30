@@ -515,3 +515,40 @@ def test_excessive_nesting_fails_before_recursive_schema_resolution():
         value = {'nested': value}
     with pytest.raises(ContractError, match='document_limits'):
         validate(value, 'Context')
+
+
+@pytest.mark.parametrize('location', ['effective_at', 'scope', 'provenance', 'context'])
+def test_invalid_rfc3339_timestamps_are_rejected_without_optional_format_extras(location):
+    document = patient()
+    name = 'PatientEvidence'
+    if location == 'effective_at':
+        document['facts'][0]['effective_at'] = 'not-a-date-time'
+    elif location == 'scope':
+        document['scope']['as_of'] = '2026-10-30T00:00:00'  # Missing required offset.
+    elif location == 'provenance':
+        document['provenance']['captured_at'] = '2026-99-99T25:61:00Z'
+    else:
+        document, name = context_claims(), 'Context'
+        document['provenance']['captured_at'] = 'invalid'
+    with pytest.raises(ContractError, match='schema_'):
+        validate(document, name)
+
+
+def test_flat_long_derivation_graph_does_not_depend_on_python_recursion_limit():
+    document = patient('high_risk_mcl_criteria_required')
+    source = document['facts'][0]
+    derived = []
+    for index in range(1100):
+        fact = {key: deepcopy(source[key]) for key in (
+            'person_key', 'state', 'effective_at', 'provenance')}
+        fact.update(evidence_id=f'derived-{index}', kind='derived', owner='CB',
+                    algorithm_version='synthetic-not-a-clinical-formula',
+                    inputs=[f'derived-{index + 1}' if index < 1099 else source['evidence_id']],
+                    value={'kind': 'number', 'value': 0, 'unit': None})
+        derived.append(fact)
+    document['facts'] = derived + [source]
+    document['current'] = [fact['evidence_id'] for fact in document['facts']]
+    validate(document, 'PatientEvidence', context=context())
+    derived[-1]['inputs'] = [derived[0]['evidence_id']]
+    with pytest.raises(ContractError, match='derivation_cycle'):
+        validate(document, 'PatientEvidence', context=context())

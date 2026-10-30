@@ -253,17 +253,23 @@ def _patient(document):
                     'derivation_inputs')
     # Reject reference cycles, not repeated use of the same clinical evidence.
     completed = set()
-    def visit(identity, ancestors):
-        require(identity not in ancestors, 'derivation_cycle')
-        if identity in completed:
-            return
-        fact = by_id[identity]
-        if fact['kind'] == 'derived':
-            for source in fact['inputs']:
-                visit(source, ancestors | {identity})
-        completed.add(identity)
     for identity in ids:
-        visit(identity, set())
+        visiting = set()
+        stack = [(identity, False)]
+        while stack:
+            current_id, exiting = stack.pop()
+            if exiting:
+                visiting.remove(current_id)
+                completed.add(current_id)
+                continue
+            if current_id in completed:
+                continue
+            require(current_id not in visiting, 'derivation_cycle')
+            visiting.add(current_id)
+            stack.append((current_id, True))
+            fact = by_id[current_id]
+            if fact['kind'] == 'derived':
+                stack.extend((source, False) for source in fact['inputs'])
     if document['availability'] != 'available':
         require(bool(document['issues']), 'unavailable_reason_missing')
         return
@@ -303,9 +309,16 @@ def validate(document, name, *, context=None):
     Diagnostics intentionally omit values, JSON paths and person identifiers.
     """
     from jsonschema import Draft202012Validator, FormatChecker
+    from rfc3339_validator import validate_rfc3339
 
     canonical(document)
-    validator = Draft202012Validator(schema_for(name), format_checker=FormatChecker())
+    checker = FormatChecker()
+    # Plain jsonschema silently skips this optional format without its checker.
+    # Import explicitly and register locally: a broken contracts installation
+    # must not accept invalid timestamps as though validation had happened.
+    checker.checks('date-time')(
+        lambda value: not isinstance(value, str) or validate_rfc3339(value.upper()))
+    validator = Draft202012Validator(schema_for(name), format_checker=checker)
     try:
         validator.validate(document)
     except RecursionError:
