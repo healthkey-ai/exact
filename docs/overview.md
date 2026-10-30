@@ -170,6 +170,10 @@ markers, outcomes, staging options, ethnicity, etc.). Consumed by the API's
 
 ## Patient-info lifecycle (stateless)
 
+The additive [typed TrialPredicate / PatientEvidence contract](omop-typed-evidence-contract.md)
+is development-only (#660). It does not replace this lifecycle or activate new
+readers. Provenance/readiness binding and all-55 reader activation remain gated.
+
 ```
 GET /trials/
   │
