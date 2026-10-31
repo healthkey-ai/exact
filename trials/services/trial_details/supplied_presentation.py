@@ -39,7 +39,10 @@ def _computed_names(patient_info):
             if 'uln_attr_' + bound in metadata:
                 names.add(metadata['uln_attr_' + bound])
         # Match the mapping's UI policy for manually controlled answers, but
-        # never let it unlock the host's persisted-derived entries.
+        # never let it unlock the host's persisted-derived entries. EXACT's older
+        # `get_user_details` lacks this `under_user_control` exception; CancerBot,
+        # the upstream source of truth, has it and pins it with
+        # `test_manually_entered_lugano_and_gelf_values_remain_editable`.
         default_readonly = (
             metadata.get('is_computed_value', False) and not metadata.get('under_user_control', False)
         )

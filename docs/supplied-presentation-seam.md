@@ -71,6 +71,17 @@ lists/maps are valid presentation values; no eligibility is inferred from them.
   unconditional persisted-derived entries stay read-only; nested source subforms
   use the existing `readonly` metadata. Patients edit source inputs, never a
   computed verdict.
+
+  **Known pre-existing divergence, deliberately not "fixed" here.** EXACT's
+  legacy `TrialAttributes.get_user_details()` still derives `ureadonly` from
+  `is_computed_value` alone, so it renders the four `under_user_control`
+  attributes (`meets_lugano`, `meets_gelf`, `meets_meas_or_bone_status`,
+  `abnormal_kappa_lambda_ratio`) read-only. CancerBot, the upstream source of
+  truth, already treats `under_user_control` as user-editable and pins that with
+  `test_manually_entered_lugano_and_gelf_values_remain_editable`. This seam
+  follows upstream; the stale legacy line is a missed port that belongs in its
+  own change, not in this inert extension point. Flipping it back would lock
+  answers CB lets patients edit.
 - “Complete views” means complete prepared rendering inputs, **not** proof of
   clinical criterion completeness, mapping approval or authenticated readiness.
   The class does not evaluate or cross-certify the clinical content of two views.
