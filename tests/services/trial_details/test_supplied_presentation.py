@@ -380,6 +380,23 @@ def test_snapshot_repr_does_not_disclose_patient_or_payload():
     assert 'synthetic-patient-identity' not in repr(value)
 
 
+@pytest.mark.parametrize('name', ['bmiMin', 'bmiMax'])
+@pytest.mark.parametrize('readonly', [False, None])
+def test_derived_bound_alias_without_an_explicit_mapping_alias_is_protected(name, readonly, patient):
+    """Legacy derives `bmi_min`/`bmi_max` from `bmi`, which has no explicit alias."""
+    payload = views()
+    row = payload['potential']['trialEligibilityAttributes'][0]
+    row.update(name=name, ufield=None)
+    if readonly is None:
+        row.pop('ureadonly', None)
+    else:
+        row['ureadonly'] = readonly
+    with pytest.raises(ValueError, match='presentation_computed_readonly'):
+        presentation(patient, payload)
+    row['ureadonly'] = True
+    assert presentation(patient, payload).view('potential') == payload['potential']
+
+
 def test_host_without_declared_schema_uses_only_the_mapping_policy():
     """A surface that declares nothing gets mapping-declared protection only.
 

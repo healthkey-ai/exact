@@ -51,8 +51,14 @@ def _computed_names(patient_info):
         for bound in ('min', 'max'):
             if metadata['type'] in (bound + '_value', 'min_max_value'):
                 alias = metadata.get('attr_' + bound)
-                if isinstance(alias, str):
-                    names.add(alias)
+                if not isinstance(alias, str):
+                    # Legacy derives `<attr>_min` / `<attr>_max` when the mapping
+                    # omits an explicit alias (e.g. `bmi`). A list `attr` has no
+                    # single derived name, so nothing is invented for it.
+                    if isinstance(fields, list):
+                        continue
+                    alias = f'{fields}_{bound}'
+                names.add(alias)
     # The potential template combines Min/Max rows under the Min name with
     # its suffix removed. Guard that presentation alias as well as each bound.
     names.update(name.removesuffix('_min') for name in tuple(names) if name.endswith('_min'))
