@@ -7,10 +7,18 @@ from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 
 
 class TrialTemplates:
-    def __init__(self, trial, patient_info):
+    def __init__(self, trial, patient_info, *, presentation=None):
         self._trial = trial
         self._patient_info = patient_info
-        self._trial_attributes = TrialAttributes(trial, patient_info=patient_info)
+        self._presentation = presentation
+        if presentation is not None:
+            from trials.services.trial_details.supplied_presentation import SuppliedTrialPresentation
+            if type(presentation) is not SuppliedTrialPresentation:
+                raise ValueError('presentation_type')
+            presentation.require_binding(trial.pk, patient_info)
+            self._trial_attributes = None
+        else:
+            self._trial_attributes = TrialAttributes(trial, patient_info=patient_info)
 
     def details_and_group_names(self, template, attrs_to_fill_in):
         if template == 'all_attributes_in_groups':
@@ -25,6 +33,8 @@ class TrialTemplates:
             }
 
     def get_field_name(self, field):
+        if self._presentation is not None:
+            raise ValueError('supplied_presentation_metadata')
         self._trial_attributes.get_field_name(field)
 
     def get_field_groups(self, field_name):
@@ -35,6 +45,11 @@ class TrialTemplates:
             return value
 
     def potential_attributes_first_view(self, attrs_to_fill_in):
+        # Supplied views are FINAL presentation, not override hints.
+        # `attrs_to_fill_in` does not reclassify or filter them; callers must
+        # select a consumer that supports the supplied statuses.
+        if self._presentation is not None:
+            return self._presentation.view('potential')
         out = {
             'general': [],
             'trialEligibilityAttributes': [],
@@ -134,6 +149,8 @@ class TrialTemplates:
         return out
 
     def all_attributes_in_groups_view(self):
+        if self._presentation is not None:
+            return self._presentation.view('grouped')
         out = {}
         details = self._trial_attributes.details()
         for field in details.values():
@@ -153,5 +170,7 @@ class TrialTemplates:
         return out
 
     def group_names(self):
+        if self._presentation is not None:
+            return self._presentation.view('group_names')
         items = {k: v for k, v in GROUP_NAMES.items() if k != 'admin'}
         return [{'value': k, 'label': v} for k, v in items.items()]

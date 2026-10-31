@@ -832,8 +832,13 @@ class Trial(TimeStampMixin):
     def get_match_score(self, patient_info):
         return UserToTrialAttrMatcher(trial=self, patient_info=patient_info).trial_match_score()
 
-    def details_and_group_names(self, patient_info, template, attrs_to_fill_in):
-        return TrialTemplates(trial=self, patient_info=patient_info).details_and_group_names(template, attrs_to_fill_in)
+    def details_and_group_names(self, patient_info, template, attrs_to_fill_in, *, presentation=None):
+        if presentation is not None:
+            return TrialTemplates(
+                trial=self, patient_info=patient_info, presentation=presentation,
+            ).details_and_group_names(template, attrs_to_fill_in)
+        return TrialTemplates(trial=self, patient_info=patient_info).details_and_group_names(
+            template, attrs_to_fill_in)
 
     def matching_type(self, patient_info):
         return UserToTrialAttrMatcher(trial=self, patient_info=patient_info).trial_match_status()
