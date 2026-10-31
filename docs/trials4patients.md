@@ -50,7 +50,7 @@ Always writes a full JSON results file to `/tmp/exact_local_test_results.json`.
 If `RESULTS_CSV` is set, also writes an evaluator-compatible CSV:
 
 ```
-CTOMOP Patient ID,Trial,Eligible/Potential,Suitability Score
+PROMOP Patient ID,Trial,Eligible/Potential,Suitability Score
 20291,NCT03452774,potential,81
 20291,NCT07038785,eligible,79
 ```

@@ -1,0 +1,21 @@
+# Reviewed synthetic database DSNs used by psql_dsn / credential-splitting tests
+# and their doc comments. Hosts are placeholders ("h", "host", a reserved
+# example domain, a documentation IPv6 range); none is a real service, and all
+# of these spans already exist on the public 2omop base. Exact spans only:
+# the pattern stops at the first path separator, so a different credential or
+# host is still reported. Added to let a clinical PR push past the guardrail's
+# dev/main merge-base scan without bypassing it.
+postgresql://u:s3cr3t@h
+postgresql://reader:s@h:5432
+postgresql://reader:s3cr3t@db.example.invalid:5432
+postgresql://u:pa#ss@h
+postgresql://u:pa?ss@h
+postgresql://reader:s3cr3t@h:5432
+postgresql://r:s@[2001:db8::1]:5432
+postgresql://u:pw@h
+postgres://u:pw@h
+postgresql://u:old@h
+postgresql://user:pa?ss@host
+postgresql://reader:p%40ss%20word@h:5432
+postgresql://u:{password}@h
+postgresql://u:s@v:s@h

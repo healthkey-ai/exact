@@ -34,7 +34,9 @@ def _bucket_by_matching_type(details: Dict[str, Any]) -> Dict[str, List[Dict[str
         mt_raw = raw.get("matchingType")
         mt = (str(mt_raw).strip().lower() if mt_raw is not None else "")
 
-        if mt == "matched":
+        if mt in {"unsupported", "unavailable"}:
+            buckets.setdefault('systemUnavailable', []).append(item)
+        elif mt == "matched":
             buckets["matched"].append(item)
         elif mt in {"not matched", "not_matched", "not-matched", "notmatched"}:
             buckets["notMatched"].append(item)
@@ -104,10 +106,20 @@ class TrialsGraphViewSet(TrialsViewSet):
         for trial in trials:
             node = GraphTrialNodeSerializer(trial, context=ctx).data
 
+            evaluation = ctx.get('typed_evaluation')
+            if evaluation is not None:
+                from trials.services.matching.typed_runtime import details, missing_attributes
+                result = evaluation.result_for(trial.pk)
+                node.update(result.summary())
+                node['attributesToFillIn'] = missing_attributes(result, counts)
+                node['match'] = _bucket_by_matching_type(details(evaluation, trial)['details'])
+                trial_nodes.append(node)
+                continue
+
             if search_type == "eligible" or getattr(trial, "match_score", None) == 100:
                 attrs_to_fill_in = []
             else:
-                attrs_to_fill_in = trial.attrs_to_fill_in(counts)
+                attrs_to_fill_in = trial.attrs_to_fill_in(counts, patient_info=patient_info)
 
             tt = TrialTemplates(trial, patient_info)
             details = tt.potential_attributes_first_view(attrs_to_fill_in=attrs_to_fill_in)
