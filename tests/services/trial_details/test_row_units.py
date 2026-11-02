@@ -56,3 +56,40 @@ def test_a_uln_row_does_not_borrow_the_physical_unit(patient_info):
 
     assert 'uunits' not in row
     assert 'units' not in row
+
+
+@pytest.mark.django_db
+def test_a_mixed_case_stored_unit_still_gets_its_label(patient_info):
+    # Converters accept `g/L`; the enum key is `G/L`. A case-sensitive lookup
+    # returned None and the client fell back to the DEFAULT label, printing a
+    # raw 120 as "g/deciliter".
+    patient_info.hemoglobin_level = 120
+    patient_info.hemoglobin_level_units = 'g/L'
+    normalize_patient_info(patient_info)
+
+    row = TrialAttributes(
+        TrialFactory(hemoglobin_level_min=9), patient_info,
+    ).details()['hemoglobinLevelMin']
+
+    assert row['uvalue'] == pytest.approx(120)
+    assert row['uunits'] == 'g/Liter'
+    assert row['units'] == 'g/deciliter'
+    # The graph compares this against the trial's 9 g/dL.
+    assert row['uvalue_canonical'] == pytest.approx(12)
+
+
+@pytest.mark.django_db
+def test_an_unknown_stored_unit_is_not_labelled_with_the_default(patient_info):
+    patient_info.weight = 220.46
+    patient_info.weight_units = 'stone'
+    normalize_patient_info(patient_info)
+
+    row = TrialAttributes(
+        TrialFactory(weight_min=50), patient_info,
+    ).details()['weightMin']
+
+    # Say nothing about units rather than printing the DEFAULT label over a
+    # code the option map does not know.
+    assert 'uunits' not in row
+    assert 'units' not in row
+    assert 'uvalue_canonical' not in row

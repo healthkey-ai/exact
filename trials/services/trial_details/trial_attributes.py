@@ -398,6 +398,7 @@ class TrialAttributes:
             subform_details = subform_attrs[attr_name] if attr_name in subform_attrs else None
 
             units_data = {}
+            stored_value_used = False
             if attr_name in user_details:
                 user_data = user_details[attr_name]
                 # Port CB's patient-attribute resolution: patient and trial
@@ -405,16 +406,24 @@ class TrialAttributes:
                 subform_details = user_data.get('subform_details') or subform_attrs.get(attr_name)
                 user_field = AttributeNames.get_by_snake_case(user_data['ufield'])
                 user_value = user_data['uvalue']
+                canonical_value = user_value
 
                 if self._patient_info:
                     units_details = patient_info_attr_units_for(user_data['ufield'], self._patient_info)
+                    uunits_label = (
+                        unit_label(units_details['options'], units_details['uvalue'])
+                        if units_details else None
+                    )
                     # A ×ULN row shows a RATIO, not a physical measurement: the
                     # stored unit label would describe a number that is not in
-                    # that unit (and the row is read-only anyway).
-                    if units_details and 'uln' not in attr_name.lower():
+                    # that unit (and the row is read-only anyway). An unknown
+                    # stored code is the other refusal: keeping the converted
+                    # value is better than pairing a raw number with the
+                    # DEFAULT unit label.
+                    if uunits_label is not None and 'uln' not in attr_name.lower():
                         units_data = {
-                            'units': units_details['options'].get(units_details['default']),
-                            'uunits': units_details['options'].get(units_details['uvalue']),
+                            'units': unit_label(units_details['options'], units_details['default']),
+                            'uunits': uunits_label,
                             'uunitsOptions': ValueOptions.to_value_and_label(units_details['options']),
                         }
                         # `uvalue` is converted into the matcher's unit, while
@@ -423,11 +432,17 @@ class TrialAttributes:
                         # would seed the editor with the converted number.
                         user_value = getattr(
                             self._patient_info, user_data['ufield'], user_value)
+                        stored_value_used = True
 
                 field = self.get_field(
                     attr, attr_value, user_field, user_value, subform_details, units_data,
                     user_readonly=user_data['ureadonly'],
                 )
+                if stored_value_used:
+                    # The graph compares this value with the trial's, which is
+                    # in the matcher's unit. Keep it beside the stored display
+                    # value so that comparison does not silently change scale.
+                    field['uvalue_canonical'] = canonical_value
                 out[field['name']] = field
                 out[field['name']]['search_type'] = user_data.get('search_type')
             elif attr_name in ATTR_NAME_ALWAYS_INCLUDED:
@@ -882,6 +897,14 @@ class TrialAttributes:
                 field = self._patient_info.__class__._meta.get_field(pi_field_name)
                 field_name = self.get_field_name(field)
                 units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
+                uunits_label = (
+                    unit_label(units_details['options'], units_details['uvalue'])
+                    if units_details else None
+                )
+                if units_details and uunits_label is None:
+                    # Unknown stored code: keep the matcher's value and attach
+                    # no label rather than mislabel it with the default unit.
+                    units_details = None
                 value = self._patient_info_attr.get_value(pi_field_name)
                 if units_details:
                     # The editor shows and writes in the PATIENT's stored unit,
@@ -949,8 +972,8 @@ class TrialAttributes:
                 # calcium typed in the wrong scale flips a clinical composite
                 # with nothing on screen to show which scale was meant.
                 if units_details:
-                    val['uunits'] = units_details['options'].get(units_details['uvalue'])
-                    val['units'] = units_details['options'].get(units_details['default'])
+                    val['uunits'] = uunits_label
+                    val['units'] = unit_label(units_details['options'], units_details['default'])
 
                 tmp[pi_field_name] = val
 

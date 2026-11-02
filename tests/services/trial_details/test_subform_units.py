@@ -39,3 +39,20 @@ def test_the_matcher_value_is_still_converted(patient_info):
     normalize_patient_info(patient_info)
 
     assert patient_info.attributes_service.get_value('weight') == pytest.approx(99.999, abs=0.01)
+
+
+@pytest.mark.django_db
+def test_a_mixed_case_stored_unit_still_gets_its_label(patient_info):
+    patient_info.weight = 220.46
+    patient_info.weight_units = 'LB'
+    normalize_patient_info(patient_info)
+
+    entries = TrialAttributes(
+        TrialFactory(bmi_min=30), patient_info,
+    ).get_user_subform_attrs()
+    by_field = {entry['upatientField']: entry
+                for group in entries.values() for entry in group}
+
+    weight = by_field['weight']
+    assert weight['value'] == pytest.approx(220.46)
+    assert weight['uunits'] == 'Pounds'
