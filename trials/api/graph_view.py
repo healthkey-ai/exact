@@ -18,6 +18,44 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "trialField": item.get("name"),
         "patientField": item.get("ufield"),
+        # The same attribute, canonical (snake_case) form. This endpoint
+        # rebuilds each row from a whitelist, so without naming it here its
+        # consumer is left deriving the name by hand — and the derivation
+        # is not safe: `p53_ihc` camelizes to `p53Ihc`, which a standard
+        # snake-caser turns back into `p_53_ihc`, a field nobody has.
+        #
+        # NOT `patientRecordField`, which is what this said first: EXACT
+        # cannot assert a column exists on PROMOP's PatientRecord, and a
+        # key that implied otherwise would put this service's authority
+        # behind a PATCH that answers 200 and changes nothing. The count
+        # and the reasoning live at `TrialAttributes.with_patient_field_names`.
+        "patientFieldCanonical": item.get("upatientField"),
+        # Whether EXACT recomputes it, i.e. whether a write upstream
+        # survives to the next match (#449).
+        "patientFieldRecomputed": item.get("upatientRecomputed"),
+        # The same answer with its reason. This endpoint rebuilds the row
+        # from a whitelist, so a key left out is a key its consumer cannot
+        # tell from "this row is about nothing" — and `null` is also what
+        # an un-recomputed field answers, which makes a missing one the
+        # hardest kind to notice.
+        "patientFieldRecomputedWhen": item.get("upatientRecomputedWhen"),
+        # Carried for the same reason as the name: this endpoint rebuilds
+        # the row, so a client here would otherwise not know the value sits
+        # behind a subform.
+        #
+        # Named for the mechanism, not for permission. `patientFieldReadOnly`
+        # was the first spelling, and `false` there reads as "you may edit
+        # this" — which is the answer EXACT has just finished explaining it
+        # does not have (#449): `renal_adequacy_status` has no subform and
+        # is still overwritten by `normalize.py` on every match.
+        #
+        # Passed through rather than coerced, so a builder that did not
+        # say arrives as `null` rather than `false`. `bool(...)` would turn
+        # "unsaid" into "no subform", which is the wrong direction to fail
+        # in and the opposite of what the key beside it does.
+        "patientFieldHasSubform": (
+            item.get("ureadonly") if item.get("upatientField") else None
+        ),
         "label": item.get("label"),
         "trialValue": item.get("value"),
         "patientValue": item.get("uvalue"),
