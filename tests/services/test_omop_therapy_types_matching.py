@@ -221,6 +221,48 @@ def test_queryset_unknown_classes_keeps_only_no_required_type_trials():
     assert ids == {open_.id}
 
 
+# ── the search filter must reach the type gate with an empty patient ──
+# Regression: a patient with no therapy lines, components or class ids took the
+# early return in `eligible_for_therapy_related_things_from_lines`, before the
+# fail-closed OMOP type gate. The trial stayed in the search list as `eligible`
+# while the detail matcher answered `not_eligible` for the same patient. Test
+# through `filter_by_patient_info`, the chokepoint the list/search uses, not the
+# inner helper the old queryset tests called directly.
+
+@pytest.mark.parametrize('class_ids', [None, []], ids=['unknown', 'known-empty'])
+@pytest.mark.parametrize('prior_therapy', ['One line', None], ids=['reported', 'unanswered'])
+@override_settings(**OMOP_TYPES)
+def test_filter_by_patient_info_empty_patient_fails_closed_on_required_types(
+        class_ids, prior_therapy):
+    needs = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[PI_CLASS])
+    open_ = TrialFactory(disease='multiple myeloma', omop_therapy_types_required=[])
+    # Only "None" is treatment-naive. A reported line with absent details, and an
+    # unanswered prior therapy, are both known/unknown EMPTY class sets that fail
+    # closed — never "no prior therapy".
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy=prior_therapy,
+                     therapy_type_ids=class_ids)
+
+    qs, _ = Trial.objects.filter(id__in=[needs.id, open_.id]).filter_by_patient_info(pi)
+
+    assert set(qs.values_list('id', flat=True)) == {open_.id}
+
+
+@override_settings(EXACT_OMOP_THERAPY=False)
+def test_filter_by_patient_info_empty_patient_still_fail_opens_under_legacy():
+    # Both columns are populated so the assertion is about WHICH one the active
+    # profile reads, not about a trial that has no type constraint at all.
+    needs = TrialFactory(disease='multiple myeloma',
+                         therapy_types_required=['legacy-class-code'],
+                         omop_therapy_types_required=[PI_CLASS])
+    pi = PatientInfo(disease='multiple myeloma', prior_therapy='One line')
+
+    qs, _ = Trial.objects.filter(id=needs.id).filter_by_patient_info(pi)
+
+    # Legacy types are internal codes and fail open on an empty patient set; the
+    # OMOP column must stay inert with the flag off.
+    assert set(qs.values_list('id', flat=True)) == {needs.id}
+
+
 # ── detail display status (parity with the verdict) ──────────────────
 
 @override_settings(**OMOP_TYPES)

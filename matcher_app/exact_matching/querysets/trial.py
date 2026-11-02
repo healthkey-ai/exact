@@ -1379,13 +1379,19 @@ class TrialQuerySet(models.QuerySet):
 
         # The regimen (from-lines) filter needs therapy_codes, but OMOP component-only
         # patients (#224) have none while still carrying consumer-supplied components /
-        # class ids — apply the component/type filter for them. Legacy always has
-        # patient_component_ids=None and patient_class_ids=None, so an empty
-        # therapy_codes still short-circuits here, byte-identical to before.
+        # class ids — apply the component/type filter for them.
+        #
+        # An empty patient set must NOT short-circuit under OMOP types: the trial-side
+        # filter fail-closes a required class on an unknown/empty patient (#285), and
+        # the per-trial matcher already answers `not_matched` for the same patient. The
+        # early return here let those trials into the list as `eligible` while the
+        # detail called them `not_eligible`. Legacy keeps the early return: there the
+        # generic helper fail-opens on empty values, so there is nothing to apply.
         scope = self
         if therapy_codes:
             scope = self.eligible_for_therapy_from_lines(therapy_codes)
-        elif not patient_component_ids and not patient_class_ids:
+        elif (not patient_component_ids and not patient_class_ids
+              and not omop_therapy_types_enabled()):
             return self
 
         # Component + type values (shared with the matcher). OMOP mode (Phase P, #234):
@@ -2005,15 +2011,20 @@ class TrialQuerySet(models.QuerySet):
             component_ids = patient_info_attr.get_user_therapy_component_ids()
             class_ids = release_gated_class_ids(
                 patient_info_attr, omop_therapy_types_enabled(), measure=True)
-            if component_ids or class_ids:
-                # Pass [] for the regimen codes, not user_therapies: this is the
-                # component/class-only path (no regimen lines), and user_therapies also
-                # folds in supportive codes — running the regimen filter on those would
-                # be wrong. class_ids included so a type-carrying patient with no regimen
-                # lines still gets the fail-closed type filter (not silently bypassed).
-                scope = scope.eligible_for_therapy_related_things_from_lines(
-                    [], has_no_prior_therapy, patient_component_ids=component_ids, patient_class_ids=class_ids)
-                is_therapies_filter_applied = True
+            # Run the helper even when both sets are empty. It is the only place that
+            # applies the fail-closed OMOP type gate, and a patient with no class ids
+            # is a KNOWN empty answer, not "no constraint": skipping the call let a
+            # trial that requires a class into the list as `eligible` while the detail
+            # matcher answered `not_eligible` for the same patient (#285).
+            #
+            # Pass [] for the regimen codes, not user_therapies: this is the
+            # component/class-only path (no regimen lines), and user_therapies also
+            # folds in supportive codes — running the regimen filter on those would
+            # be wrong. class_ids included so a type-carrying patient with no regimen
+            # lines still gets the fail-closed type filter (not silently bypassed).
+            scope = scope.eligible_for_therapy_related_things_from_lines(
+                [], has_no_prior_therapy, patient_component_ids=component_ids, patient_class_ids=class_ids)
+            is_therapies_filter_applied = True
 
         # Legacy (#4449): supportive-therapy codes fold into user_therapies
         # (get_user_therapies) and feed the regimen / prior-lines filter. It
