@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { PromopClient, type PromopPatientSummary } from "./promopClient";
+import { CtomopClient, type CtomopPatientSummary } from "./ctomopClient";
 
-type Source = "promop-local" | "promop-staging";
+type Source = "ctomop-local" | "ctomop-staging";
 
 const SOURCE_STORAGE_KEY = "exact-harness-source";
-const VALID_SOURCES: readonly Source[] = ["promop-local", "promop-staging"] as const;
+const VALID_SOURCES: readonly Source[] = ["ctomop-local", "ctomop-staging"] as const;
 
 function loadSource(): Source {
   try {
@@ -14,7 +14,7 @@ function loadSource(): Source {
   } catch {
     /* ignore */
   }
-  return "promop-local";
+  return "ctomop-local";
 }
 
 function saveSource(s: Source): void {
@@ -33,21 +33,21 @@ interface Props {
   selectedPersonId: number | null;
 }
 
-export function PromopPicker({ onSelect, selectedPersonId }: Props) {
+export function CtomopPicker({ onSelect, selectedPersonId }: Props) {
   const [source, setSource] = useState<Source>(() => loadSource());
   const [needsLogin, setNeedsLogin] = useState(false);
-  const [patients, setPatients] = useState<PromopPatientSummary[] | null>(null);
+  const [patients, setPatients] = useState<CtomopPatientSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Reachability + auth status + patient list — driven by a single
   // effect so the UI never blinks between "no patients" and "logged out".
   const baseFor = useCallback(
-    (s: Source) => (s === "promop-local" ? "/promop-local" : "/promop-staging"),
+    (s: Source) => (s === "ctomop-local" ? "/ctomop-local" : "/ctomop-staging"),
     [],
   );
 
-  const client = useMemo(() => new PromopClient(baseFor(source)), [source, baseFor]);
+  const client = useMemo(() => new CtomopClient(baseFor(source)), [source, baseFor]);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,7 +61,7 @@ export function PromopPicker({ onSelect, selectedPersonId }: Props) {
       if (cancelled) return;
       if (!reachable) {
         setError(
-          `PROMOP at ${baseFor(source)} is not reachable. Is the backend running?`,
+          `CTOMOP at ${baseFor(source)} is not reachable. Is the backend running?`,
         );
         setLoading(false);
         return;
@@ -112,7 +112,7 @@ export function PromopPicker({ onSelect, selectedPersonId }: Props) {
               cursor: "pointer",
             }}
           >
-            {s === "promop-local" ? "Local" : "Staging"}
+            {s === "ctomop-local" ? "Local" : "Staging"}
           </button>
         ))}
       </div>
@@ -124,7 +124,7 @@ export function PromopPicker({ onSelect, selectedPersonId }: Props) {
       ) : null}
 
       {needsLogin ? (
-        <PromopInlineLogin
+        <CtomopInlineLogin
           client={client}
           onLoggedIn={() => {
             // Re-list after login. If the post-login fetch also fails
@@ -159,7 +159,7 @@ export function PromopPicker({ onSelect, selectedPersonId }: Props) {
 
       {patients?.length === 0 ? (
         <p style={{ color: "#6b7280", fontSize: "0.875rem" }}>
-          No patients available on this PROMOP backend.
+          No patients available on this CTOMOP backend.
         </p>
       ) : null}
 
@@ -197,11 +197,11 @@ export function PromopPicker({ onSelect, selectedPersonId }: Props) {
   );
 }
 
-function PromopInlineLogin({
+function CtomopInlineLogin({
   client,
   onLoggedIn,
 }: {
-  client: PromopClient;
+  client: CtomopClient;
   onLoggedIn: () => void;
 }) {
   const [username, setUsername] = useState("");
@@ -234,10 +234,10 @@ function PromopInlineLogin({
       }}
     >
       <p style={{ margin: 0, fontSize: "0.75rem", color: "#6b7280" }}>
-        PROMOP requires sign-in to list patients.
+        CTOMOP requires sign-in to list patients.
       </p>
       <label style={{ fontSize: "0.75rem", color: "#6b7280" }}>
-        <span style={{ position: "absolute", left: "-9999px" }}>PROMOP username</span>
+        <span style={{ position: "absolute", left: "-9999px" }}>CTOMOP username</span>
         <input
           type="text"
           placeholder="username"
@@ -248,7 +248,7 @@ function PromopInlineLogin({
         />
       </label>
       <label style={{ fontSize: "0.75rem", color: "#6b7280" }}>
-        <span style={{ position: "absolute", left: "-9999px" }}>PROMOP password</span>
+        <span style={{ position: "absolute", left: "-9999px" }}>CTOMOP password</span>
         <input
           type="password"
           placeholder="password"
@@ -274,7 +274,7 @@ function PromopInlineLogin({
           fontSize: "0.75rem",
         }}
       >
-        {submitting ? "Signing in…" : "Sign in to PROMOP"}
+        {submitting ? "Signing in…" : "Sign in to CTOMOP"}
       </button>
     </form>
   );

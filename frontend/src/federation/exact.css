@@ -9,9 +9,12 @@
  * keeps the "no global CSS / host-agnostic" contract honest. Preflight was
  * already excluded for the same reason. */
 
-/* Scoped tokens. The host can override any `--exact-*` var on `:root`
- * or on a `.exact-root` ancestor without colliding with its own design
- * system. Per hk-labs `docs/module-federation.md` CSS token contract.
+/* Scoped tokens, per the hk-labs `docs/module-federation.md` CSS token
+ * contract. A host overrides one by declaring it ON `.exact-root` — from
+ * outside a layer, or from a later one. NOT on `:root`, and not on an
+ * ancestor: the defaults below are declarations on the element itself, and
+ * a declaration on the element beats an inherited value in every layer, so
+ * an override set upstream never reaches the remote.
  *
  * Defaults below mirror CancerBot UI v2's design tokens so the trials
  * list looks native inside CB out of the box (see CB `client/global.css`).
@@ -23,6 +26,10 @@
   --exact-color-not-eligible: #dc2626;
   --exact-color-muted: #6b7280;
   --exact-color-surface: #ffffff;
+  /* Raised/inset fill behind small chips — tab counts, the current page
+   * marker. Referenced by the list chrome; a dark host must override it or
+   * those markers vanish into their own background. */
+  --exact-color-surface-2: hsl(0 0% 94%);
   --exact-color-border: hsl(0 0% 91.4%); /* CB --border-secondary */
   --exact-color-text: hsl(216 17% 14%); /* CB --text-primary-900 */
   --exact-color-text-muted: hsl(220 9% 32%); /* CB --text-secondary-700 */
@@ -45,6 +52,26 @@
   --exact-color-brand-green: hsl(146 70% 45%);
   --exact-color-brand-green-hover: hsl(152 91% 29%);
   --exact-color-on-brand: #ffffff;
+  /* The label color on a `primary` fill (the bookmark when it is on). Its own
+   * token: a host that darkens `on-brand` for a light CTA must not darken the
+   * star on blue with it. */
+  --exact-color-on-primary: #ffffff;
+  /* The tint behind a chosen segment and a chosen tab count — CB --brand-50,
+   * which it pairs with brand-700 text; `primary` stands in for that text
+   * here. Measured on these defaults, that pair is 5.27:1 — AA for the 12px
+   * it is used at.
+   *
+   * The two travel WITH `--exact-color-primary`, and nothing enforces it: a
+   * host that themes `primary` dark and leaves these light gets
+   * light-on-light on the one mark that says which thing is chosen. No
+   * check can catch that either — `assertExactTokens` reads the value back
+   * off this same element, so it sees our default and calls it present.
+   * They are in its list for the only reason anything is: a name that reads
+   * empty means the sheet never arrived. */
+  --exact-color-primary-50: hsl(199 100% 92%);
+  /* The edge of that chip — CB --brand-200, paired with the fill above.
+   * Only a border is drawn with it. */
+  --exact-color-primary-200: hsl(199 100% 64%);
 
   /* Default to `inherit` so the remote picks up the host's typography
    * (CB sets Manrope on <body>) and reads as native. A host can still
@@ -164,6 +191,11 @@
 .exact-root .exact-card__action {
   padding: 0 1.25rem 1.25rem;
 }
+/* The View Trial button spans the card on a phone; its tooltip wrap has to
+   as well, or the button shrinks to its label. */
+.exact-root .exact-action-tip.exact-card__view-tip {
+  display: flex;
+}
 .exact-root .exact-btn-view {
   display: flex;
   align-items: center;
@@ -186,6 +218,23 @@
 }
 .exact-root .exact-btn-view:hover {
   background: var(--exact-color-brand-green-hover);
+}
+
+/* A panel title and its "?", outside the heading so the heading's name stays
+   "Summary" rather than "Summary More information". */
+.exact-root .exact-panel__head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.625rem;
+}
+.exact-root .exact-panel__head .exact-panel__title {
+  margin-bottom: 0;
+}
+
+/* A pill and its "?" (CB's HelpTooltip), kept on one line. */
+.exact-root .exact-pill__wrap {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Score pill — CB `ScorePill`. Tier colors are applied inline from the
@@ -258,6 +307,51 @@
 }
 .exact-root .exact-detail__back:hover {
   text-decoration: underline;
+}
+/* Title and actions (bookmark, interest button) on one line, as CB lays out
+   its detail header. `baseline` rather than center: the actions sit against
+   the title's FIRST line, so a title that wraps to three lines does not drag
+   them to the middle, and nothing needs a size-dependent offset. Measured,
+   the group's centre lands 3px above that line's centre; closing those 3px
+   costs a negative margin plus a compensating row-gap, which leaves the
+   group overhanging the row above. The two controls are centred against each
+   other — see `.exact-detail__actions`. On a narrow
+   screen the actions wrap below the title, as CB moves them under the meta
+   row. The head owns the spacing below it, so a wrapped row is spaced by
+   `gap` alone rather than by `gap` plus the title's margin. */
+.exact-root .exact-detail__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.exact-root .exact-detail__head .exact-detail__title {
+  flex: 1 1 20rem;
+  min-width: 0;
+  margin-bottom: 0;
+}
+.exact-root .exact-detail__actions {
+  display: flex;
+  flex-shrink: 0;
+  /* Centred, NOT baseline: the bookmark holds an SVG and has no text
+     baseline, so a baseline row put it 5px above the interest button beside
+     it. Both are 2.75rem tall at a 16px root — the button as 2.5rem plus its
+     two 2px borders, which do not scale with the root — so centring is exact
+     there, and out by a quarter pixel for every 2px of root size above it.
+     Because no item in this row takes part in baseline alignment any more,
+     the row's own baseline comes from its FIRST child (through to the
+     bookmark's SVG, synthesized from its bottom edge). So the group's DOM
+     order sets where the row sits in the head: with the bookmark absent — a
+     failed favorites read — the button moves down 5px. */
+  align-items: center;
+  gap: 0.75rem;
+}
+/* No bookmark and no button (no adapter, or both reads failed): no box, so
+   it takes no `gap` and cannot wrap onto a blank row of its own. */
+.exact-root .exact-detail__actions:empty {
+  display: none;
 }
 .exact-root .exact-detail__title {
   margin: 0 0 0.75rem;
@@ -346,6 +440,14 @@
 }
 .exact-root .exact-elig__cell {
   display: flex;
+  /* Wraps because `.exact-elig__error` below claims `flex: 1 0 100%` to get a
+     line of its own. Without a wrapping parent that basis cannot wrap and,
+     being `flex-shrink: 0`, cannot shrink either: the message overflowed the
+     cell and carried the retry control out past its right edge — measured at
+     45px of overflow in a 300px cell, with the pencil landing at x=357. The
+     two other sites that use that class already sit in wrapping parents,
+     which is why only this one broke. */
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 0.375rem;
   padding: 0.25rem 0.5rem;
@@ -382,9 +484,353 @@
   display: inline-flex;
   color: var(--exact-color-success-700);
 }
+
+.exact-root .exact-elig__mismatch {
+  display: inline-flex;
+  color: var(--exact-color-not-eligible);
+}
 .exact-root .exact-elig__units {
   font-size: 0.75rem;
   color: var(--exact-color-text-tertiary);
+}
+
+/* "not a requirement of this trial" — the row the trial never constrained.
+   Tertiary and italic on purpose: it is the absence of a criterion, so it
+   must not compete with the rows that are one. */
+.exact-root .exact-elig__note {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--exact-color-text-tertiary);
+}
+
+/* High-risk MCL criteria panel (#4408) */
+.exact-root .exact-mcl {
+  margin-top: 16px;
+}
+
+.exact-root .exact-mcl__verdict {
+  margin: 0 0 12px;
+  font-weight: 600;
+}
+
+.exact-root .exact-mcl__verdict.is-matched {
+  color: var(--exact-color-success-700);
+}
+
+.exact-root .exact-mcl__verdict.is-not_matched {
+  color: var(--exact-color-error-700);
+}
+
+.exact-root .exact-mcl__verdict.is-unknown {
+  color: var(--exact-color-warning-700);
+}
+
+.exact-root .exact-mcl__group + .exact-mcl__group {
+  margin-top: 14px;
+}
+
+.exact-root .exact-mcl__group-title {
+  margin: 0 0 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-mcl__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exact-root .exact-mcl__item {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.exact-root .exact-mcl__mark {
+  display: inline-flex;
+  justify-content: center;
+}
+
+.exact-root .exact-mcl__item.is-good .exact-mcl__mark {
+  color: var(--exact-color-eligible);
+}
+
+.exact-root .exact-mcl__item.is-bad .exact-mcl__mark {
+  color: var(--exact-color-not-eligible);
+}
+
+.exact-root .exact-mcl__item.is-unknown .exact-mcl__mark {
+  color: var(--exact-color-potential);
+}
+
+/* An unmet criterion in the "any one of these" group is not a failure — the
+   others cover it — so it is marked neutrally rather than in red. */
+.exact-root .exact-mcl__item.is-neutral .exact-mcl__mark {
+  color: var(--exact-color-text-tertiary);
+}
+
+.exact-root .exact-mcl__status {
+  font-size: 0.75rem;
+  /* Never the only carrier of the verdict: the mark beside it is coloured,
+     and colour alone is not a message. */
+  color: var(--exact-color-text-tertiary);
+}
+
+@media (max-width: 640px) {
+  .exact-root .exact-mcl__item {
+    grid-template-columns: 20px 1fr;
+  }
+
+  .exact-root .exact-mcl__status {
+    grid-column: 2;
+  }
+}
+
+/* Explore Trials — the knowledge graph */
+.exact-root .exact-graph {
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-graph__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exact-root .exact-graph__sub,
+.exact-root .exact-graph__stats,
+.exact-root .exact-graph__status,
+.exact-root .exact-graph__empty {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__truncated {
+  color: var(--exact-color-warning-700);
+}
+
+.exact-root .exact-graph__close,
+.exact-root .exact-graph__more {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The picture scrolls inside its own box; the page never scrolls sideways. */
+.exact-root .exact-graph__scroll {
+  overflow-x: auto;
+  margin-top: 12px;
+}
+
+.exact-root .exact-graph__svg {
+  max-width: none;
+}
+
+.exact-root .exact-graph__trial {
+  cursor: pointer;
+}
+
+.exact-root .exact-graph__trial:focus-visible circle {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+.exact-root .exact-graph__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: baseline;
+}
+
+/* The same content as the picture, in text. Not a fallback — the picture is
+   the quick read and this is the one that survives a screen reader, a narrow
+   window, and a label longer than the space beside its dot. */
+.exact-root .exact-graph__list {
+  margin: 12px 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-graph__list > li + li {
+  margin-top: 8px;
+}
+
+.exact-root .exact-graph__list button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--exact-color-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.exact-root .exact-graph__score {
+  color: var(--exact-color-text-tertiary);
+}
+
+/* Map view — the places these trials are */
+.exact-root .exact-map {
+  margin: 12px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-map__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exact-root .exact-map__sub,
+.exact-root .exact-map__empty,
+.exact-root .exact-map__note {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-map__close {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.exact-root .exact-map__body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Side by side once there is room for both; the panel scrolls on its own so
+   the map stays put while the reader works down the places. */
+@media (min-width: 900px) {
+  /* Two columns only when there is a map to put in the first one. Without a
+     renderer the places are the whole panel, and a lone list in a 1.6fr/1fr
+     grid leaves a third of it blank. */
+  .exact-root .exact-map__body.has-map {
+    grid-template-columns: 1.6fr 1fr;
+    align-items: start;
+  }
+
+  .exact-root .exact-map__body.has-map .exact-map__places {
+    position: sticky;
+    top: 12px;
+    max-height: 32rem;
+    overflow-y: auto;
+  }
+}
+
+.exact-root .exact-map__canvas {
+  min-height: 20rem;
+  border-radius: var(--exact-border-radius);
+  overflow: hidden;
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-map__places {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exact-root .exact-map__place + .exact-map__place {
+  border-top: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-map__place-head {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exact-root .exact-map__place.is-open .exact-map__place-name {
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-map__place-name {
+  font-weight: 600;
+}
+
+.exact-root .exact-map__place-count,
+.exact-root .exact-map__distance {
+  font-size: 0.75rem;
+  color: var(--exact-color-text-tertiary);
+  white-space: nowrap;
+}
+
+.exact-root .exact-map__place-trials {
+  margin: 0 0 8px;
+  padding-left: 1rem;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.exact-root .exact-map__place-trials li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.exact-root .exact-map__place-trials button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--exact-color-primary);
+  text-align: left;
+  cursor: pointer;
 }
 
 /* Field tooltip: "?" icon + floating text box on hover/focus */
@@ -411,15 +857,11 @@
   cursor: default;
   padding: 0;
 }
+/* Every box is an `ActionTooltip` box, placed by script; `.exact-action-tip__box`
+   below owns position, size and stacking. This carries the look. */
 .exact-root .exact-tooltip__box {
   display: none;
-  position: absolute;
-  bottom: calc(100% + 0.375rem);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 50;
   width: max-content;
-  max-width: min(28rem, 80vw);
   padding: 0.5rem 0.75rem;
   background: #1e3a5f;
   color: #fff;
@@ -428,11 +870,6 @@
   border-radius: 0.375rem;
   white-space: pre-line;
   pointer-events: none;
-}
-/* Show on hover or focus-within */
-.exact-root .exact-tooltip__wrap:hover .exact-tooltip__box,
-.exact-root .exact-tooltip__wrap:focus-within .exact-tooltip__box {
-  display: block;
 }
 
 @media (min-width: 679px) {
@@ -468,5 +905,1271 @@
   .exact-root .exact-detail__elig {
     flex: 1;
     min-width: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * List chrome — title, tabs, sort, pagination. Mirrors CB's Your Trials page
+ * (`ui.v2/client/pages/Trials.tsx`), which builds the same shapes out of
+ * Tailwind utilities. Written by hand here because the remote ships no
+ * utility layer: everything stays scoped under `.exact-root` so nothing can
+ * leak into the host.
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-list__title {
+  /* The gap below belongs to the row now, so the two cannot disagree about
+     how far the tab strip sits from the head. */
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 2rem;
+  letter-spacing: -0.02em;
+  color: var(--exact-color-text);
+}
+
+.exact-root .exact-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--exact-color-border);
+  overflow-x: auto;
+  /* `overflow-x` alone does not stop this strip widening the page (#535).
+     A scroll container's automatic minimum size is only zeroed for a FLEX
+     item, and this is a block child of the list — so its min-content, the
+     sum of the tabs, travelled up to the host's flex column and stretched
+     it: 569px of document inside a 390px window, with the right edge of
+     every card off-screen. Inline-size containment says the box's own
+     width does not depend on its contents, which is the claim `overflow-x`
+     was already making about the reader's experience of it. Measured: the
+     document comes back to 390 and the strip finally scrolls itself. */
+  contain: inline-size;
+  /* Not `container-type: inline-size`, which would be the obvious symmetry
+     with the controls row: that also applies LAYOUT containment, making this
+     a containing block for fixed-position descendants and a stacking context
+     — neither of which this strip should become. `contain: inline-size` is
+     the one axis of it that is needed, and it lands in Firefox 101 against
+     `container-type`'s 110. */
+  /* And now that it really scrolls, a swipe past its end stays in it rather
+     than turning into the browser's back gesture. */
+  overscroll-behavior-x: contain;
+  /* The strip corrects its own scroll position when the tab in force would
+     otherwise be off-screen, and that correction has to be instant: a host
+     with `* { scroll-behavior: smooth }` would turn it into an animation,
+     whose intermediate scroll events are indistinguishable from the reader
+     moving the strip themselves. `Tabs.tsx` asks for `instant` outright;
+     this covers an engine that takes no options. */
+  scroll-behavior: auto;
+  /* Room for the focus ring. `overflow-x: auto` computes `overflow-y` to
+   * `auto` as well, so the outline is clipped on both axes at the padding
+   * box: 3px for the ring's 2px width at 1px offset, and 4px below, where
+   * the tabs sit a further 1px low from the negative margin that laps them
+   * over the container's rule. */
+  padding: 3px 3px 4px;
+}
+
+/* The stylesheet defined no focus style at all, so every control the chrome
+ * added relied on whatever the host's reset left behind — often nothing. */
+.exact-root .exact-tab:focus-visible,
+.exact-root .exact-pagination__step:focus-visible,
+.exact-root .exact-pagination__page:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+  border-radius: 0.25rem;
+}
+
+.exact-root .exact-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.75rem;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  color: var(--exact-color-text-tertiary);
+  white-space: nowrap;
+  cursor: pointer;
+  /* Pulls the 2px indicator over the container's 1px rule so the active tab
+     sits on the line rather than above it — CB does the same with -mb-px. */
+  margin-bottom: -1px;
+}
+
+.exact-root .exact-tab:hover {
+  color: var(--exact-color-text);
+}
+
+.exact-root .exact-tab.is-active {
+  color: var(--exact-color-primary);
+  border-bottom-color: var(--exact-color-primary);
+}
+
+.exact-root .exact-tab__count {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  /* CB draws this pill with a border in BOTH states; the fill alone is a
+     few percent of grey and all but disappears on a white card. */
+  border: 1px solid var(--exact-color-border);
+  border-radius: 624.9375rem;
+  background: var(--exact-color-surface-2, rgba(10, 13, 18, 0.06));
+  color: var(--exact-color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tinted, not filled: CB's chosen tab carries brand-50 behind brand-700 on a
+   brand-200 edge. A solid primary pill — what this was — is a heavier mark
+   than the 2px rule under the tab, and the two competed to say the same
+   thing. */
+.exact-root .exact-tab.is-active .exact-tab__count {
+  border-color: var(--exact-color-primary-200);
+  background: var(--exact-color-primary-50);
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-list__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  /* A query container, so the labels below answer to the width the HOST gave
+     this remote rather than to the window's: the same 1280px window shows
+     this list in a 900px column inside ht-phr and full width inside CB.
+     Where container queries are unsupported those rules never match, which
+     leaves the wrapping labels — the ones that fit either way.
+
+     Declared HERE and not on `.exact-list`, which is the element the host
+     mounts: `inline-size` containment computes an element's intrinsic width
+     as if it had no contents, so a host that sizes the remote by its content
+     (a flex row, an `inline-block`, an auto grid track) would have collapsed
+     the whole list to its padding. This row takes its width from the list
+     either way, and the cards still speak for the list's own width. */
+  container-type: inline-size;
+  container-name: exact-controls;
+}
+
+/* The triggers travel together at the right, whatever else shares the row:
+   `space-between` was written for two children and puts a third in the
+   middle of the row rather than beside the one it belongs with. */
+.exact-root .exact-list__triggers {
+  display: flex;
+  /* Three buttons that do not wrap are 364px of row in a 278px column, and
+     the overflow lands on the page rather than on them (#535). */
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+/* The sort's own row, when the row is too narrow to hold everything. Only
+   rendered in that case (`wideControlsRow` in `listChrome.ts` is how much
+   room it takes, `TrialMatches` does the measuring), so there is no `order`
+   here: what is painted second is written second, and the keyboard follows
+   the same path as the eye. `flex-basis: 100%` breaks the row; the control
+   inside keeps its own width rather than stretching across the page. */
+.exact-root .exact-list__sort {
+  display: flex;
+  flex-basis: 100%;
+}
+
+/* Segmented control — CB's `TrialsViewMode` / `TrialsSortControl`: joined
+   buttons in one bordered, shadowed box, the chosen one tinted. */
+/* `shadow-card`, not `shadow-sm`: CB gives every control in this row the
+   same edge — an inset hairline over the border, a hint of an inner bottom
+   rule, and a 1px drop. `shadow-sm` is the drop alone, which reads as a
+   flatter control beside CB's. */
+.exact-root .exact-seg {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+  /* Squares off the corner fills of the first and last segments. */
+  overflow: hidden;
+}
+
+/* The tooltip wrap sits between the group and each button, so the segment
+   rules address it rather than the button directly. Its own `inline-flex`
+   is blockified by the flex group, so it needs no `display` here. */
+.exact-root .exact-seg__item {
+  min-width: 0;
+}
+
+/* The options share the width evenly: three sort labels of very different
+   lengths otherwise give the shortest order the smallest target. */
+.exact-root .exact-seg--grow .exact-seg__item {
+  flex: 1 1 0;
+}
+
+.exact-root .exact-seg__item:not(:last-child) > .exact-seg__btn {
+  border-right: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-seg__btn {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.875rem;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  /* A segment is a third of the row and its labels are not short: on the
+     narrowest containers "Suitability" alone is wider than the share, and
+     without this the centred text spills sideways over its neighbours and
+     is clipped by the group's own `overflow: hidden`. */
+  overflow-wrap: break-word;
+  /* Wrapping by default, one line once there is room: three orders named in
+     full share a phone's width otherwise. Asked of the CONTAINER, like the
+     row above — a desktop window can still hand this remote a column a few
+     hundred pixels wide, and a viewport query would keep the labels on one
+     line and push a 500px control out of it. */
+  white-space: normal;
+}
+
+@container exact-controls (min-width: 40rem) {
+  .exact-root .exact-seg__btn {
+    white-space: nowrap;
+  }
+
+  /* Held to one line, a label can still be wider than its share of the row:
+     an order the host asked for is rendered as `Sorted by <key>`, and those
+     keys are long (`patientBurdenScore`). Cut by the group's own
+     `overflow: hidden` that reads as a rendering fault; cut here it reads as
+     a name too long for its box, which is what it is. The whole name stays
+     in the accessible name and in the segment's tooltip. */
+  .exact-root .exact-seg__label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* Its own element so the label can be ellipsised: the button is a flex
+   container, and its bare text would be an anonymous item that
+   `text-overflow` cannot reach. */
+.exact-root .exact-seg__label {
+  min-width: 0;
+}
+
+.exact-root .exact-seg__btn:hover {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-seg__btn.is-on {
+  background: var(--exact-color-primary-50);
+  color: var(--exact-color-primary);
+}
+
+/* Forced colors (Windows high contrast) replaces every author colour with one
+   from the user's palette, so the tint above — the only thing that says which
+   segment is chosen — comes back identical to the other two: measured in the
+   browser, `is-on` and its neighbours both render white on black. The selected
+   state has to be said in colours the mode keeps, and `Highlight` is the pair
+   it reserves for exactly that. `aria-checked` already carries this to a
+   screen reader; this is for the sighted keyboard user it left behind. */
+@media (forced-colors: active) {
+  .exact-root .exact-seg__btn.is-on {
+    background: Highlight;
+    color: HighlightText;
+    /* Without this the label keeps the backplate the mode paints behind text
+       over a filled background, and `HighlightText` lands on it white on
+       white. Turning the adjustment off leaves the two system colours above
+       in charge, which are the user's own, not ours. */
+    forced-color-adjust: none;
+  }
+
+  /* The icons are stroked with `currentColor`, so they follow the label. */
+  .exact-root .exact-seg__btn.is-on svg {
+    stroke: HighlightText;
+  }
+
+  /* `forced-color-adjust: none` above also hands this ring back to our own
+     token, which then paints a fixed blue over the user's `Highlight` fill —
+     on some palettes the ring all but disappears. Inside this mode the ring
+     belongs to the system pair too. */
+  .exact-root .exact-seg__btn.is-on:focus-visible {
+    outline-color: HighlightText;
+  }
+}
+
+/* Inset, because the button fills its segment edge to edge: an outset ring
+   would be clipped by the group's `overflow: hidden`. */
+.exact-root .exact-seg__btn:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: -2px;
+}
+
+.exact-root .exact-list__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  transition: opacity 0.2s;
+}
+
+/* Previous rows stay on screen while the next page or filter is in flight
+   (`keepPreviousData`); dimming says the list is not yet the answer to the
+   question just asked. Interaction is deliberately NOT blocked:
+   `pointer-events: none` stops the mouse and not the keyboard, so it only
+   half-delivered on the promise, and the rows underneath are real trials
+   whose detail page is worth opening either way. */
+.exact-root .exact-list__rows.is-stale {
+  opacity: 0.5;
+}
+
+.exact-root .exact-list__updating-slot {
+  position: sticky;
+  bottom: 1rem;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  /* Not the default `stretch`: the slot's line is 0 tall, so stretching the
+   * pill floors its content box at 0 and the text spills out of its own
+   * lozenge. Centring lets the pill size to its content and overflow the
+   * zero-height line symmetrically. */
+  align-items: center;
+  /* Zero height so an empty slot cannot push the rows around; the pill
+   * overlays the list rather than displacing it. */
+  height: 0;
+  overflow: visible;
+}
+
+/* Deliberately NOT `position: fixed`. A scoped selector still renders
+ * globally: a fixed pill lands over whatever host chrome occupies the bottom
+ * of the viewport, and any host ancestor with a transform re-anchors it
+ * somewhere arbitrary. Sticky keeps it inside the remote's own box. */
+.exact-root .exact-list__updating {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 624.9375rem;
+  background: var(--exact-color-surface);
+  box-shadow: 0 4px 6px -1px rgba(10, 13, 18, 0.1);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--exact-color-text-tertiary);
+  pointer-events: none;
+}
+
+.exact-root .exact-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--exact-color-border);
+}
+
+.exact-root .exact-pagination__step {
+  flex: 1 0 auto;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.exact-root .exact-pagination__step:last-child {
+  text-align: right;
+}
+
+.exact-root .exact-pagination__step:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.exact-root .exact-pagination__step:disabled {
+  color: var(--exact-color-text-tertiary);
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.exact-root .exact-pagination__pages {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+}
+
+.exact-root .exact-pagination__page {
+  min-width: 2.5rem;
+  padding: 0.5rem;
+  border: none;
+  border-radius: var(--exact-border-radius);
+  background: none;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+}
+
+.exact-root .exact-pagination__page:hover {
+  background: var(--exact-color-surface-2, rgba(10, 13, 18, 0.04));
+}
+
+.exact-root .exact-pagination__page.is-current {
+  background: var(--exact-color-surface-2, rgba(10, 13, 18, 0.06));
+  color: var(--exact-color-text);
+  font-weight: 600;
+}
+
+.exact-root .exact-pagination__gap {
+  min-width: 2.5rem;
+  padding: 0.5rem;
+  text-align: center;
+  color: var(--exact-color-text-tertiary);
+}
+
+.exact-root .exact-pagination__position {
+  display: none;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--exact-color-text-muted);
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .exact-root .exact-pagination__pages {
+    display: none;
+  }
+
+  .exact-root .exact-pagination__position {
+    display: inline;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Filter panel — CB's `TrialFiltersPanel` (ui.v2), which builds the same grid
+ * out of Tailwind utilities and shadcn controls. Native controls here, so no
+ * component library follows the remote into its host.
+ * ------------------------------------------------------------------------- */
+/* Export CSV: the same chrome as the filter trigger — it sits beside it and
+   two differently-drawn buttons in one row read as two kinds of control. */
+.exact-root .exact-list__export {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.exact-root .exact-list__export:disabled {
+  /* `not-allowed`, not `progress`: the button is also disabled when the export
+     CANNOT run, and a spinner cursor over a dead control asserts work that is
+     not happening. */
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.exact-root .exact-list__export.is-working:disabled {
+  cursor: progress;
+}
+
+.exact-root .exact-list__export-error {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--exact-color-not-eligible);
+}
+
+/* "Shown here but not saved" — the filters work, the storing of them did not.
+   A status rather than an alert: nothing the reader has to act on. */
+.exact-root .exact-list__save-warning {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--exact-color-warning-700);
+}
+
+.exact-root .exact-filters__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.exact-root .exact-filters__trigger:hover {
+  background: var(--exact-color-surface-2);
+}
+
+/* Both "open" and "has filters applied" light the trigger up: a closed panel
+   still filtering the list is the state most worth making visible. */
+.exact-root .exact-filters__trigger.is-on {
+  border-color: var(--exact-color-primary);
+  color: var(--exact-color-primary);
+}
+
+.exact-root .exact-filters__trigger:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+.exact-root .exact-filters {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+}
+
+.exact-root .exact-filters__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 640px) {
+  .exact-root .exact-filters__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .exact-root .exact-filters__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .exact-root .exact-filters__grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.exact-root .exact-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.exact-root .exact-filter__label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--exact-color-text-tertiary);
+}
+
+.exact-root .exact-filter__input {
+  width: 100%;
+  min-width: 0;
+  height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+}
+
+.exact-root .exact-filter__input:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: -1px;
+}
+
+/* Trial purpose is several codes at once (#428). `<details>` is the native
+   popover: no library, keyboard- and screen-reader-navigable as shipped. The
+   summary is styled as an input so the control does not look like a different
+   species from the selects beside it. */
+.exact-root .exact-filter__multi {
+  position: relative;
+  min-width: 0;
+}
+
+.exact-root .exact-filter__multi-summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Safari draws its own disclosure triangle through `list-style: none`. */
+.exact-root .exact-filter__multi-summary::-webkit-details-marker {
+  display: none;
+}
+
+.exact-root .exact-filter__multi-summary::after {
+  content: "";
+  margin-left: auto;
+  padding-left: 0.5rem;
+  border: 0.3rem solid transparent;
+  border-top-color: var(--exact-color-text-tertiary);
+  transform: translateY(0.15rem);
+}
+
+.exact-root .exact-filter__multi[open] .exact-filter__multi-summary::after {
+  transform: translateY(-0.15rem) rotate(180deg);
+}
+
+/* Absolute so opening the list does not reflow the filter grid under it. */
+.exact-root .exact-filter__multi-list {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  margin-top: 0.25rem;
+  padding: 0.375rem;
+  max-height: 14rem;
+  overflow-y: auto;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+}
+
+.exact-root .exact-filter__multi-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+  cursor: pointer;
+}
+
+.exact-root .exact-filter__multi-option:hover {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-filter__pair {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.exact-root .exact-filter__units {
+  width: 6rem;
+  flex: 0 0 auto;
+  padding: 0 0.5rem;
+}
+
+/* The units select filters nothing on its own, so it is disabled until a
+   distance is entered rather than sitting there implying it does something. */
+.exact-root .exact-filter__units:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+.exact-root .exact-filters__footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.exact-root .exact-filters__reset {
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.375rem;
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--exact-color-text-muted);
+  cursor: pointer;
+}
+
+.exact-root .exact-filters__reset:hover:not(:disabled) {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-filters__reset:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.exact-root .exact-filters__reset:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+/* Bookmark toggle, on a trial card and in the detail header. CB's lucide
+   bookmark, drawn as inline SVG (`BookmarkIcon`) because the remote ships no
+   icon set and must not pull one into its host. */
+.exact-root .exact-fav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  padding: 0.25rem;
+  line-height: 1;
+  color: var(--exact-color-text-tertiary);
+  cursor: pointer;
+}
+
+.exact-root .exact-fav.is-on {
+  color: var(--exact-color-primary);
+}
+
+/* Action tooltips (see `ActionTooltip`). The box lives in a body-level
+   `.exact-root.exact-tooltip-layer` and is placed by script (`left`/`top`)
+   with `position: fixed`; shown only while open. The wrap is a
+   layout-neutral inline box, so the controls line up as before. */
+.exact-root .exact-action-tip {
+  display: inline-flex;
+}
+/* A disabled button swallows mouse events in some browsers; letting them
+   through to the wrap is what shows the "why it's unavailable" tooltip. */
+.exact-root .exact-action-tip > button:disabled {
+  pointer-events: none;
+}
+/* …which hands the cursor to the wrap, so the wrap carries it. */
+.exact-root .exact-action-tip:has(> button:disabled) {
+  cursor: not-allowed;
+}
+.exact-root .exact-action-tip:has(> .exact-list__export.is-working:disabled) {
+  cursor: progress;
+}
+.exact-root .exact-action-tip__box {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2147483000;
+  max-width: min(20rem, calc(100vw - 1rem));
+  /* max-height is set by script from the visible viewport. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  text-align: left;
+  font-weight: 400;
+  /* Hoverable, unlike the base box (WCAG 1.4.13). */
+  pointer-events: auto;
+}
+.exact-root .exact-action-tip__box.is-open {
+  display: block;
+}
+
+/* CB's bookmark button in the detail header. */
+.exact-root .exact-fav--boxed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.5rem;
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+}
+.exact-root .exact-fav--boxed:not(.is-on):hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-fav--boxed.is-on {
+  border-color: var(--exact-color-primary);
+  background: var(--exact-color-primary);
+  color: var(--exact-color-on-primary);
+}
+
+.exact-root .exact-fav:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+  border-radius: 0.25rem;
+}
+
+/* After the rule above, which it has to beat: the boxed button keeps its own
+   corners, and its outline stands clear of a primary-filled box. */
+.exact-root .exact-fav--boxed:focus-visible {
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* A bookmark write on the wire, dimmed like the interest button beside it. */
+.exact-root .exact-fav[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------------------
+ * Register interest — CB's `RegisterInterestCard`, minus the promise that a
+ * coordinator will be in touch (nothing here notifies anyone).
+ * ------------------------------------------------------------------------- */
+.exact-root .exact-register {
+  margin-top: 1rem;
+  border-color: var(--exact-color-success-200);
+  background: var(--exact-color-success-50);
+}
+
+.exact-root .exact-register__text {
+  margin: 0.5rem 0 0.75rem;
+  color: var(--exact-color-text-muted);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.exact-root .exact-register__btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.625rem 0.875rem;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  background: var(--exact-color-brand-green);
+  box-shadow: var(--exact-shadow-card);
+  color: var(--exact-color-on-brand);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+/* The "?" CB draws inside its interest button; decoration, the tooltip is
+   on the button itself. */
+.exact-root .exact-register__help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-left: 0.375rem;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.625rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.exact-root .exact-register__btn:hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-brand-green-hover);
+}
+
+/* Withdraw is not the same act as registering and must not wear the same
+   green CTA: the reader is looking for the way out of something, not for
+   the way into it. */
+.exact-root .exact-register__btn.is-on {
+  border-color: var(--exact-color-border);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-register__btn.is-on:hover:not([aria-disabled="true"]) {
+  background: var(--exact-color-surface);
+  color: var(--exact-color-text);
+}
+
+/* `aria-disabled`, not `:disabled` — the button keeps focus while the write
+   is on the wire (see TrialDetailPage), so the styling has to follow the
+   attribute that is actually set. */
+.exact-root .exact-register__btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.exact-root .exact-register__btn:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+/* A warning must not arrive in the same success green as an invitation:
+   "You may not meet this trial's eligibility criteria" was painted exactly
+   like "Interested in this trial?". And once the answer is recorded the
+   panel is neither — it is a receipt. */
+.exact-root .exact-register.is-warning {
+  border-color: var(--exact-color-warning-200);
+  background: var(--exact-color-warning-50);
+}
+
+.exact-root .exact-register.is-registered {
+  border-color: var(--exact-color-border);
+  background: var(--exact-color-surface);
+}
+
+.exact-root .exact-register__error {
+  margin: 0.5rem 0 0;
+  color: var(--exact-color-not-eligible);
+  font-size: 0.875rem;
+}
+.exact-root .exact-detail__register-error {
+  margin: 0 0 0.75rem;
+}
+.exact-root .exact-detail__eligibility-warning {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--exact-color-warning-200);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-warning-50);
+  color: var(--exact-color-warning-700);
+  font-size: 0.875rem;
+}
+
+/* Inline editing of "Your Value" (#421).
+
+   The pencil sits in the flow after the value rather than floating over it:
+   absolute placement put it on top of the mismatch mark on narrow screens,
+   where the two are the same size and the reader cannot tell which they are
+   about to press. */
+.exact-root .exact-elig__edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--exact-color-text-tertiary);
+  cursor: pointer;
+}
+.exact-root .exact-elig__edit:hover:not(:disabled) {
+  color: var(--exact-color-primary);
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-elig__edit:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+.exact-root .exact-elig__editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.exact-root .exact-elig__input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 4px;
+  font: inherit;
+  /* Not `inherit`: the cell carries the row's status colour, so an inherited
+     input would be red in a mismatched row and green in a matched one. */
+  color: var(--exact-color-text);
+  background: var(--exact-color-surface);
+}
+.exact-root .exact-elig__input--multi {
+  min-height: 5rem;
+}
+.exact-root .exact-elig__save,
+.exact-root .exact-elig__cancel {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--exact-color-border);
+  font: inherit;
+  cursor: pointer;
+}
+.exact-root .exact-elig__save {
+  border-color: var(--exact-color-primary);
+  background: var(--exact-color-primary);
+  color: var(--exact-color-on-brand);
+}
+.exact-root .exact-elig__cancel {
+  background: transparent;
+  color: var(--exact-color-text);
+}
+.exact-root .exact-elig__save:disabled,
+.exact-root .exact-elig__cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Its own line, so a long message does not squeeze the box it is about. */
+.exact-root .exact-elig__error {
+  flex: 1 0 100%;
+  color: var(--exact-color-not-eligible);
+  font-size: 0.8125rem;
+}
+
+/* The subform dialog (#421): the only route a computed row has to being
+   changed, so it is a dialog rather than an expander — the reader is leaving
+   the table to work on something else and comes back to a recomputed row. */
+.exact-root .exact-elig__subform {
+  margin-left: 6px;
+  padding: 2px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+.exact-root .exact-elig__subform:hover {
+  background: var(--exact-color-surface-2);
+}
+.exact-root .exact-subform__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  /* Its own ground rather than a tint of the host's: this remote does not
+     know what it is mounted on, and a translucent white over a dark host
+     leaves the panel unreadable. */
+  background: rgb(0 0 0 / 45%);
+}
+.exact-root .exact-subform {
+  width: min(32rem, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 16px;
+  border-radius: var(--exact-radius-card);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-card);
+  color: var(--exact-color-text);
+}
+.exact-root .exact-subform__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.exact-root .exact-subform__title {
+  margin: 0;
+  font-size: 1rem;
+}
+.exact-root .exact-subform__close {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--exact-color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.exact-root .exact-subform__note {
+  margin: 4px 0 12px;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-subform__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.exact-root .exact-subform__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--exact-color-border);
+}
+.exact-root .exact-subform__label {
+  flex: 1 1 10rem;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-subform__value {
+  font-size: 0.875rem;
+}
+
+/* A refused write, said where the reader will see it whatever they closed.
+   Above the table rather than inside it: the row that failed may be a subform
+   input, which has no row of its own. */
+.exact-root .exact-detail__write-error {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--exact-color-not-eligible);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font-size: 0.875rem;
+  color: var(--exact-color-not-eligible);
+}
+
+/* Suitability Preferences — CB's card-shaped trigger, on the title's line,
+   and the form its dialog holds.
+   --------------------------------------------------------------------- */
+/* The title and the preferences trigger on one line, as CB has them below
+   lg. The tab strip stays a row of its own: shared with the trigger it was
+   a flex item that could shrink, and its bottom rule — the one the active
+   tab sits on — stopped at the last tab instead of ruling the row. */
+.exact-root .exact-list__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.exact-root .exact-prefs__trigger {
+  display: inline-flex;
+  align-items: center;
+  /* Both belong to the tooltip WRAP that actually is the flex item here
+     (`exact-action-tip` is `inline-flex`), not to this button — but through
+     it they are what keeps the label on one line: the wrap's automatic
+     minimum size resolves to this button's min-content, and `nowrap` is what
+     makes that the whole label rather than its longest word. */
+  flex-shrink: 0;
+  white-space: nowrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  box-shadow: var(--exact-shadow-sm);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  color: var(--exact-color-primary);
+  cursor: pointer;
+}
+
+.exact-root .exact-prefs__trigger:hover {
+  background: var(--exact-color-surface-2);
+}
+
+.exact-root .exact-prefs__trigger:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+/* Says the score is not on its defaults. In forced colors the fill is gone,
+   so it carries a border of its own rather than relying on one. */
+.exact-root .exact-prefs__badge {
+  padding: 0 0.375rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--exact-color-primary-50);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+@media (forced-colors: active) {
+  .exact-root .exact-prefs__badge {
+    border-color: currentColor;
+  }
+}
+
+.exact-root .exact-prefs__form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.exact-root .exact-prefs__row {
+  display: grid;
+  /* The number keeps its own column so the four inputs line up under each
+     other; the hint sits under the label rather than beside the box. */
+  grid-template-columns: 1fr 6rem;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.exact-root .exact-prefs__label {
+  grid-column: 1;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+}
+
+.exact-root .exact-prefs__hint {
+  grid-column: 1;
+  grid-row: 2;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+
+.exact-root .exact-prefs__input {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+}
+
+.exact-root .exact-prefs__input.is-invalid {
+  border-color: var(--exact-color-error-700);
+}
+
+.exact-root .exact-prefs__input:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 1px;
+}
+
+.exact-root .exact-prefs__error {
+  grid-column: 1 / -1;
+  font-size: 0.8125rem;
+  color: var(--exact-color-error-700);
+}
+
+.exact-root .exact-prefs__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.exact-root .exact-prefs__save {
+  padding: 0.5rem 1rem;
+  border: 1px solid transparent;
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-primary);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  color: var(--exact-color-on-primary);
+  cursor: pointer;
+}
+
+.exact-root .exact-prefs__save:hover {
+  background: var(--exact-color-brand-green-hover);
+}
+
+.exact-root .exact-prefs__save:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
+
+/* Forced colors replaces the fill and the label alike, which would leave the
+   one button that commits the change indistinguishable from the one beside
+   it. Same answer as the segmented control's chosen segment. */
+@media (forced-colors: active) {
+  .exact-root .exact-prefs__save {
+    background: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
   }
 }

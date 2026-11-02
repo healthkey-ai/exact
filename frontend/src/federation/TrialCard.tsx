@@ -6,16 +6,42 @@
 // its own `/t/:id`; the remote owns the detail view itself).
 import type { KeyboardEvent } from "react";
 
-import { EyeIcon, Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
+import {
+  ActionTooltip,
+  EyeIcon,
+  FavoriteToggle,
+  Field,
+  ScorePill,
+  SUITABILITY_HREF,
+  asText,
+} from "./bits";
+import { ACTION_TOOLTIPS } from "./tooltips";
 import type { TrialMatch } from "./types";
 
 interface Props {
   trial: TrialMatch;
   onSelect?: (trial: TrialMatch) => void;
   isSelected?: boolean;
+  /** Whether this trial is bookmarked. `undefined` means not known yet —
+   *  the ids are still loading — and renders nothing rather than an
+   *  un-bookmarked star that would flip under the reader's eye. */
+  isFavorite?: boolean;
+  /** Omitted when the host supplied no state adapter, in which case no
+   *  control is drawn: a bookmark button with nowhere to write is a button
+   *  that forgets. */
+  onToggleFavorite?: (next: boolean) => void;
+  /** A bookmark write for this trial is on the wire. */
+  busy?: boolean;
 }
 
-export function TrialCard({ trial, onSelect, isSelected }: Props) {
+export function TrialCard({
+  trial,
+  onSelect,
+  isSelected,
+  isFavorite,
+  onToggleFavorite,
+  busy,
+}: Props) {
   const distance =
     trial.distance != null
       ? `${trial.distance} ${trial.distanceUnits ?? ""}`.trim()
@@ -72,28 +98,44 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
           </div>
 
           <div className="exact-card__scores">
-            <ScorePill score={trial.matchScore} label="Matching Score" />
+            <ScorePill
+              score={trial.matchScore}
+              label="Matching Score"
+              tooltip={ACTION_TOOLTIPS.matchingScore}
+            />
             <ScorePill
               score={trial.goodnessScore}
               label="Suitability Score"
               href={SUITABILITY_HREF}
+              tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
         </div>
 
         <div className="exact-card__action">
+          <FavoriteToggle
+            title={trial.briefTitle}
+            isFavorite={isFavorite}
+            onToggle={onToggleFavorite}
+            busy={busy}
+          />
           {onSelect ? (
-            <button
-              type="button"
-              className="exact-btn-view"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleSelect();
-              }}
-            >
-              <EyeIcon />
-              <span>View Trial</span>
-            </button>
+            <ActionTooltip text={ACTION_TOOLTIPS.viewTrial} className="exact-card__view-tip">
+              {(tipId) => (
+                <button
+                  type="button"
+                  className="exact-btn-view"
+                  aria-describedby={tipId}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelect();
+                  }}
+                >
+                  <EyeIcon />
+                  <span>View Trial</span>
+                </button>
+              )}
+            </ActionTooltip>
           ) : null}
         </div>
       </div>
