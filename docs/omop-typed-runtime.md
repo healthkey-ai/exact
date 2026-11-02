@@ -1,11 +1,16 @@
 # Typed request orchestration (#661 continuation)
 
-**Implementation under a disabled server boundary, not activation/readiness.**
-`EXACT_TYPED_MATCHING_ENABLED=False` and `EXACT_TYPED_MATCHING_RESOLVER=None` are
-deliberately not environment-activatable. No production resolver is supplied.
-Turning on the boundary without one returns 503 rather than running legacy on
-an OMOP-only request. Request JSON/query parameters cannot supply or activate a
-session. #662 must authenticate person/scope/selection, publication freshness,
+**A fail-closed server boundary, not activation/readiness.**
+`EXACT_OMOP_CRITERIA` is the public environment flag (off by default; the
+internal alias is `EXACT_TYPED_MATCHING_ENABLED`). Turning it on without a
+usable `EXACT_TYPED_MATCHING_RESOLVER` makes the typed gate return 503 rather
+than run legacy on an OMOP-only request: `typed_matching_unavailable` when no
+resolver is configured, `trusted_resolver_configuration` when the configured
+import path does not resolve or is not callable. Routes that reject a request
+earlier (for example the graph endpoint's missing-patient 400) keep their own
+response. No production resolver is supplied.
+Request JSON/query parameters cannot supply or activate a session. #662 must
+authenticate person/scope/selection, publication freshness,
 schemas/generations and producer receipts before a resolver can be deployed.
 
 ## Upstream and ownership
