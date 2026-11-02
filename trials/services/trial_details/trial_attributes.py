@@ -8,7 +8,7 @@ from django.db.models import Q
 
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
-from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_types_enabled
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
@@ -544,6 +544,20 @@ class TrialAttributes:
             trial_field = self._trial.__class__._meta.get_field(field_name)
             trial_field_name = self.get_field_name(trial_field)
             options = self.get_options(trial_field_name)
+            if (omop_therapy_types_enabled()
+                    and field_name in ('therapy_types_required', 'therapy_types_excluded')):
+                # Under the OMOP profile the column holds concept_ids, while the
+                # legacy option map is keyed by internal category codes, so every
+                # row rendered a bare number. Resolve through the release-pinned
+                # mirror — the same resolver the matcher's `omopConcepts` block
+                # uses — and keep an unresolved id visible rather than dropping
+                # it (or inventing a title).
+                from exact_matching.matcher import _resolve_omop_concepts
+                options = [
+                    {'value': str(item['code']),
+                     'label': item['title'] or f'Unknown concept ({item["code"]})'}
+                    for item in _resolve_omop_concepts(value)
+                ]
             uoptions = None
             subform_details = subform_attrs[field_name] if field_name in subform_attrs else None
 
