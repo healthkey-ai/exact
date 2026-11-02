@@ -16,6 +16,10 @@ interface Recorded {
   url?: string;
   params?: Record<string, string>;
   authorization?: string;
+  /** The body, so a write can be traced back to the adapter that made it —
+   *  the credential alone cannot, since the new account writing its own row
+   *  looks the same on the wire as the old adapter writing into it. */
+  data?: unknown;
 }
 
 const requests: Recorded[] = [];
@@ -23,6 +27,8 @@ let meRow: Record<string, unknown> | null = { person_id: 9001, disease: "MM" };
 const seen: { state?: TrialStateAdapter; patientInfo?: unknown }[] = [];
 /** Errors from writes the probe made while unmounting. */
 const unmountWriteErrors: string[] = [];
+/** Stable number per adapter object, so a recorded body says which made it. */
+const adapterIds = new Map<object, number>();
 
 const respond = (config: InternalAxiosRequestConfig, data: unknown) => ({
   data,
@@ -39,6 +45,7 @@ const recordingAdapter: AxiosAdapter = async (config) => {
     url: config.url,
     params: config.params,
     authorization: config.headers?.Authorization as string | undefined,
+    data: typeof config.data === "string" ? JSON.parse(config.data) : config.data,
   });
   if (config.url === "/patient-info/me/") return respond(config, { patient_info: meRow });
   if (config.url === "/normalize-ctomop-row/") return respond(config, { diseaseCode: "MM" });
@@ -54,13 +61,29 @@ vi.mock("./TrialMatches", () => ({
   default: (props: { state?: TrialStateAdapter; patientInfo?: unknown }) => {
     seen.push({ state: props.state, patientInfo: props.patientInfo });
     const { state } = props;
+    // Which adapter this mount was given, stamped into the write below.
+    if (state && !adapterIds.has(state)) adapterIds.set(state, adapterIds.size);
+    const mountIndex = state ? adapterIds.get(state) : -1;
     // What TrialMatches really does on unmount: flush a pending write through
     // the adapter it was given (`hooks.ts`, the saved-filter writer).
+    // BOTH halves, because they reach different services by different
+    // clients and only one of them was ever guarded. Tagged so a test can
+    // say which refused: an assertion that merely counts "session changed"
+    // passes while one half leaks.
     useEffect(
       () => () => {
+        // `?.()` on the methods too: one test hands the bridge a partial
+        // state of its own, which is the shape a host is allowed to pass.
         state
-          ?.setFavorite("7", true)
-          .catch((error: Error) => unmountWriteErrors.push(error.message));
+          ?.setFavorite?.("7", true)
+          .catch((error: Error) =>
+            unmountWriteErrors.push(`favorite: ${error.message}`),
+          );
+        state
+          ?.savePreferences?.({ phase: `from-adapter-${mountIndex}` })
+          .catch((error: Error) =>
+            unmountWriteErrors.push(`preferences: ${error.message}`),
+          );
       },
       [state],
     );
@@ -75,6 +98,7 @@ const getToken = async () => "id-token";
 beforeEach(() => {
   requests.length = 0;
   seen.length = 0;
+  adapterIds.clear();
   unmountWriteErrors.length = 0;
   meRow = { person_id: 9001, disease: "MM" };
 });
@@ -237,7 +261,8 @@ describe("the bridge's per-user state", () => {
           const writes = enrollmentRequests().filter((r) => r.method !== "get");
           // Nothing for 9001 went out, under any token.
           expect(writes.filter((r) => r.params?.person_id === "9001")).toEqual([]);
-          expect(unmountWriteErrors).toContain("[exact-remote] session changed");
+          expect(unmountWriteErrors).toContain("favorite: [exact-remote] session changed");
+    expect(unmountWriteErrors).toContain("preferences: [exact-remote] session changed");
           // Whatever did go out is the new user's own: StrictMode's double
           // effect on the new probe, and nothing without it.
           expect(writes).toHaveLength(strict ? 1 : 0);
@@ -283,7 +308,8 @@ describe("the bridge's per-user state", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
 
     expect(enrollmentRequests()).toEqual([]);
-    expect(unmountWriteErrors).toContain("[exact-remote] session changed");
+    expect(unmountWriteErrors).toContain("favorite: [exact-remote] session changed");
+    expect(unmountWriteErrors).toContain("preferences: [exact-remote] session changed");
   });
 
   for (const strict of [false, true]) {
@@ -313,9 +339,114 @@ describe("the bridge's per-user state", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       expect(enrollmentRequests()).toEqual([]);
-      expect(unmountWriteErrors).toEqual(["[exact-remote] session changed"]);
+      expect(unmountWriteErrors.sort()).toEqual([
+        "favorite: [exact-remote] session changed",
+        "preferences: [exact-remote] session changed",
+      ]);
     });
   }
+
+  for (const strict of [false, true]) {
+    it(`refuses a flushed preference write when the host switches account in place${
+      strict ? " (StrictMode)" : ""
+    }`, async () => {
+      // The case the hand-called test below does NOT reach, and the one that
+      // actually happens: the host swaps accounts without unmounting, React
+      // runs the deleted child's cleanup, and `useSavedFilters` flushes its
+      // writer there by design — against the OLD adapter.
+      //
+      // A stable `getToken` over a global auth store is the shape
+      // `types.ts` recommends and the shape that makes this dangerous:
+      // nothing about the function identity says the user changed, so a
+      // client built once keeps working and simply starts attaching the new
+      // credential. EXACT keys the preferences row on that credential.
+      //
+      // A guard checked synchronously at call entry does not catch this —
+      // measured — because React runs this cleanup BEFORE the parent's own
+      // effect updates `sessionRef`. It has to sit where the token is
+      // attached.
+      let currentUser = "1";
+      const fromStore = async () => `token-${currentUser}`;
+      const props = (key: string) => ({
+        baseUrl: "https://exact.example",
+        ctomopBaseUrl: "https://promop.example",
+        getToken: fromStore,
+        sessionKey: key,
+      });
+      const el = <Bridge {...props("user-1")} />;
+      const view = render(strict ? <StrictMode>{el}</StrictMode> : el);
+      await view.findByTestId("matches");
+      await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+      requests.length = 0;
+      unmountWriteErrors.length = 0;
+
+      currentUser = "2";
+      const next = <Bridge {...props("user-2")} />;
+      view.rerender(strict ? <StrictMode>{next}</StrictMode> : next);
+      await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+      // Nothing reached the NEW account's row. Asserted on the credential
+      // rather than on "no write at all": under StrictMode the initial
+      // double-mount flushes once within user 1's own session, which is a
+      // correct write and not what this is about.
+      // The OLD adapter's write, carrying the NEW account's credential.
+      // Both halves of that matter: under StrictMode the new adapter also
+      // writes with token-2, correctly, into its own row — so neither the
+      // token nor the mere existence of a POST identifies the defect.
+      const leaked = requests.filter(
+        (r) =>
+          r.url?.includes("user-state") &&
+          r.method === "post" &&
+          r.authorization === "Bearer token-2" &&
+          (r.data as { preferences?: { phase?: string } })?.preferences?.phase ===
+            "from-adapter-0",
+      );
+      expect(leaked).toEqual([]);
+      expect(unmountWriteErrors).toContain(
+        "preferences: [exact-remote] session changed",
+      );
+    });
+  }
+
+  it("refuses a preference write held over from the previous account", async () => {
+    // EXACT keys the preferences row on the identity in the token, so an old
+    // adapter reaching the NEW account's client writes one patient's filters
+    // into another patient's record. And this is not hypothetical plumbing:
+    // `useSavedFilters` flushes its writer during cleanup on purpose, and
+    // the host switching accounts runs that cleanup against the OLD
+    // transport — `hooks.ts` says so in as many words.
+    //
+    // The token reader beside it has been guarded since the PROMOP half was
+    // written; this asserts the EXACT half is too, because the ref that lets
+    // a token refresh through would otherwise let an account switch through
+    // as well.
+    const view = render(
+      <Bridge
+        baseUrl="https://exact.example"
+        ctomopBaseUrl="https://promop.example"
+        getToken={async () => "token-a"}
+        sessionKey="user-1"
+      />,
+    );
+    await view.findByTestId("matches");
+    const stale = lastSeen().state!;
+    requests.length = 0;
+
+    view.rerender(
+      <Bridge
+        baseUrl="https://exact.example"
+        ctomopBaseUrl="https://promop.example"
+        getToken={async () => "token-b"}
+        sessionKey="user-2"
+      />,
+    );
+    await waitFor(() => expect(lastSeen().state).not.toBe(stale));
+
+    await expect(stale.savePreferences({ phase: "II" })).rejects.toThrow(
+      "session changed",
+    );
+    expect(requests.filter((r) => r.url?.includes("user-state"))).toEqual([]);
+  });
 
   it("does not drop a write when only the token is refreshed within a session", async () => {
     const view = render(

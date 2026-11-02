@@ -6,6 +6,8 @@ import {
   fetchTrials,
   filterStateToParams,
   hasInlinePatient,
+  inlinePatientId,
+  patientHandleOf,
 } from "./api";
 import type { FilterState } from "./types";
 
@@ -340,5 +342,68 @@ describe("trialPurpose from a build that spelled it a string", () => {
 
   it("an empty string is no param at all", () => {
     expect(filterStateToParams({ trialPurpose: "" as never })).toEqual({});
+  });
+});
+
+describe("patientHandleOf", () => {
+  // This string is the key the write queue, the writable-fields descriptor
+  // and the open trial all hang on. Two patients sharing one means an edit
+  // queued for the first is sent through the second's adapter — a lab value
+  // in the wrong chart — so the two properties below are load-bearing, and
+  // the component suite cannot see either of them.
+
+  it("cannot be spelled by another pair, whatever is in the ids", () => {
+    // Joined on a separator, `("a|b", "c")` and `("a", "b|c")` are the same
+    // string. Hashed as a pair, they are not.
+    expect(patientHandleOf({ id: "c" }, "a|b")).not.toBe(
+      patientHandleOf({ id: "b|c" }, "a"),
+    );
+  });
+
+  it("does not move when a host rebuilds an id-less payload in another order", () => {
+    // Same patient, same fields, different insertion order — which is what a
+    // host re-reading a profile produces. `JSON.stringify` calls that a new
+    // patient: the open trial closes and the descriptor is refetched.
+    expect(patientHandleOf({ a: 1, b: 2 }, undefined)).toBe(
+      patientHandleOf({ b: 2, a: 1 }, undefined),
+    );
+  });
+
+  it("tells a number from a string, and either from nothing", () => {
+    // Concatenation coerced them together. Keeping them apart is the safe
+    // direction — it resets where it need not, rather than treating two
+    // patients as one — but it is a contract worth stating: a host that
+    // flips `personId` between 9009 and "9009" for one patient is telling
+    // this remote the patient changed.
+    expect(patientHandleOf(null, 9009)).not.toBe(patientHandleOf(null, "9009"));
+    expect(patientHandleOf(null, "")).not.toBe(patientHandleOf(null, undefined));
+  });
+});
+
+describe("inlinePatientId", () => {
+  it("takes the first field that actually holds an id", () => {
+    expect(inlinePatientId({ person_id: 9009 })).toBe("9009");
+    expect(inlinePatientId({ external_id: "abc" })).toBe("abc");
+    expect(inlinePatientId({ patient_id: "7" })).toBe("7");
+  });
+
+  it("steps over a field that is present but empty", () => {
+    // A column that exists and is blank. Taken as an id on position alone,
+    // every patient carrying it hashes to the same handle.
+    expect(inlinePatientId({ person_id: "", id: 9009 })).toBe("9009");
+    expect(inlinePatientId({ person_id: "   ", id: 9009 })).toBe("9009");
+    expect(inlinePatientId({ person_id: Number.NaN, id: 9009 })).toBe("9009");
+  });
+
+  it("answers null when nothing names the patient", () => {
+    expect(inlinePatientId({ disease: "multiple myeloma" })).toBeNull();
+    expect(inlinePatientId(null)).toBeNull();
+    // `0` is an id; `false` is not.
+    expect(inlinePatientId({ id: 0 })).toBe("0");
+    expect(inlinePatientId({ id: false as never })).toBeNull();
+  });
+
+  it("does not carry surrounding whitespace into the handle", () => {
+    expect(inlinePatientId({ person_id: " 9009 " })).toBe("9009");
   });
 });

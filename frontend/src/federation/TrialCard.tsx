@@ -47,6 +47,9 @@ export function TrialCard({
       ? `${trial.distance} ${trial.distanceUnits ?? ""}`.trim()
       : "";
 
+  // See the mark below, and the Matching Score beside it.
+  const notEligible = trial.matchingType === "not_eligible";
+
   const handleSelect = () => onSelect?.(trial);
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!onSelect) return;
@@ -80,6 +83,18 @@ export function TrialCard({
             {trial.studyId ? (
               <span className="exact-card__studyid">{trial.studyId}</span>
             ) : null}
+            {/* Only the state tabs can ever paint this. The corpus search
+                drops a trial the patient no longer qualifies for, so
+                `not_eligible` never reaches a card there; the saved-ids
+                path keeps it, because a trial the reader bookmarked
+                themselves should not vanish from the tab whose badge
+                counts it (#568). The hedge is the detail page's — the
+                matcher answers over mapped attributes, not a clinician. */}
+            {notEligible ? (
+              <p className="exact-card__mismatch">
+                You may not meet this trial's eligibility criteria
+              </p>
+            ) : null}
 
             <div className="exact-card__fields">
               <Field label="Location" value={asText(trial.location)} collapsible />
@@ -98,6 +113,14 @@ export function TrialCard({
           </div>
 
           <div className="exact-card__scores">
+            {/* No special case for a marked row. The server sends
+                `matchScore: 0` with `not_eligible` — the pair the matcher
+                returns for that verdict, and the one the detail page this
+                card opens shows for the same trial. Without that the score
+                was the raw SQL annotation, which counts criteria it could
+                EVALUATE and never compares values, so it read 100 beside the
+                mismatch line. Guarding it a second time here would put the
+                same judgement in two places and let them drift. */}
             <ScorePill
               score={trial.matchScore}
               label="Matching Score"

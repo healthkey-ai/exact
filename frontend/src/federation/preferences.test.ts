@@ -20,20 +20,25 @@ import type { FilterState } from "./types";
 
 /** A transport that lets the test decide when each request completes. */
 function controllable() {
-  const calls: Array<{ kind: "save" | "reset"; value?: FilterState }> = [];
+  const calls: Array<{
+    kind: "save" | "reset";
+    value?: FilterState;
+    askedBy?: string | undefined;
+  }> = [];
   const resolvers: Array<() => void> = [];
   const hold = () =>
     new Promise<void>((resolve) => {
       resolvers.push(resolve);
     });
   const transport: PreferenceTransport = {
+    forget: () => {},
     get: async () => ({}),
     save: (value) => {
       calls.push({ kind: "save", value });
       return hold();
     },
-    reset: () => {
-      calls.push({ kind: "reset" });
+    reset: (askedBy) => {
+      calls.push({ kind: "reset", askedBy });
       return hold();
     },
   };
@@ -107,7 +112,64 @@ describe("PreferenceWriter", () => {
 
     w.save({ distance: 1 });
     w.reset();
-    expect(t.calls).toEqual([{ kind: "reset" }]);
+    expect(t.calls).toEqual([{ kind: "reset", askedBy: undefined }]);
+  });
+
+  it("hands the transport the reader who PRESSED reset, not whoever is signed in at the send", async () => {
+    // #613. This queue already compared the two and refused a mismatch, but
+    // the transport below it had no way to know the difference: everything it
+    // can see describes whoever is signed in when the request goes out, and
+    // that is the value in question. So the click-time reader travels with
+    // the request.
+    //
+    // The gap between the two is real, not theoretical — a reset is queued
+    // behind whatever write is in flight, and that write is a full round
+    // trip. Measured on the generated harness: a reset asked by `one` emptied
+    // `three`'s row.
+    // The CACHED reading, which is what the click-time capture uses: it only
+    // moves when something fetches a token, so it can name a reader who has
+    // already gone.
+    let cached = "sub:iss|one";
+    // The ASKED answer, which is what the send-time check uses. It still says
+    // `two`, because a token is fetched only when something asks the host for
+    // one and nothing has since. So this queue's own guard — the #583 check,
+    // which works — sees `two` on both sides and lets the reset through.
+    //
+    // That is not a hole in the test, it is the shape of the bug: the queue
+    // is the LAST thing that knows who pressed, and it cannot see past its own
+    // ask. The transport asks again and is told otherwise.
+    let asked = "sub:iss|one";
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => cached,
+      identityNow: () => asked,
+    });
+
+    // A save goes on the wire and the account changes while it is there.
+    w.save({ distance: 1 });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    cached = "sub:iss|two";
+    asked = "sub:iss|two";
+    // `two` presses Reset…
+    w.reset();
+    const askedBy = cached;
+    // …and the host has moved on to `three` since, without having been asked.
+    // A token is fetched only when something asks for one, and the reset in
+    // flight is waiting on the request it has not issued yet — so every
+    // reading this queue can take still says `two`.
+    cached = "sub:iss|three";
+
+    await t.settle();
+    await t.settle();
+
+    const resetCall = t.calls.find((c) => c.kind === "reset");
+    // The queue's own guard let it through, so the reset really was sent.
+    expect(resetCall).toBeDefined();
+    // And it carries `two` — the reader who pressed. Not `sub:iss|three`,
+    // which is whoever is signed in at the send and precisely the value the
+    // transport must not be left to compare on its own.
+    expect(askedBy).toBe("sub:iss|two");
+    expect(resetCall?.askedBy).toBe("sub:iss|two");
   });
 
   it("drops a save that was waiting behind a reset", async () => {
@@ -170,6 +232,7 @@ describe("PreferenceWriter", () => {
   it("reports a failed write instead of throwing", async () => {
     const onError = vi.fn();
     const transport: PreferenceTransport = {
+      forget: () => {},
       get: async () => ({}),
       save: async () => {
         throw new Error("503");
@@ -189,6 +252,7 @@ describe("PreferenceWriter", () => {
     const seen: FilterState[] = [];
     let fail = true;
     const transport: PreferenceTransport = {
+      forget: () => {},
       get: async () => ({}),
       save: async (filters) => {
         seen.push(filters);
@@ -530,6 +594,7 @@ describe("PreferenceWriter — a transport that throws synchronously", () => {
     const onSuccess = vi.fn();
     const w = new PreferenceWriter(
       {
+        forget: () => {},
         get: async () => ({}),
         save: () => {
           throw new Error("no client");
@@ -683,6 +748,7 @@ describe("PreferenceWriter — recovering from a failed write", () => {
     let fail = true;
     const w = new PreferenceWriter(
       {
+        forget: () => {},
         get: async () => ({}),
         save: async () => {
           if (fail) {
@@ -844,6 +910,32 @@ describe("adapterPreferences, conditionally", () => {
     await t.save({ distance: 50 });
 
     expect(a.writes[0].precondition).toEqual({ kind: "ifNoneMatch" });
+  });
+
+  it("re-reads once told the row was written by another route", async () => {
+    // The weights wizard records "this reader has been asked" as a COLUMN on
+    // this row, through `upsert`, not through this transport. That moves
+    // `updated_at` — which is the tag — so the cached one is stale from that
+    // moment and the next save here is refused.
+    const a = versionedAdapter({ sponsor: "Acme" }, '"v0"');
+    const t = adapterPreferences(a.methods);
+    await t.get();
+    await t.save({ distance: 50 });
+    a.elsewhere({ sponsor: "Acme", distance: 50 }, '"afterTheFlag"');
+
+    t.forget();
+    const writesBefore = a.writes.length;
+    await t.save({ distance: 60 });
+
+    // ONE attempt, not a refusal and a retry — which is the whole saving, and
+    // the only thing that distinguishes this from doing nothing: the recovery
+    // path reaches the same tag either way, just two round trips later, and
+    // in a second tab it can drop the edit instead.
+    expect(a.writes.length - writesBefore).toBe(1);
+    expect(a.writes.at(-1)!.precondition).toEqual({
+      kind: "ifMatch",
+      version: '"afterTheFlag"',
+    });
   });
 
   it("quotes the version it read on every later write", async () => {
@@ -1551,5 +1643,464 @@ describe("adapterPreferences, conditionally", () => {
     await t.save({ distance: 50 });
 
     expect(saved[0]).toEqual({ sponsor: "Acme", distance: 50 });
+  });
+});
+
+describe("PreferenceWriter — a write that outlived the reader who made it (#583)", () => {
+  // Same fact as `patientWriter`: EXACT keys the row on the bearer token, so
+  // a payload sent under somebody else's credential lands in their row. The
+  // saved-filters queue is simpler — one whole value, last-write-wins — so
+  // there is nothing to partition; a write either belongs to whoever is
+  // signed in at send time or it does not go.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const settleAll = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+
+  it("does not save a filter chosen by somebody else", async () => {
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two"; // the credential swaps during the debounce
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+
+    expect(t.calls).toEqual([]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0][0] as { name: string }).name).toBe("IdentityChanged");
+  });
+
+  it("does not clear somebody else's row when a Reset outlives its reader", async () => {
+    // A reset is not a lesser write: it EMPTIES the row. Landing in the wrong
+    // one destroys a saved search rather than merely adding to it, so the
+    // click captures the identity exactly as a keystroke does.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    // Held behind an in-flight save so the reset waits in `pending` and is
+    // run later, which is where the captured value has to survive to.
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+
+    w.reset();
+    who = "sub:iss|two";
+    await t.settle();
+    await settleAll();
+
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("does not wedge the queue behind a stranded write", async () => {
+    // The stranded write must not take the queue with it: the new reader is
+    // entitled to save their own filters immediately afterwards. This is why
+    // the refusal goes through the same tail as every other failure.
+    const t = controllable();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError: () => {} });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+    expect(t.calls).toEqual([]);
+
+    // The new reader's own edit goes out normally.
+    w.save({ country: "CA" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "CA" } }]);
+  });
+
+  it("keeps a queued save under the reader who made it, not the one who flushes", async () => {
+    // A save that waits in `pending` behind an in-flight request is sent from
+    // the tail, and it must still be compared against the identity it was
+    // MADE under. Storing only the value would let the queue re-attribute it
+    // to whoever happens to be signed in when the wire clears.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    expect(t.calls).toHaveLength(1); // on the wire
+
+    w.save({ country: "US", distance: 50 }); // queued behind it, by user one
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    who = "sub:iss|two";
+    await t.settle();
+    await settleAll();
+
+    expect(t.calls).toHaveLength(1); // the queued one never left
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("lets a rotated credential through", async () => {
+    const t = controllable();
+    const onError = vi.fn();
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => "sub:iss|one",
+      onError,
+    });
+
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("does nothing at all when nobody told it who is signed in", async () => {
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport);
+
+    w.save({ country: "US" });
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await settleAll();
+
+    expect(t.calls).toEqual([{ kind: "save", value: { country: "US" } }]);
+  });
+});
+
+describe("PreferenceWriter — the credential is read afresh at send (#583)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("does not trust a cache that nothing refreshed", async () => {
+    // The cached reading only changes when somebody fetches a token, and
+    // between an edit and its flush there may be no request at all. Against
+    // the cache alone the swap below is invisible and the write goes out
+    // under the new credential — which was the state of the first version of
+    // this guard, measured.
+    const t = controllable();
+    const onError = vi.fn();
+    const cached = "sub:iss|one"; // never updated, as in the failing shape
+    let current = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, {
+      identity: () => cached,
+      identityNow: async () => current,
+      onError,
+    });
+
+    w.save({ country: "US" });
+    current = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(t.calls).toEqual([]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+
+  it("still sends in the same task when the reader answers synchronously", async () => {
+    // A contract this queue already had: `reset` jumps the debounce, and a
+    // caller that advances its timers and reads `calls` is entitled to see
+    // the request. Awaiting unconditionally moved every send a microtask
+    // later and broke nine tests in this file.
+    const t = controllable();
+    const w = new PreferenceWriter(t.transport, { identity: () => "sub:iss|one" });
+
+    w.reset();
+    expect(t.calls).toEqual([{ kind: "reset", askedBy: "sub:iss|one" }]);
+  });
+});
+
+describe("PreferenceWriter — only the cached reader (#583)", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("falls back to it rather than to nothing", async () => {
+    // Same reachable combination as the patient queue, same reason: a reader
+    // that always answers `undefined` reads as "unknown", which is a match,
+    // so the guard would be silently off.
+    const t = controllable();
+    const onError = vi.fn();
+    let who = "sub:iss|one";
+    const w = new PreferenceWriter(t.transport, { identity: () => who, onError });
+
+    w.save({ country: "US" });
+    who = "sub:iss|two";
+    vi.advanceTimersByTime(FILTER_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(t.calls).toEqual([]);
+    expect(
+      onError.mock.calls.some((c) => (c[0] as { name?: string })?.name === "IdentityChanged"),
+    ).toBe(true);
+  });
+});
+
+describe("adapterPreferences — a belief belongs to the reader it was read for (#603)", () => {
+  // The transport caches what the server holds, so a save can send the
+  // reader's payload merged over it — without that, a partial payload
+  // replaces the row and everything the reader did not submit is gone.
+  //
+  // Which row it is caching depends on the credential. In the shapes #583
+  // measured, the account changes and no key moves, so the transport
+  // survives the swap holding the PREVIOUS reader's filters, and the next
+  // reader's first save merges over them.
+  //
+  // #583's own guard cannot see this: that one compares the credential a
+  // write was queued under against the one it is sent under, and here they
+  // agree. What is wrong is the merge base.
+  function fakeRow() {
+    const saved: Array<Record<string, unknown>> = [];
+    const reads: string[] = [];
+    let row: Record<string, unknown> = {};
+    return {
+      saved,
+      reads,
+      put: (v: Record<string, unknown>) => {
+        row = v;
+      },
+      methods: {
+        getPreferences: async () => {
+          reads.push("get");
+          return row as never;
+        },
+        savePreferences: async (f: never) => {
+          saved.push(f as Record<string, unknown>);
+          row = f as Record<string, unknown>;
+        },
+        resetPreferences: async () => {
+          row = {};
+        },
+      },
+    };
+  }
+
+  it("does not merge one reader's filters into the next reader's row", async () => {
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    const t = adapterPreferences(a.methods, () => who, async () => who);
+
+    // Reader one's row, read and cached.
+    a.put({ country: "US", distance: 50 });
+    expect(await t.get()).toEqual({ country: "US", distance: 50 });
+
+    // The account changes with nothing signalled, and the new reader's row
+    // holds something else.
+    who = "sub:iss|two";
+    a.put({ country: "CA" });
+    await t.save({ distance: 100 });
+
+    // The payload is two's row plus two's edit. One's `country: US` must not
+    // be in it — that is somebody else's saved search.
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
+    expect(a.saved.at(-1)).not.toHaveProperty("country", "US");
+  });
+
+  it("re-reads for the new reader rather than writing blind", async () => {
+    // Forgetting is only half: `seeded` has to go with it, or the transport
+    // believes an empty row and replaces the new reader's filters with the
+    // one key they touched.
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    const t = adapterPreferences(a.methods, () => who, async () => who);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    who = "sub:iss|two";
+    a.put({ country: "CA", distance: 50 });
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBeGreaterThan(before);
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
+  });
+
+  it("keeps the cache across a token refresh, which is the common case", async () => {
+    // Tokens rotate hourly. Dropping the cache on every rotation would cost
+    // a read per save for every reader, all day, to protect against a swap
+    // that is rare — and `fingerprintOf` exists precisely so a refresh is
+    // not a change.
+    //
+    // BOTH halves of the reader contract, where this used to pass only
+    // the cached one. That matters because the single read asserted here
+    // is what the full contract buys: a host that cannot be asked cannot
+    // tell a rotation from a swap at all, so it gets no guard and no
+    // extra reads either — pinned by `does not guard, and does not
+    // re-read, a host that cannot be asked`, below.
+    const a = fakeRow();
+    const t = adapterPreferences(a.methods, () => "sub:iss|one", () => "sub:iss|one");
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("keeps the cache when nobody can say who is signed in", async () => {
+    // The local no-auth stand, and any deployment behind a gateway that
+    // injects the header. Re-reading on every call would slow down exactly
+    // the host this guard can do nothing for.
+    const a = fakeRow();
+    const t = adapterPreferences(a.methods, () => undefined);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("does nothing at all when nobody told it who is signed in", async () => {
+    // The default, and every caller that has not been wired. Written as a
+    // swap that is NOT noticed, because the merge assertion alone passed
+    // both with the change reverted and with the guard forced to fire on
+    // every call — it measured neither direction.
+    const a = fakeRow();
+    const t = adapterPreferences(a.methods); // no identity reader
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    // Whatever the credential is doing, this transport was not told and
+    // must behave exactly as it did: no re-read, and the cache still used.
+    a.put({ country: "CA" });
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("does not let a read issued for the old reader seed the new one", async () => {
+    // The generation bump, and it has to be timed to mean anything. If the
+    // old read RESOLVES before the swap it has already seeded, and the
+    // clear alone covers it — the first version of this test was arranged
+    // that way and passed with the bump removed. What the bump is for is a
+    // read that is still in the air when the new reader's save has already
+    // cleared the cache: it resolves afterwards holding the PREVIOUS
+    // reader's row, and must not seed from it.
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    let releaseFirst: () => void = () => {};
+    const firstOut = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let call = 0;
+    const slow = {
+      ...a.methods,
+      getPreferences: async () => {
+        call += 1;
+        a.reads.push("get");
+        if (call === 1) {
+          await firstOut;
+          return { country: "US" } as never;
+        }
+        return { country: "CA" } as never;
+      },
+    };
+    const t = adapterPreferences(slow, () => who, async () => who);
+
+    const inFlight = t.get();
+    await Promise.resolve(); // the read is out, issued for reader one
+    who = "sub:iss|two";
+
+    // The new reader saves. It serialises behind the read already in
+    // flight, which lands holding reader ONE's row — and that read is now
+    // DROPPED rather than adopted, because the reader it went out for is no
+    // longer the one signed in (`stillTheirs`). Nothing is seeded, so this
+    // save takes the re-read path and builds against reader TWO's own row.
+    //
+    // THE EXPECTATION CHANGED HERE, and deliberately. It used to be that
+    // the read seeded, was stamped as reader one's, and the post-await
+    // check refused the save — costing the reader an edit to protect
+    // somebody else's row. Dropping the read instead protects the same row
+    // and costs nothing: the edit lands where it belongs on the first
+    // attempt. The refusal still exists for the case it is the only answer
+    // to — a swap after the payload was composed — and
+    // `preferences.whoseRequest.test.ts` pins the other half.
+    const saving = t.save({ distance: 100 });
+    await Promise.resolve();
+    releaseFirst();
+    await inFlight;
+    await saving;
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 100 });
+    // The whole point: nothing of reader one's crossed over.
+    expect(a.saved.at(-1)).not.toHaveProperty("country", "US");
+
+    // And the next one goes the same way.
+    await t.save({ distance: 200 });
+    expect(a.saved.at(-1)).toEqual({ country: "CA", distance: 200 });
+  });
+
+  it("does not guard, and does not re-read, a host that cannot be asked", async () => {
+    // THIS TEST REPLACES its opposite, twice over, and the history is the
+    // point of keeping it.
+    //
+    // It first asserted that a cache stamped "unknown" survives the
+    // identity becoming known — which was the hole the mount defect went
+    // through. It was then changed to assert the reverse, re-reading to be
+    // safe. Both were attempts to half-protect a host that supplies
+    // `credentialIdentity` and not `credentialIdentityNow`, and half was
+    // the wrong amount: measured, that shape leaked in full anyway,
+    // because the transport decided it could ask by looking at whether an
+    // argument was passed and `hooks.ts` always passed one.
+    //
+    // The decision now is that the shape is not supported. Asking means
+    // asking; a host that cannot be asked gets no guard, pays for no extra
+    // reads, and `hooks.ts` reports the missing prop as missing instead of
+    // substituting the cache for it. What is asserted here is that "off"
+    // is all that happens — no refusals, no re-reads, the reader's own row
+    // loaded and merged as it always was.
+    const a = fakeRow();
+    let who: string | undefined = undefined;
+    const t = adapterPreferences(a.methods, () => who);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    who = "sub:iss|one";
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
+  });
+
+  it("does not re-read for a rotated token, which is what `sameIdentity` is for", async () => {
+    // The case the test above used to be standing in for, pinned properly:
+    // a STAMPED cache meeting the same reader again. Firebase hands out a
+    // fresh JWT about once an hour, and a strict comparison would throw
+    // away a good cache — one wasted read per reader, per hour.
+    const a = fakeRow();
+    let who = "sub:iss|one";
+    const t = adapterPreferences(a.methods, () => who, () => who);
+    a.put({ country: "US" });
+    await t.get();
+    const before = a.reads.length;
+
+    // Same person, a credential the host has since refreshed. The
+    // fingerprint does not move, so nothing here should notice.
+    who = "sub:iss|one";
+    await t.save({ distance: 100 });
+
+    expect(a.reads.length).toBe(before);
+    expect(a.saved.at(-1)).toEqual({ country: "US", distance: 100 });
   });
 });

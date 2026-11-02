@@ -23,6 +23,7 @@
 import { sameValue } from "./filters";
 import { PreconditionFailed } from "./state";
 import type { Precondition, TrialPreferenceStore } from "./state";
+import { COULD_NOT_TELL, IdentityChanged, sameIdentity } from "./identityFingerprint";
 import type { FilterState } from "./types";
 
 /** The preference half, which is now its own interface: `TrialPreferenceStore`
@@ -41,7 +42,36 @@ export const FILTER_DEBOUNCE_MS = 400;
 export interface PreferenceTransport {
   get(): Promise<FilterState>;
   save(filters: FilterState): Promise<void>;
-  reset(): Promise<void>;
+  /** `askedBy` — who pressed Reset, read from the credential at the CLICK.
+   *
+   *  Required, and it is the one thing the transport cannot work out for
+   *  itself. Everything else on this interface is answered from the cache,
+   *  which describes whoever is signed in *now*; but "now" is precisely what
+   *  may have moved between the click and the request, and the difference
+   *  between those two is the whole question. A transport that had to guess
+   *  would be comparing the arriving reader against himself — the exact
+   *  mistake that cost round 2 of #603.
+   *
+   *  Omitting it means "nobody in particular", which under `sameIdentity`
+   *  matches everybody and so guards nothing. That is the honest way for a
+   *  host with no credentials to be here, and it is why this is not optional
+   *  in spirit even though the type permits `undefined`. */
+  reset(askedBy?: string | undefined): Promise<void>;
+  /** Forget the cached ETag, because somebody wrote this row by another
+   *  route.
+   *
+   *  The weights wizard records "this reader has been asked" as a column on
+   *  the same row, through `upsert`, not through this transport. That bumps
+   *  `updated_at` — which IS the tag — so the next save here quotes one the
+   *  server has moved past and is refused. The refusal is survivable (re-read,
+   *  re-apply, retry once) but it is two extra round trips on every save
+   *  afterwards, and a second tab on the same patient can turn the retry into
+   *  a dropped edit. Unknown is the truthful state and it costs one read.
+   *
+   *  Only the TAG. The row's `preferences` payload is untouched by that write,
+   *  so `stored` is still right and re-reading it would be the round trip
+   *  this is trying to make cheap. */
+  forget(): void;
 }
 
 /** PROMOP, through the host-supplied state adapter.
@@ -73,6 +103,35 @@ export interface PreferenceTransport {
  */
 export function adapterPreferences(
   state: PreferenceMethods,
+  /** Who the credential names, right now (`identityFingerprint.ts`).
+   *
+   *  A BELIEF ABOUT A ROW BELONGS TO THE READER IT WAS READ FOR. Everything
+   *  cached below — `stored`, `believed`, `version` — describes one row, and
+   *  which row that is depends on the credential. When the credential names
+   *  somebody else, all three describe a row this transport is no longer
+   *  writing to, and the next save merges the previous reader's filters into
+   *  the new reader's row (#603).
+   *
+   *  #583's guard cannot see this. It compares the credential a write was
+   *  QUEUED under against the one it is SENT under, and here the two agree:
+   *  the new reader queued and sent their own edit. What is wrong is the
+   *  merge BASE, not the attribution.
+   *
+   *  Nothing else can see it either. The transport is rebuilt when the
+   *  hook's key moves, and #583 measured four shapes where the identity
+   *  changes and no key does — nothing in the React tree learns anything.
+   *
+   *  Omitted means no check, and the caller behaves as it did. */
+  identity?: () => string | undefined,
+  /** The same question, ASKED rather than remembered — see
+   *  `credentialIdentityNow` in `types.ts`.
+   *
+   *  Required for the guard to work at all on the one read that matters
+   *  most. The cached reading above is written by the client's own
+   *  interceptor, so at mount it is still unknown: the seeding read IS the
+   *  first request to fetch a token. Round 2 of the #603 review measured
+   *  eleven mount stamps and every one of them was unknown at issue time. */
+  identityNow?: () => Promise<string | undefined> | string | undefined,
 ): PreferenceTransport {
   // What the server is believed to hold — seeded by `get`, kept current by
   // every successful write. Under a wholesale replace this is not an
@@ -96,6 +155,9 @@ export function adapterPreferences(
   // `stored` was seeded — and under a wholesale replace that payload IS the
   // row, so everything they had saved would go with it.
   let firstRead: Promise<unknown> | null = null;
+  // Whose belief the cache is. Written ONLY by `nowBelievedFor`, which is
+  // also the only thing that sets `seeded` — see the rule stated there.
+  let believedFor: string | undefined = undefined;
   // The row's entity-tag as last seen. Three states, and collapsing any two
   // of them produces a wrong precondition:
   //
@@ -166,18 +228,288 @@ export function adapterPreferences(
   // baseline is excluded from what gets saved at all. Representing "the reader
   // cleared the host's value" would need a sentinel that survives reads, and
   // that is a product decision about whose scope wins, not a defect.
+  /** Drop everything if the credential has changed hands.
+   *
+   *  `sameIdentity` rather than `!==`, for the two reasons it exists: a
+   *  rotated token is the same reader, and an unknown identity on either
+   *  side is not a mismatch — a host with no credential at all would
+   *  otherwise re-read on every call, which is the deployment this guard
+   *  is least able to help and most able to slow down.
+   *
+   *  Everything, not just the tag. `forget()` above clears the tag alone
+   *  because the row's payload is untouched by the write that moved it;
+   *  here the row itself is a different one, so `stored` and `believed` are
+   *  about somebody else and `generation` has to move so a read already in
+   *  flight cannot seed the new reader from the old one's row.
+   *
+   *  Read synchronously, from the cached fingerprint rather than by
+   *  fetching a token. That is sound because of the ORDER: `PreferenceWriter`
+   *  does its own send-time check immediately before calling `save` here,
+   *  and that check fetches a token and refreshes the cache. For `get` there
+   *  is no such guarantee and none is needed — a stale answer there costs
+   *  one extra read later, not a wrong row.
+   */
+  const stillTheSameReader = () => {
+    if (belongsTo(believedFor, identity?.())) return;
+    stored = {};
+    believed = {};
+    seeded = false;
+    version = undefined;
+    firstRead = null;
+    // Cleared rather than set to the new reader: nothing is believed yet,
+    // and the read that seeds it is what will say whose it is.
+    believedFor = undefined;
+  };
+
+  /** WHO A REQUEST IS ABOUT TO GO OUT AS, asked rather than remembered.
+   *
+   *  The one question the two previous attempts at this guard could not
+   *  answer, and the reason each of them was wrong in its own way:
+   *
+   *    * stamped from the cached reading BEFORE the read — unknown at
+   *      mount, because the cache is written by the client's interceptor
+   *      and the seeding read is the first request to fetch a token. The
+   *      cache was then never stamped and the guard was off for a reader
+   *      who loads their filters and never saves.
+   *    * stamped from the cached reading AFTER the read — by then it names
+   *      whoever the host has swapped in since. A read issued as one and
+   *      resolving after the swap stamped the cache with TWO while holding
+   *      ONE's row, every later check agreed, and the merge went ahead.
+   *      Measured end to end through the real bridge, round 2.
+   *
+   *  Both spellings share a premise: that the identity of a request can be
+   *  recovered by inspecting a cache some OTHER request may have moved. It
+   *  cannot. So it is established here, awaited before the request is
+   *  issued, and carried by the caller to the place that records the
+   *  belief. */
+  const whoThisRequestIsFor = async (): Promise<string | undefined> => {
+    try {
+      // NO FALLBACK to the cached reader, and that is the correction this
+      // whole round is about. `identityNow` absent means the host cannot
+      // be asked; answering from the cache instead makes "we asked" and
+      // "we looked at a value somebody else may have moved" the same
+      // thing, which is the premise all three defects here shared. With
+      // no fallback the answer is honestly unknown, the guard is off for
+      // that host, and nothing pretends otherwise.
+      return await identityNow?.();
+    } catch {
+      // `COULD_NOT_TELL`, NOT `undefined`, and the difference is a P1.
+      // `undefined` here means "nothing to guard", which `sameIdentity`
+      // matches against everybody — so one rejecting `getToken` stamped
+      // the cache with a value that fitted the next reader too, and the
+      // first reader's row became their merge base. Measured on the
+      // deployed wiring; see the constant's own note.
+      //
+      // It must not REJECT: this promise is started beside the request and
+      // awaited after it, so throwing here would leave the read unhandled.
+      return COULD_NOT_TELL;
+    }
+  };
+
+  /** Record a belief about the row, and whose row it is, TOGETHER.
+   *
+   *  The only thing that sets either, and that is the invariant: `seeded`
+   *  without a stamp switches the guard off for good, because
+   *  `sameIdentity(undefined, anyone)` is true. `reset()` used to reach
+   *  exactly that state — it clears `believedFor` on a swap and then claims
+   *  `seeded` on its way out — and every reader after it was waved through.
+   *
+   *  `who` is what `whoThisRequestIsFor()` answered BEFORE the request that
+   *  produced this belief. Unknown is allowed and means the guard is off
+   *  for this cache: a host with no credentials has nothing to guard, and
+   *  an honest "we could not tell" is not the same as a confident wrong
+   *  name. What is not allowed is filling it in from anywhere else. */
+  const nowBelievedFor = (who: string | undefined) => {
+    seeded = true;
+    believedFor = who;
+  };
+
+  /** Whether something attributed to `whose` may be used for `now`.
+   *
+   *  Plain `sameIdentity`, including its carve-out: unknown on either side
+   *  is a match. An earlier revision made the unknowns asymmetric so that
+   *  "we could not attribute this" would refuse a reader who CAN be named.
+   *  That existed for one host shape — `credentialIdentity` supplied and
+   *  `credentialIdentityNow` not — and that shape is no longer supported
+   *  (see `whoThisRequestIsFor`). With it gone, "unknown" means only "this
+   *  deployment has no credentials", which has nothing to guard and must
+   *  not be made to pay; the asymmetric rule then had no reachable case
+   *  except to refuse the reader's own saved filters on a plain page load.
+   */
+  const belongsTo = (whose: string | undefined, now: string | undefined) =>
+    sameIdentity(whose, now);
+
+  /** Whether a read that went out for `issuedFor` may still be adopted.
+   *
+   *  A read carries what the server held for whoever its request named; if
+   *  the host has signed somebody else in since, that row is a stranger's
+   *  and the answer is to drop it on the floor rather than cache it OR
+   *  hand it back.
+   *
+   *  This replaces a counter (`readerEra`) that moved whenever the cache
+   *  was dropped. That is the wrong clock: it moves on the first read of
+   *  every host that has credentials at all, so gating on it discarded the
+   *  seeding read or let a stale one through depending on which side of
+   *  the bump it was captured. Both spellings were tried; both were dead
+   *  under ablation, twice, by two different reviewers. The question is
+   *  not "how many times has the cache changed hands" but "is this row's
+   *  reader still here", and that is answerable directly. */
+  const stillTheirs = async (issuedFor: string | undefined) => {
+    // ASKED, not read off the cache. The cache was last written when this
+    // read's own request went out, so consulting it here compares the
+    // issue-time answer with itself and agrees every time — measured, and
+    // the row went to the arriving reader anyway. Asking costs one
+    // `getToken`, which the host serves from its own cache, and it is the
+    // only thing that can see a swap that happened while the read was in
+    // the air.
+    //
+    // Safe to await here in a way it is not before a request: the read has
+    // already landed, so nothing can overtake it.
+    return belongsTo(issuedFor, await whoThisRequestIsFor());
+  };
+
+
+  /** Refuse to write if the row this payload was composed for is no longer
+   *  the row a write would land in.
+   *
+   *  CALLED IMMEDIATELY BEFORE EVERY WRITE, not once near the top of
+   *  `save`. One check up there covers the synchronous entry and nothing
+   *  else: below it are the first read, the re-read when nothing was
+   *  seeded, the unknown-version refresh and the 412 recovery re-read —
+   *  four round trips, each one a window in which the host can swap the
+   *  account. Measured in that window: reader one's edit went out under
+   *  reader two's credential and `onSuccess` reported it as saved.
+   *
+   *  Refused rather than re-based on the arriving reader's row: the payload
+   *  was composed for a panel showing the PREVIOUS reader's filters, so
+   *  re-basing would send those into the new row, which is the whole of
+   *  #603. The reader loses this one edit, can make it again, and is told
+   *  — `PreferenceWriter` surfaces it through `onError`.
+   *
+   *  ASKS AFRESH rather than reading the cached fingerprint. An earlier
+   *  version read the cache and argued that every call site sat just after
+   *  a request through the same client, so the cache had been refreshed by
+   *  it. That argument is true of the two writes below a read and false of
+   *  the first write of a save whose cache was already seeded — nothing has
+   *  spoken to the server since the swap, so the cache still names the
+   *  reader who has gone. The transport was then correct only in the
+   *  company of `PreferenceWriter`, which asks on its behalf.
+   *
+   *  Generated interleavings found it in seconds; the argument had survived
+   *  two reviews. A transport that is correct on its own is worth one token
+   *  read, which the host's `getToken` serves from its own cache anyway. */
+  const refuseIfTheReaderChanged = async () => {
+    if (belongsTo(believedFor, await whoThisRequestIsFor())) return;
+    stillTheSameReader();
+    throw new Error(
+      "the signed-in account changed while these filters were being saved",
+    );
+  };
+
+  /** Refuse a clear that would empty a row the reader did not ask to empty.
+   *
+   *  Separate from `refuseIfTheReaderChanged` because the two compare
+   *  DIFFERENT things. That one asks "is the row our cache describes still
+   *  ours?", which is right for a save — the payload was composed against
+   *  that cache, so the cache names the reader it belongs to. A clear has no
+   *  payload: the only question is whose panel the reader was looking at
+   *  when they pressed the button, and only the caller was in a position to
+   *  see that. So `askedBy` arrives from the click and `issuedFor` from the
+   *  ask that names the request about to go out.
+   *
+   *  `stillTheSameReader()` before the throw, as in every other refusal: the
+   *  belief we were about to act on describes a row that is not ours, and
+   *  leaving it in place is how the next write merges a stranger's filters
+   *  in. */
+  const refuseUnlessOurs = (askedBy: string | undefined, issuedFor: string | undefined) => {
+    if (belongsTo(askedBy, issuedFor)) return;
+    stillTheSameReader();
+    throw new Error(
+      "the signed-in account changed while these filters were being reset",
+    );
+  };
+
   return {
+    forget: () => {
+      // NOT `stillTheSameReader()`. This is called from the wizard's flag
+      // write, which is not serialised behind the save queue, and the
+      // forget's bump could land inside a save's refresh read — the save
+      // then abandoned quietly and `onSuccess` fired over a write that
+      // never happened. The next `get` or `save` does the identity check
+      // anyway; all this one owes is the tag.
+      version = undefined;
+    },
     get: async () => {
+      stillTheSameReader();
+      // BOTH STARTED IN THIS TICK, and that is load-bearing in both
+      // directions.
+      //
+      // The ask has to happen, because the cached fingerprint is written by
+      // the client's own interceptor and at mount it has never been written
+      // — this read is the first request to fetch a token. Stamping from
+      // the cache instead is what round 1 and round 2 of the review each
+      // got wrong in their own way.
+      //
+      // But the request must not WAIT for it. Awaiting the ask first
+      // delayed the read by a microtask, and a measured consequence
+      // followed: when the host swaps one store for another for the same
+      // patient, the previous writer's unmount flush goes through `live()`
+      // into the NEW store, and in that microtask it got there first. The
+      // read then came back holding what the flush had just written rather
+      // than the new store's own row (`savedFiltersRace.test.tsx`, the
+      // delivery control at the end of the Reset test).
+      //
+      // Issued together, the ask names whoever the request is going out as
+      // — both fetch the token in the same moment — and nothing is delayed.
+      const asking = (async () => whoThisRequestIsFor())();
+      const reading = versioning
+        ? versioning.read()
+        : (async () => ({
+            filters: (await state.getPreferences()) ?? {},
+            version: null as string | null,
+          }))();
+      // A handler NOW, not when it is awaited. `reading` is started beside
+      // the ask and awaited after it, and in that gap a rejection has
+      // nobody listening — Node reports an unhandled rejection even though
+      // the caller does catch `get()`. The original promise is still the
+      // one awaited below, so the failure is not swallowed, only
+      // acknowledged.
+      void reading.catch(() => undefined);
+      // THE RESET ERA IS READ HERE, synchronously, beside the request it
+      // describes. "This read predates the Reset" is a statement about when
+      // the read was ISSUED, so taking it after an await answers a different
+      // question: measured, `reset()` bumps synchronously and the reader's
+      // cleared filters came straight back.
+      //
+      // WHOSE read this is, by contrast, is not a clock at all: it is
+      // `issuedFor`, carried on the closure and checked against the reader
+      // when the row lands. See `stillTheirs`.
       const era = generation;
       const read = (async () => {
-        const fromServer = versioning
-          ? await versioning.read()
-          : { filters: (await state.getPreferences()) ?? {}, version: null };
+        const issuedFor = await asking;
+        // Now that the ask has refreshed what is knowable. The check at the
+        // top of `get` was taken against a cache that, at mount, had never
+        // been written.
+        stillTheSameReader();
+        const fromServer = await reading;
         const out: FilterState = {};
         for (const [k, v] of Object.entries(fromServer.filters ?? {})) {
           // A null is a key an older build cleared by writing one, not a set
           // value. Nothing writes them any more.
           if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
+        }
+        if (!(await stillTheirs(issuedFor))) {
+          // Not merely "do not cache it" — do not HAND IT BACK either. The
+          // caller paints what this resolves to into the panel (`hooks.ts`,
+          // the load effect), so returning the departed reader's row draws
+          // their saved search in front of the arriving one, whose next
+          // keystroke then sends the whole panel. Declining to seed while
+          // still returning it moved the leak one caller along.
+          //
+          // Nothing is seeded, so the arriving reader's first save takes
+          // `save`'s re-read path and builds against THEIR row. They lose
+          // nothing; the row they never saw is simply never adopted.
+          return {};
         }
         if (era === generation) {
           stored = { ...out };
@@ -189,8 +521,8 @@ export function adapterPreferences(
           // every one of them — a value, or a tombstone — and corrects the
           // record. Narrow that claim and narrow this alongside it.
           believed = { ...out };
-          seeded = true;
           version = fromServer.version;
+          nowBelievedFor(issuedFor);
         }
         return out;
       })();
@@ -198,6 +530,22 @@ export function adapterPreferences(
       return read;
     },
     save: async (filters) => {
+      stillTheSameReader();
+      // WHICH RESET ERA THIS SAVE BELONGS TO, taken before anything is
+      // awaited. Everything below — the first read, the re-read, three
+      // asks — is a window a Reset can land in, and a Reset is the newer
+      // intent: this payload describes a panel it has already cleared.
+      //
+      // The per-write checks further down are NOT enough, and the reason
+      // is worth stating because it cost a round. They capture
+      // `generation` after the awaits above, so a Reset that landed in one
+      // of those windows is already folded into what they compare — both
+      // agree, the write goes out quoting the tag Reset installed, the
+      // precondition passes, and the reader's cleared filters come back
+      // with nothing on `onError`. I had written in a test that the first
+      // ask was "far enough ahead of the write that the existing logic
+      // covers it". That was reasoning, not measurement, and it was wrong.
+      const saveEra = generation;
       // Serialised behind the first read — see `firstRead` above. A save that
       // overtakes it would build its payload against an empty `stored` and
       // replace the row with the one key the reader has touched.
@@ -205,17 +553,30 @@ export function adapterPreferences(
       if (!seeded) {
         // One more attempt, because a read that failed once may not fail
         // twice, and the alternative is losing the reader's edit.
+        //
+        // Asked alongside the read rather than before it, exactly as in
+        // `get` and for both of the reasons stated there.
+        const asking = (async () => whoThisRequestIsFor())();
+        // Through the versioning transport when there is one, so `stored`
+        // and `version` are seeded by the SAME read. Seeding only `stored`
+        // here left the version at "no row yet", and the next write then
+        // sent `If-None-Match: *` at a row that plainly exists — a
+        // guaranteed 412 and a wasted round trip, from the one place the
+        // two were filled in by different code.
+        const reading = versioning
+          ? versioning.read()
+          : (async () => ({
+              filters: (await state.getPreferences()) ?? {},
+              version: undefined,
+            }))();
+        // Same as in `get`: acknowledged now, awaited below.
+        void reading.catch(() => undefined);
+        // Beside the request, for the reason spelled out in `get`.
         const era = generation;
+        const issuedFor = await asking;
+        stillTheSameReader();
         try {
-          // Through the versioning transport when there is one, so `stored`
-          // and `version` are seeded by the SAME read. Seeding only `stored`
-          // here left the version at "no row yet", and the next write then
-          // sent `If-None-Match: *` at a row that plainly exists — a
-          // guaranteed 412 and a wasted round trip, from the one place the
-          // two were filled in by different code.
-          const fromServer = versioning
-            ? await versioning.read()
-            : { filters: (await state.getPreferences()) ?? {}, version: undefined };
+          const fromServer = await reading;
           const out: FilterState = {};
           for (const [k, v] of Object.entries(fromServer.filters ?? {})) {
             if (v !== null && v !== undefined) (out as Record<string, unknown>)[k] = v;
@@ -230,8 +591,8 @@ export function adapterPreferences(
             // `before[k]` is undefined, so "nothing to clear" — and the
             // reader's clear silently never fired.
             believed = { ...out };
-            seeded = true;
             version = fromServer.version;
+            nowBelievedFor(issuedFor);
           }
         } catch {
           // Still blind. Refusing costs the reader this one edit, which they
@@ -241,6 +602,19 @@ export function adapterPreferences(
           throw new Error("saved filters could not be read, so they were not overwritten");
         }
       }
+      // ASKED AGAIN, after the awaits above. The check at the top of `save`
+      // is taken synchronously, and everything since — the first read, the
+      // re-read when nothing was seeded — is one or two round trips during
+      // which the account can change. Refusing costs the reader this one
+      // edit, which they can make again and which `PreferenceWriter`
+      // reports through `onError`; writing costs somebody else their saved
+      // search. Refused rather than re-based on the new reader's row: the
+      // payload was composed for a panel showing the PREVIOUS reader's
+      // filters, so re-basing would send those into the new row, which is
+      // the whole of #603.
+      await refuseIfTheReaderChanged();
+      if (saveEra !== generation) return;
+
       // The reader's payload over what the server holds. A key they cleared is
       // present-and-`undefined` and drops out on the way through JSON; a key
       // they never saw survives.
@@ -310,6 +684,9 @@ export function adapterPreferences(
 
       if (!versioning) {
         const payload = merge(stored);
+        const era = generation;
+        await refuseIfTheReaderChanged();
+        if (era !== generation) return;
         await state.savePreferences(payload);
         // AFTER it resolves. Recording a payload that failed means the next
         // one is built against a row that does not exist.
@@ -372,11 +749,35 @@ export function adapterPreferences(
       // have built: the keys it omits are exactly the ones already equal to
       // what `stored` holds.
       const payload = mergeEdit(stored, edit);
+      // CAPTURED WITH THE PAYLOAD IT DESCRIBES, not read again at the
+      // write. `precondition()` reads `version`, and `forget()` sets that
+      // to `undefined` without touching `generation` — on purpose: it is
+      // called from the wizard's flag write, which is not serialised
+      // behind this queue. Evaluated after the await below, it therefore
+      // answers `{ kind: "none" }`, and a conditional write silently
+      // becomes an unconditional one: no `If-Match`, no 412, another tab's
+      // edit destroyed with nothing on `onError`.
+      //
+      // There was no await between the refresh and the write before this
+      // branch, so the window is one this change opened. Captured here,
+      // the worst case is a tag that has gone stale, which 412s and takes
+      // the recovery path below. Stale fails safe; absent fails open.
+      const sending = precondition();
       // The tag the refusal reported, kept for the recovery below.
       let refusedWith: string | null | undefined;
       const writeEra = generation;
+      // The unknown-version refresh above is a full round trip, and the
+      // reader can change inside it.
+      await refuseIfTheReaderChanged();
+      // AND the ask itself is a round trip, during which a Reset can land.
+      // The check after the write is too late: by then the pre-reset
+      // payload has gone out quoting the tag Reset installed, so the
+      // precondition PASSES and everything the reader cleared comes back.
+      // Every await before a write needs this in front of it, not only the
+      // ones that fetch.
+      if (writeEra !== generation) return;
       try {
-        const tag = normalise(await versioning.write(payload, precondition()));
+        const tag = normalise(await versioning.write(payload, sending));
         if (writeEra !== generation) {
           // A Reset landed while this write was on the wire. Recording its
           // payload would carry the reader's pre-reset filters forward into
@@ -417,9 +818,15 @@ export function adapterPreferences(
       // Only what changed, over what is there NOW. `merge(stored)` here
       // would re-assert the whole stale panel — see `edited` above.
       const retried = mergeEdit(stored, edit);
+      // Same capture, same reason, on the path that is walked least.
+      const sendingAgain = precondition();
       const retryEra = generation;
+      // Same again: the 412 recovery re-read is another round trip, and so
+      // is the ask inside the refusal.
+      await refuseIfTheReaderChanged();
+      if (retryEra !== generation) return;
       try {
-        const tag = normalise(await versioning.write(retried, precondition()));
+        const tag = normalise(await versioning.write(retried, sendingAgain));
         if (retryEra !== generation) {
           // A Reset landed while the retry was on the wire. Same reason as
           // the first write: recording this payload would carry the
@@ -448,8 +855,27 @@ export function adapterPreferences(
         );
       }
     },
-    reset: async () => {
+    reset: async (askedBy) => {
+      stillTheSameReader();
+      // Bumped SYNCHRONOUSLY, before anything is awaited. A read already in
+      // flight reads `generation` to decide whether Reset superseded it, and
+      // deferring the bump by even a microtask hands that read a window in
+      // which it still looks current.
+      //
+      // The bump does NOT drop `stored`/`believed`, and must not be moved to
+      // after the refusal below to make it tidier. A refused Reset has still
+      // retired everything issued before it — that part happened before the
+      // account changed, and a reader who edited and then found their account
+      // swapped has lost those edits whoever they went to.
       generation += 1;
+      // Asked beside the clear, never before it — `get` states both halves
+      // of that rule. This call establishes a belief ("the row is empty"),
+      // so it needs a stamp: without one, a reset following a swap cleared
+      // `believedFor` and then claimed `seeded` on its way out, leaving the
+      // cache seeded and unstamped. `sameIdentity(undefined, anyone)` is
+      // true, so every reader after that was waved through and the guard
+      // was off for the life of the transport.
+      const asking = (async () => whoThisRequestIsFor())();
       // `stored` cleared REGARDLESS of the outcome, which is the opposite of
       // what a merging endpoint would want. Under a replace, a `stored` still
       // full of the old values means the next save puts them all back — the
@@ -469,32 +895,77 @@ export function adapterPreferences(
       // Reset empties the panel as well, so the next save's delta is measured
       // against an empty one.
       believed = {};
-      seeded = knew;
+      // WHO THE CLEAR IS FOR, and the one refusal this path was missing.
+      //
+      // `askedBy` is the reader who pressed the button; `issuedFor` below is
+      // the reader the credential names when the request goes out. When they
+      // differ, the clear is about to empty somebody else's row, and under a
+      // wholesale replace that is the WHOLE row — not an edit they can make
+      // again, a wipe. Generated interleavings found this in seconds (#613,
+      // seed 16: a reset asked by `one` emptied `three`'s filters).
+      //
+      // WHY IT CANNOT BE ANSWERED FROM THE CACHE. `believedFor` is the
+      // obvious anchor and it is wrong twice over. Before anything has been
+      // read it is `undefined`, which `sameIdentity` matches against
+      // everybody — the guard silently off, which is seed 16. After a swap it
+      // names the ARRIVING reader, and comparing him with himself passes,
+      // which is seed 174: the cache said `two`, the credential said `two`,
+      // and the row that got emptied was still not the one `one` asked to
+      // clear. Nothing on this transport remembers who asked; only the
+      // caller, at the click, can know.
+      //
+      // SAFE TO AWAIT HERE, AND ONLY BECAUSE OF WHERE IT ENDS. `get` and
+      // `save` both refuse to wait before issuing, because a microtask of
+      // delay let a write from elsewhere land first — see `get`. Here the
+      // delay IS the check, and nothing is awaited between the answer
+      // arriving and the request leaving: the clear is issued in the same
+      // continuation. One more promise in between and the identity can move
+      // again, at which point `issuedFor` describes the past and the check
+      // has bought nothing.
+      const issuedFor = await asking;
+      refuseUnlessOurs(askedBy, issuedFor);
       if (!versioning) {
-        await state.resetPreferences();
-        seeded = true;
+        const clearing = state.resetPreferences();
+        void clearing.catch(() => undefined);
+        // Through the pair, so the stamp cannot drift away from the flag.
+        // Before the await as well as after: `knew` carries the previous
+        // answer forward, and a reset that FAILS must not leave the cache
+        // claiming to know an empty row it never wrote.
+        if (knew) nowBelievedFor(issuedFor);
+        else seeded = false;
+        await clearing;
+        nowBelievedFor(issuedFor);
         return;
       }
-      try {
-        // A reset with no known version is still worth sending: there is
-        // nothing to protect, since clearing is what a concurrent writer
-        // would lose anyway and the reader asked for it explicitly.
-        version = normalise(
-          await versioning.clear(
-            typeof knownVersion === "string"
-              ? { kind: "ifMatch", version: knownVersion }
-              : { kind: "none" },
-          ),
-        );
-      } catch (error) {
-        if (!PreconditionFailed.is(error)) throw error;
-        // The row moved under us. A reset does not need to preserve what it
-        // is about to delete, so clear unconditionally rather than spending
-        // a read to earn a tag we would only use to delete the row anyway —
-        // the reader's intent has not changed.
-        version = normalise(await versioning.clear({ kind: "none" }));
-      }
-      seeded = true;
+      // Issued in the continuation that took the answer, with nothing awaited
+      // in between — see the note on the refusal above.
+      const clearing = (async () => {
+        try {
+          // A reset with no known version is still worth sending: there is
+          // nothing to protect, since clearing is what a concurrent writer
+          // would lose anyway and the reader asked for it explicitly.
+          return normalise(
+            await versioning.clear(
+              typeof knownVersion === "string"
+                ? { kind: "ifMatch", version: knownVersion }
+                : { kind: "none" },
+            ),
+          );
+        } catch (error) {
+          if (!PreconditionFailed.is(error)) throw error;
+          // The row moved under us. A reset does not need to preserve what
+          // it is about to delete, so clear unconditionally rather than
+          // spending a read to earn a tag we would only use to delete the
+          // row anyway — the reader's intent has not changed.
+          return normalise(await versioning.clear({ kind: "none" }));
+        }
+      })();
+      // Same as in `get`.
+      void clearing.catch(() => undefined);
+      if (knew) nowBelievedFor(issuedFor);
+      else seeded = false;
+      version = await clearing;
+      nowBelievedFor(issuedFor);
     },
   };
 }
@@ -535,6 +1006,9 @@ export function localStoragePreferences(key: string): PreferenceTransport {
     }
   };
   return {
+    // Nothing to forget: this transport has no precondition, because there is
+    // no other writer to lose a race with.
+    forget: () => {},
     get: async () => {
       const store = storage();
       if (!store) return {};
@@ -566,7 +1040,14 @@ export function localStoragePreferences(key: string): PreferenceTransport {
         // reason to break the search that is already on screen.
       }
     },
-    reset: async () => {
+    // `askedBy` is accepted and ignored. This transport is keyed by PATIENT,
+    // not by credential, and holds no reader identity to compare: the row it
+    // empties is the one this browser wrote, which follows the reader to
+    // every device they sign in from. There is no stranger's row here, so
+    // there is nothing for the adapter's comparison to protect. The parameter
+    // exists because `PreferenceTransport` asks for it — the shape IS the
+    // guard, and a shape only some transports honour is not one.
+    reset: async (_askedBy?: string | undefined) => {
       try {
         storage()?.removeItem(storageKey);
       } catch {
@@ -594,12 +1075,18 @@ function hashKey(key: string): string {
  *  writing the old values back alongside the new edit.
  */
 interface Pending {
-  reset: boolean;
-  save: FilterState | null;
+  reset: { by: string | undefined } | null;
+  save: { value: FilterState; by: string | undefined } | null;
 }
 
-/** One unit of work for the queue. */
-type Write = { kind: "save"; value: FilterState } | { kind: "reset" };
+/** One unit of work for the queue.
+ *
+ *  `by` is who was signed in when the reader ASKED for it — at the keystroke
+ *  for a save, at the click for a reset — carried all the way to the send so
+ *  the two can be compared. See `identityFingerprint.ts` and #583. */
+type Write =
+  | { kind: "save"; value: FilterState; by: string | undefined }
+  | { kind: "reset"; by: string | undefined };
 
 export interface PreferenceWriterOptions {
   debounceMs?: number;
@@ -610,6 +1097,31 @@ export interface PreferenceWriterOptions {
    *  caller showing "couldn't save" has no way to learn that the NEXT write
    *  succeeded, and goes on saying it. */
   onSuccess?: () => void;
+  /** Who is signed in, RIGHT NOW, as a fingerprint
+   *  (`identityFingerprint.ts`).
+   *
+   *  Read when a write is asked for and again when it goes out; a write
+   *  whose two readings disagree is not sent. EXACT keys the saved-filters
+   *  row on the token, so sending it would write one reader's search into
+   *  another's row — #583.
+   *
+   *  Simpler here than in `patientWriter`: this queue carries one whole
+   *  value, last-write-wins, so there is nothing to partition. A stranded
+   *  write takes the existing failure path — reported, not retried, and
+   *  whatever is queued behind it still drains.
+   *
+   *  Omitted means no guard, and the caller behaves exactly as it did. */
+  identity?: () => string | undefined;
+  /** Who the credential names AT SEND TIME, read afresh.
+   *
+   *  The cached `identity` above is right for the capture — it is read on a
+   *  keystroke — but it only changes when somebody fetches a token, and
+   *  between an edit and its flush there may be no request at all. Compared
+   *  against the cache, a swap inside the debounce window is invisible: the
+   *  write passes and the transport then sends it under the new credential.
+   *  See `patientWriter.ts`, which carries the same pair and the same note
+   *  about the microsecond race that remains. */
+  identityNow?: () => Promise<string | undefined> | string | undefined;
 }
 
 /**
@@ -626,11 +1138,17 @@ export class PreferenceWriter {
   private readonly debounceMs: number;
   private readonly onError: (error: unknown) => void;
   private readonly onSuccess: () => void;
+  private readonly identity: () => string | undefined;
+  private readonly identityNow: () => Promise<string | undefined> | string | undefined;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private debounced: FilterState | null = null;
+  /** Who made the edit sitting in the debounce. Captured at the keystroke,
+   *  because that is the moment the reader chose the value; by the time the
+   *  timer fires, the account may not be theirs any more. */
+  private debouncedBy: string | undefined = undefined;
   private inFlight: Promise<void> | null = null;
-  private pending: Pending = { reset: false, save: null };
+  private pending: Pending = { reset: null, save: null };
   /** Bumped by `reset`. A write started under an older generation has its
    *  result ignored, and a queued one is dropped. */
   private generation = 0;
@@ -639,6 +1157,8 @@ export class PreferenceWriter {
     this.transport = transport;
     this.debounceMs = opts.debounceMs ?? FILTER_DEBOUNCE_MS;
     this.onSuccess = opts.onSuccess ?? (() => {});
+    this.identity = opts.identity ?? (() => undefined);
+    this.identityNow = opts.identityNow ?? (() => this.identity());
     this.onError =
       opts.onError ??
       ((error: unknown) => {
@@ -652,12 +1172,18 @@ export class PreferenceWriter {
   /** Persist these filters, eventually. */
   save(filters: FilterState): void {
     this.debounced = filters;
+    this.debouncedBy = this.identity();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
       const value = this.debounced;
+      const by = this.debouncedBy;
       this.debounced = null;
-      if (value !== null) this.enqueue({ kind: "save", value });
+      // Cleared with it. Nothing live reads the stale one — `flush` bails on
+      // a null value first, and `save` overwrites both — but the two are one
+      // fact and leaving half of it behind invites a reader to trust it.
+      this.debouncedBy = undefined;
+      if (value !== null) this.enqueue({ kind: "save", value, by });
     }, this.debounceMs);
   }
 
@@ -665,7 +1191,7 @@ export class PreferenceWriter {
   reset(): void {
     this.cancelDebounce();
     this.generation += 1;
-    this.enqueue({ kind: "reset" });
+    this.enqueue({ kind: "reset", by: this.identity() });
   }
 
   /** Send a pending debounced write immediately. For unmount: a filter
@@ -676,8 +1202,9 @@ export class PreferenceWriter {
     // Read before cancelling: `cancelDebounce` clears the pending value too,
     // so taking it afterwards always reads null and flush sends nothing.
     const value = this.debounced;
+    const by = this.debouncedBy;
     this.cancelDebounce();
-    if (value !== null) this.enqueue({ kind: "save", value });
+    if (value !== null) this.enqueue({ kind: "save", value, by });
   }
 
   /** Resolves when nothing is in FLIGHT. A write still sitting in the debounce
@@ -693,20 +1220,21 @@ export class PreferenceWriter {
       this.timer = null;
     }
     this.debounced = null;
+    this.debouncedBy = undefined;
   }
 
-  private enqueue(write: { kind: "save"; value: FilterState } | { kind: "reset" }): void {
+  private enqueue(write: Write): void {
     if (this.inFlight) {
       if (write.kind === "reset") {
         // A reset supersedes a queued save — that save was issued before it.
-        this.pending.reset = true;
+        this.pending.reset = { by: write.by };
         this.pending.save = null;
       } else if (this.pending.reset) {
         // Waits behind the reset, not instead of it.
-        this.pending.save = write.value;
+        this.pending.save = { value: write.value, by: write.by };
       } else {
         // Only the latest save matters; the intermediate states do not.
-        this.pending.save = write.value;
+        this.pending.save = { value: write.value, by: write.by };
       }
       return;
     }
@@ -715,22 +1243,55 @@ export class PreferenceWriter {
 
   private async run(write: Write): Promise<void> {
     const generation = this.generation;
+    // WHOSE WRITE THIS IS, decided before the transport is touched and
+    // against the credential as it is NOW, not as it was cached. A rotated
+    // token and an unknown identity pass; a known stranger does not —
+    // `identityFingerprint.ts` has why those differ.
+    //
+    // Thrown into the chain rather than given a path of its own: `onError`
+    // reports it, `onSuccess` does not fire, and the tail still drains,
+    // which is every behaviour a stranded write wants and none of them
+    // newly written.
+    //
+    // The async wrapper also subsumes what the old try/catch here was for —
+    // a host adapter that throws SYNCHRONOUSLY rather than rejecting. Left
+    // outside a chain that bypassed `onError`, never assigned `inFlight`,
+    // and surfaced only as an unhandled rejection, while this class promises
+    // that a failed write is reported and not thrown. A rejection rather
+    // than a reported-and-resolved substitute, because a resolved one
+    // travels the SUCCESS path below and the failure would be announced as
+    // a success.
+    const send = (now: string | undefined): Promise<void> => {
+      if (!sameIdentity(write.by, now)) throw new IdentityChanged();
+      // `write.by` goes down with a reset, not just up from it. This queue
+      // compares it against `now` above and refuses a mismatch, but the
+      // transport below cannot see this queue and has only the credential to
+      // go on — which by the time a queued reset is sent may already name the
+      // NEXT reader. So the reader who pressed the button travels with the
+      // request, and the transport compares it against whoever the request
+      // would actually go out as. #613: `reset` was the one write path with
+      // no such comparison, and an endpoint that REPLACES the row turns that
+      // into somebody else's whole row.
+      return write.kind === "reset"
+        ? this.transport.reset(write.by)
+        : this.transport.save(write.value);
+    };
     let request: Promise<void>;
     try {
+      const now = this.identityNow();
+      // Awaited only when there is something to await. A reader that answers
+      // synchronously — the default, and every caller that supplies none —
+      // keeps the transport call in the SAME task, which is a contract this
+      // queue already had: a reset "jumps the debounce", and a caller that
+      // advances its timers and then reads `calls` is entitled to see the
+      // request. Wrapping unconditionally in an async function moved every
+      // send a microtask later and broke nine existing tests, which is the
+      // cheap version of breaking a caller.
       request =
-        write.kind === "reset"
-          ? this.transport.reset()
-          : this.transport.save(write.value);
+        typeof (now as { then?: unknown })?.then === "function"
+          ? (now as Promise<string | undefined>).then(send)
+          : send(now as string | undefined);
     } catch (error: unknown) {
-      // A host adapter that throws synchronously rather than rejecting. Left
-      // outside the chain it bypassed `onError`, never assigned `inFlight`,
-      // and surfaced only as an unhandled rejection — while the class
-      // promises that a failed write is reported, not thrown.
-      //
-      // Rejected rather than reported here and resolved: a resolved
-      // substitute travels the SUCCESS path below, so the failure would be
-      // reported and then immediately announced as a success. One error path,
-      // and it is the chain's.
       request = Promise.reject(error);
     }
 
@@ -741,20 +1302,27 @@ export class PreferenceWriter {
       .catch((error: unknown) => {
         this.onError(error);
       })
-      .then(() => {
-        this.inFlight = null;
-        if (this.pending.reset) {
-          this.pending.reset = false;
-          void this.run({ kind: "reset" });
-          return;
-        }
-        const save = this.pending.save;
-        this.pending.save = null;
-        if (save === null) return;
-        // Drop a save issued before a reset: sending it now would restore
-        // exactly what the reset cleared.
-        if (generation !== this.generation) return;
-        void this.run({ kind: "save", value: save });
-      });
+      .then(() => this.next(generation));
+  }
+
+  /** Unlock the queue and start whatever was waiting behind this write.
+   *
+   *  Extracted so the stranded path above reaches it too: a write refused
+   *  for the wrong account must not also wedge the queue behind it. */
+  private next(generation: number): void {
+    this.inFlight = null;
+    const reset = this.pending.reset;
+    if (reset) {
+      this.pending.reset = null;
+      void this.run({ kind: "reset", by: reset.by });
+      return;
+    }
+    const save = this.pending.save;
+    this.pending.save = null;
+    if (save === null) return;
+    // Drop a save issued before a reset: sending it now would restore
+    // exactly what the reset cleared.
+    if (generation !== this.generation) return;
+    void this.run({ kind: "save", value: save.value, by: save.by });
   }
 }

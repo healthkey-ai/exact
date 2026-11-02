@@ -309,6 +309,29 @@ describe("the suitability preferences control", () => {
     expect(api.listRequests().every((r) => r.params.riskWeight === undefined)).toBe(true);
   });
 
+  it("closes when the host changes ACCOUNT, same patient", async () => {
+    // The fifth site of one defect, and the one whose own docstring already
+    // said "reader" while its prop said patient. The weights live in a row
+    // EXACT keys on the identity in the token, so a host switching account
+    // while showing the same patient changes whose row this writes to and
+    // changes neither `personId` nor the payload — leaving the previous
+    // reader's half-typed numbers on screen, ready to be saved into
+    // somebody else's row.
+    const api = fakeApi();
+    const view = renderTrialMatches(api, { personId: "p1", stateIdentity: "k:user-1" });
+    await waitFor(() => expect(api.listRequests().length).toBeGreaterThan(0));
+    await openDialog();
+    await userEvent.clear(field("Risk Weight"));
+    await userEvent.type(field("Risk Weight"), "80");
+
+    view.setProps({ stateIdentity: "k:user-2" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Suitability Preferences" })).toBeNull(),
+    );
+    expect(api.listRequests().every((r) => r.params.riskWeight === undefined)).toBe(true);
+  });
+
   it("asks for a number when a field is left empty", async () => {
     // A number input hands back "" for an empty box AND for "abc", and
     // neither is out of range — which is all CB's single message says.

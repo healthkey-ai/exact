@@ -491,3 +491,142 @@ describe("the editing pair is all or nothing", () => {
     expect(canEditFields(undefined)).toBe(false);
   });
 });
+
+describe("the weights wizard flag", () => {
+  it("reads it off the same row the filters come from", async () => {
+    const client = fakeClient({
+      results: [{ preferences: { sort: "distance" }, weights_wizard_offered: true }],
+    });
+    expect(await adapter(client).weightsWizard!.wasOffered()).toBe(true);
+    expect(client.get).toHaveBeenCalledWith("/api/v1/trial-search-preferences/", {
+      params: { person_id: "9001" },
+    });
+  });
+
+  it("reads a patient with no row as never offered", async () => {
+    // The commonest shape of the reader the wizard exists for. Not an error,
+    // and not a reason to stay quiet.
+    expect(await adapter(fakeClient({ results: [] })).weightsWizard!.wasOffered()).toBe(
+      false,
+    );
+  });
+
+  it("reads a row WITHOUT the column as a server that cannot remember", async () => {
+    // The widget's gate asks whether the store has a `weightsWizard`, and
+    // `createPromopState` always supplies one — so it cannot tell a PROMOP
+    // that has shipped the column from one that has not. Behind it,
+    // `record()` PATCHes an unknown field, DRF answers 200, nothing is
+    // stored, and the reader is asked again on every visit for ever: the
+    // exact outcome the gate exists to prevent.
+    //
+    // The row is the only thing that can say. An existing row with the key
+    // ABSENT is therefore answered "already offered" — the deployment asks a
+    // patient at most once, on the visit that creates their row, instead of
+    // every time.
+    expect(
+      await adapter(fakeClient({ results: [{ preferences: {} }] })).weightsWizard!
+        .wasOffered(),
+    ).toBe(true);
+  });
+
+  it("still reads an explicit false as never offered", async () => {
+    // The distinction the line above turns on: absent is not false.
+    expect(
+      await adapter(
+        fakeClient({ results: [{ preferences: {}, weights_wizard_offered: false }] }),
+      ).weightsWizard!.wasOffered(),
+    ).toBe(false);
+  });
+
+  it("reads the row off an unpaginated list too", async () => {
+    // `readRow` accepts both shapes — `{results: [...]}` and a bare array —
+    // because pagination is a deployment setting, not an API contract. The
+    // bare branch had no test on either reader, and it now decides whether a
+    // patient is ever asked.
+    expect(
+      await adapter(
+        fakeClient([{ preferences: {}, weights_wizard_offered: true }]),
+      ).weightsWizard!.wasOffered(),
+    ).toBe(true);
+    expect(
+      await adapter(
+        fakeClient([{ preferences: {}, weights_wizard_offered: false }]),
+      ).weightsWizard!.wasOffered(),
+    ).toBe(false);
+    // And an empty one is a patient with no row, not a server without the
+    // column: nothing to find the key in.
+    expect(await adapter(fakeClient([])).weightsWizard!.wasOffered()).toBe(false);
+  });
+
+  it("writes it alone, and without a precondition", async () => {
+    // Alone: the weights go through `savePreferences`, which keeps this
+    // store's belief of what is saved true. Unconditional: an `If-Match`
+    // would let a filter save racing the answer refuse it, and the column
+    // takes one value, so there is nothing to disagree about.
+    const client = fakeClient({ results: [] });
+    await adapter(client).weightsWizard!.record();
+    expect(client.patch).toHaveBeenCalledWith(
+      "/api/v1/trial-search-preferences/upsert/",
+      { weights_wizard_offered: true },
+      { params: { person_id: "9001" } },
+    );
+  });
+});
+
+
+describe("naming the fields the record refused", () => {
+  // The queue can only send the rest of a batch again if it is told WHICH
+  // field was objected to, and turning an axios error into that answer is
+  // this adapter's job — knowledge of what an axios error looks like does
+  // not belong in a transport-agnostic queue. None of this was exercised:
+  // three separate mutations of it survived the whole suite.
+
+  const refusing = (data: unknown, status = 400) => {
+    const patch = vi.fn().mockRejectedValue(
+      Object.assign(new Error("Request failed"), { response: { status, data } }),
+    );
+    return { get: vi.fn(), patch } as unknown as AxiosInstance;
+  };
+
+  const refusalFrom = async (client: AxiosInstance, fields: Record<string, unknown>) => {
+    try {
+      await adapter(client).setPatientFields!(fields);
+    } catch (error: unknown) {
+      return error as { name?: string; fields?: string[] };
+    }
+    throw new Error("expected the write to be refused");
+  };
+
+  it("names the field DRF objected to", async () => {
+    const client = refusing({ flipi_score_options: ["Select recognized FLIPI risk factors."] });
+
+    const error = await refusalFrom(client, { flipi_score_options: "x", hemoglobin_g_dl: 12 });
+
+    expect(error.name).toBe("PatientFieldsRefused");
+    expect(error.fields).toEqual(["flipi_score_options"]);
+  });
+
+  it("ignores a name that was not in this request", async () => {
+    // Intersected here as well as in the queue. A body naming something
+    // else leaves nothing to retry, and a queue that believed it would
+    // re-send the identical batch for ever.
+    const client = refusing({ some_other_field: ["nope"] });
+
+    const error = await refusalFrom(client, { hemoglobin_g_dl: 12 });
+
+    expect(error.name).not.toBe("PatientFieldsRefused");
+  });
+
+  it("passes a body with no field names through untouched", async () => {
+    // `{"detail": …}` from a permission error, and a 500 with nothing at
+    // all. There is no field to blame, so the raw error reaches the queue
+    // and the whole batch is failed — which is the old behaviour and the
+    // safe one. Mutated to always wrap, this swallowed every 500 and
+    // nothing noticed.
+    for (const body of [{ detail: "Not found." }, "", null, ["a"]]) {
+      const error = await refusalFrom(refusing(body, 500), { hemoglobin_g_dl: 12 });
+
+      expect(error.name).not.toBe("PatientFieldsRefused");
+    }
+  });
+});

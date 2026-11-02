@@ -19,11 +19,15 @@ import type { TrialPreferenceStore, TrialStateAdapter } from "./state";
  *  See `trials/services/patient_info/patient_info.py`. */
 export type PatientInfo = Record<string, unknown>;
 
-/** Per-trial verdict from the matcher. The serializer only ever emits
- *  `'eligible'` or `'potential'` (the backend filters not-eligibles
- *  out of the queryset before serialization), but the type union
- *  includes `'not_eligible'` so a host that paints a manual
- *  not-eligible group via a separate call doesn't fight the types. */
+/** Per-trial verdict from the matcher.
+ *
+ *  A corpus search emits only `'eligible'` or `'potential'`: the backend
+ *  filters not-eligibles out of the queryset before serialization. One
+ *  request type does emit `'not_eligible'` — a saved-ids search (`trial_ids`
+ *  in the body, no `?type=`), where a bookmark the patient has stopped
+ *  qualifying for is kept and marked rather than dropped (#568). Its
+ *  `matchScore` is 0, the value that verdict means. Handle the third value;
+ *  a host on the Favorites or Registered tab will receive it. */
 export type MatchingType = "eligible" | "potential" | "not_eligible";
 
 export interface ClosestLocationGeoPoint {
@@ -413,6 +417,67 @@ export interface TrialMatchesProps {
   /** Optional shared TanStack QueryClient — when omitted, the component
    *  spins up its own. Set when the host wants to share the cache. */
   queryClient?: QueryClient;
+  /** Which SIGNED-IN IDENTITY the `state` adapter belongs to, as an opaque
+   *  string. Supplied by the bridge from its session signal; a host wiring
+   *  `state` itself supplies its own, or omits it and keeps today's
+   *  behaviour.
+   *
+   *  It exists because the patient and the account are not the same thing.
+   *  Per-user rows used to be keyed on `person_id` everywhere, so "same
+   *  patient" was a safe answer to "same context, keep writing". EXACT's own
+   *  store keys on the identity in the token, and a host that supplies the
+   *  patient itself can switch account without the patient changing — at
+   *  which point a debounced filter write goes to the new account's row with
+   *  a credential nothing can fault. See `identityKeyOf`. */
+  stateIdentity?: string | number;
+  /** Who the CREDENTIAL names, right now, as a fingerprint.
+   *
+   *  Supplied by the bridge, not by a host — it is read off the tokens the
+   *  bridge hands to its own clients, so there is nothing for a host to pass
+   *  and nothing it can get wrong.
+   *
+   *  It exists because `stateIdentity` above cannot close the hole its own
+   *  docstring describes. That value is what the HOST says; this one is what
+   *  the credential says, and #583 measured four shapes where they disagree
+   *  — an identity that changes with no new `sessionKey`, no new `getToken`
+   *  and no re-render. Nothing in the React tree learns about those, so no
+   *  key can be derived from them; the write queues compare this instead,
+   *  capturing it when an edit is enqueued and again when it is sent.
+   *
+   *  Synchronous, because it is consulted on a keystroke. See
+   *  `identityFingerprint.ts`. */
+  credentialIdentity?: () => string | undefined;
+  /** The same thing, read AFRESH rather than remembered.
+   *
+   *  NOT A LATENCY REFINEMENT OF THE ONE ABOVE, whatever the rest of this
+   *  note used to suggest. Supplying `credentialIdentity` and omitting
+   *  this one switches the saved-filters isolation guard OFF: the cached
+   *  reading is written by the client's own interceptor, so at the moment
+   *  a request is issued it can be a reader who has already gone, and a
+   *  guard built on it is a guard that compares a stale value with
+   *  itself. EXACT does not try to protect that shape halfway any more —
+   *  it tried, and the half-protection both leaked and stopped the panel
+   *  loading (exact#603). Pass both, or accept that two accounts sharing
+   *  one mounted remote can share saved filters.
+   *
+   *  ANSWER A NAME OR A SENTINEL, NEVER `undefined`, if this host can ever
+   *  name anybody. `undefined` means "there is nobody to name here" and
+   *  switches the guard off — it is what a host with no accounts at all
+   *  answers, and it is matched against every reader on purpose so that
+   *  such a host keeps working. A host that answers it only while signed
+   *  out, with `credentialIdentity` still naming the previous reader, gets
+   *  the guard off while believing it wired both halves. EXACT's own
+   *  bridge floors the answer at `NO_CREDENTIAL` for exactly this reason.
+   *
+   *
+   *  A pair, because the two readings happen at moments with different
+   *  budgets. The cached one above is consulted on a keystroke and must not
+   *  await anything; this one is consulted immediately before a request,
+   *  where awaiting is free — and it has to be asked rather than remembered,
+   *  because the cache only moves when somebody fetches a token and a whole
+   *  debounce window can pass with no request in it. See
+   *  `patientWriter.ts`. */
+  credentialIdentityNow?: () => Promise<string | undefined> | string | undefined;
   /** CTOMOP person_id. Mutually exclusive with `patientInfo` — when
    *  both are provided, `patientInfo` wins (matches the server-side
    *  precedence in `resolve_patient_info`). */
@@ -423,6 +488,90 @@ export interface TrialMatchesProps {
   initialFilters?: FilterState;
   /** Called when the user opens a trial card / detail view. */
   onTrialSelect?: (trial: TrialMatch) => void;
+  /** The trial the HOST has in its address bar.
+   *
+   *  Passing this — `null` included — hands the remote's navigation to the
+   *  host: it renders the trial named here, and asks for a change through
+   *  `onTrialIdChange` instead of moving history itself. Omit it, and the
+   *  remote keeps its own selection and pushes a synthetic history entry so
+   *  the browser's back button returns to the list; that is what a host
+   *  with no route for a trial gets, and it is unchanged.
+   *
+   *  Pass `onTrialIdChange` with it. Alone, this prop would leave the remote
+   *  with nowhere to report a change and the reader stuck on a detail page
+   *  whose back button does nothing, so half a contract is read as none: the
+   *  remote keeps its own selection and says so at the console.
+   *
+   *  Exactly one of the two pushes. Both pushing is how a back button starts
+   *  needing two presses.
+   *
+   *  A string is taken as it comes — a URL segment is a string — and handed
+   *  to the detail request. An id nothing answers for lands on the detail
+   *  page's own "we could not find that trial", which is a page with a way
+   *  back rather than an empty frame. */
+  trialId?: number | string | null;
+  /** The reader opened a trial, or left one — `null` for the list.
+   *
+   *  Only meaningful alongside `trialId`: it is how the remote asks the host
+   *  to change the URL it is being told to render. `onTrialSelect` still
+   *  fires for an opening, and carries the whole row; this one carries what
+   *  goes in an address bar. */
+  onTrialIdChange?: (trialId: number | null) => void;
+  /** The record took an inline edit, and here is what it says those fields
+   *  are now.
+   *
+   *  Called once a batch of edits has settled AND the record has been
+   *  re-read, with the values the RECORD answered — not always what was
+   *  typed, since it canonicalises units, dates and cleared values on the
+   *  way back. A field the record did not mention is left out.
+   *
+   *  A host that supplies `patientInfo` MUST refresh it here, and is the
+   *  only one that can: its payload wins server-side over `personId`, so
+   *  until the payload carries the new value every query this remote makes
+   *  is answered from the old one and the page keeps showing what the
+   *  reader just changed away from (#555).
+   *
+   *  **The payload must name the patient** — `personId`, `person_id`,
+   *  `externalId`, `external_id`, `patientId`, `patient_id` or `id`, any one
+   *  of them, non-blank. This remote has no other
+   *  way to tell a refresh of the same profile from a switch to a different
+   *  one, so with an id-less payload the refresh you make here reads as a
+   *  change of patient: the trial page the edit was made from closes, and an
+   *  edit made while your refresh is in flight is written but never reported
+   *  back. A console warning says so when the prop is wired to such a
+   *  payload.
+   *
+   *  **Re-read the profile; do not merge these fields into the payload.**
+   *  They are named the way the patient RECORD names them
+   *  (`hemoglobin_g_dl`), which is not the vocabulary a payload is in
+   *  (`hemoglobin_level`, and in different units for some) — the two are
+   *  bridged by `/normalize-ctomop-row/`, on the way in. Merged raw, a field
+   *  is dropped by the server's own filter or, worse, sits beside the
+   *  normalised copy it was supposed to replace. They are reported so a host
+   *  can log them, show them, or map them deliberately.
+   *
+   *  Ordering: the queue runs one batch at a time and each report waits on
+   *  that batch's own re-read — including when a later batch supersedes it,
+   *  which chains onto the newer read rather than cutting the wait short.
+   *  The one case that skips it is the reader leaving the detail page
+   *  before the write settles: nothing is observing that query, so nothing
+   *  refetches and the report arrives having re-read nothing. It still
+   *  carries what the record answered. What this cannot order is the HOST's
+   *  own work: if your refresh is asynchronous, make sure an older
+   *  one cannot land after a newer one and put the payload back. React
+   *  Query's `invalidateQueries` on one key does that for you — the newest
+   *  fetch wins; a hand-rolled fetch does not.
+   *
+   *  Deliberately not solved by chaining the calls here: waiting on the
+   *  host's promise lets a host that never settles block every later report,
+   *  and the page would go quiet on writes that succeeded.
+   *
+   *  A host that throws, or returns a promise that rejects, does not turn a
+   *  successful write into a failed one. Nothing is reported after this
+   *  remote unmounts or after the host takes the state adapter away: the
+   *  payload names no patient, so a host could not tell that what it was
+   *  handed belongs to whoever was on screen a moment ago. */
+  onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
   /** Draws the map behind the list/map view mode.
    *
    *  A function rather than an API key, because rendering tiles means loading
@@ -463,6 +612,89 @@ export interface TrialMatchesProps {
    *  stops surviving a reload, because a store present at all replaces the
    *  browser-local one rather than joining it. */
   preferences?: TrialPreferenceStore;
+}
+
+/** Public props for the federated `./TrialMatchesBridge` export — the
+ *  framework-agnostic mount used by hosts that are not React.
+ *
+ *  Lives here rather than in `TrialMatchesBridge.tsx` so a TypeScript host can
+ *  type its `provider().render({ … })` call against the contract: `./types` is
+ *  exposed, the bridge module is loaded at runtime.
+ *
+ *  `apiClient` and `queryClient` are omitted deliberately — the host passes
+ *  data, not live objects, so it needs neither axios nor react-query. */
+export interface TrialMatchesBridgeProps
+  extends Omit<TrialMatchesProps, "apiClient" | "queryClient" | "personId"> {
+  /** As `TrialMatchesProps["personId"]`, but `null` is accepted and means the
+   *  same as omitting it: the hosts this bridge exists for have no types, and
+   *  `personId: pid ?? null` is how they spell "I do not have one". Normalised
+   *  before it reaches TrialMatches. */
+  personId?: string | number | null;
+  /** Service origin, e.g. `"https://exact-staging-….run.app"`. */
+  baseUrl: string;
+  /**
+   * PRomop origin. When given (and neither `patientInfo` nor `personId` is
+   * passed), the bridge loads the signed-in patient itself: PRomop's
+   * `/patient-info/me/` with the caller's own token, then EXACT's
+   * `/normalize-ctomop-row/`.
+   *
+   * That two-step is EXACT's business, not the host's, so it lives in the
+   * bridge rather than being reimplemented by every host. It also has to be
+   * the caller's token: EXACT's server-side `person_id` resolver is disabled
+   * by default because its CTOMOP service token is not bound to the caller and
+   * would let any `person_id` through (IDOR). Fetching "me" makes PRomop
+   * enforce access.
+   *
+   * Note that passing `patientInfo: null` explicitly counts as the host having
+   * answered ("this patient has no profile") and suppresses the fetch; omit
+   * the prop entirely to have the bridge resolve.
+   */
+  ctomopBaseUrl?: string;
+  /** Joined onto `baseUrl` to form the axios baseURL. Leading/trailing
+   *  slashes are normalised, so `"api"` and `"/api"` behave the same.
+   *
+   *  Defaults to `""`, i.e. EXACT's API is assumed to live at the origin
+   *  itself. Most deployments mount it under `/api` — pass it, or every call
+   *  404s behind the generic error card. */
+  apiBasePath?: string;
+  /** Joined onto `ctomopBaseUrl` the same way. Defaults to `"/api"`; set it
+   *  when PRomop is mounted elsewhere (e.g. `"/api/v1"`), otherwise the
+   *  `/patient-info/me/` call 404s behind the generic error card. */
+  ctomopApiBasePath?: string;
+  /**
+   * Resolves the caller's bearer token; the host owns authentication.
+   *
+   * The same token is sent to both `baseUrl` and `ctomopBaseUrl`, so it must
+   * be valid at both services — an EXACT-only, audience-scoped token is not
+   * enough when `ctomopBaseUrl` is set.
+   *
+   * Its *identity* is the session signal when no `sessionKey` is passed, in
+   * which case changing it re-runs the self-driven patient resolution. Pass a stable function (module-level,
+   * or memoised) so a re-render does not cost a redundant round trip — and do
+   * hand over a new one when the signed-in user changes, or a mount reused
+   * across a logout/login will keep showing the previous user's matches.
+   */
+  getToken?: () => Promise<string | null | undefined> | string | null | undefined;
+  /**
+   * Identifies the signed-in user. Change it and the bridge drops whatever it
+   * resolved and resolves again; keep it and the bridge holds what it has.
+   *
+   * A mount reused across a logout/login would otherwise keep showing the
+   * previous user's matches, so without a `sessionKey` the bridge falls back
+   * to `getToken`'s identity as the signal. That is safe but blunt: a host
+   * that builds `getToken` inline rebuilds it on every render, and each one
+   * sends the user back to the loading state, losing the filters and the
+   * query cache. Pass a `sessionKey` (a user id, a session id — any scalar
+   * that changes with the user) and `getToken` can be as unstable as you like.
+   *
+   * `null`, `""`, `NaN` and a boolean all count as not passing one, and fall back to the
+   * `getToken` signal rather than pinning every user to the same key: they are
+   * what `auth.userId ?? null`, `user?.id ?? ""` and `Number(sub)` produce
+   * when there is nothing to read, not user ids. Pass a scalar, and one that
+   * is stable within a session — an object is a new value on every render, so
+   * every render would reset the mount and re-resolve the patient.
+   */
+  sessionKey?: string | number | null;
 }
 
 /** Public props for the federated `./TrialMatchesBridge` export — the

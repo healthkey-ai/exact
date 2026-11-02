@@ -23,13 +23,14 @@
  * ownership of how it calls its own API.
  * See ht-phr/docs/mf-bridge-proposal.md §6.2.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios, { type AxiosInstance } from "axios";
 import { createBridgeComponent } from "@module-federation/bridge-react/v19";
 
 import TrialMatches from "./TrialMatches";
 import { normalizeCtomopRow } from "./api";
-import { createPromopState } from "./state";
+import { NO_CREDENTIAL, fingerprintOf } from "./identityFingerprint";
+import { composeState, createExactPreferences, createPromopState } from "./state";
 import {
   hasUsableSessionKey,
   joinBaseUrl,
@@ -37,7 +38,9 @@ import {
   personIdOfRow,
   promopStateBasePath,
   selectBridgeView,
+  identityKeyOf,
   resolveSessionSignal,
+  usableIdentity,
   selectPatientInfo,
   shouldResolvePatient,
   type PatientLoad,
@@ -136,7 +139,7 @@ function TrialMatchesBridgeRoot({
       buildClient(
         baseUrl,
         apiBasePath,
-        async () => getToken?.(),
+        async () => noteIdentity(await getToken?.()),
         SEARCH_TIMEOUT_MS,
       ),
     [baseUrl, apiBasePath, getToken],
@@ -158,6 +161,48 @@ function TrialMatchesBridgeRoot({
   useEffect(() => {
     getTokenRef.current = getToken;
   });
+
+  /** Who the last credential this component handed out names.
+   *
+   *  Every token that leaves here for a client passes through `noteIdentity`,
+   *  so this is always the identity the NEXT request would be attributed to.
+   *  The write queues capture it when an edit is enqueued and compare it when
+   *  the edit is sent — #583, and `identityFingerprint.ts` for why a token
+   *  that changed is not an identity that changed.
+   *
+   *  Recorded here rather than asked for at the keystroke because `getToken`
+   *  is async: awaiting it inside a debounced `save` would let the reader's
+   *  keystroke land after the batch it belongs to. A ref rather than state
+   *  because nothing renders from it, and a render per token refresh would
+   *  be a render per hour for nothing.
+   *
+   *  Undefined until the first token is read, which disables the guard for
+   *  an edit made before any request — `sameIdentity` treats unknown as a
+   *  match. In practice the list has already been fetched by the time a row
+   *  is editable, and guessing an identity we have not seen would be the
+   *  worse failure. */
+  const identityRef = useRef<string | undefined>(undefined);
+  const noteIdentity = useCallback(<T extends string | null | undefined>(token: T): T => {
+    // `?? NO_CREDENTIAL`, and this is the line the whole guard turns on. A
+    // read that answered NOTHING is not "we have not looked" — it is "there
+    // is no credential right now", which for a host with accounts is the
+    // interval between a sign-out and a sign-in. Stored as `undefined` it
+    // read as unknown, `sameIdentity` waved everything through, and a write
+    // enqueued in that window went out under the next account: the leak this
+    // branch exists to close, reopened by its own cache. Measured through
+    // the real bridge.
+    identityRef.current = fingerprintOf(token) ?? NO_CREDENTIAL;
+    return token;
+  }, []);
+  const credentialIdentity = useCallback(() => identityRef.current, []);
+  /** Asked, not remembered — the reading the queues make just before a
+   *  request. Reads the ref-held getter so a token refresh is picked up
+   *  without rebuilding anything, and notes what it saw so the cached
+   *  reading above is current too. */
+  const credentialIdentityNow = useCallback(async () => {
+    noteIdentity(await getTokenRef.current?.());
+    return identityRef.current;
+  }, [noteIdentity]);
 
   const hasToken = getToken != null;
   // A resolution can fail for reasons that go away: a token that had not
@@ -293,7 +338,7 @@ function TrialMatchesBridgeRoot({
       // Aborting beats sending: a row fetched as one user must never leave
       // under another's credentials, even into a response we would discard.
       if (cancelled) throw new Error("[exact-remote] session changed");
-      return getTokenRef.current?.();
+      return noteIdentity(await getTokenRef.current?.());
     };
 
     (async () => {
@@ -403,6 +448,21 @@ function TrialMatchesBridgeRoot({
   const statePersonId =
     personIdOfRow({ person_id: rest.personId }) ??
     (current.status === "ready" ? (current.personId ?? null) : null);
+  // A host may name the identity itself, but not with the spellings that
+  // mean "I have nothing" — `""` is what `user?.id ?? ""` produces, and
+  // taking it at face value pins every account to one key and silently
+  // reopens the cross-account write this prop exists to close. Same gauntlet
+  // `resolveSessionSignal` runs its own input through, and for the same
+  // reason.
+  const hostIdentity = usableIdentity(rest.stateIdentity);
+  if (rest.stateIdentity != null && hostIdentity === undefined) {
+    warnOnce(
+      "stateIdentity-unusable",
+      "[exact-remote] `stateIdentity` must be a non-empty string or a finite " +
+        "number; ignoring it and using the session signal instead.",
+    );
+  }
+
   const bridgeState = useMemo(() => {
     if (!ctomopBaseUrl || statePersonId == null) return undefined;
     const builtFor = sessionSignal;
@@ -410,19 +470,78 @@ function TrialMatchesBridgeRoot({
       if (!Object.is(sessionRef.current, builtFor)) {
         throw new Error("[exact-remote] session changed");
       }
-      return getTokenRef.current?.();
+      // The adapters' own reader, and the one every WRITE goes out under, so
+      // the fingerprint recorded here is the one the queues compare against.
+      return noteIdentity(await getTokenRef.current?.());
     };
-    return createPromopState({
-      client: buildClient(
-        ctomopBaseUrl,
-        ctomopApiBasePath,
-        readTokenForThisSession,
-        RESOLVE_TIMEOUT_MS,
+    // Two stores while the migration has two. Favourites and registration
+    // interest still live in PROMOP, keyed on `person_id`; preferences have
+    // moved to EXACT's own `user_state`, keyed on the identity in the token.
+    // `composeState` is where phases 2 and 3 each delete a line.
+    //
+    // `apiClient` for the EXACT half — the remote's own service — rather
+    // than the PROMOP client built here. Different origin, different
+    // credential audience, and the row is found by the token rather than by
+    // a `person_id` this bridge would have to pass.
+    return composeState(
+      createPromopState({
+        client: buildClient(
+          ctomopBaseUrl,
+          ctomopApiBasePath,
+          readTokenForThisSession,
+          RESOLVE_TIMEOUT_MS,
+        ),
+        personId: statePersonId,
+        basePath: promopStateBasePath(ctomopApiBasePath),
+      }),
+      // Its own client, built from the SAME guarded reader as the PROMOP
+      // half — not the shared `apiClient`, and not a ref to it.
+      //
+      // The reason is a race, and the first two attempts at this both lost
+      // it. `useSavedFilters` flushes its writer during cleanup by design,
+      // and the host switching accounts runs that cleanup against the OLD
+      // adapter (`hooks.ts`: "runs this cleanup against the OLD
+      // transport"). EXACT keys the row on the token, so a flush that
+      // reaches the new account's credential writes one patient's filters
+      // into another patient's record.
+      //
+      // Attempt one was a bare ref: obviously wrong once stated. Attempt two
+      // checked the session synchronously at call entry, and MEASURED still
+      // leaking — React runs a deleted child's passive cleanup before the
+      // parent's own effect updates `sessionRef`, so the check passes and
+      // the shared client's interceptor then asks the auth store, which by
+      // then answers for the new account. The guard has to sit where the
+      // credential is attached, which is the interceptor, which is exactly
+      // where the PROMOP half has always had it.
+      //
+      // Being its own client also costs nothing here: it carries only the
+      // preference calls, and a token refresh within the session is still
+      // picked up, because the reader is asked per request.
+      createExactPreferences(() =>
+        // `RESOLVE_TIMEOUT_MS`, the same bound as the PROMOP state client
+        // built above, and NOT `SEARCH_TIMEOUT_MS` — which is `undefined`
+        // on purpose, because search is a matcher call over the whole
+        // corpus behind react-query's retries and any ceiling there is
+        // multiplied by four. This is a small write to EXACT's own API
+        // with no retry above it, and unbounded it can hang the saved-filter
+        // writer for as long as the connection stays open.
+        buildClient(baseUrl, apiBasePath, readTokenForThisSession, RESOLVE_TIMEOUT_MS),
       ),
-      personId: statePersonId,
-      basePath: promopStateBasePath(ctomopApiBasePath),
-    });
-  }, [ctomopBaseUrl, ctomopApiBasePath, statePersonId, sessionSignal]);
+    );
+    // `apiClient` is deliberately NOT a dependency, and neither is
+    // `getToken`: both are rebuilt when the host hands over a new token
+    // function, and rebuilding this adapter on that event drops the writes
+    // already queued against it — which is what "does not drop a write when
+    // only the token is refreshed" pins. `baseUrl` and `apiBasePath` are
+    // dependencies because they change where the writes GO.
+  }, [
+    baseUrl,
+    apiBasePath,
+    ctomopBaseUrl,
+    ctomopApiBasePath,
+    statePersonId,
+    sessionSignal,
+  ]);
   const view = selectBridgeView({
     shouldLoad,
     load: current,
@@ -491,6 +610,11 @@ function TrialMatchesBridgeRoot({
       {...rest}
       apiClient={apiClient}
       patientInfo={patientInfo}
+      // Whose adapter this is. Not derivable downstream: the session signal
+      // is `unknown` by design and may be the `getToken` function itself.
+      stateIdentity={hostIdentity ?? identityKeyOf(sessionSignal)}
+      credentialIdentity={credentialIdentity}
+      credentialIdentityNow={credentialIdentityNow}
       state={rest.state ?? bridgeState}
       // `null` is the bridge's spelling of "not given"; TrialMatches' own
       // contract only knows `undefined`.

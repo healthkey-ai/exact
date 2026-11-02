@@ -4,7 +4,7 @@
  *  can go wrong here is the export and the list disagreeing: a different tab,
  *  a dropped filter, the bookmarks ignored.
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -17,6 +17,48 @@ import { fakeApi, fakeState, renderTrialMatches } from "../test/renderTrialMatch
 const exportRequests = (api: ReturnType<typeof fakeApi>) =>
   api.requests.filter((r) => r.url.startsWith("/trials/export/"));
 
+/** The download, stubbed for the whole FILE rather than per `describe`.
+ *
+ *  Every export here ends in `link.click()` on an anchor carrying a `blob:`
+ *  href, and jsdom answers a real one with "Not implemented: navigation to
+ *  another Document" — through its virtual console, asynchronously, so it is
+ *  printed against whichever test happens to be RUNNING when the export
+ *  finishes rather than the one that started it. Stubbed per `describe` it
+ *  covered two of the twelve, and a test that starts an export and asserts
+ *  the request without waiting for the file clicked for real: measured, one
+ *  navigation per run of this file, landing two tests later (#544).
+ *
+ *  A plain assignment, not `vi.spyOn`: this has to outlive every test hook,
+ *  including the `mockRestore` calls the tests below make on spies of their
+ *  own. Those still work — they spy on this stub and restore it, not what
+ *  was underneath.
+ *
+ *  What is underneath is the suite-wide download guard (`downloadGuard.ts`),
+ *  not jsdom's own method, since `setup.ts` has already replaced the
+ *  prototype by the time this module body runs. Putting THAT back is the
+ *  right restore: handing jsdom's real click back would disarm the guard
+ *  for whatever runs next in this file.
+ *
+ *  The two `URL` functions are replaced per-test by the first `describe`
+ *  below and put back here, for tidiness rather than for a bug:
+ *  `isolate` is on, so each file gets its own jsdom and nothing here can
+ *  reach another file. The note in the first `describe` saying jsdom
+ *  implements neither is simply out of date — both are functions now, and
+ *  what the assignment replaces is a working implementation. */
+const outerAnchorClick = HTMLAnchorElement.prototype.click;
+const outerCreateObjectURL = URL.createObjectURL;
+const outerRevokeObjectURL = URL.revokeObjectURL;
+
+beforeAll(() => {
+  HTMLAnchorElement.prototype.click = function stubbedDownload() {};
+});
+
+afterAll(() => {
+  HTMLAnchorElement.prototype.click = outerAnchorClick;
+  URL.createObjectURL = outerCreateObjectURL;
+  URL.revokeObjectURL = outerRevokeObjectURL;
+});
+
 describe("the Export CSV button", () => {
   let click: ReturnType<typeof vi.spyOn>;
   let created: string[];
@@ -27,8 +69,10 @@ describe("the Export CSV button", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     created = [];
     revoked = [];
-    // jsdom implements neither, and the component is not interesting without
-    // them: what it does with the blob IS the feature.
+    // Recorded rather than merely stubbed: what the component does with the
+    // blob IS the feature, and these two arrays are how the tests below see
+    // it. (jsdom does implement both, whatever the note above says; these
+    // replace them for the file and `afterAll` puts them back.)
     (URL as unknown as Record<string, unknown>).createObjectURL = vi.fn(() => {
       const url = `blob:${created.length}`;
       created.push(url);

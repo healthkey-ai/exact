@@ -169,6 +169,131 @@ export function resolveSessionSignal(sessionKey: unknown, getToken: unknown): un
   return sessionKey;
 }
 
+/** A string that changes when the SIGNED-IN IDENTITY changes, for use in a
+ *  cache key.
+ *
+ *  THE INVARIANT THIS EXISTS FOR, written down because three fixes in a row
+ *  missed it by guarding the wrong thing: a saved-filter payload belongs to
+ *  the identity that produced it, and must be DROPPED — not re-routed — if
+ *  that identity is no longer the one the row will be keyed on.
+ *
+ *  `useSavedFilters` decides "same context, keep writing through the live
+ *  adapter" from `stateKey`, which named the PATIENT. That was right while
+ *  every row was keyed on `person_id`: a different patient is a different
+ *  row, and the server could see a credential that did not match. EXACT's
+ *  own store keys on the identity in the token, so with a host that supplies
+ *  the patient itself, an account switch changes neither the patient nor the
+ *  key — and the debounced write of user 1's filters goes out through user
+ *  2's adapter with user 2's token, into user 2's row, with nothing wrong
+ *  with it that any server can see. Removing `person_id` removed the only
+ *  cross-check; this puts one back on the side that still has the facts.
+ *
+ *  A COUNTER, not the signal itself, because the signal is `unknown` by
+ *  design: `resolveSessionSignal` hands back the host's `sessionKey` when it
+ *  is usable and the `getToken` FUNCTION when it is not, and a function has
+ *  no stable string form. Stringifying one would collapse every anonymous
+ *  arrow to the same text and quietly disable the guard, which is the failure
+ *  mode `resolveSessionSignal` itself is full of warnings about.
+ *
+ *  Erring towards CHANGING is safe and erring towards holding is not: a key
+ *  that changes when it need not sends the flush through the captured
+ *  adapter, which refuses — one lost draft. A key that holds when it should
+ *  not writes into a stranger's record.
+ */
+const identityKeys = new WeakMap<object, string>();
+let identityKeyCount = 0;
+
+export function identityKeyOf(signal: unknown): string {
+  if (signal == null) return "";
+  if (typeof signal === "string" || typeof signal === "number") {
+    return `k:${signal}`;
+  }
+  if (typeof signal !== "object" && typeof signal !== "function") {
+    return `k:${String(signal)}`;
+  }
+  const existing = identityKeys.get(signal as object);
+  if (existing) return existing;
+  identityKeyCount += 1;
+  const assigned = `o:${identityKeyCount}`;
+  identityKeys.set(signal as object, assigned);
+  return assigned;
+}
+
+/** The key `useSavedFilters` uses to decide "same context, keep writing
+ *  through the live adapter".
+ *
+ *  A named function rather than a template literal at the call site, because
+ *  a test that builds the key itself is testing its own arithmetic. Both the
+ *  component and the probe call this, so a change to the rule is a change
+ *  both of them see.
+ *
+ *  Maximum discrimination on purpose: every part that could distinguish two
+ *  readers is in it. Erring towards changing costs a discarded draft; erring
+ *  towards holding writes into a stranger's record. `identityKeyOf` above
+ *  says why the identity is in here at all.
+ */
+export function stateKeyOf(
+  stateIdentity: string | number | undefined,
+  personId: string | number | undefined,
+  patientInfoKey: string | null | undefined,
+): string {
+  // Prefixed onto the persisted key rather than spelled out again: the two
+  // must stay in step, and a copy would not.
+  return `${stateIdentity ?? ""}|${persistedKeyOf(personId, patientInfoKey)}`;
+}
+
+/** A host-supplied `stateIdentity`, or `undefined` when it says nothing.
+ *
+ *  The same gauntlet `resolveSessionSignal` runs its own input through, and
+ *  for the same reason: `""` is what `user?.id ?? ""` produces, and taken at
+ *  face value it pins every account to one key and silently reopens the
+ *  cross-account write this prop exists to close.
+ *
+ *  A NUMBER is usable, which the first version of this check got wrong in
+ *  the unsafe direction. PROMOP's own `person_id` is an integer, so
+ *  `stateIdentity={user.id}` is the natural spelling — and rejecting it fell
+ *  back to the session signal, which for a host with a stable `getToken` and
+ *  no `sessionKey` does not move at all. The guard was disabled by the host
+ *  doing something reasonable.
+ */
+export function usableIdentity(value: unknown): string | undefined {
+  if (typeof value === "string") return value === "" ? undefined : value;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? String(value) : undefined;
+  }
+  return undefined;
+}
+
+/** The key for anywhere it is written to DISK: the same one this page used
+ *  before an identity was ever part of a key.
+ *
+ *  Built from the parts, never by taking a key apart again. The version that
+ *  did the latter sliced to the first `|` and so still let an identity
+ *  through whenever the identity contained one — and `auth0|5f3c9b` is the
+ *  mainstream spelling of `sub`, so "a host that names itself" and "an
+ *  identity with a pipe in it" are close to the same set. Measured: that
+ *  host's namespace moved anyway, which is the thing the split was added to
+ *  prevent.
+ *
+ *  Why no identity at all on disk. In memory it belongs in the key: within
+ *  one page load it is what tells two accounts apart. Persisted it is wrong
+ *  twice. A GENERATED one (`o:N`, minted per page load for a host with no
+ *  `sessionKey`) gives every visit a fresh namespace, so the reader's
+ *  filters are forgotten each load and an orphaned `exact.filters.*` entry
+ *  accumulates that nothing can reclaim. A HOST-SUPPLIED one is durable but
+ *  MOVES the namespace once, so those readers lose their filters on the
+ *  first load after the deploy and leave the same orphan behind. Keeping
+ *  none costs only that two accounts on one browser share a local
+ *  namespace — where they already were, local to the machine, touching no
+ *  row on any server.
+ */
+export function persistedKeyOf(
+  personId: string | number | undefined,
+  patientInfoKey: string | null | undefined,
+): string {
+  return `${personId ?? ""}|${patientInfoKey ?? ""}`;
+}
+
 /** Whether `sessionKey` was usable, i.e. whether the signal above is a real
  *  session key or the `getToken` fallback. */
 export function hasUsableSessionKey(sessionKey: unknown): boolean {

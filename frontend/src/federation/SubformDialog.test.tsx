@@ -62,6 +62,79 @@ const open = async () => {
   await screen.findByText("Back to all trials");
 };
 
+describe("what the dialog says about an entry it cannot offer", () => {
+  const withEntries = (extra: SubformEntry, writable: WritableFields) => {
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([composite({ subform_details: [entry(), extra] })]),
+    );
+    renderTrialMatches(api, {
+      state: fakeState({ writable: { ...WRITABLE, ...writable } }).adapter,
+    });
+    return api;
+  };
+
+  it("says where the edit belongs when the refusal names a place", async () => {
+    // `genetic_mutations` is `writable: true, target: "genomics"`: PATCHing
+    // the record writes nothing, so there is no control — and with no
+    // sentence either, the honest reading of a row with no pencil is that the
+    // record cannot hold the reader's variants.
+    withEntries(
+      entry({
+        name: "geneticMutations",
+        label: "Mutations",
+        upatientField: "genetic_mutations",
+        options: null,
+        value: null,
+      }),
+      {
+        genetic_mutations: {
+          kind: "editable",
+          writable: true,
+          target: "genomics",
+          reason: "Edit individual variants in the Genomics tab.",
+        },
+      },
+    );
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+
+    const row = (await screen.findByText("Mutations")).closest("li")!;
+    expect(within(row).getByText(/genomics part of the record/)).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /^Edit/ })).toBeNull();
+  });
+
+  it("stays quiet when the refusal only says the value is derived", async () => {
+    // 114 fields carry a reason like this one. Printing them would bury the
+    // dialog in sentences answering a question nobody asked.
+    withEntries(
+      entry({
+        name: "bmi",
+        label: "BMI",
+        upatientField: "bmi",
+        options: null,
+        value: 24,
+      }),
+      {
+        bmi: {
+          kind: "computed",
+          writable: false,
+          reason: "Derived from height and weight.",
+        },
+      },
+    );
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what TNBC Status/ }),
+    );
+
+    const row = (await screen.findByText("BMI")).closest("li")!;
+    expect(within(row).queryByText(/Derived from/)).toBeNull();
+  });
+});
+
 describe("when the door is offered", () => {
   it("offers it on a computed row whose inputs can be written", async () => {
     const api = fakeApi();

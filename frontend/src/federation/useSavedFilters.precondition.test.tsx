@@ -79,3 +79,88 @@ describe("useSavedFilters", () => {
     expect(seen[0]).toEqual({ kind: "ifMatch", version: '"v0"' });
   });
 });
+
+describe("useSavedFilters().settle", () => {
+  /** An adapter whose writes fail on demand. */
+  function flakyAdapter(fails: () => boolean): TrialStateAdapter {
+    return {
+      listFavoriteIds: async () => [],
+      setFavorite: async () => undefined,
+      listRegisteredIds: async () => [],
+      setRegistered: async () => undefined,
+      listAdvancedEnrollments: async () => ({}),
+      getPreferences: async () => ({}) as never,
+      savePreferences: async () => {
+        if (fails()) throw new Error("503");
+      },
+      resetPreferences: async () => undefined,
+      getWritableFields: async () => ({}) as never,
+    } as unknown as TrialStateAdapter;
+  }
+
+  it("says false when the write it waited for did not land", async () => {
+    const state = flakyAdapter(() => true);
+    const { result } = renderHook(() =>
+      useSavedFilters(state, "patient-1", () => undefined),
+    );
+    await waitFor(() => expect(result.current).toBeTruthy());
+
+    let verdict: boolean | undefined;
+    await act(async () => {
+      result.current.persist({ distance: 50 } as never);
+      verdict = await result.current.settle();
+    });
+    expect(verdict).toBe(false);
+  });
+
+  it("does not let a later success in the same drain mask an earlier failure", async () => {
+    // The scope is the DRAIN, and a drain is not one write: `settled()` keeps
+    // waiting while the queue refills. With a success clearing the verdict, a
+    // write landing after an earlier one had failed answered `true`, and the
+    // wizard would record "this reader has answered" over a ranking that was
+    // never stored.
+    //
+    // `reset()` rather than a second `persist`, because only an enqueued
+    // write joins a drain already under way — a `persist` sits on the
+    // debounce and is not part of it. Reset is the caller that can genuinely
+    // land behind a failing save.
+    // Saves always fail; `resetPreferences` always succeeds.
+    const state = flakyAdapter(() => true);
+    const { result } = renderHook(() =>
+      useSavedFilters(state, "patient-1", () => undefined),
+    );
+    await waitFor(() => expect(result.current).toBeTruthy());
+
+    let verdict: boolean | undefined;
+    await act(async () => {
+      result.current.persist({ distance: 50 } as never);
+      const settled = result.current.settle();
+      result.current.reset();
+      verdict = await settled;
+    });
+    expect(verdict).toBe(false);
+  });
+
+  it("forgets a failure that happened before it was called", async () => {
+    // Otherwise one failed save early in the session would refuse the wizard
+    // its flag for the rest of the page's life.
+    let attempt = 0;
+    const state = flakyAdapter(() => (attempt += 1) === 1);
+    const { result } = renderHook(() =>
+      useSavedFilters(state, "patient-1", () => undefined),
+    );
+    await waitFor(() => expect(result.current).toBeTruthy());
+
+    await act(async () => {
+      result.current.persist({ distance: 50 } as never);
+      await result.current.settle();
+    });
+
+    let verdict: boolean | undefined;
+    await act(async () => {
+      result.current.persist({ distance: 60 } as never);
+      verdict = await result.current.settle();
+    });
+    expect(verdict).toBe(true);
+  });
+});

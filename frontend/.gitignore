@@ -11,8 +11,11 @@ dist/
 .env.local
 .env.*.local
 
-# Emitted by `tsc -b` beside the vite configs it typechecks. The build
-# output that ships is `dist/`; these are incidental.
+# Emitted by `tsc -b` beside the vite configs it typechecks. The build output
+# that ships is `dist/`; these are incidental. They are worse than clutter in
+# one specific case: vite prefers `vite.config.js` over `vite.config.ts`, so a
+# stale copy silently becomes the config that `npm run dev` and
+# `npm run build:spa` use while edits to the maintained .ts are ignored.
 vite.config.js
 vite.config.d.ts
 vite.remote.config.js

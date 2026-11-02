@@ -36,6 +36,7 @@ import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit } from "./FieldEdit";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
+import { splitJoined } from "./writable";
 import { editabilityOf } from "./writable";
 import type { WritableFields } from "./writable";
 
@@ -126,6 +127,39 @@ export function formatValue(value: unknown, options?: TrialDetailField["options"
   if (Array.isArray(value)) {
     const parts = value.filter((v) => v != null && v !== "").map((v) => labelOf(v, options));
     return parts.length ? parts.join(", ") : "—";
+  }
+  // A COMMA-JOINED value is a list the column happens to store as text, and
+  // it used to read as raw codes here: `labelOf` matches the WHOLE string,
+  // so "age,stage" matched nothing and fell through to itself — while the
+  // editor opened on the same row showed "Age: Greater than 60 years". The
+  // cell is where a reader checks their record, and codes there make a
+  // correctly stored value look wrong (#586).
+  //
+  // Only when EVERY part is a known value. Not every string with a comma is
+  // a list — a free-text field can hold "Smith, John" — and labelling one
+  // part of somebody's prose because it happened to collide with an option
+  // would be worse than the codes. All-or-nothing keeps the fallback exactly
+  // where it was: a value the vocabulary does not recognise still reads
+  // verbatim, which is what a legacy spelling needs.
+  //
+  // `splitJoined`, so the split here and the split the editor seeds from are
+  // the same one. Two different splits of the same string is how
+  // `inv(3)(q21,q26)` becomes two markers nobody has heard of.
+  //
+  // THERE IS A THIRD RULE, and it is the one that decides eligibility:
+  // EXACT's matcher uses a bare `value.split(",")` with no trimming and no
+  // bracket awareness (`trials/querysets/trial.py`). PROMOP reads
+  // `cytogenetic_markers` back `", "`-joined, so the matcher already drops
+  // every marker after the first — before this change and independently of
+  // it. What this DOES do is remove the last on-screen hint: the cell used
+  // to show raw text and now shows recognised labels for values the match
+  // is not using. Filed as #588, which is where the three rules are made
+  // one; this is not the place to paper over it.
+  if (typeof value === "string" && options?.length) {
+    const parts = splitJoined(value);
+    const known = parts.length > 1
+      && parts.every((part) => options.some((o) => String(o.value) === part));
+    if (known) return parts.map((part) => labelOf(part, options)).join(", ");
   }
   return labelOf(value, options);
 }
@@ -293,18 +327,30 @@ function EligibilityRow({
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
-  // Only `edit` puts anything on screen. `no` carries a reason, but PROMOP's
-  // reasons are written for whoever is integrating — one of them points at
-  // `docs/omop_to_patientrecord.md` — so showing them raw to a patient would
-  // be worse than the silence. Surfacing them needs curated wording, and that
-  // is a decision, not an oversight.
+  // `edit` puts a control on screen; `no` may put a sentence there. PROMOP's
+  // own `reason` strings never reach it — they are written for whoever is
+  // integrating, and one points at `docs/omop_to_patientrecord.md`. What the
+  // reader sees is curated wording from two tables in `writable.ts`, and a
+  // refusal with no entry in either stays silent.
   const [editorOpen, setEditorOpen] = useState(false);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   const editable =
     editing && editableHere
-      ? editabilityOf(field.upatientField, editing.fields)
+      ? editabilityOf(field.upatientField, editing.fields, {
+          // EXACT ships some value sets on the row itself; without this the
+          // editor asks PROMOP, gets nothing, and draws a text box over a
+          // column the matcher reads as a list of codes.
+          //
+          // `uoptions` alone, though the cell above displays through
+          // `uoptions ?? options`. The bare `options` is the TRIAL's
+          // vocabulary for its own requirement, and offering it as answers
+          // the PATIENT can give is how a trial's value ends up in a
+          // patient's record.
+          type: field.utype,
+          options: field.uoptions,
+        })
       : ({ can: "unknown" } as const);
 
   return (
@@ -359,6 +405,22 @@ function EligibilityRow({
             ✕
           </span>
         ) : null}
+        {/* Said out loud, not left to silence, in the two cases `announce`
+            names: a control EXACT took away, and a write PROMOP routes to
+            another resource. Both sentences are EXACT's own. The rows the
+            descriptor merely refuses stay quiet — they never offered a
+            control, so nothing went missing, and a sentence on each of the
+            114 is noise.
+
+            No `!editorOpen` guard. `FieldEdit` only renders under
+            `can === "edit"`, so the editor cannot be open on a row that shows
+            this — except after a verdict flips edit→no while it is open, and
+            `FieldEdit` never clears the flag on unmount. In exactly that case
+            the value and units above are suppressed too, so guarding here
+            would leave the cell showing its column header and nothing else. */}
+        {editable.can === "no" && editable.announce ? (
+          <span className="exact-elig__note">{editable.why}</span>
+        ) : null}
         {writePending ? (
           <span className="exact-elig__saving">Saving…</span>
         ) : null}
@@ -395,6 +457,8 @@ function EligibilityRow({
             field={editable.field}
             label={field.label}
             entry={editable.entry}
+            options={editable.options}
+            joined={editable.joined}
             control={editable.control}
             // A refused value wins over the record's: the reader is about to
             // try again, and the thing they want in the box is what they
@@ -406,6 +470,8 @@ function EligibilityRow({
                   ? pendingValue
                   : field.uvalue
             }
+            // The record's own value, with neither of those in front of it.
+            recordValue={field.uvalue}
             units={field.uunits ?? field.units}
             onSave={(value) => editing.save(editable.field, value)}
             onOpenChange={setEditorOpen}
@@ -702,8 +768,16 @@ export function TrialDetailPage({
       ) : null}
 
       {query.isError ? (
-        <p style={{ color: "var(--exact-color-not-eligible)" }}>
-          Failed to load trial: {(query.error as Error)?.message ?? "unknown error"}
+        /* A 404 is not a failure to report as one. With the host keeping the
+         * trial in its URL (#552), this page is reachable by typing — and
+         * `/trials/nonsense` answering "Failed to load trial: Request failed
+         * with status code 404" reads as something broken here rather than
+         * an address that names no trial. Anything else keeps the message
+         * it came with, because that one IS about us. */
+        <p role="alert" style={{ color: "var(--exact-color-error-700)" }}>
+          {(query.error as { response?: { status?: number } })?.response?.status === 404
+            ? "We could not find that trial. It may have been withdrawn, or the address may be wrong."
+            : `Failed to load trial: ${(query.error as Error)?.message ?? "unknown error"}`}
         </p>
       ) : null}
 

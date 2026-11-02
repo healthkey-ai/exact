@@ -3,6 +3,7 @@
 // (e.g. mounting two filtered views with the same patient doesn't
 // re-request).
 import {
+  hashKey,
   keepPreviousData,
   useQuery,
   type UseQueryResult,
@@ -25,6 +26,7 @@ import {
   fetchTrialDetail,
   fetchTrials,
   fetchTrialsGraph,
+  patientHandleOf,
 } from "./api";
 import { canEditFields } from "./state";
 import { PatientFieldWriter } from "./patientWriter";
@@ -162,6 +164,26 @@ export function useWritableFields(
 export function useQueuedPatientFields(
   state: TrialStateAdapter | undefined,
   key: string,
+  /** The values the RECORD came back with, once a batch has settled and the
+   *  re-read has landed.
+   *
+   *  Both `saved` and `differs` are reported: `differs` is not a refusal, it
+   *  is the record having canonicalised what was sent (mg/L whatever unit was
+   *  typed, a datetime for a date, `null` for a cleared `""`), so it is the
+   *  value the page should be showing. `unconfirmed` is left out — the
+   *  response did not mention the field, so there is nothing to report about
+   *  it. */
+  onConfirmed?: (fields: Record<string, unknown>) => void,
+  /** Who the credential names, right now. Passed to the queue, which
+   *  captures it per field at enqueue and compares it at send — see
+   *  `patientWriter.ts` and the invariant note on `live()` below for why the
+   *  key cannot do this job. Omitted means no guard. */
+  credentialIdentity?: () => string | undefined,
+  /** The same, asked afresh immediately before a request rather than
+   *  remembered. The pair is explained on `credentialIdentityNow` in
+   *  `types.ts`; in short, the cached one only moves when somebody fetches a
+   *  token and a whole debounce window can pass with no request in it. */
+  credentialIdentityNow?: () => Promise<string | undefined> | string | undefined,
 ): {
   save: (field: string, value: unknown) => void;
   outstanding: Record<string, unknown>;
@@ -219,6 +241,19 @@ export function useQueuedPatientFields(
   // Fields reported in the current batch, retired together once the re-read
   // above has landed.
   const settledFields = useRef<string[]>([]);
+  // And what the record said they are now — see `onConfirmed`.
+  const settledValues = useRef<Record<string, unknown>>({});
+  const onConfirmedRef = useRef(onConfirmed);
+  onConfirmedRef.current = onConfirmed;
+  // Through a ref like every other callback here: the writer is built once
+  // per key and would otherwise hold the reader it was built with for the
+  // life of that key, which is the bug this is here to prevent, one level
+  // up. The bridge hands over a stable function, but nothing in this
+  // signature says it has to.
+  const identityRef = useRef(credentialIdentity);
+  identityRef.current = credentialIdentity;
+  const identityNowRef = useRef(credentialIdentityNow);
+  identityNowRef.current = credentialIdentityNow;
   settledRef.current = () => {
     queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
     queryClient.invalidateQueries({ queryKey: ["exact-writable-fields", key] });
@@ -255,24 +290,65 @@ export function useQueuedPatientFields(
     //  - same patient, new adapter object (a host writing
     //    `state={createPromopState(...)}` inline, or a refreshed client): use
     //    the current one, or a write would go through an expired client.
-    //  - different patient: use the captured one. This writer belongs to the
-    //    previous patient and its flush carries values edited FOR them —
-    //    sent through the ref they would be written into the NEXT patient's
+    //  - a different READER: use the captured one. This writer belongs to
+    //    the previous one and its flush carries values edited FOR them —
+    //    sent through the ref they would be written into the NEXT reader's
     //    record. For a saved search that is an annoyance; for a haemoglobin
     //    it is one person's lab value in another person's chart.
+    //
+    // THE INVARIANT, and what `key` has to be for it to hold: a queued
+    // payload belongs to the reader who produced it, and must be DROPPED —
+    // not re-routed — if that reader is no longer the one the write will be
+    // attributed to. "Reader" is the IDENTITY and the patient, not either
+    // alone. Keyed on the patient only, a host that switches ACCOUNT while
+    // showing the same patient keeps the key still, and this returns the new
+    // account's adapter to a flush carrying the old account's values.
+    //
+    // Three call sites had that bug, found one at a time over three reviews
+    // — saved filters, the weights wizard, and this one. They are keyed on
+    // `readerHandle` now (`TrialMatches.tsx`). If you add a fourth caller,
+    // that is the key it wants; a patient handle is not enough for anything
+    // that writes.
+    //
+    // AND THE KEY IS NOT THE WHOLE GUARD. A key chooses which adapter the
+    // flush goes through; it does not drop a payload. So an identity that
+    // changes without moving the session signal used to be RE-ROUTED, not
+    // dropped — #583, four measured shapes, none of them derivable from
+    // anything in the React tree.
+    //
+    // What drops one now is the queue itself: it captures the credential's
+    // fingerprint when an edit is enqueued and compares it when the batch
+    // goes out (`identity` below, `patientWriter.ts`, and
+    // `identityFingerprint.ts` for why a rotated token is not a new
+    // identity). The key still decides WHICH adapter; the fingerprint
+    // decides WHETHER. Keep both — a stale adapter and a stranger's
+    // credential are different failures and neither guard catches the
+    // other.
     const captured = stateRef.current;
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     const built: PatientFieldWriter = new PatientFieldWriter(
       (fields) => live().setPatientFields!(fields),
       {
-        onSettled: (field) => {
+        identity: () => identityRef.current?.(),
+        // Falls back to the CACHED reader when no fresh one was given, the
+        // way the writer's own default does. Passing a function that always
+        // answers `undefined` would override that default and switch the
+        // guard off entirely — `sameIdentity` reads unknown as a match — so a
+        // caller supplying only the cached reader would get no protection
+        // and no sign of it. The two props are independently optional, so
+        // that combination is reachable.
+        identityNow: () => (identityNowRef.current ?? identityRef.current)?.(),
+        onSettled: (field, outcome) => {
           if (writerRef.current && writerRef.current !== built) return;
           owed.current[field] = Math.max(0, (owed.current[field] ?? 1) - 1);
           // Superseded: a newer edit to this field has not been answered yet,
           // and ITS value is what the row is showing.
           if (owed.current[field] > 0) return;
           settledFields.current.push(field);
+          if (outcome.status !== "unconfirmed") {
+            settledValues.current[field] = outcome.value;
+          }
           setFailed((current) => {
             if (!(field in current)) return current;
             const next = { ...current };
@@ -282,11 +358,63 @@ export function useQueuedPatientFields(
         },
         onBatchSettled: () => {
           const reported = settledFields.current;
+          const confirmed = settledValues.current;
           settledFields.current = [];
+          settledValues.current = {};
           if (writerRef.current && writerRef.current !== built) return;
           void settledRef.current().then(() => {
             if (writerRef.current && writerRef.current !== built) return;
             retire(reported);
+            // After the record has been re-read, not before: the host
+            // refreshes its payload on this, and doing that while our re-read
+            // of the detail is still in the air would have the page answering
+            // from two records at once. (The list and the descriptor are
+            // invalidated alongside it and not waited for — see `settledRef`.)
+            //
+            // One case where "re-read" is weaker than it sounds, and it is
+            // not the one it looks like. A second batch settling first does
+            // NOT make this resolve early: React Query cancels the refetch
+            // this was waiting on and the waiter chains onto the newer one
+            // instead, so the report lands after that — measured, at the
+            // newer fetch's completion, not the cancelled one's.
+            //
+            // What does skip the re-read is `refetchType: "active"`, the
+            // default: with the reader back on the list, the detail query
+            // has no observer, nothing refetches, and this resolves having
+            // re-read nothing. The report is still right — it carries what
+            // the RECORD answered, and the host refreshes from the record —
+            // and the page it would have repainted is not on screen.
+            //
+            // `=== built`, where the write itself accepts a null writer: an
+            // unmount and a host taking the adapter away both leave the ref
+            // null, and a write already on the wire must still be finished
+            // and answered. A REPORT after either is a different matter —
+            // there is no page left to refresh, or the page has moved to
+            // someone else, and the payload names no patient, so a host
+            // cannot tell that the value it is being handed belongs to the
+            // person who is no longer on screen.
+            if (writerRef.current !== built) return;
+            if (Object.keys(confirmed).length > 0) {
+              const failed = (error: unknown) =>
+                console.warn("[exact] the host could not be told what was written", error);
+              try {
+                // `Promise.resolve` because the prop returns `void` and an
+                // `async` host callback is assignable to that: a rejection
+                // from one would sail past the `catch` below and land as an
+                // unhandled rejection, which some hosts and test runners
+                // treat as fatal.
+                void Promise.resolve(onConfirmedRef.current?.(confirmed)).catch(failed);
+              } catch (error) {
+                failed(error);
+              }
+            }
+          }).catch((error) => {
+            // The chain is `invalidateQueries` and the two calls above, both
+            // of which guard themselves. Nothing here is expected to reject;
+            // an unhandled rejection is what would come of it if something
+            // did, and in a host's page that is somebody else's error
+            // reporter lighting up over a write that succeeded.
+            console.warn("[exact] the post-write settle did not finish", error);
           });
         },
         onError: (fields) => {
@@ -590,10 +718,58 @@ export function useTrialDetail({
       personId ?? null,
       patientInfo ?? null,
       filters ?? null,
+      // Derived from the two above it, and hashed the same way React Query
+      // hashes the key itself, so it draws no distinction the key did not
+      // already have. (`JSON.stringify` would: `hashKey` sorts a plain
+      // object's fields and it does not, so a host rebuilding its payload in
+      // another field order would have spelled a new key here and paid a
+      // round trip for it.) It is in the key so the hold below has something
+      // stable to compare WHO this answer was about — see there.
+      patientHandleOf(patientInfo, personId),
     ],
     queryFn: () => fetchTrialDetail({ apiClient, trialId, patientInfo, personId, filters }),
     enabled: enabled && trialId != null,
     staleTime: 30_000,
+    // Hold the previous answer while a re-read is in flight — but only when
+    // the trial, the filters and the patient are all still the same, so the
+    // only thing that moved is the payload itself.
+    //
+    // The key carries the patient payload, and a host refreshing that (which
+    // it does after an inline edit, #555) makes a NEW query: `data` goes
+    // undefined, the attribute rows unmount, and every editor open on one
+    // goes with them, half-typed value included. The reader's own save is
+    // what triggers the refresh, so this lands on exactly the person who is
+    // working through a column of fields.
+    //
+    // A blanket `keepPreviousData` would hold across all three, and each of
+    // them paints something the reader would read as current and true:
+    // another trial's eligibility under the title they just opened, a score
+    // computed under the weights they just changed, or — worst — the
+    // previous PATIENT's numbers. Nothing here dims or says "Updating…" the
+    // way the list does, so whatever is held is simply believed.
+    //
+    // Honest about all three: measured, NONE of them changes anything
+    // today, and no test holds any of them — a mutation setting any one to
+    // `true`, or dropping to a blanket `keepPreviousData`, leaves the suite
+    // green. What IS pinned is that a hold exists at all (`FieldEdit`'s
+    // "does not wipe a second editor" dies without it).
+    //
+    // They are dead for one reason: every condition here can only differ
+    // when something has also moved the detail out from under this observer
+    // — a trial change unmounts it (`selectedTrial` goes through null), and
+    // a patient change fires the reset effect that does the same. So the
+    // conditions are what keeps this honest if either of those stops being
+    // true: a "similar trials" link, or a reset keyed on less. A test
+    // asserting them today would pass against the blanket form too, which
+    // is worse than no test.
+    placeholderData: (previous, previousQuery) => {
+      const key = previousQuery?.queryKey;
+      if (!key) return undefined;
+      const sameTrial = key[1] === trialId;
+      const sameFilters = hashKey([key[4]]) === hashKey([filters ?? null]);
+      const samePatient = key[5] === patientHandleOf(patientInfo, personId);
+      return sameTrial && sameFilters && samePatient ? previous : undefined;
+    },
   });
 }
 
@@ -695,9 +871,49 @@ export function useSavedFilters(
    *  built for. `TrialMatches` passes `"state"` or `"preferences"`; a caller
    *  with one source can leave it out. */
   sourceId?: string,
+  /** The key for the localStorage fallback, when it must differ from the one
+   *  above. It must: `key` carries the signed-in identity so two accounts do
+   *  not share a writer, and an identity on disk either rots (a generated
+   *  one is per page load) or moves the namespace once (a host-supplied one).
+   *  Handed in already built rather than derived by taking `key` apart —
+   *  an identity can contain the separator, `auth0|5f3c9b` being the usual
+   *  spelling, and a parser got that wrong. Omitted, the key is used as-is. */
+  persistedKey?: string,
+  /** Who the credential names, right now. Captured when the reader asks for
+   *  a save or a reset and compared when the write goes out — see
+   *  `preferences.ts` and the invariant note on `live()` above. Omitted
+   *  means no guard. */
+  credentialIdentity?: () => string | undefined,
+  /** The same, asked afresh immediately before a request. See
+   *  `credentialIdentityNow` in `types.ts`. */
+  credentialIdentityNow?: () => Promise<string | undefined> | string | undefined,
 ): {
   persist: (filters: FilterState) => void;
   reset: () => void;
+  /** Tell the transport that this row was written by another route, so the
+   *  next save re-reads instead of quoting a tag the server has moved past.
+   *  See `PreferenceTransport.forget`. */
+  forget: () => void;
+  /** Send whatever is queued, wait for the queue to DRAIN, and say whether
+   *  everything in that drain landed.
+   *
+   *  For a caller whose next step must not happen unless the filters were
+   *  stored — the weights wizard records "this reader has answered" only once
+   *  their answer is safe, because the two writes take different routes to
+   *  the same row and the queue's is the one that can be refused.
+   *
+   *  Read the scope exactly. It is "the writes this call waited for", not
+   *  "your write": verdicts from before the call are excluded, and a write
+   *  somebody else enqueues while it waits is included. The two come apart
+   *  only if a second writer is active behind a modal that blocks the page,
+   *  which nothing here does today — but a caller that cannot tolerate the
+   *  wider scope needs a per-write promise, which `PreferenceWriter.save`
+   *  deliberately does not return.
+   *
+   *  A write RETIRED by a Reset counts as landed. It travelled the success
+   *  path because Reset superseding it is an intent, not a failure, and the
+   *  content it carried is gone on purpose. */
+  settle: () => Promise<boolean>;
   /** The last write did not land. */
   failed: boolean;
   /** Which attempt this is. Changes whenever the reader behind the panel
@@ -746,8 +962,40 @@ export function useSavedFilters(
     const live = () =>
       (keyRef.current === key ? (stateRef.current ?? captured) : captured)!;
     return captured
-      ? adapterPreferences(preferenceMethodsThrough(captured, live))
-      : localStoragePreferences(key);
+      ? adapterPreferences(
+          preferenceMethodsThrough(captured, live),
+          // Whose row this transport believes it is caching. The key above
+          // rebuilds it when the host SIGNALS an account change; #583
+          // measured four shapes where the identity moves and no key does,
+          // and in those the cache would otherwise survive the swap and
+          // become the merge base for the next reader's first save (#603).
+          () => filterIdentityRef.current?.(),
+          // The asked-afresh half, and the guard does not work at mount
+          // without it: the cached reading above is written by the
+          // client's interceptor, so at the moment the seeding read is
+          // issued it has never been written at all.
+          //
+          // PASSED THROUGH, NOT SUBSTITUTED. This used to fall back to the
+          // cached reader when the host supplied no `credentialIdentityNow`
+          // — and that fallback was invisible to the transport, which
+          // decides whether it can ask by looking at this argument. It
+          // always got a function, so it always believed it could ask, and
+          // what it got back was the very cache it must not trust. The
+          // measured result was #603 reproducing in full for that host,
+          // with the transport's own handling of the case unreachable.
+          // Answering `undefined` is the truth, and the transport acts on
+          // it: an unattributed request stamps unknown, which leaves the
+          // guard off for that host rather than confidently wrong.
+          //
+          // Still a closure, and still evaluated lazily. Reading the ref
+          // here in the factory to decide whether to pass one at all was
+          // the obvious spelling and it is a `ReferenceError` — the ref is
+          // declared BELOW this memo, so the factory is inside its
+          // temporal dead zone. It took out a dozen tests at once, which
+          // is the only pleasant thing about it.
+          () => filterIdentityNowRef.current?.(),
+        )
+      : localStoragePreferences(persistedKey ?? key);
     // `source` rather than `state`: see above, and `sourceId`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, key]);
@@ -757,12 +1005,46 @@ export function useSavedFilters(
   // would be replacing, and without this the reader's edit simply vanishes —
   // they come back tomorrow and their filters are last week's.
   const [failed, setFailed] = useState(false);
+  // Whether anything has failed since the last `settle()`, readable without
+  // waiting for a render: `settle()` is awaited by a caller that decides on
+  // it, and by the time the state above reaches them the answer is a render
+  // old. Cleared by `settle()` before it waits and set by nothing but a
+  // failure, so what it returns is a conjunction over that wait rather than
+  // the last verdict in it. Written by every writer this hook builds, which
+  // is why the scope is "the drain", not "one write" — see `settle` in the
+  // return type. Starts true: nothing has failed before anything was sent.
+  const okRef = useRef(true);
   // Which writer's verdict the message belongs to. A patient switch builds a
   // new one while the old one's flush is still in the air, and that flush
   // lands afterwards — under the new patient, about the previous one's row.
+  // Read through a ref so the writer, which is built once per key, does not
+  // hold the reader it was built with for the life of that key — which is
+  // the very failure this guard exists to prevent.
+  const filterIdentityRef = useRef(credentialIdentity);
+  filterIdentityRef.current = credentialIdentity;
+  const filterIdentityNowRef = useRef(credentialIdentityNow);
+  filterIdentityNowRef.current = credentialIdentityNow;
+
   const writerRef = useRef<PreferenceWriter | null>(null);
   const writer = useMemo(() => {
     const built: PreferenceWriter = new PreferenceWriter(transport, {
+      // Through the ref, like every other callback here — see the note where
+      // it is declared.
+      identity: () => filterIdentityRef.current?.(),
+      // Same fallback as the patient queue, for the same reason.
+      // The fallback STAYS here, unlike the transport's above, and the
+      // difference is worth stating because the two lines look identical.
+      //
+      // `PreferenceWriter` compares the reader a payload was queued under
+      // against this answer and drops the write if they differ. It makes
+      // no decision about whether it CAN ask, so a cached answer is a
+      // weaker guard than a fresh one, not a wrong one: it catches every
+      // swap the cache has seen and misses the ones it has not. The
+      // transport's version had to go because it keyed "can I ask" on this
+      // argument being present, so laundering it turned the guard off
+      // while reporting it on.
+      identityNow: () =>
+        (filterIdentityNowRef.current ?? filterIdentityRef.current)?.(),
       // `=== built`, so a NULL ref means "not mine" and this stays quiet.
       // `useQueuedPatientFields` writes the same guard as
       // `current && current !== built`, where null means "nobody has claimed
@@ -773,6 +1055,9 @@ export function useSavedFilters(
       // mean is that this hook is gone, and raising a flag on an unmounted
       // tree says nothing to anybody.
       onError: () => {
+        // Outside the ownership check, unlike `setFailed`: a verdict nobody
+        // is rendering is still the verdict `settle()` must return.
+        okRef.current = false;
         if (writerRef.current === built) setFailed(true);
       },
       // Cleared when a write LANDS, not when one is issued. Writes queue, so
@@ -780,6 +1065,13 @@ export function useSavedFilters(
       // optimistically and then never restore it — or, the other way round,
       // leave it standing over filters that did in fact save.
       onSuccess: () => {
+        // Deliberately does NOT clear `okRef`. `settle()` asks whether
+        // EVERYTHING in its drain landed, and a drain is not one write: with
+        // a success clearing the flag, a second write succeeding after the
+        // first had failed answered `true`, and the caller acted on a write
+        // that was never stored. `settle()` clears it once, at the start.
+        // `failed` below is a different question — "is the panel's last word
+        // unsaved" — and a success genuinely answers that one.
         if (writerRef.current === built) setFailed(false);
       },
     });
@@ -938,10 +1230,23 @@ export function useSavedFilters(
         editedRef.current = true;
         writer.reset();
       },
+      forget: () => transport.forget(),
+      settle: async () => {
+        // Cleared first, so the answer describes THIS drain. `okRef` is one
+        // boolean for the life of the hook, and a failure from ten minutes
+        // ago is not a reason to withhold the wizard's flag. Anything that
+        // fails during the wait below flips it back.
+        okRef.current = true;
+        // `flush()` before waiting: `settled()` waits on what is in FLIGHT,
+        // and a `persist` a moment ago is still sitting on the debounce.
+        writer.flush();
+        await writer.settled();
+        return okRef.current;
+      },
       failed,
       pending,
       epoch: writer,
     }),
-    [writer, failed, pending],
+    [writer, transport, failed, pending],
   );
 }
