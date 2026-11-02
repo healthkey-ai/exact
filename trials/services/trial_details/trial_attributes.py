@@ -6,9 +6,10 @@ import re
 from django.db import models
 from django.db.models import Q
 
+from trials.services.patient_info.normalize import recompute_note
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
-from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_types_enabled
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
@@ -425,11 +426,109 @@ class TrialAttributes:
                 out[field['name']] = field
 
         therapies = self.therapies(subform_attrs)
-        return {
+        return self.with_patient_field_names({
             **out,
             **computed_fields,
             **therapies,
-        }
+        })
+
+    @staticmethod
+    def with_patient_field_names(fields):
+        """Stamp every row with the patient attribute it is about, in snake_case.
+
+        `ufield` is camelCase for the UI, and a client that wants to WRITE
+        the value addresses PROMOP, whose API is snake_case. Deriving the
+        name client-side is a trap: PROMOP answers an unknown field with 200
+        and no change (its `partial_update` dropped the old 405 on purpose),
+        so a name converted wrongly is a save that appears to work. (That is
+        PROMOP's `dev`; its `main` still answers 405, which is the older and
+        louder behaviour — a client must not rely on either.)
+
+        The derivation is not safe even when it looks it: `p53_ihc`
+        camelizes to `p53Ihc`, and a standard snake-caser turns that back
+        into `p_53_ihc`, a field nobody has.
+
+        What this is NOT is a promise that the value can be written.
+        `upatientField` names the attribute; whether PROMOP will accept a
+        write to it — and where that write lands — is answered by
+        `GET /api/v1/patient-records/writable-fields/`, which is caller-aware
+        and moves with the vocabulary. EXACT cannot answer it: 19 of
+        its own user fields have no column on PROMOP's `PatientRecord` at
+        all, measured against its `dev` on 2026-09-12 (`mipi_risk`,
+        `high_risk_mcl_criteria`, `p53_ihc`, …), and a key here that
+        implied otherwise would put EXACT's authority behind exactly the
+        silent 200 this exists to prevent.
+
+        There is a THIRD question neither answers, and it matters as much:
+        which values EXACT itself recomputes. An edit to one of those is
+        overwritten by the next match whatever PROMOP thinks of the write —
+        `normalize.py` sets `tnbc_status` on every save and `mipi_risk` on
+        every MCL one, among a dozen others — none of them from anything
+        the reader typed.
+
+        `ureadonly` is not that answer, though it is the obvious candidate:
+        `get_field` sets it from the presence of a subform, nothing more.
+        Nor is the mapping's `is_computed_value`, which is a display flag —
+        `_normalize_mcl_derivations` overwrites four fields on consecutive
+        lines and only one of them carries it, while `meets_gelf` and
+        `meets_lugano` carry it and are plain stored booleans nothing
+        derives. A draft of this change exposed that flag as `ucomputed`
+        and would have hidden the only control that can set those two while
+        offering one over `tnbc_status`, which the next save undoes.
+
+        So EXACT does not answer it yet and this key does not pretend to:
+        making the overwrite set explicit in `normalize.py` is #449. Until
+        then an editing client should treat a value whose provenance it
+        cannot see as provisional.
+
+        Two further traps the name alone does not close, both for the
+        client: a `×ULN` row inherits the base field's `ufield`, so editing
+        it would write the raw lab value; and `None` covers two different
+        situations — a trial-only row with nothing to write ever, and a row
+        whose data exists but not under one field (the therapy lines).
+
+        Stamped here rather than in `get_field` because rows are built in
+        three places — `get_field`, `computed_general_fields`, `therapies` —
+        and a key added to one is a key the others quietly lack, which a
+        client cannot tell from "this row is about nothing".
+
+        And the name is checked, not trusted: `therapies` puts the TRIAL
+        attribute in `ufield`, so `therapiesRequired` would have become
+        `therapies_required`, which is not a patient attribute at all.
+        """
+        for field in fields.values():
+            if not isinstance(field, dict):
+                continue
+            ufield = field.get('ufield')
+            patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
+            field['upatientField'] = (
+                patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
+            )
+            # Whether a stored value for it survives. EXACT recomputes these
+            # on every match from the inputs it was given, so a write upstream
+            # is replaced before the matcher ever sees it — accepted, then
+            # undone, with no error anywhere (#449). A client that offers an
+            # edit box for one of them is offering a control that does
+            # nothing, which is worse than offering none.
+            #
+            # `recompute_note` rather than the set alone, because the set is
+            # what this module WRITES and that is not the whole question.
+            # `abnormal_kappa_lambda_ratio` and `meets_meas_or_bone_status`
+            # are properties with no column and no setter — recomputed on
+            # every read, and dropped from an inbound payload before they
+            # reach the instance. They are in neither the set nor any
+            # condition, so they answered `false` here: "this value is the
+            # reader's", over a field an edit cannot reach at all. Worse than
+            # the case the key exists for.
+            note = recompute_note(field['upatientField'])
+            field['upatientRecomputed'] = note is not None
+            # The same answer with its reason, for a client that can say more
+            # than yes or no. A boolean calls `mipi_risk` recomputed for a
+            # breast-cancer patient, whose `mipi_risk` nothing here touches —
+            # so the control is hidden from the one reader who could have used
+            # it, which is the false positive #449 named on `meets_gelf`.
+            field['upatientRecomputedWhen'] = note
+        return fields
 
     def computed_general_fields(self):
         computed_fields = {}
@@ -544,6 +643,20 @@ class TrialAttributes:
             trial_field = self._trial.__class__._meta.get_field(field_name)
             trial_field_name = self.get_field_name(trial_field)
             options = self.get_options(trial_field_name)
+            if (omop_therapy_types_enabled()
+                    and field_name in ('therapy_types_required', 'therapy_types_excluded')):
+                # Under the OMOP profile the column holds concept_ids, while the
+                # legacy option map is keyed by internal category codes, so every
+                # row rendered a bare number. Resolve through the release-pinned
+                # mirror — the same resolver the matcher's `omopConcepts` block
+                # uses — and keep an unresolved id visible rather than dropping
+                # it (or inventing a title).
+                from exact_matching.matcher import _resolve_omop_concepts
+                options = [
+                    {'value': str(item['code']),
+                     'label': item['title'] or f'Unknown concept ({item["code"]})'}
+                    for item in _resolve_omop_concepts(value)
+                ]
             uoptions = None
             subform_details = subform_attrs[field_name] if field_name in subform_attrs else None
 
@@ -751,6 +864,9 @@ class TrialAttributes:
                 pi_field_names = data
 
             for pi_field_name in pi_field_names:
+                # Once per entry, the way the row site does it, rather than
+                # once for the boolean and again for the note.
+                entry_note = recompute_note(pi_field_name)
                 if pi_field_name in out:
                     continue
 
@@ -772,7 +888,53 @@ class TrialAttributes:
                     'type': utype,
                     'value': self.get_value(field_name, value),
                     'options': options,
+                    # The patient attribute this entry IS — taken from the
+                    # mapping rather than derived from `name`, which is the
+                    # camelCase spelling and cannot be turned back reliably
+                    # (`p53_ihc` camelises to `p53Ihc`, which a snake-caser
+                    # returns as `p_53_ihc`). The row's own `upatientField`
+                    # has to be derived; this one does not, and taking the
+                    # harder route here would be inventing a problem.
+                    'upatientField': pi_field_name,
+                    # Same question as on a row, and it is asked here for the
+                    # opposite reason. A subform exists because the value
+                    # above it is COMPUTED: the reader cannot write
+                    # `tnbc_status`, they write the receptor statuses it is
+                    # computed from. So the entries are the writable part —
+                    # except where an entry is itself computed, and then it is
+                    # no more writable than the row that opened the dialog.
+                    #
+                    # Only the therapy groups contain such an entry today:
+                    # `first_line_therapy` and its date and outcome are
+                    # derived from the therapy lines. Every statically listed
+                    # input is raw data. (`creatinine_clearance_rate` looks
+                    # like a counter-example and is not one — EXACT reads it
+                    # and never writes it; the derived renal value is
+                    # `estimated_glomerular_filtration_rate`, which is in no
+                    # subform.)
+                    #
+                    # Through `recompute_note` like the row above, not off the
+                    # set: the set is what `normalize.py` WRITES, and a value
+                    # that is not stored at all — a read-only property with no
+                    # column — is in neither it nor any condition, so reading
+                    # the set alone answers `false` for one, which a client
+                    # takes as "this is yours to edit" over a field an edit
+                    # cannot reach.
+                    'upatientRecomputed': entry_note is not None,
+                    'upatientRecomputedWhen': entry_note,
                 }
+
+                # The unit the PATIENT's value is stored in, the same way a row
+                # carries it. Without this a subform prints a bare number and
+                # an editor falls back to the descriptor's unit, which is the
+                # vocabulary's and not this patient's — and CRAB, whose inputs
+                # are exactly these labs, converts through the stored one. A
+                # calcium typed in the wrong scale flips a clinical composite
+                # with nothing on screen to show which scale was meant.
+                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
+                if units_details:
+                    val['uunits'] = units_details['options'].get(units_details['uvalue'])
+                    val['units'] = units_details['options'].get(units_details['default'])
 
                 tmp[pi_field_name] = val
 

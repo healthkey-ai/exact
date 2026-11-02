@@ -3,8 +3,32 @@ from django.test import override_settings
 
 from trials.services.value_options import ValueOptions
 from trials.services.trial_details.trial_templates import TrialTemplates
+from trials.services.trial_details.trial_attributes import TrialAttributes
 from trials.services.patient_info.normalize import normalize_patient_info
 from tests.factories import *
+
+
+@pytest.fixture(autouse=True)
+def _without_edit_metadata(monkeypatch):
+    """These tests are full-row snapshots of the ELIGIBILITY fields they were
+    recorded for. The editing metadata a row now carries is asserted in
+    `test_patient_field_metadata.py`; keeping it here would turn every snapshot
+    into a list of new keys and hide the fields the snapshot exists to guard."""
+    monkeypatch.setattr(
+        TrialAttributes, 'with_patient_field_names',
+        staticmethod(lambda fields: fields), raising=True)
+    original = TrialAttributes.get_user_subform_attrs
+
+    def stripped(self, *args, **kwargs):
+        out = original(self, *args, **kwargs)
+        for entries in out.values():
+            for entry in entries:
+                for key in ('upatientField', 'upatientRecomputed',
+                            'upatientRecomputedWhen', 'units', 'uunits', 'uunitsOptions'):
+                    entry.pop(key, None)
+        return out
+
+    monkeypatch.setattr(TrialAttributes, 'get_user_subform_attrs', stripped, raising=True)
 
 
 def row_named(res, name):
