@@ -53,8 +53,12 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         # say arrives as `null` rather than `false`. `bool(...)` would turn
         # "unsaid" into "no subform", which is the wrong direction to fail
         # in and the opposite of what the key beside it does.
+        # The subform signal is the subform itself, not `ureadonly`: that flag
+        # also comes from `is_computed_value` (FL `meets_gelf` / `meets_lugano`
+        # are read-only rows with no subform entries), and a client reading it
+        # as "this opens a dialog" would offer a door with nothing behind it.
         "patientFieldHasSubform": (
-            item.get("ureadonly") if item.get("upatientField") else None
+            bool(item.get("subform_details")) if item.get("upatientField") else None
         ),
         "label": item.get("label"),
         "trialValue": item.get("value"),
