@@ -7,6 +7,10 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import override_settings
 
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
+
+from accounts.models import Identity
 from trials.services.matching.typed_runtime import (
     TypedMatchingUnavailable,
     resolve_evaluation,
@@ -82,7 +86,7 @@ def test_readiness_command_lists_all_55_with_resolver(capsys):
     with override_settings(
         EXACT_OMOP_CRITERIA=True,
         EXACT_TYPED_MATCHING_ENABLED=True,
-        EXACT_TYPED_MATCHING_RESOLVER=object(),
+        EXACT_TYPED_MATCHING_RESOLVER=lambda request, patient: None,
         EXACT_OMOP_THERAPY=True,
         EXACT_OMOP_LANGUAGES=True,
     ):
@@ -91,7 +95,90 @@ def test_readiness_command_lists_all_55_with_resolver(capsys):
     assert payload['criteria_count'] == 55
     assert payload['ready_count'] == 55
     assert payload['resolver_installed'] is True
+    assert payload['resolver_error'] is None
     # The resolver replaces the whole evaluation, so every field — including
     # therapy and language — is served by the typed runtime, not the cutover
     # readers.
     assert {row['reader'] for row in payload['fields']} == {'typed_runtime'}
+
+
+def test_runtime_rejects_unimportable_resolver():
+    with override_settings(
+        EXACT_OMOP_CRITERIA=True,
+        EXACT_TYPED_MATCHING_ENABLED=True,
+        EXACT_TYPED_MATCHING_RESOLVER='no.such.module.resolver',
+    ):
+        with pytest.raises(TypedMatchingUnavailable) as raised:
+            resolve_evaluation(_request(), SimpleNamespace())
+    assert raised.value.detail['code'] == 'trusted_resolver_configuration'
+
+
+def test_readiness_rejects_unimportable_resolver(capsys):
+    with override_settings(
+        EXACT_OMOP_CRITERIA=True,
+        EXACT_TYPED_MATCHING_ENABLED=True,
+        EXACT_TYPED_MATCHING_RESOLVER='no.such.module.resolver',
+    ):
+        with pytest.raises(CommandError):
+            call_command('omop_criteria_readiness', '--json')
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['resolver_installed'] is False
+    assert payload['resolver_error'] == 'trusted_resolver_configuration'
+    assert payload['ready_count'] == 0
+    assert all('resolver configuration invalid' in row['reason'] for row in payload['fields'])
+
+
+def test_readiness_rejects_non_callable_resolver(capsys):
+    with override_settings(
+        EXACT_OMOP_CRITERIA=True,
+        EXACT_TYPED_MATCHING_ENABLED=True,
+        EXACT_TYPED_MATCHING_RESOLVER=object(),
+    ):
+        with pytest.raises(CommandError):
+            call_command('omop_criteria_readiness', '--json')
+    payload = json.loads(capsys.readouterr().out)
+    assert payload['resolver_installed'] is False
+    assert payload['resolver_error'] == 'trusted_resolver_configuration'
+
+
+def test_readiness_reports_language_data_gate(monkeypatch, capsys):
+    import trials.services.omop.languages_readiness as languages_readiness
+
+    monkeypatch.setattr(
+        languages_readiness,
+        'check_languages_readiness',
+        lambda: SimpleNamespace(ok=False, reasons=['vocab missingomop_concept_id']),
+    )
+    with override_settings(
+        EXACT_OMOP_CRITERIA=False,
+        EXACT_TYPED_MATCHING_ENABLED=False,
+        EXACT_TYPED_MATCHING_RESOLVER=None,
+        EXACT_OMOP_LANGUAGES=True,
+    ):
+        call_command('omop_criteria_readiness', '--json')
+    payload = json.loads(capsys.readouterr().out)
+    language = next(
+        row for row in payload['fields'] if row['field'] == 'languages_skills_required'
+    )
+    assert language['ready'] is False
+    assert 'data not ready' in language['reason']
+    assert 'vocab missingomop_concept_id' in language['reason']
+
+
+def test_trial_request_fails_closed_without_resolver():
+    user, _ = Identity.objects.get_or_create(issuer='urn:local', sub='flag-http-tester')
+    token, _ = Token.objects.get_or_create(user=user)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+    with override_settings(
+        EXACT_OMOP_CRITERIA=True,
+        EXACT_TYPED_MATCHING_ENABLED=True,
+        EXACT_TYPED_MATCHING_RESOLVER=None,
+    ):
+        response = client.post(
+            '/trials/match/',
+            {'patient_info': {'disease': 'multiple myeloma'}},
+            format='json',
+        )
+    assert response.status_code == 503
+    assert response.data['code'] == 'typed_matching_unavailable'

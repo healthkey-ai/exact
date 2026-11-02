@@ -23,6 +23,27 @@ class TypedMatchingUnavailable(APIException):
     default_code = 'typed_matching_unavailable'
 
 
+def load_resolver():
+    """Return the configured resolver callable, or raise ``ContractError``.
+
+    Shared by the request path and the readiness command so both agree on what
+    "installed" means: an empty value is ``typed_matching_unavailable``; a
+    dotted path that does not import, or a non-callable object, is
+    ``trusted_resolver_configuration``.
+    """
+    resolver = getattr(settings, 'EXACT_TYPED_MATCHING_RESOLVER', None)
+    if not resolver:
+        raise ContractError('typed_matching_unavailable')
+    if isinstance(resolver, str):
+        try:
+            resolver = import_string(resolver)
+        except (ImportError, AttributeError) as error:
+            raise ContractError('trusted_resolver_configuration') from error
+    if not callable(resolver):
+        raise ContractError('trusted_resolver_configuration')
+    return resolver
+
+
 def resolve_evaluation(request, patient_info):
     # One public flag for the non-therapy criteria. EXACT_TYPED_MATCHING_ENABLED
     # remains the internal name for existing callers/tests.
@@ -40,21 +61,11 @@ def resolve_evaluation(request, patient_info):
             raise failure
         return holder[0]
     try:
-        resolver = getattr(settings, 'EXACT_TYPED_MATCHING_RESOLVER', None)
-        if not resolver:
-            # The flag is on but the host installed no resolver: that is the
-            # documented fail-closed state of EXACT_OMOP_CRITERIA, not a
-            # missing patient. Keep the two reasons distinct.
-            raise ContractError('typed_matching_unavailable')
+        # A missing resolver is the flag's own fail-closed state, not a
+        # missing patient: keep the two reasons distinct.
+        resolver = load_resolver()
         if patient_info is None:
             raise ContractError('trusted_context_unavailable')
-        if isinstance(resolver, str):
-            try:
-                resolver = import_string(resolver)
-            except (ImportError, AttributeError) as error:
-                raise ContractError('trusted_resolver_configuration') from error
-        if not callable(resolver):
-            raise ContractError('trusted_resolver_configuration')
         evaluation = resolver(request, patient_info)
         if not isinstance(evaluation, RequestEvaluation) or not evaluation.is_bound_to(patient_info):
             raise ContractError('request_patient_binding')

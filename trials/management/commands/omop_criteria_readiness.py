@@ -10,7 +10,9 @@ import json
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from exact_matching.contracts import ContractError
 from exact_matching.contracts.inventory import CRITERIA
+from trials.services.matching.typed_runtime import load_resolver
 
 THERAPY_FIELDS = frozenset({
     'therapies_required', 'therapies_excluded',
@@ -34,12 +36,24 @@ class Command(BaseCommand):
         therapy_flag = bool(getattr(settings, 'EXACT_OMOP_THERAPY', False))
         language_flag = bool(getattr(settings, 'EXACT_OMOP_LANGUAGES', False))
 
-        # An installed resolver serves every field: the typed runtime replaces
-        # the whole evaluation, including therapy and language. The per-field
+        # Same validation the request path uses: an unimportable dotted path or
+        # a non-callable object is not "installed", it is a broken configuration
+        # that fails closed with trusted_resolver_configuration.
+        resolver_error = None
+        if resolver:
+            try:
+                load_resolver()
+            except ContractError as error:
+                resolver_error = str(error)
+        elif criteria_flag:
+            resolver_error = 'typed_matching_unavailable'
+
+        # A valid resolver serves every field: the typed runtime replaces the
+        # whole evaluation, including therapy and language. The per-field
         # cutover flags only decide what serves a field while that is not the
         # case.
-        typed_ready = criteria_flag and resolver is not None
-        criteria_fail_closed = criteria_flag and resolver is None
+        typed_ready = criteria_flag and resolver_error is None
+        criteria_fail_closed = criteria_flag and resolver_error is not None
         rows = []
         for spec in CRITERIA:
             field = spec.field
@@ -53,15 +67,43 @@ class Command(BaseCommand):
                 # unavailable, not just the non-therapy ones.
                 ready = False
                 reader = 'typed_runtime'
-                reason = 'EXACT_OMOP_CRITERIA on, resolver not installed (fail-closed 503)'
+                if resolver_error == 'typed_matching_unavailable':
+                    reason = 'EXACT_OMOP_CRITERIA on, resolver not installed (fail-closed 503)'
+                else:
+                    reason = (
+                        'EXACT_OMOP_CRITERIA on, resolver configuration invalid '
+                        f'({resolver_error}); fail-closed 503'
+                    )
             elif field in THERAPY_FIELDS:
                 ready = therapy_flag
                 reader = 'therapy_match_profile'
                 reason = 'EXACT_OMOP_THERAPY on' if ready else 'EXACT_OMOP_THERAPY off'
             elif field in LANGUAGE_FIELDS:
-                ready = language_flag
                 reader = 'languages_match_profile'
-                reason = 'EXACT_OMOP_LANGUAGES on' if ready else 'EXACT_OMOP_LANGUAGES off'
+                if not language_flag:
+                    ready = False
+                    reason = 'EXACT_OMOP_LANGUAGES off'
+                else:
+                    # The setting is not the gate: the profile falls back to
+                    # legacy unless the vocab/backfill readiness check passes.
+                    from trials.services.omop.languages_readiness import (
+                        check_languages_readiness,
+                    )
+                    try:
+                        report = check_languages_readiness()
+                    except Exception as error:  # noqa: BLE001 - report, never crash the report
+                        ready = False
+                        reason = (
+                            'EXACT_OMOP_LANGUAGES on, readiness check failed: '
+                            f'{type(error).__name__}'
+                        )
+                    else:
+                        ready = report.ok
+                        if ready:
+                            reason = 'EXACT_OMOP_LANGUAGES on, data ready'
+                        else:
+                            details = '; '.join(report.reasons) or 'no reason reported'
+                            reason = f'EXACT_OMOP_LANGUAGES on, data not ready: {details}'
             else:
                 ready = False
                 reader = 'typed_runtime'
@@ -75,10 +117,12 @@ class Command(BaseCommand):
                 'reason': reason,
             })
 
+        resolver_installed = bool(resolver) and resolver_error is None
         payload = {
             'EXACT_OMOP_CRITERIA': criteria_flag,
             'EXACT_TYPED_MATCHING_ENABLED': typed_enabled,
-            'resolver_installed': resolver is not None,
+            'resolver_installed': resolver_installed,
+            'resolver_error': resolver_error,
             'EXACT_OMOP_THERAPY': therapy_flag,
             'EXACT_OMOP_LANGUAGES': language_flag,
             'criteria_count': len(rows),
@@ -91,7 +135,8 @@ class Command(BaseCommand):
         else:
             self.stdout.write(
                 f"EXACT_OMOP_CRITERIA={criteria_flag} "
-                f"resolver_installed={resolver is not None} "
+                f"resolver_installed={resolver_installed} "
+                f"resolver_error={resolver_error or '-'} "
                 f"EXACT_OMOP_THERAPY={therapy_flag} "
                 f"EXACT_OMOP_LANGUAGES={language_flag}"
             )
@@ -105,8 +150,8 @@ class Command(BaseCommand):
                 f"ready {payload['ready_count']} / {payload['criteria_count']}"
             )
 
-        if criteria_flag and resolver is None:
+        if criteria_flag and resolver_error is not None:
             raise CommandError(
-                'EXACT_OMOP_CRITERIA is enabled without EXACT_TYPED_MATCHING_RESOLVER; '
-                'non-therapy requests will fail closed with 503 typed_matching_unavailable.'
+                'EXACT_OMOP_CRITERIA is enabled but its resolver is not usable '
+                f'({resolver_error}); trial requests will fail closed with 503.'
             )
