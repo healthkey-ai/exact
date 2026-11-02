@@ -680,6 +680,25 @@ def options_from_enum_dict(data: dict):
     return data
 
 
+def unit_label(options, value):
+    """The label for a stored unit code, case-insensitively.
+
+    The converters accept mixed-case spellings (`g/L`, `micromoles/l`), but
+    the enum-keyed option maps are exact-case. A case-sensitive lookup then
+    returned ``None`` and the client fell back to the default unit label —
+    displaying a raw 120 g/L as 120 g/deciliter.
+    """
+    if value is None:
+        return None
+    if value in options:
+        return options[value]
+    folded = str(value).lower()
+    for code, label in options.items():
+        if str(code).lower() == folded:
+            return label
+    return None
+
+
 def patient_info_attr_units_for(attr, patient_info):
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import WeightUnits, HeightUnits, PlateletCountUnits, \

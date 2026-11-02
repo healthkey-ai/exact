@@ -132,3 +132,17 @@ class TestGraphRowCarriesTheReason:
         })
 
         assert row['patientFieldHasSubform'] is False
+
+    def test_patient_value_is_compared_in_the_canonical_scale(self):
+        # The stored value can be in a different unit from the trial's. The
+        # graph compares numbers, so it must use the matcher-scale value the
+        # detail row carries, not the raw one.
+        row = _normalize_item_for_ui({
+            'name': 'hemoglobinLevelMin', 'ufield': 'hemoglobinLevel',
+            'upatientField': 'hemoglobin_level', 'label': 'Hb',
+            'value': 9, 'uvalue': 120, 'uvalue_canonical': 12,
+            'ureadonly': False, 'units': 'g/deciliter', 'uunits': 'g/Liter',
+        })
+
+        assert row['trialValue'] == 9
+        assert row['patientValue'] == 12

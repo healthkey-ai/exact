@@ -62,7 +62,11 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "label": item.get("label"),
         "trialValue": item.get("value"),
-        "patientValue": item.get("uvalue"),
+        # The comparison beside `trialValue` is in the matcher's unit. The
+        # detail row's `uvalue` is now the patient's STORED value when units
+        # differ, so use the canonical one it carries for that comparison; a
+        # raw 120 g/L against a 9 g/dL minimum must not read as 120 vs 9.
+        "patientValue": item.get("uvalue_canonical", item.get("uvalue")),
         "dependencies": item.get("dependencies", []),
         "dependencies_labels": [AttributeNames.humanize(x) for x in item.get("dependencies", [])],
     }
