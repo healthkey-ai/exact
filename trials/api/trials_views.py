@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import F, Prefetch, QuerySet
@@ -18,6 +19,12 @@ from trials.services.study_preferences import StudyPreferences, study_preference
 from trials.services.value_options import ValueOptions
 
 logger = logging.getLogger(__name__)
+
+# A trial id is ASCII digits only (see TrialsViewSet._trial_id) and fits the
+# bigint `id` column; anything wider makes PostgreSQL cast the column to
+# numeric and lose the primary-key index.
+_TRIAL_ID_RE = re.compile(r'\d{1,19}', re.ASCII)
+_MAX_TRIAL_ID = 2 ** 63 - 1
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -159,14 +166,116 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     def _resolve_study_preferences(self) -> StudyPreferences:
         return study_preferences_from_query_params(self.request.query_params)
 
+    #: The most bookmarks one request may filter by. Every id becomes part of
+    #: an `IN (...)`, so an unbounded list expands into thousands of clauses.
+    MAX_TRIAL_IDS = 500
+
+    def _reject_user_scoped_search_type(self, search_type):
+        """EXACT holds no per-user trial state; these types cannot narrow.
+
+        `favorites` would filter a `favorite` field the Trial model does not
+        have (a FieldError surfacing as 500), and `my_trials` / `not_eligible`
+        match no branch, so they return the whole corpus under a name that
+        promises a subset. The federated UI's Favorites tab sends a bounded
+        `trial_ids` list instead; `all` stays allowed because the unnarrowed
+        corpus is what it names.
+        """
+        if search_type in ('favorites', 'my_trials'):
+            raise serializers.ValidationError({
+                'type': [
+                    f"'{search_type}' is not supported: EXACT stores no per-user "
+                    f"trial state. POST the ids to filter by as `trial_ids` "
+                    f"instead — see /trials/search/match/."
+                ]
+            })
+        if search_type == 'not_eligible':
+            raise serializers.ValidationError({
+                'type': [
+                    "'not_eligible' is not supported: the queryset has no such "
+                    "narrowing, and the value used to return the eligible and "
+                    "potential trials instead — the inverse of what it names."
+                ]
+            })
+
+    def _resolve_trial_ids(self):
+        """The `trial_ids` filter from the request body, or None.
+
+        The federated UI's Favorites/Registered tabs keep their ids in PROMOP
+        and send them here; the narrowing must happen before counting,
+        sorting and pagination so the total agrees with the rows.
+
+        `None` means no filter. An EMPTY LIST means the caller has no saved
+        trials, so the honest answer is no trials — not the whole corpus.
+        """
+        if 'trial_ids' in self.request.query_params:
+            raise serializers.ValidationError({
+                'trial_ids': [
+                    'send trial_ids in the request body, not the query string '
+                    '— see POST /trials/search/match/.'
+                ]
+            })
+
+        data = getattr(self.request, 'data', None)
+        if not isinstance(data, dict) or 'trial_ids' not in data:
+            return None
+
+        raw = data.get('trial_ids')
+        if not isinstance(raw, (list, tuple)):
+            raise serializers.ValidationError(
+                {'trial_ids': ['must be a list of trial ids.']}
+            )
+        if len(raw) > self.MAX_TRIAL_IDS:
+            raise serializers.ValidationError({
+                'trial_ids': [
+                    f'at most {self.MAX_TRIAL_IDS} ids may be sent; got {len(raw)}.'
+                ]
+            })
+        return [self._trial_id(value) for value in raw]
+
+    @staticmethod
+    def _trial_id(value):
+        """One id, or a 400.
+
+        `True` is an int in Python and `int(3.5)` truncates, so a loose parse
+        turns a boolean or a float into a DIFFERENT trial. Accept an int or an
+        ASCII-digits string, and refuse a negative or out-of-bigint value.
+        """
+        if isinstance(value, bool) or isinstance(value, float):
+            raise serializers.ValidationError(
+                {'trial_ids': [f'{value!r} is not a trial id.']}
+            )
+        if isinstance(value, int):
+            return TrialsViewSet._in_range(value, value)
+        if isinstance(value, str) and _TRIAL_ID_RE.fullmatch(value.strip()):
+            return TrialsViewSet._in_range(int(value), value)
+        raise serializers.ValidationError(
+            {'trial_ids': [f'{value!r} is not a trial id.']}
+        )
+
+    @staticmethod
+    def _in_range(number, original):
+        if 0 <= number <= _MAX_TRIAL_ID:
+            return number
+        raise serializers.ValidationError(
+            {'trial_ids': [f'{original!r} is not a trial id.']}
+        )
+
     def get_queryset(self, patient_info=None):
+        # Before the patient round trip: a malformed body should not pay for a
+        # PROMOP fetch to be told it is malformed.
+        trial_ids = self._resolve_trial_ids()
+        if self.action in ('list', 'count', 'search'):
+            self._reject_user_scoped_search_type(
+                self.request.query_params.get('type', None)
+            )
+
         if patient_info is None:
             patient_info = self._resolve_patient_info()
 
         from trials.services.matching.typed_runtime import resolve_evaluation
         evaluation = resolve_evaluation(self.request, patient_info)
         if evaluation is not None:
-            return self._get_typed_queryset(evaluation)
+            return self._get_typed_queryset(evaluation, trial_ids)
 
         # trial_type is a FK serialized on every trial via StringRelatedField
         # (list, search, detail); without select_related the serializer fetches
@@ -176,6 +285,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = Trial.objects.select_related('trial_type')
         study_prefs = self._resolve_study_preferences()
         search_type = self.request.query_params.get('type', None)
+
+        if trial_ids is not None:
+            # Before the matcher: scores, ordering and the total are computed
+            # over the set the caller asked about.
+            queryset = queryset.filter(id__in=trial_ids)
 
         if self.action in ['list', 'count', 'search']:
             queryset, _ = queryset.filtered_trials(
@@ -221,9 +335,6 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.order_by('-match_score', '-posted_date', 'id')
 
         if self.action == 'search':
-            if search_type == 'favorites':
-                queryset = queryset.filter(favorite=True)
-
             counts = self._trials_counts(queryset, patient_info)
             queryset = queryset.with_potential_attrs_count(patient_info, search_type, counts)
 
@@ -267,7 +378,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
-    def _get_typed_queryset(self, evaluation):
+    def _get_typed_queryset(self, evaluation, trial_ids=None):
         """SQL visibility/search first, complete final evaluation second, pages last."""
         from datetime import date
         from collections import Counter
@@ -280,6 +391,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         params = self.request.query_params
         search_type = params.get('type')
         queryset = Trial.objects.select_related('trial_type')
+        if trial_ids is not None:
+            queryset = queryset.filter(id__in=trial_ids)
         if self.action != 'retrieve':
             queryset, _ = queryset.candidate_trials(params, prefs, patient_info, search_type=search_type)
         # Apply DRF text search to ORM, never to an already finalized sequence.
