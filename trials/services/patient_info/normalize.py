@@ -98,7 +98,7 @@ RECOMPUTED_WHEN = {
     # zero-coordinate defect behind "non-zero" is #470.
     'geo_point': (
         'when a country or postal code is supplied, or a latitude and '
-        'longitude that are not both zero'
+        'longitude that are both non-zero'
     ),
     'high_risk_mcl_criteria': 'for a mantle cell lymphoma patient',
     'later_date': "cleared when prior therapy is 'Two lines', 'One line', 'None' or blank",
@@ -152,6 +152,12 @@ def is_computed_on_read(field):
     """
     if not field:
         return False
+    # Computed by `PatientInfoAttributes.get_value`, not by a `PatientInfo`
+    # property: no column and no setter, so the property check below cannot see
+    # it. An edit is dropped before it reaches the instance, exactly like the
+    # two properties this exists for.
+    if field == 'day_since_stem_cell_transplant':
+        return True
     from trials.services.patient_info.patient_info import PatientInfo
 
     attribute = getattr(PatientInfo, field, None)

@@ -872,7 +872,15 @@ class TrialAttributes:
 
                 field = self._patient_info.__class__._meta.get_field(pi_field_name)
                 field_name = self.get_field_name(field)
+                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
                 value = self._patient_info_attr.get_value(pi_field_name)
+                if units_details:
+                    # The editor shows and writes in the PATIENT's stored unit,
+                    # and `uunits` below names that unit. `get_value` converts
+                    # measurements into the matcher's unit, so using its number
+                    # here would put 12 (g/dL) beside "G/Liter" and submit 12
+                    # into a field that expects 120.
+                    value = getattr(self._patient_info, pi_field_name)
                 if pi_field_name in THERAPY_LINES_ATTRS_UNDERSCORED:
                     options = self.get_options_for(pi_field_name)
                 else:
@@ -931,7 +939,6 @@ class TrialAttributes:
                 # are exactly these labs, converts through the stored one. A
                 # calcium typed in the wrong scale flips a clinical composite
                 # with nothing on screen to show which scale was meant.
-                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
                 if units_details:
                     val['uunits'] = units_details['options'].get(units_details['uvalue'])
                     val['units'] = units_details['options'].get(units_details['default'])
