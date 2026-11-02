@@ -408,12 +408,21 @@ class TrialAttributes:
 
                 if self._patient_info:
                     units_details = patient_info_attr_units_for(user_data['ufield'], self._patient_info)
-                    if units_details:
+                    # A ×ULN row shows a RATIO, not a physical measurement: the
+                    # stored unit label would describe a number that is not in
+                    # that unit (and the row is read-only anyway).
+                    if units_details and 'uln' not in attr_name.lower():
                         units_data = {
                             'units': units_details['options'].get(units_details['default']),
                             'uunits': units_details['options'].get(units_details['uvalue']),
                             'uunitsOptions': ValueOptions.to_value_and_label(units_details['options']),
                         }
+                        # `uvalue` is converted into the matcher's unit, while
+                        # `uunits` names the patient's STORED unit. Pairing them
+                        # printed 120 g/L as "12 g/Liter" and, on a writable row,
+                        # would seed the editor with the converted number.
+                        user_value = getattr(
+                            self._patient_info, user_data['ufield'], user_value)
 
                 field = self.get_field(
                     attr, attr_value, user_field, user_value, subform_details, units_data,
