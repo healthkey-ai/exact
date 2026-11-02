@@ -459,6 +459,20 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+    @action(methods=['post'], detail=False, url_path='search/match',
+            url_name='search-match')
+    def search_match(self, request, *args, **kwargs):
+        """POST alias for `search`, carrying `patient_info` in the body.
+
+        The federated UI's default path is an inline patient payload, and the
+        Fetch spec forbids GET-with-body (axios's XHR adapter also drops it),
+        so the UI posts here. `match` routes to `list`, whose ordering ignores
+        `?sort=`; binding `self.action = 'search'` keeps the search branches
+        (sorting, tab counts) firing exactly as the GET path does.
+        """
+        self.action = 'search'
+        return self.search(request, *args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Lookup table ViewSets
