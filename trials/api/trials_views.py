@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from django.db.models import F, Prefetch, QuerySet
+from django.utils.functional import SimpleLazyObject, cached_property
 from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -333,6 +334,40 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             return queryset  # SQL search already ran before final evaluation.
         return super().filter_queryset(queryset)
 
+    @cached_property
+    def trials_counts(self):
+        """How many trials leave each of the patient's blank attributes
+        unanswered — what `attributesToFillIn` ranks by, and what decides
+        whether a row reads `eligible` or `potential`.
+
+        `get_serializer_context` used to put a literal `{}` here, and
+        `potential_attrs_for_trial` loops over `counts.keys()`: the loop never
+        ran, so `attributesToFillIn` was `[]` on every row and `matchingType`
+        was the constant `eligible` — a claim about eligibility the matcher
+        never made. The same trial could then read `eligible` in the list and
+        `not_eligible` (or `potential`) on its detail page.
+
+        Its own scope, not the request's queryset: the count answers "fill
+        this in and N more trials can be judged", which is about the patient's
+        matched corpus and not about the page. `type=all` deliberately widens
+        it, as CB's `trials_counts` does — this is a port of it.
+        """
+        patient_info = self._resolve_patient_info()
+        if patient_info is None:
+            return {}
+
+        search_type = self.request.query_params.get('type', None)
+        if search_type == 'all':
+            scope = Trial.objects.all()
+        else:
+            scope, _ = Trial.objects.all().filtered_trials(
+                search_options={},
+                study_info=self._resolve_study_preferences(),
+                patient_info=patient_info,
+                add_traces=False,
+            )
+        return self._trials_counts(scope, patient_info)
+
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
@@ -350,7 +385,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             'patient_info': patient_info,
             'distance_units': study_prefs.distance_units,
             'recruitment_status': study_prefs.recruitment_status,
-            'counts': {},
+            # Lazily: the context is shared with `TrialDetailsSerializer`, which
+            # never reads `counts`, so an eager value ran the corpus-wide
+            # aggregate on every detail request and threw it away.
+            'counts': SimpleLazyObject(lambda: self.trials_counts),
             'template': template,
             'search_type': search_type,
             'explain': self.request.query_params.get('explain', '').lower() == 'true',
