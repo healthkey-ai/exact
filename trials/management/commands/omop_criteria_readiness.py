@@ -153,5 +153,6 @@ class Command(BaseCommand):
         if criteria_flag and resolver_error is not None:
             raise CommandError(
                 'EXACT_OMOP_CRITERIA is enabled but its resolver is not usable '
-                f'({resolver_error}); trial requests will fail closed with 503.'
+                f'({resolver_error}); matching requests that reach the typed gate '
+                'will fail closed with 503.'
             )
