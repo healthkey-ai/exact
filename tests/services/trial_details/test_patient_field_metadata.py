@@ -90,3 +90,13 @@ class TestPatientFieldName:
             if r.get('ureadonly') and r.get('upatientField')
         ]
         assert read_only_but_named, 'expected rows that are named and behind a subform'
+
+    def test_a_value_computed_on_read_is_never_stored(self):
+        # `day_since_stem_cell_transplant` is computed by
+        # `PatientInfoAttributes.get_value`, not by a PatientInfo property, so
+        # the property check cannot see it. An edit is dropped all the same.
+        from trials.services.patient_info.normalize import recompute_note
+
+        assert recompute_note('day_since_stem_cell_transplant') == {
+            'when': 'never-stored',
+        }
