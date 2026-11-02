@@ -549,11 +549,16 @@ EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', '
 # just a CB-code languages_skills reads as unknown.
 EXACT_OMOP_LANGUAGES = os.environ.get('EXACT_OMOP_LANGUAGES', '').lower() in ('1', 'true', 'yes', 'on')
 
-# #661 transport is wired for a future authenticated #662 server resolver only.
-# Not environment-activatable yet: no live all-55 producer/publication contract
-# is installed. Tests may inject a synthetic resolver; that is not readiness.
-EXACT_TYPED_MATCHING_ENABLED = False
-EXACT_TYPED_MATCHING_RESOLVER = None
+# Single public flag for the remaining non-therapy Trial criteria (the all-55
+# typed runtime, #661/#662). OFF by default. When ON, EXACT uses the typed
+# runtime and FAILS CLOSED with `typed_matching_unavailable` (503) until a
+# trusted host resolver is installed. It never silently falls back to comparing
+# legacy CB codes with OMOP concept_ids.
+EXACT_OMOP_CRITERIA = os.environ.get('EXACT_OMOP_CRITERIA', '').lower() in ('1', 'true', 'yes', 'on')
+EXACT_TYPED_MATCHING_ENABLED = EXACT_OMOP_CRITERIA
+# Optional import path or callable installed by the host. No production resolver
+# is shipped here; an empty value is the fail-closed state.
+EXACT_TYPED_MATCHING_RESOLVER = os.environ.get('EXACT_TYPED_MATCHING_RESOLVER') or None
 
 
 # ---------------------------------------------------------------------------
