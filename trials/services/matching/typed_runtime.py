@@ -24,7 +24,10 @@ class TypedMatchingUnavailable(APIException):
 
 
 def resolve_evaluation(request, patient_info):
-    if not getattr(settings, 'EXACT_TYPED_MATCHING_ENABLED', False):
+    # One public flag for the non-therapy criteria. EXACT_TYPED_MATCHING_ENABLED
+    # remains the internal name for existing callers/tests.
+    if not (getattr(settings, 'EXACT_OMOP_CRITERIA', False)
+            or getattr(settings, 'EXACT_TYPED_MATCHING_ENABLED', False)):
         return None
     store = getattr(request, '_request', request)
     holder = getattr(store, '_exact_typed_evaluation', None)
@@ -38,7 +41,12 @@ def resolve_evaluation(request, patient_info):
         return holder[0]
     try:
         resolver = getattr(settings, 'EXACT_TYPED_MATCHING_RESOLVER', None)
-        if not resolver or patient_info is None:
+        if not resolver:
+            # The flag is on but the host installed no resolver: that is the
+            # documented fail-closed state of EXACT_OMOP_CRITERIA, not a
+            # missing patient. Keep the two reasons distinct.
+            raise ContractError('typed_matching_unavailable')
+        if patient_info is None:
             raise ContractError('trusted_context_unavailable')
         if isinstance(resolver, str):
             try:
