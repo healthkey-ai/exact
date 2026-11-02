@@ -187,13 +187,10 @@ class TestTrialTemplates:
             'value': '1.5 - 2.0',
             'options': None,
             'ufield': 'liverEnzymeLevelsAlt',
-            'units': 'U/L',
             'uvalue': 1.6667,
             'utype': 'float',
             'uoptions': None, 'dependencies': [],
             'ureadonly': True,
-            'uunits': 'U/L',
-            'uunitsOptions': [{'value': 'u/l', 'label': 'U/L'}],
             'matchingType': 'matched'
         }
 
@@ -207,13 +204,10 @@ class TestTrialTemplates:
             'value': 1.5,
             'options': None,
             'ufield': 'liverEnzymeLevelsAlt',
-            'units': 'U/L',
             'uvalue': 1.6667,
             'utype': 'float',
             'uoptions': None, 'dependencies': [],
             'ureadonly': True,
-            'uunits': 'U/L',
-            'uunitsOptions': [{'value': 'u/l', 'label': 'U/L'}],
             'matchingType': 'matched'
         }
 
@@ -227,13 +221,10 @@ class TestTrialTemplates:
             'value': 2.0,
             'options': None,
             'ufield': 'liverEnzymeLevelsAlt',
-            'units': 'U/L',
             'uvalue': 1.6667,
             'utype': 'float',
             'uoptions': None, 'dependencies': [],
             'ureadonly': True,
-            'uunits': 'U/L',
-            'uunitsOptions': [{'value': 'u/l', 'label': 'U/L'}],
             'matchingType': 'matched'
         }
 
