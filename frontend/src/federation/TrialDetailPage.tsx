@@ -34,7 +34,7 @@ import { injectStyles } from "./injectStyles";
 import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
-import { FieldEdit } from "./FieldEdit";
+import { FieldEdit, PencilIcon } from "./FieldEdit";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { splitJoined } from "./writable";
 import { editabilityOf } from "./writable";
@@ -271,15 +271,14 @@ function editableRowNames(fields: TrialDetailField[]): Set<string> {
  *  and has to wonder which one is theirs.
  */
 function subformRowNames(fields: TrialDetailField[]): Set<string> {
-  const taken = new Set<string>();
-  const rows = new Set<string>();
-  for (const field of fields) {
-    const attribute = field.upatientField;
-    if (!attribute || !field.subform_details?.length || taken.has(attribute)) continue;
-    taken.add(attribute);
-    rows.add(field.name);
-  }
-  return rows;
+  // Every row that carries entries gets its own trigger. Two rows can carry the
+  // same dialog (a threshold and the therapy group both list the therapy
+  // history), and hiding one of them leaves the reader looking at the row they
+  // clicked with no way in. The trigger is per ROW, not per group: it opens what
+  // that row is worked out from.
+  return new Set(
+    fields.filter((field) => field.subform_details?.length).map((field) => field.name),
+  );
 }
 
 function EligibilityRow({
@@ -437,11 +436,12 @@ function EligibilityRow({
         {canOpenSubform ? (
           <button
             type="button"
-            className="exact-elig__subform"
+            className="exact-elig__edit"
             aria-label={`Change what ${field.label} is worked out from`}
+            title={`Change what ${field.label} is worked out from`}
             onClick={() => onSubformOpen?.(field.name)}
           >
-            Change what this is from
+            <PencilIcon />
           </button>
         ) : null}
         {subformOpen && editing && field.subform_details ? (
