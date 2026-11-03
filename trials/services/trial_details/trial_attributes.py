@@ -655,9 +655,10 @@ class TrialAttributes:
         return computed_fields
 
     #: The trial vocabulary that owns each OMOP-mapped therapy level's titles.
-    #: `TherapyComponentCategory` is deliberately absent: drug classes are not
-    #: OMOP-mapped in EXACT, so their ids resolve through the release-pinned
-    #: mirror alone (#672).
+    #: Types are deliberately absent: they carry drug-class concept_ids but
+    #: EXACT has no curated title table for them (`TherapyComponentCategory.
+    #: omop_concept_id` is unused), so the release-pinned mirror is their only
+    #: source (#672).
     _OMOP_THERAPY_VOCAB = {
         'therapies_required': 'Therapy',
         'therapies_excluded': 'Therapy',
@@ -665,42 +666,80 @@ class TrialAttributes:
         'therapy_components_excluded': 'TherapyComponent',
     }
 
+    def _omop_field_ids(self):
+        """`{field_name: [concept_id_str]}` for the rows the OMOP profile flips."""
+        fields = {}
+        for field_name in THERAPIES_ATTRS_UNDERSCORED:
+            active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
+            if omop_therapy_enabled() and active_col != field_name:
+                fields[field_name] = [
+                    str(item) for item in (getattr(self._trial, active_col) or [])
+                ]
+        return fields
+
+    def _prefetch_omop_therapy_titles(self):
+        """Resolve every flipped row's titles once, for the whole detail.
+
+        One query per trial vocabulary (regimens and components share their
+        model between the required and excluded rows) plus one mirror call for
+        every id neither vocabulary knows, instead of a round per row.
+        """
+        fields = self._omop_field_ids()
+        ids_by_model = {}
+        for field_name, ids in fields.items():
+            model_name = self._OMOP_THERAPY_VOCAB.get(field_name)
+            if model_name:
+                ids_by_model.setdefault(model_name, set()).update(
+                    int(item) for item in ids if item.isdigit())
+        titles_by_model = {}
+        if ids_by_model:
+            from trials import models as trial_models
+            for model_name, numeric in ids_by_model.items():
+                model = getattr(trial_models, model_name)
+                titles_by_model[model_name] = {
+                    str(concept_id): title for concept_id, title in (
+                        model.objects.filter(omop_concept_id__in=sorted(numeric))
+                        .order_by('id')
+                        .values_list('omop_concept_id', 'title')
+                    )
+                }
+        cache = {}
+        unresolved = set()
+        for field_name, ids in fields.items():
+            titles = dict(titles_by_model.get(self._OMOP_THERAPY_VOCAB.get(field_name), {}))
+            cache[field_name] = titles
+            unresolved.update(item for item in ids if not titles.get(item))
+        if unresolved:
+            from exact_matching.matcher import _resolve_omop_concepts
+            mirrored = {
+                str(item['code']): item['title']
+                for item in _resolve_omop_concepts(sorted(unresolved))
+                if item.get('title')
+            }
+            for titles in cache.values():
+                for concept_id, title in mirrored.items():
+                    titles.setdefault(concept_id, title)
+        self._omop_title_cache = cache
+
     def _omop_option_map(self, field_name, value):
         """`[{value, label}]` for a row whose `value` is a list of concept_ids.
 
         The trial's own vocabulary is the first source: its rows carry both the
         concept id the backfill wrote and the title the legacy option map used,
         so the label does not depend on a mirror release covering the concept.
-        The pinned mirror is the fallback (and the only source for levels with no
-        OMOP column, such as therapy types). An id neither source knows stays
-        visible as "Unknown concept (<id>)".
+        The pinned mirror is the fallback (and the only source for therapy
+        types). An id neither source knows stays visible as
+        "Unknown concept (<id>)" rather than being dropped or inventing a title.
         """
-        from exact_matching.matcher import _resolve_omop_concepts
-
         ids = [str(item) for item in (value or [])]
-        titles = {}
-        model_name = self._OMOP_THERAPY_VOCAB.get(field_name)
-        if model_name and ids:
-            from trials import models as trial_models
-            model = getattr(trial_models, model_name)
-            numeric = [int(item) for item in ids if item.isdigit()]
-            titles = {
-                str(concept_id): title
-                for concept_id, title in (
-                    model.objects.filter(omop_concept_id__in=numeric)
-                    .values_list('omop_concept_id', 'title')
-                )
-            }
-        mirrored = {}
-        unresolved = [item for item in ids if not titles.get(item)]
-        if unresolved:
-            mirrored = {
-                str(item['code']): item['title']
-                for item in _resolve_omop_concepts(unresolved)
-            }
+        cache = getattr(self, '_omop_title_cache', None)
+        titles = cache.get(field_name) if cache is not None else None
+        if titles is None:
+            self._prefetch_omop_therapy_titles()
+            titles = getattr(self, '_omop_title_cache', {}).get(field_name, {})
         return [
             {'value': item,
-             'label': titles.get(item) or mirrored.get(item) or f'Unknown concept ({item})'}
+             'label': titles.get(item) or f'Unknown concept ({item})'}
             for item in ids
         ]
 
@@ -709,6 +748,7 @@ class TrialAttributes:
         # here and the per-criterion match status is filled in by the caller. Runs
         # with or without a patient — without one the criteria still render and the
         # caller marks them 'unknown' (#318), consistent with the other criteria.
+        self._prefetch_omop_therapy_titles()
         out = {}
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
