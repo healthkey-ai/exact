@@ -280,11 +280,13 @@ describe("when the door is offered", () => {
       await screen.findByRole("button", { name: /Change what Age Minimum/ }),
     );
 
-    expect(await screen.findByText("Date Of Birth")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit Date Of Birth" })).toBeInTheDocument();
-    // The guard still refuses the other Person field on the same row: it is
-    // listed as context, but with no control.
-    expect(screen.queryByRole("button", { name: "Edit Gender" })).toBeNull();
+    // The age row uses the dedicated birth-date dialog, which edits the date
+    // and its precision together (#5664).
+    expect(await screen.findByLabelText("Date of birth")).toBeInTheDocument();
+    expect(screen.getByLabelText("Date of birth precision")).toBeInTheDocument();
+    // The guard refuses the other Person field on the same row: the dedicated
+    // dialog never lists it at all.
+    expect(screen.queryByText("Gender")).toBeNull();
   });
 
   it("does not offer it when PROMOP will not take the inputs either", async () => {

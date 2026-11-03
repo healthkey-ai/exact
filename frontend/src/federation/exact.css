@@ -2136,6 +2136,25 @@
   padding: 4px 0;
   font-size: 0.875rem;
 }
+.exact-root .exact-answer__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 0.8125rem;
+  color: var(--exact-color-text-muted);
+}
+.exact-root .exact-answer__field input,
+.exact-root .exact-answer__field select {
+  width: fit-content;
+  min-width: 12rem;
+  padding: 4px 8px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font-size: 0.875rem;
+  color: var(--exact-color-text);
+}
 .exact-root .exact-answer__list {
   max-height: 18rem;
   margin: 4px 0 0;

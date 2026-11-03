@@ -35,6 +35,7 @@ import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
+import { BirthDateDialog } from "./BirthDateDialog";
 import { ExplicitAnswerDialog } from "./ExplicitAnswerDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { splitJoined } from "./writable";
@@ -339,6 +340,16 @@ function EligibilityRow({
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
+  // The age dialog edits a date and its precision as ONE answer; the generic
+  // subform would save them separately and truncate the date between the two
+  // (see `BirthDateDialog`). Keyed on the entries, not `editableHere`: a
+  // subform row is `ureadonly` by construction and would fail that gate.
+  const birthHere = Boolean(
+    editing
+    && field.subform_details?.some(
+      (entry) => entry.upatientField === "date_of_birth",
+    ),
+  );
   // The explicit-answer field is not a column write, so `editabilityOf`
   // refuses it on purpose. The descriptor names the endpoint instead, and the
   // host decides whether it can speak to it; without that half we draw no
@@ -493,12 +504,21 @@ function EligibilityRow({
           </button>
         ) : null}
         {subformOpen && editing && field.subform_details ? (
-          <SubformDialog
-            field={field}
-            entries={field.subform_details}
-            editing={editing}
-            onClose={() => onSubformOpen?.(null)}
-          />
+          birthHere ? (
+            <BirthDateDialog
+              label={field.label}
+              entries={field.subform_details}
+              editing={editing}
+              onClose={() => onSubformOpen?.(null)}
+            />
+          ) : (
+            <SubformDialog
+              field={field}
+              entries={field.subform_details}
+              editing={editing}
+              onClose={() => onSubformOpen?.(null)}
+            />
+          )
         ) : null}
         {explicitHere ? (
           <button

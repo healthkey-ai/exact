@@ -310,6 +310,13 @@ function TrialMatchesInner({
   // survive the host re-reading the same profile, or every refresh discards
   // a draft for nothing.
   const readerHandle = `${stateIdentity ?? ""}|${patientHandle}`;
+  // The handle a delayed explicit answer must still belong to. The field
+  // queue captures the same pair per write; this callback is not in that
+  // queue, so it compares its render's handle with the live one before it
+  // tells the host anything — a write that lands after a patient or account
+  // switch must not refresh the NEW patient with the OLD patient's answer.
+  const readerHandleRef = useRef(readerHandle);
+  readerHandleRef.current = readerHandle;
   // What NAMES the patient, one axis at a time. The payload's own id and the
   // `personId` prop answer different questions — which patient the server
   // matches, and which record a write is PATCHed into — so a move on either
@@ -1856,6 +1863,11 @@ function TrialMatchesInner({
                 // for that row, and every other row is unaffected.
                 answers: state?.preExistingConditionsAnswer,
                 onAnswered: (answer) => {
+                  // The dialog outlives a patient switch by exactly as long
+                  // as its request; the handle names the patient AND the
+                  // signed-in reader, so a late answer cannot refresh a
+                  // different record.
+                  if (readerHandleRef.current !== readerHandle) return;
                   // The answer moves both the trial verdict and the row's
                   // own value, and PROMOP re-derives the record from it.
                   queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
@@ -1863,11 +1875,17 @@ function TrialMatchesInner({
                   // An inline-profile host keeps sending its own copy of the
                   // patient, so without this the refetch above would ask the
                   // server about the OLD answer (#555, and the explicit
-                  // answer takes the same path the field queue does).
-                  onPatientRecordChanged?.({
-                    no_pre_existing_conditions: answer.no_pre_existing_conditions,
-                    preexisting_conditions: answer.preexisting_conditions,
-                  });
+                  // answer takes the same path the field queue does). A host
+                  // callback that throws is its own problem; the write has
+                  // already landed and must not be reported as failed.
+                  try {
+                    onPatientRecordChanged?.({
+                      no_pre_existing_conditions: answer.no_pre_existing_conditions,
+                      preexisting_conditions: answer.preexisting_conditions,
+                    });
+                  } catch {
+                    // Nothing to tell the reader: the answer is saved.
+                  }
                 },
               }
             : undefined

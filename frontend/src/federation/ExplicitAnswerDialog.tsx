@@ -68,11 +68,15 @@ export function ExplicitAnswerDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
+  // Whether an earlier step of a multi-step answer already landed. A failure
+  // after that point must not say "nothing was saved".
+  const [landed, setLanded] = useState(false);
 
   const load = async () => {
     setLoading(true);
     setError(null);
     setStale(false);
+    setLanded(false);
     try {
       const current = await answers.read();
       setAnswer(current);
@@ -105,15 +109,22 @@ export function ExplicitAnswerDialog({
   ) => {
     setSaving(true);
     setError(null);
+    let current = answer;
     try {
-      let current = answer;
       for (const step of steps) {
         if (!current) return;
         current = await answers.write(step(current));
+        // Keep the snapshot current even if a LATER step fails: the clear
+        // has already landed, and sending the old snapshot again would be a
+        // stale write.
+        setAnswer(current);
+        setLanded(true);
       }
       if (current) onAnswered?.(current);
       onClose();
     } catch (failure) {
+      // A partial answer is still a change the host must hear about.
+      if (current) onAnswered?.(current);
       if (failure instanceof AnswerChanged) {
         setStale(true);
         return;
@@ -246,8 +257,9 @@ export function ExplicitAnswerDialog({
 
       {stale ? (
         <p className="exact-elig__error" role="alert">
-          Your answer changed somewhere else. Nothing was saved — review the
-          answer and try again.
+          {landed
+            ? "Part of your answer was saved, but the rest changed somewhere else. Review the answer and try again."
+            : "Your answer changed somewhere else. Nothing was saved — review the answer and try again."}
           <button type="button" className="exact-answer__link" onClick={() => void load()}>
             Reload the answer
           </button>

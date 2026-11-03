@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { fakeApi, fakeState, renderTrialMatches, trialDetail } from "../test/renderTrialMatches";
 import { AnswerChanged } from "./state";
-import type { ExplicitAnswerAdapter } from "./state";
+import type { ExplicitAnswerAdapter, PreExistingConditionsAnswer } from "./state";
 import type { TrialDetailField } from "./types";
 import type { WritableFields } from "./writable";
 
@@ -275,3 +275,82 @@ describe("the pre-existing-conditions answer", () => {
     await waitFor(() => expect(adapter.read).toHaveBeenCalledTimes(2));
   });
 });
+
+describe("an explicit answer that lands in more than one step", () => {
+  it("says the clear was saved when the confirmation then goes stale", async () => {
+    const changed = vi.fn();
+    const adapter = answers();
+    adapter.write = vi
+      .fn()
+      .mockResolvedValueOnce({
+        no_pre_existing_conditions: null,
+        preexisting_conditions: [],
+      })
+      .mockRejectedValueOnce(new AnswerChanged());
+    page(
+      fakeState({
+        writable: WRITABLE,
+        overrides: { preExistingConditionsAnswer: adapter },
+      }),
+      { onPatientRecordChanged: changed },
+    );
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Answer Pre Existing/ }),
+    );
+    await userEvent.click(
+      await screen.findByLabelText("I have none of these conditions"),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(/Part of your answer was saved/)).toBeInTheDocument();
+    // The clear landed, so the host has to learn about it even though the
+    // second step did not.
+    expect(changed).toHaveBeenCalledWith({
+      no_pre_existing_conditions: null,
+      preexisting_conditions: [],
+    });
+  });
+});
+
+
+  it("does not tell the host about an answer that arrives after a patient switch", async () => {
+    let release!: (answer: PreExistingConditionsAnswer) => void;
+    const pending = new Promise<PreExistingConditionsAnswer>((resolve) => {
+      release = resolve;
+    });
+    const adapter = answers({ write: vi.fn(async () => pending) });
+    const changed = vi.fn();
+    const api = fakeApi();
+    api.setDetail(detailWith([ROW]));
+    const state = fakeState({
+      writable: WRITABLE,
+      overrides: { preExistingConditionsAnswer: adapter },
+    });
+    const view = renderTrialMatches(api, {
+      state: state.adapter,
+      onPatientRecordChanged: changed,
+      personId: 1,
+      patientInfo: { disease: "multiple myeloma", person_id: 1 },
+    });
+    const cards = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.click(cards[0]);
+    await screen.findByText("Back to all trials");
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Answer Pre Existing/ }),
+    );
+    await userEvent.click(
+      await screen.findByLabelText("I have none of these conditions"),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The reader switches patient while the write is on the wire.
+    view.setProps({
+      personId: 2,
+      patientInfo: { disease: "multiple myeloma", person_id: 2 },
+    });
+    release({ no_pre_existing_conditions: true, preexisting_conditions: null });
+    await waitFor(() => expect(adapter.write).toHaveBeenCalled());
+    // The answer belongs to patient 1; patient 2 must not be refreshed with it.
+    expect(changed).not.toHaveBeenCalled();
+  });
