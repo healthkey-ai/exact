@@ -2115,6 +2115,51 @@
   font-size: 0.875rem;
 }
 
+/* The explicit pre-existing-conditions answer (#5665). A radio pair, a
+   checkbox list that appears only for the second answer, and the snapshot
+   reload named in place rather than hidden behind an icon. */
+.exact-root .exact-answer__choices {
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+.exact-root .exact-answer__legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.exact-root .exact-answer__choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.875rem;
+}
+.exact-root .exact-answer__list {
+  max-height: 18rem;
+  margin: 4px 0 0;
+  padding: 0 0 0 1.5rem;
+  overflow-y: auto;
+  list-style: none;
+}
+.exact-root .exact-answer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.exact-root .exact-answer__link {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* A refused write, said where the reader will see it whatever they closed.
    Above the table rather than inside it: the row that failed may be a subform
    input, which has no row of its own. */

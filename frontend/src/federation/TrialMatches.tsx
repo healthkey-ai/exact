@@ -33,7 +33,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
   }, [value, delay, immediate]);
   return immediate ? value : debounced;
 }
-import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 
 import { ActionTooltip } from "./bits";
 import { persistedKeyOf, stateKeyOf } from "./bridgeState";
@@ -173,6 +173,11 @@ function TrialMatchesInner({
   useEffect(() => {
     injectStyles();
   }, []);
+
+  // Invalidation after an explicit answer: the page's detail query is keyed
+  // inside `useTrialDetail`, so the answer and the trial verdict move together
+  // only if both caches are told.
+  const queryClient = useQueryClient();
 
   /** This mount's own root, for the canary below. */
   const exactRootRef = useRef<HTMLDivElement>(null);
@@ -1846,6 +1851,16 @@ function TrialMatchesInner({
                 save: patientFields.save,
                 outstanding: patientFields.outstanding,
                 failed: patientFields.failed,
+                // Optional on the adapter: a host that cannot answer the
+                // explicit pre-existing-conditions question gets no control
+                // for that row, and every other row is unaffected.
+                answers: state?.preExistingConditionsAnswer,
+                onAnswered: () => {
+                  // The answer moves both the trial verdict and the row's
+                  // own value, and PROMOP re-derives the record from it.
+                  queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
+                  queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+                },
               }
             : undefined
         }

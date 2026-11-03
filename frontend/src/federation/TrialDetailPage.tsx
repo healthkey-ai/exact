@@ -35,10 +35,12 @@ import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
+import { ExplicitAnswerDialog } from "./ExplicitAnswerDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { splitJoined } from "./writable";
 import { editabilityOf, invertBoolean } from "./writable";
 import type { WritableFields } from "./writable";
+import type { ExplicitAnswerAdapter } from "./state";
 
 /** Everything the two writing controls need, as plain values and callbacks.
  *
@@ -181,6 +183,11 @@ export interface RowEditing {
   /** The value that was refused, by field — so the editor can open on what
    *  the reader typed rather than making them find it again. */
   failed: Record<string, unknown>;
+  /** The explicit-answer endpoint, when the host implements it. Separate from
+   *  `save`: an attestation is not a field PATCH and carries a snapshot. */
+  answers?: ExplicitAnswerAdapter;
+  /** Re-read the trial after an explicit answer lands. */
+  onAnswered?: () => void;
 }
 
 /** The fields whose last write was refused, named the way the reader saw them.
@@ -326,9 +333,17 @@ function EligibilityRow({
   // reader sees is curated wording from two tables in `writable.ts`, and a
   // refusal with no entry in either stays silent.
   const [editorOpen, setEditorOpen] = useState(false);
+  const [answerOpen, setAnswerOpen] = useState(false);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
+  // The explicit-answer field is not a column write, so `editabilityOf`
+  // refuses it on purpose. The descriptor names the endpoint instead, and the
+  // host decides whether it can speak to it; without that half we draw no
+  // control rather than a door that cannot save.
+  const explicitEntry = editing?.fields?.[field.upatientField ?? ""];
+  const explicitHere =
+    Boolean(editableHere && editing?.answers && explicitEntry?.kind === "explicit-answer");
   const editable =
     editing && editableHere
       ? editabilityOf(field.upatientField, editing.fields, {
@@ -474,6 +489,26 @@ function EligibilityRow({
             entries={field.subform_details}
             editing={editing}
             onClose={() => onSubformOpen?.(null)}
+          />
+        ) : null}
+        {explicitHere ? (
+          <button
+            type="button"
+            className="exact-elig__edit"
+            aria-label={`Answer ${field.label}`}
+            title={`Answer ${field.label}`}
+            onClick={() => setAnswerOpen(true)}
+          >
+            <PencilIcon />
+          </button>
+        ) : null}
+        {answerOpen && explicitHere && editing?.answers && explicitEntry ? (
+          <ExplicitAnswerDialog
+            label={field.label}
+            entry={explicitEntry}
+            answers={editing.answers}
+            onClose={() => setAnswerOpen(false)}
+            onAnswered={editing.onAnswered}
           />
         ) : null}
         {editable.can === "edit" && editing ? (

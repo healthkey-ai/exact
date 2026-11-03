@@ -229,6 +229,46 @@ export interface TrialStateAdapter extends TrialPreferenceStore {
    *  states rather than resolved-or-rejected. A field the response does not
    *  mention is `unconfirmed`; it does not make the others unconfirmed. */
   setPatientFields?(fields: Record<string, unknown>): Promise<Record<string, WriteOutcome>>;
+  /** The explicit pre-existing-conditions answer, which has its own endpoint
+   *  and snapshot.
+   *
+   *  Not part of `setPatientFields`: that contract is a field PATCH whose
+   *  result is read back from the same body, while this one is an attestation
+   *  with an expected-state precondition. A stale dialog must be refused
+   *  rather than write over an answer made elsewhere.
+   *
+   *  Optional, and paired: `canAnswerPreExistingConditions` refuses half a
+   *  pair, for the same reason `canEditFields` does. */
+  preExistingConditionsAnswer?: ExplicitAnswerAdapter;
+}
+
+/** What a reader said about their pre-existing conditions.
+ *
+ *  `pre_existing_conditions` is the category-code list; `null` means the
+ *  question is unanswered, and `[]` is an answer of "none" only alongside the
+ *  flag. Kept exactly as the endpoint answers so the snapshot can be sent
+ *  back unaltered. */
+export interface PreExistingConditionsAnswer {
+  no_pre_existing_conditions: boolean | null;
+  preexisting_conditions: string[] | null;
+}
+
+export type PreExistingConditionsWrite =
+  | {
+      action: "confirm_none" | "withdraw";
+      expected_flag: boolean | null;
+      expected_categories: string[] | null;
+    }
+  | {
+      action: "set_categories";
+      categories: string[];
+      expected_flag: boolean | null;
+      expected_categories: string[] | null;
+    };
+
+export interface ExplicitAnswerAdapter {
+  read(): Promise<PreExistingConditionsAnswer>;
+  write(answer: PreExistingConditionsWrite): Promise<PreExistingConditionsAnswer>;
 }
 
 /** What the record showed after a write.
@@ -267,6 +307,18 @@ export function canEditFields(
 ): adapter is TrialStateAdapter &
   Required<Pick<TrialStateAdapter, "getWritableFields" | "setPatientFields">> {
   return Boolean(adapter?.getWritableFields && adapter?.setPatientFields);
+}
+
+/** Whether the host can answer the pre-existing-conditions question at all.
+ *
+ *  A half-implemented pair is refused rather than half-honoured: a read with
+ *  no write shows a dialog that cannot save, and a write with no read cannot
+ *  send the snapshot the endpoint requires.
+ */
+export function canAnswerPreExistingConditions(
+  adapter: TrialStateAdapter | undefined,
+): boolean {
+  return Boolean(adapter?.preExistingConditionsAnswer);
 }
 
 interface PromopStateArgs {
@@ -320,6 +372,20 @@ export class PatientFieldsRefused extends Error {
   }
 }
 
+/** The answer moved while the dialog was open.
+ *
+ *  A 409 from the explicit-answer endpoint means the snapshot the dialog sent
+ *  no longer matches the record — another tab answered, or a coordinator did.
+ *  It is not a transport failure and retrying the same payload would be
+ *  refused again: the only honest response is to re-read and ask the reader.
+ */
+export class AnswerChanged extends Error {
+  constructor() {
+    super("[exact-remote] the answer changed since it was read");
+    this.name = "AnswerChanged";
+  }
+}
+
 /** The fields a DRF error body names, restricted to the ones we sent.
  *
  *  A 400 body is `{field: ["message"]}`. It can also be `{"detail": "..."}`
@@ -345,6 +411,7 @@ export function createPromopState({
   const enrollments = `${basePath}/trial-enrollments`;
   const preferences = `${basePath}/trial-search-preferences`;
   const records = `${basePath}/patient-records`;
+  const preexistingAnswer = `${records}/${person}/preexisting-conditions-answer/`;
 
   const ids = async (params: Record<string, string>): Promise<TrialId[]> => {
     const response = await client.get<{ trial_ids: TrialId[]; count: number }>(
@@ -581,6 +648,42 @@ export function createPromopState({
       }
       return outcomes;
     },
+
+    // An attestation, not a field PATCH: the endpoint keeps its own snapshot
+    // and refuses a write whose expected answer no longer matches (409), so
+    // the two halves go together. `person_id` is in the path here as well.
+    preExistingConditionsAnswer: {
+      read: async () => {
+        const response = await client.get<PreExistingConditionsAnswer>(preexistingAnswer);
+        return normaliseAnswer(response.data);
+      },
+      write: async (answer) => {
+        const response = await client
+          .post<PreExistingConditionsAnswer>(preexistingAnswer, answer)
+          .catch((error: unknown) => {
+            const status = (error as { response?: { status?: number } })
+              ?.response?.status;
+            throw status === 409 ? new AnswerChanged() : error;
+          });
+        return normaliseAnswer(response.data);
+      },
+    },
+  };
+}
+
+/** The endpoint's answer with the two "nothing recorded" shapes made explicit.
+ *
+ *  `undefined` and `null` both reach the dialog as a missing answer, and
+ *  sending `undefined` back as the snapshot would serialize it away — the
+ *  server compares `record.preexisting_conditions != expected`, so a dropped
+ *  key is a different value from the null it is meant to echo.
+ */
+function normaliseAnswer(
+  body: Partial<PreExistingConditionsAnswer> | null | undefined,
+): PreExistingConditionsAnswer {
+  return {
+    no_pre_existing_conditions: body?.no_pre_existing_conditions ?? null,
+    preexisting_conditions: body?.preexisting_conditions ?? null,
   };
 }
 

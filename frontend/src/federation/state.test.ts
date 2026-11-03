@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AxiosInstance } from "axios";
 
-import { canEditFields, createPromopState } from "./state";
+import { canAnswerPreExistingConditions, canEditFields, createPromopState, AnswerChanged } from "./state";
 
 function fakeClient(data: unknown = {}) {
   const get = vi.fn().mockResolvedValue({ data });
   const patch = vi.fn().mockResolvedValue({ data: {} });
-  return { get, patch } as unknown as AxiosInstance & {
+  const post = vi.fn().mockResolvedValue({ data });
+  return { get, patch, post } as unknown as AxiosInstance & {
     get: ReturnType<typeof vi.fn>;
     patch: ReturnType<typeof vi.fn>;
+    post: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -628,5 +630,92 @@ describe("naming the fields the record refused", () => {
 
       expect(error.name).not.toBe("PatientFieldsRefused");
     }
+  });
+});
+
+describe("the explicit pre-existing-conditions answer", () => {
+  it("reads and writes through its own endpoint, not the record PATCH", async () => {
+    const client = fakeClient({
+      no_pre_existing_conditions: null,
+      preexisting_conditions: ["cardiacIssues"],
+    });
+    const answers = adapter(client).preExistingConditionsAnswer!;
+
+    expect(await answers.read()).toEqual({
+      no_pre_existing_conditions: null,
+      preexisting_conditions: ["cardiacIssues"],
+    });
+    expect(client.get).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/preexisting-conditions-answer/",
+    );
+  });
+
+  it("sends the snapshot the dialog read", async () => {
+    const client = fakeClient({
+      no_pre_existing_conditions: true,
+      preexisting_conditions: null,
+    });
+    const body = {
+      action: "confirm_none" as const,
+      expected_flag: null,
+      expected_categories: ["cardiacIssues"],
+    };
+
+    await adapter(client).preExistingConditionsAnswer!.write(body);
+
+    expect(client.post).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/preexisting-conditions-answer/",
+      body,
+    );
+  });
+
+  it("keeps a missing half as null rather than dropping the key", async () => {
+    // The snapshot is compared server-side; an absent key is not the null it
+    // is meant to echo, so a dropped one would make an unanswered record look
+    // like a different answer and refuse the write as stale.
+    const client = fakeClient({});
+    const answer = await adapter(client).preExistingConditionsAnswer!.read();
+
+    expect(answer).toEqual({
+      no_pre_existing_conditions: null,
+      preexisting_conditions: null,
+    });
+  });
+
+  it("names a 409 so the dialog can re-read instead of blaming the network", async () => {
+    const client = fakeClient();
+    client.post.mockRejectedValueOnce({ response: { status: 409 } });
+
+    await expect(
+      adapter(client).preExistingConditionsAnswer!.write({
+        action: "withdraw",
+        expected_flag: true,
+        expected_categories: null,
+      }),
+    ).rejects.toBeInstanceOf(AnswerChanged);
+  });
+
+  it("is a pair: half an adapter is refused", () => {
+    const bare = {
+      listFavoriteIds: async () => [],
+      setFavorite: async () => undefined,
+      listRegisteredIds: async () => [],
+      setRegistered: async () => undefined,
+      listAdvancedEnrollments: async () => ({}),
+      getPreferences: async () => ({}),
+      savePreferences: async () => undefined,
+      resetPreferences: async () => undefined,
+    };
+    expect(canAnswerPreExistingConditions(undefined)).toBe(false);
+    expect(canAnswerPreExistingConditions(bare)).toBe(false);
+    expect(
+      canAnswerPreExistingConditions({
+        ...bare,
+        preExistingConditionsAnswer: {
+          read: async () => ({ no_pre_existing_conditions: null, preexisting_conditions: null }),
+          write: async () => ({ no_pre_existing_conditions: null, preexisting_conditions: null }),
+        },
+      }),
+    ).toBe(true);
   });
 });
