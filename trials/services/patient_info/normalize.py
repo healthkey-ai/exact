@@ -229,6 +229,36 @@ def normalize_patient_info(pi) -> None:
 # Individual normalizers
 # ---------------------------------------------------------------------------
 
+#: Which `prior_therapy` answers keep each line's fields. It mirrors
+#: `_normalize_therapy_lines` below: a patient who says "One line" cannot be in
+#: their second, so the field reads as cleared rather than as a value.
+LINE_FIELDS_BY_PRIOR_THERAPY = {
+    'first_line_': {'One line', 'Two lines', 'More than two lines of therapy'},
+    'second_line_': {'Two lines', 'More than two lines of therapy'},
+    'later_': {'More than two lines of therapy'},
+}
+
+#: The parts of a line the trial-detail subform authors. The rest of a line's
+#: columns (concept ids, per-line lists, end dates) stay derivation's.
+AUTHORABLE_LINE_PARTS = frozenset({'therapy', 'date', 'outcome'})
+
+
+def therapy_line_is_authorable(pi_field_name, prior_therapy) -> bool:
+    """Whether normalization keeps this line field for this patient.
+
+    The subform offers a line's therapy, date and outcome as inputs. They stay
+    "recomputed on read" for everybody else: a patient whose own history does
+    not claim that line yet would be typing a second-line therapy under "no
+    prior therapy", and the payload clears it either way, so offering the
+    control would promise an edit the record then hides.
+    """
+    for prefix, answers in LINE_FIELDS_BY_PRIOR_THERAPY.items():
+        if pi_field_name.startswith(prefix):
+            part = pi_field_name[len(prefix):]
+            return part in AUTHORABLE_LINE_PARTS and prior_therapy in answers
+    return False
+
+
 def _normalize_therapy_lines(pi) -> None:
     """Clear downstream therapy fields when prior_therapy is reduced."""
     if pi.prior_therapy == 'More than two lines of therapy':

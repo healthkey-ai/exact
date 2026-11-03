@@ -6,7 +6,9 @@ import re
 from django.db import models
 from django.db.models import Q
 
-from trials.services.patient_info.normalize import recompute_note
+from trials.services.patient_info.normalize import (
+    recompute_note, therapy_line_is_authorable,
+)
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
 from trials.services.therapy_match_profile import (
@@ -976,6 +978,14 @@ class TrialAttributes:
                 # Once per entry, the way the row site does it, rather than
                 # once for the boolean and again for the note.
                 entry_note = recompute_note(pi_field_name)
+                if therapy_line_is_authorable(
+                        pi_field_name,
+                        getattr(self._patient_info, 'prior_therapy', None)):
+                    # The line this field projects is one the patient's own
+                    # history already claims, and PROMOP now writes it through
+                    # the therapy-line service. It is not recomputed behind the
+                    # reader, so the pencil is real.
+                    entry_note = None
                 if pi_field_name in out:
                     continue
 
