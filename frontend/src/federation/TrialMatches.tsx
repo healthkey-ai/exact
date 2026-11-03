@@ -1855,11 +1855,19 @@ function TrialMatchesInner({
                 // explicit pre-existing-conditions question gets no control
                 // for that row, and every other row is unaffected.
                 answers: state?.preExistingConditionsAnswer,
-                onAnswered: () => {
+                onAnswered: (answer) => {
                   // The answer moves both the trial verdict and the row's
                   // own value, and PROMOP re-derives the record from it.
                   queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
                   queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+                  // An inline-profile host keeps sending its own copy of the
+                  // patient, so without this the refetch above would ask the
+                  // server about the OLD answer (#555, and the explicit
+                  // answer takes the same path the field queue does).
+                  onPatientRecordChanged?.({
+                    no_pre_existing_conditions: answer.no_pre_existing_conditions,
+                    preexisting_conditions: answer.preexisting_conditions,
+                  });
                 },
               }
             : undefined

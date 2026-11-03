@@ -124,7 +124,7 @@ class TestTrialTemplates:
             'uvalue': None,
             'utype': 'int',
             'uoptions': None, 'dependencies': [],
-            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}],
+            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}, {'name': 'dateOfBirthPrecision', 'label': 'Date Of Birth Precision', 'type': 'string', 'value': None, 'options': None}],
             'ureadonly': True,
             'matchingType': 'unknown'
         }
@@ -141,7 +141,7 @@ class TestTrialTemplates:
             'uvalue': None,
             'utype': 'int',
             'uoptions': None, 'dependencies': [],
-            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}],
+            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}, {'name': 'dateOfBirthPrecision', 'label': 'Date Of Birth Precision', 'type': 'string', 'value': None, 'options': None}],
             'ureadonly': True,
             'matchingType': 'unknown'
         }
@@ -158,7 +158,7 @@ class TestTrialTemplates:
             'uvalue': None,
             'utype': 'int',
             'uoptions': None, 'dependencies': [],
-            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}],
+            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}, {'name': 'dateOfBirthPrecision', 'label': 'Date Of Birth Precision', 'type': 'string', 'value': None, 'options': None}],
             'ureadonly': True,
             'matchingType': 'unknown'
         }

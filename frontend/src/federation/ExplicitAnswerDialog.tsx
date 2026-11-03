@@ -28,8 +28,9 @@ export interface ExplicitAnswerDialogProps {
   entry: WritableFieldEntry;
   answers: ExplicitAnswerAdapter;
   onClose: () => void;
-  /** Called after a write lands, so the page re-reads the trial. */
-  onAnswered?: () => void;
+  /** Called with the saved answer, so the page can re-read the trial and the
+   *  host can refresh the profile it sends inline. */
+  onAnswered?: (answer: PreExistingConditionsAnswer) => void;
 }
 
 /** The sentence to show for a refusal, without inventing one. */
@@ -91,12 +92,26 @@ export function ExplicitAnswerDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const send = async (write: PreExistingConditionsWrite) => {
+  /** Run one or more writes as a unit and close on the last one.
+   *
+   *  A "none" answer over a record that still has categories needs two: the
+   *  endpoint refuses to read recorded conditions as "none", so the reader's
+   *  explicit removal goes first. If the second write then hits a concurrent
+   *  change, the record is left with no categories and an unknown flag — not
+   *  a false "none", which is the safe half of the pair to land.
+   */
+  const send = async (
+    steps: ((previous: PreExistingConditionsAnswer) => PreExistingConditionsWrite)[],
+  ) => {
     setSaving(true);
     setError(null);
     try {
-      await answers.write(write);
-      onAnswered?.();
+      let current = answer;
+      for (const step of steps) {
+        if (!current) return;
+        current = await answers.write(step(current));
+      }
+      if (current) onAnswered?.(current);
       onClose();
     } catch (failure) {
       if (failure instanceof AnswerChanged) {
@@ -111,31 +126,53 @@ export function ExplicitAnswerDialog({
 
   const save = () => {
     if (!answer || mode === null) return;
-    const expected_flag = answer.no_pre_existing_conditions;
     const expected_categories = answer.preexisting_conditions;
     if (mode === "none") {
-      void send({ action: "confirm_none", expected_flag, expected_categories });
+      const steps: ((previous: PreExistingConditionsAnswer) => PreExistingConditionsWrite)[] = [];
+      // The reviewed contract: remove what is recorded before attesting that
+      // nothing is. Sending them together as `confirm_none` is exactly the
+      // silent interpretation the endpoint refuses. The second step reads
+      // the snapshot the first returned — sending the old one is a stale
+      // write the endpoint would (correctly) refuse.
+      if ((expected_categories?.length ?? 0) > 0) {
+        steps.push((previous) => ({
+          action: "set_categories",
+          categories: [],
+          expected_flag: previous.no_pre_existing_conditions,
+          expected_categories: previous.preexisting_conditions,
+        }));
+      }
+      steps.push((previous) => ({
+        action: "confirm_none",
+        expected_flag: previous.no_pre_existing_conditions,
+        expected_categories: previous.preexisting_conditions,
+      }));
+      void send(steps);
       return;
     }
-    if (selected.length === 0) {
-      setError("Select at least one condition, or answer that you have none.");
-      return;
-    }
-    void send({
-      action: "set_categories",
-      categories: [...new Set(selected)],
-      expected_flag,
-      expected_categories,
-    });
+    // An empty selection is a real answer here: it removes the recorded
+    // conditions and leaves the flag unknown, which is the only way to undo a
+    // category from this dialog.
+    const categories = [...new Set(selected)];
+    void send([
+      (previous) => ({
+        action: "set_categories",
+        categories,
+        expected_flag: previous.no_pre_existing_conditions,
+        expected_categories: previous.preexisting_conditions,
+      }),
+    ]);
   };
 
   const withdraw = () => {
     if (!answer) return;
-    void send({
-      action: "withdraw",
-      expected_flag: answer.no_pre_existing_conditions,
-      expected_categories: answer.preexisting_conditions,
-    });
+    void send([
+      (previous) => ({
+        action: "withdraw",
+        expected_flag: previous.no_pre_existing_conditions,
+        expected_categories: previous.preexisting_conditions,
+      }),
+    ]);
   };
 
   const answered =
@@ -198,6 +235,11 @@ export function ExplicitAnswerDialog({
                 </li>
               ))}
             </ul>
+          ) : null}
+          {mode === "categories" && options.length > 0 ? (
+            <p className="exact-subform__note">
+              Leave every box clear to remove the recorded conditions.
+            </p>
           ) : null}
         </fieldset>
       )}

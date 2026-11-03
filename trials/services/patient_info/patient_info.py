@@ -50,6 +50,10 @@ _FIELDS = [
     # offer the birth date as its edit surface instead of a read-only number
     # (#5664); the matcher keeps reading `patient_age`.
     _f(DateField, 'date_of_birth'),
+    # How much of the date is known: `year`, `month` or `day`. A year-only
+    # record must not be silently promoted (or truncated to January 1st) by an
+    # edit; the reader chooses the precision beside the date.
+    _f(CharField, 'date_of_birth_precision', max_length=5),
     _f(CharField, 'gender', max_length=2),
     _f(FloatField, 'weight'),
     _f(CharField, 'weight_units', default='kg', max_length=2),

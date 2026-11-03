@@ -21,7 +21,8 @@ BIRTH_DATE = date(1980, 5, 20)
 
 def _attributes(**overrides):
     pi = PatientInfo(**{**HEADER, 'patient_age': 45,
-                        'date_of_birth': BIRTH_DATE, **overrides})
+                        'date_of_birth': BIRTH_DATE,
+                        'date_of_birth_precision': 'day', **overrides})
     trial = TrialFactory(age_low_limit=18)
     return TrialAttributes(trial, patient_info=pi)
 
@@ -31,7 +32,7 @@ def test_the_age_row_opens_on_the_birth_date():
     subforms = attrs.get_user_subform_attrs()
 
     assert [entry['upatientField'] for entry in subforms['patient_age']] == [
-        'date_of_birth'
+        'date_of_birth', 'date_of_birth_precision',
     ]
     assert subforms['patient_age'][0]['type'] == 'date'
     assert subforms['patient_age'][0]['value'] == BIRTH_DATE
@@ -48,15 +49,21 @@ def test_the_age_rows_carry_the_dialog_and_stay_read_only_themselves():
             'the number is derived; the box belongs to the birth date'
         )
         entries = row['subform_details']
-        assert [entry['upatientField'] for entry in entries] == ['date_of_birth']
+        assert [entry['upatientField'] for entry in entries] == [
+            'date_of_birth', 'date_of_birth_precision',
+        ]
 
 
 def test_the_record_boundary_carries_the_birth_date():
     pi = build_patient_info_from_promop_row({
         **HEADER, 'patient_age': 45, 'date_of_birth': '1980-05-20',
+        'date_of_birth_precision': 'month',
     })
 
     assert pi.date_of_birth == BIRTH_DATE
+    assert pi.date_of_birth_precision == 'month', (
+        'a year-only or month-only birth date must not be promoted by a read'
+    )
     assert pi.patient_age == 45, 'the supplied age is not recomputed a second time'
 
 
@@ -67,6 +74,6 @@ def test_a_row_without_a_birth_date_still_builds_the_dialog():
     subforms = attrs.get_user_subform_attrs()
 
     assert [entry['upatientField'] for entry in subforms['patient_age']] == [
-        'date_of_birth'
+        'date_of_birth', 'date_of_birth_precision',
     ]
     assert subforms['patient_age'][0]['value'] is None

@@ -41,6 +41,7 @@ import { splitJoined } from "./writable";
 import { editabilityOf, invertBoolean } from "./writable";
 import type { WritableFields } from "./writable";
 import type { ExplicitAnswerAdapter } from "./state";
+import type { PreExistingConditionsAnswer } from "./state";
 
 /** Everything the two writing controls need, as plain values and callbacks.
  *
@@ -186,8 +187,9 @@ export interface RowEditing {
   /** The explicit-answer endpoint, when the host implements it. Separate from
    *  `save`: an attestation is not a field PATCH and carries a snapshot. */
   answers?: ExplicitAnswerAdapter;
-  /** Re-read the trial after an explicit answer lands. */
-  onAnswered?: () => void;
+  /** Re-read the trial after an explicit answer lands, and give the host the
+   *  answer so an inline profile it sends is refreshed too. */
+  onAnswered?: (answer: PreExistingConditionsAnswer) => void;
 }
 
 /** The fields whose last write was refused, named the way the reader saw them.
@@ -342,8 +344,15 @@ function EligibilityRow({
   // host decides whether it can speak to it; without that half we draw no
   // control rather than a door that cannot save.
   const explicitEntry = editing?.fields?.[field.upatientField ?? ""];
-  const explicitHere =
-    Boolean(editableHere && editing?.answers && explicitEntry?.kind === "explicit-answer");
+  const explicitHere = Boolean(
+    editableHere
+    && editing?.answers
+    && explicitEntry?.kind === "explicit-answer"
+    // The endpoint has its own permission, and the descriptor's caller-aware
+    // answer clears this for a read-only reader whose `writable` was already
+    // false (#5665).
+    && explicitEntry.answerable === true,
+  );
   const editable =
     editing && editableHere
       ? editabilityOf(field.upatientField, editing.fields, {
