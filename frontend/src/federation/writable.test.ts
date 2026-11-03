@@ -134,10 +134,23 @@ describe("deciding whether a row may be edited", () => {
     expect(answer.why).toBe("Derived from height and weight; edit those instead.");
   });
 
-  it("names the field to edit instead of an alias", () => {
+  it("edits the canonical field an alias mirrors", () => {
+    // The descriptor says "edit that field instead", and this row is the only
+    // place a reader meets it. Refusing here left the row with no control at
+    // all; the save goes to the field the alias names.
     const answer = editabilityOf("hemoglobin_level", fields);
+    if (answer.can !== "edit") throw new Error("expected edit");
+    expect(answer.field).toBe("hemoglobin_g_dl");
+    expect(answer.entry.unit).toBe("g/dL");
+  });
+
+  it("still refuses an alias whose canonical is not editable", () => {
+    const answer = editabilityOf("hemoglobin_level", {
+      ...fields,
+      hemoglobin_g_dl: entry({ kind: "computed", writable: false, reason: "No." }),
+    });
     if (answer.can !== "no") throw new Error("expected no");
-    expect(answer.why).toContain("hemoglobin_g_dl");
+    expect(answer.why).toContain("No.");
   });
 
   it("answers unknown while the descriptor has not arrived", () => {

@@ -465,6 +465,16 @@ export function editabilityOf(
   // refused the write, it has never been asked about the field, and there is
   // no reason worth showing. The row stays as it reads today.
   if (!entry) return { can: "unknown" };
+  // An alias names the column that mirrors a canonical one, and the canonical
+  // is where the write lands. Offer the row as an editor for THAT field rather
+  // than refusing it: "Absolute Neutrophile Count" is a mirror of
+  // `anc_thousand_per_ul`, so the reader who wants to fix it edits the field
+  // the descriptor already points at. Every refusal this branch used to give
+  // was a dead end on a row the trial actually shows.
+  if (entry.kind === "alias" && typeof entry.canonical === "string"
+      && fields[entry.canonical]) {
+    return editabilityOf(entry.canonical, fields, row);
+  }
   // Writable, but not through this endpoint. `genetic_mutations` is
   // `writable: true` with `target: "genomics"` and a reason naming the tab to
   // edit it in; PATCHing the record would write nothing. Its own reason is
