@@ -1199,7 +1199,9 @@ USER_TO_TRIAL_ATTRS_MAPPING = {
     "meets_lugano": {
         "type": "bool_restriction",
         "searchable": True,
-        "is_computed_value": True,
+        # NOT a derived value: there is no PET/CT or marrow result in the
+        # record to compute it from. PROMOP stores the clinician's answer as
+        # a direct boolean, so the row is an input and takes a control.
         "under_user_control": True,
         "disease": ["FL", "MCL"],
         "attr": "meets_lugano",

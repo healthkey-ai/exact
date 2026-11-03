@@ -46,3 +46,19 @@ def test_the_therapy_count_row_opens_the_line_dialog():
     row = details['therapy_lines_count_min']
     assert row['ufield'] == 'prior_therapy'
     assert row['subform_details'], 'the count row has no door again'
+
+
+def test_meets_lugano_is_an_input_not_a_computed_row():
+    """Nothing in the record derives it; the clinician's answer is the value.
+
+    The `is_computed_value` display flag made the row read-only even after
+    PROMOP started accepting the boolean.
+    """
+    trial = TrialFactory(meets_lugano=True)
+    attrs = TrialAttributes(
+        trial, patient_info=PatientInfo(disease='follicular lymphoma'),
+    )
+
+    row = attrs.get_user_details(subform_attrs={})['meets_lugano']
+
+    assert row['ureadonly'] is False
