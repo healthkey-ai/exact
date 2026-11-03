@@ -9,7 +9,8 @@ from django.db.models import Q
 from trials.services.patient_info.normalize import recompute_note
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
-from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE, omop_therapy_types_enabled
+from trials.services.therapy_match_profile import (
+    THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled)
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
@@ -653,11 +654,101 @@ class TrialAttributes:
 
         return computed_fields
 
+    #: The trial vocabulary that owns each OMOP-mapped therapy level's titles.
+    #: Types are deliberately absent: they carry drug-class concept_ids but
+    #: EXACT has no curated title table for them (`TherapyComponentCategory.
+    #: omop_concept_id` is unused), so the release-pinned mirror is their only
+    #: source (#672).
+    _OMOP_THERAPY_VOCAB = {
+        'therapies_required': 'Therapy',
+        'therapies_excluded': 'Therapy',
+        'therapy_components_required': 'TherapyComponent',
+        'therapy_components_excluded': 'TherapyComponent',
+    }
+
+    def _omop_field_ids(self):
+        """`{field_name: [concept_id_str]}` for the rows the OMOP profile flips."""
+        fields = {}
+        for field_name in THERAPIES_ATTRS_UNDERSCORED:
+            active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
+            if omop_therapy_enabled() and active_col != field_name:
+                fields[field_name] = [
+                    str(item) for item in (getattr(self._trial, active_col) or [])
+                ]
+        return fields
+
+    def _prefetch_omop_therapy_titles(self):
+        """Resolve every flipped row's titles once, for the whole detail.
+
+        One query per trial vocabulary (regimens and components share their
+        model between the required and excluded rows) plus one mirror call for
+        every id neither vocabulary knows, instead of a round per row.
+        """
+        fields = self._omop_field_ids()
+        ids_by_model = {}
+        for field_name, ids in fields.items():
+            model_name = self._OMOP_THERAPY_VOCAB.get(field_name)
+            if model_name:
+                ids_by_model.setdefault(model_name, set()).update(
+                    int(item) for item in ids if item.isdigit())
+        titles_by_model = {}
+        if ids_by_model:
+            from trials import models as trial_models
+            for model_name, numeric in ids_by_model.items():
+                model = getattr(trial_models, model_name)
+                titles_by_model[model_name] = {
+                    str(concept_id): title for concept_id, title in (
+                        model.objects.filter(omop_concept_id__in=sorted(numeric))
+                        .order_by('id')
+                        .values_list('omop_concept_id', 'title')
+                    )
+                }
+        cache = {}
+        unresolved = set()
+        for field_name, ids in fields.items():
+            titles = dict(titles_by_model.get(self._OMOP_THERAPY_VOCAB.get(field_name), {}))
+            cache[field_name] = titles
+            unresolved.update(item for item in ids if not titles.get(item))
+        if unresolved:
+            from exact_matching.matcher import _resolve_omop_concepts
+            mirrored = {
+                str(item['code']): item['title']
+                for item in _resolve_omop_concepts(sorted(unresolved))
+                if item.get('title')
+            }
+            for titles in cache.values():
+                for concept_id, title in mirrored.items():
+                    titles.setdefault(concept_id, title)
+        self._omop_title_cache = cache
+
+    def _omop_option_map(self, field_name, value):
+        """`[{value, label}]` for a row whose `value` is a list of concept_ids.
+
+        The trial's own vocabulary is the first source: its rows carry both the
+        concept id the backfill wrote and the title the legacy option map used,
+        so the label does not depend on a mirror release covering the concept.
+        The pinned mirror is the fallback (and the only source for therapy
+        types). An id neither source knows stays visible as
+        "Unknown concept (<id>)" rather than being dropped or inventing a title.
+        """
+        ids = [str(item) for item in (value or [])]
+        cache = getattr(self, '_omop_title_cache', None)
+        titles = cache.get(field_name) if cache is not None else None
+        if titles is None:
+            self._prefetch_omop_therapy_titles()
+            titles = getattr(self, '_omop_title_cache', {}).get(field_name, {})
+        return [
+            {'value': item,
+             'label': titles.get(item) or f'Unknown concept ({item})'}
+            for item in ids
+        ]
+
     def therapies(self, subform_attrs):
         # Renders the trial's therapy criteria; patient values (uvalue) are None
         # here and the per-criterion match status is filled in by the caller. Runs
         # with or without a patient — without one the criteria still render and the
         # caller marks them 'unknown' (#318), consistent with the other criteria.
+        self._prefetch_omop_therapy_titles()
         out = {}
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
@@ -667,20 +758,14 @@ class TrialAttributes:
             trial_field = self._trial.__class__._meta.get_field(field_name)
             trial_field_name = self.get_field_name(trial_field)
             options = self.get_options(trial_field_name)
-            if (omop_therapy_types_enabled()
-                    and field_name in ('therapy_types_required', 'therapy_types_excluded')):
-                # Under the OMOP profile the column holds concept_ids, while the
-                # legacy option map is keyed by internal category codes, so every
-                # row rendered a bare number. Resolve through the release-pinned
-                # mirror — the same resolver the matcher's `omopConcepts` block
-                # uses — and keep an unresolved id visible rather than dropping
-                # it (or inventing a title).
-                from exact_matching.matcher import _resolve_omop_concepts
-                options = [
-                    {'value': str(item['code']),
-                     'label': item['title'] or f'Unknown concept ({item["code"]})'}
-                    for item in _resolve_omop_concepts(value)
-                ]
+            if omop_therapy_enabled() and active_col != field_name:
+                # Under the OMOP profile the column holds concept_ids while the
+                # option map is keyed by the legacy code, so every row rendered a
+                # bare number (#672, #680). Resolve the ids to titles and keep an
+                # unresolved one visible rather than dropping it or inventing a
+                # title. Display-only: these rows are read-only and the editor
+                # reads `uoptions`, which stays None.
+                options = self._omop_option_map(field_name, value)
             uoptions = None
             subform_details = subform_attrs[field_name] if field_name in subform_attrs else None
 
