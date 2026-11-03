@@ -63,8 +63,14 @@ function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
   if (verdict.can !== "edit") return verdict;
   // A demographic reached through a threshold row is a door into the wrong
   // room, not a refusal worth explaining — see the note above.
+  //
+  // The birth date is the exception, and not a hole in the rule: it is the
+  // age row's OWN input (#5664). Editing the age means editing the date it is
+  // computed from; `gender` and `ethnicity` only feed a ratio's denominator
+  // and stay refused.
   const projection = verdict.entry.projection_target;
-  return projection === "person" || projection === "location"
+  const demographic = projection === "person" || projection === "location";
+  return demographic && verdict.field !== "date_of_birth"
     ? { can: "unknown" }
     : verdict;
 }

@@ -124,7 +124,8 @@ class TestTrialTemplates:
             'uvalue': None,
             'utype': 'int',
             'uoptions': None, 'dependencies': [],
-            'ureadonly': False,
+            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}],
+            'ureadonly': True,
             'matchingType': 'unknown'
         }
 
@@ -140,7 +141,8 @@ class TestTrialTemplates:
             'uvalue': None,
             'utype': 'int',
             'uoptions': None, 'dependencies': [],
-            'ureadonly': False,
+            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}],
+            'ureadonly': True,
             'matchingType': 'unknown'
         }
 
@@ -156,7 +158,8 @@ class TestTrialTemplates:
             'uvalue': None,
             'utype': 'int',
             'uoptions': None, 'dependencies': [],
-            'ureadonly': False,
+            'subform_details': [{'name': 'dateOfBirth', 'label': 'Date Of Birth', 'type': 'date', 'value': None, 'options': None}],
+            'ureadonly': True,
             'matchingType': 'unknown'
         }
 

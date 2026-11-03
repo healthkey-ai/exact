@@ -46,6 +46,10 @@ _FIELDS = [
     _f(TextField, 'languages_asked'),
     # Disease block
     _f(IntegerField, 'patient_age'),
+    # The input `patient_age` is computed from. Carried so the age row can
+    # offer the birth date as its edit surface instead of a read-only number
+    # (#5664); the matcher keeps reading `patient_age`.
+    _f(DateField, 'date_of_birth'),
     _f(CharField, 'gender', max_length=2),
     _f(FloatField, 'weight'),
     _f(CharField, 'weight_units', default='kg', max_length=2),

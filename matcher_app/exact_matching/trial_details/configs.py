@@ -246,6 +246,10 @@ def get_treatment_attrs(patient_info):
 
 
 SUBFORM_ATTRS_MAPPING = {
+    # The age row's number is computed from the birth date, and the birth date
+    # is the only thing a reader can actually correct. Without this the age
+    # row is a read-only number with no door (#5664).
+    'patient_age': ['date_of_birth'],
     'myeloma_related_disorders_excluded': [
         'mgus', 'smoldering_multiple_myeloma', 'waldenstrom_macroglobulinemia',
         'igm_multiple_myeloma', 'al_amyloidosis', 'poems_syndrome',

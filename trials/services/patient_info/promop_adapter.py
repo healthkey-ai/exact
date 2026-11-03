@@ -181,8 +181,10 @@ SKIP_COLUMNS = frozenset({
     'id', 'person_id', 'person',
     # Timestamps
     'created_at', 'updated_at',
-    # PII not needed for trial matching
-    'email', 'date_of_birth',
+    # PII not needed for trial matching — except the birth date, which is the
+    # input `patient_age` is computed from and therefore the only field the age
+    # row can offer as its edit surface (#5664).
+    'email',
     # Computed by EXACT (do not override)
     'bmi',
     # Legacy columns not present in EXACT

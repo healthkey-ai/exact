@@ -234,6 +234,59 @@ describe("when the door is offered", () => {
     expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
   });
 
+  it("offers the birth date from the age row, though it is a Person field", async () => {
+    // The age row's number is computed from the birth date (#5664), and the
+    // demographic guard exists to stop a threshold row from reprogramming
+    // gender/ethnicity record-wide. The birth date is the age row's OWN
+    // input, so it is the one Person field the guard has to let through.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        composite({
+          name: "ageLowLimit",
+          label: "Age Minimum",
+          ufield: "patientAge",
+          upatientField: "patient_age",
+          upatientRecomputed: false,
+          subform_details: [
+            entry({
+              name: "dateOfBirth",
+              label: "Date Of Birth",
+              type: "date",
+              value: "1980-05-20",
+              upatientField: "date_of_birth",
+            }),
+            entry({ name: "gender", label: "Gender", value: "M", upatientField: "gender" }),
+          ],
+        }),
+      ]),
+    );
+    renderTrialMatches(api, {
+      state: fakeState({
+        writable: {
+          date_of_birth: {
+            kind: "direct", writable: true, value_kind: "date",
+            projection_target: "person",
+          },
+          gender: {
+            kind: "direct", writable: true, value_kind: "string",
+            projection_target: "person", options: [{ value: "M" }, { value: "F" }],
+          },
+        },
+      }).adapter,
+    });
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what Age Minimum/ }),
+    );
+
+    expect(await screen.findByText("Date Of Birth")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Date Of Birth" })).toBeInTheDocument();
+    // The guard still refuses the other Person field on the same row: it is
+    // listed as context, but with no control.
+    expect(screen.queryByRole("button", { name: "Edit Gender" })).toBeNull();
+  });
+
   it("does not offer it when PROMOP will not take the inputs either", async () => {
     const api = fakeApi();
     api.setDetail(detailWith([composite()]));
