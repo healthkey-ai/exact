@@ -671,6 +671,44 @@ describe("saving", () => {
     await waitFor(() => expect(state.record.staging_modalities).toBe("CT,PET"));
   });
 
+  it("matches a demographic by its OMOP code and saves the stored value", async () => {
+    // EXACT's row carries `F`; PROMOP's choice is `{value: "Female", code:
+    // "F"}`. The select must show Female, not "F (not in the list)", and a
+    // save sends the value the record stores.
+    const state = fakeState({
+      writable: {
+        gender: {
+          kind: "direct", writable: true, value_kind: "string",
+          projection_target: "person",
+          options: [
+            { value: "Female", code: "F" },
+            { value: "Male", code: "M" },
+          ],
+        },
+      },
+    });
+    await startEditing(state, [
+      row({
+        label: "Gender",
+        upatientField: "gender",
+        uvalue: "F",
+        utype: "select",
+        uoptions: [
+          { value: "F", label: "Female" },
+          { value: "M", label: "Male" },
+        ],
+        units: undefined,
+      }),
+    ]);
+
+    const picker = screen.getByRole("combobox", { name: "Gender" });
+    expect(picker).toHaveValue("Female");
+    await userEvent.selectOptions(picker, "Male");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(state.record.gender).toBe("Male"));
+  });
+
   it("uses the row's picker for a numeric score", async () => {
     // Five attributes are `value_kind: "number"` in the descriptor and carry
     // an option list on the row (`ecog_performance_status` among them). They

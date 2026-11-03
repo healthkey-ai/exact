@@ -187,8 +187,8 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
         </p>
         {patientWide ? (
           <p className="exact-subform__note">
-            Gender, ethnicity and date of birth apply to the whole patient
-            record, not only to this row.
+            Gender, race and date of birth apply to the whole patient record,
+            not only to this row.
           </p>
         ) : null}
 

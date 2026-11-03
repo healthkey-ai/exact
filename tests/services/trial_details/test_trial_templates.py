@@ -177,6 +177,7 @@ class TestTrialTemplates:
         pi = patient_info
         pi.gender = 'M'
         pi.ethnicity = 'Caucasian/European'
+        pi.race = 'White'
         pi.liver_enzyme_levels_alt = 75
         normalize_patient_info(pi)
 
@@ -185,7 +186,7 @@ class TestTrialTemplates:
         assert res['trialEligibilityAttributes'][1] == {
             'name': 'liverEnzymeLevelAltUln',
             'label': 'Liver Enzyme Level Alt ULN Range',
-            'subform_details': [{'name': 'liverEnzymeLevelsAlt', 'label': 'Liver Enzyme Levels Alt', 'type': 'int', 'value': 75, 'options': None}, {'name': 'gender', 'label': 'Gender', 'type': 'select', 'value': 'M', 'options': [{'value': '', 'label': 'Unknown'}, {'value': 'M', 'label': 'Male'}, {'value': 'F', 'label': 'Female'}]}, {'name': 'ethnicity', 'label': 'Ethnicity', 'type': 'select', 'value': 'Caucasian/European', 'options': [{'value': 'caucasian_or_european', 'label': 'Caucasian/European'}, {'value': 'african_or_black', 'label': 'African/Black'}, {'value': 'asian', 'label': 'Asian'}, {'value': 'native_american', 'label': 'Native American'}, {'value': 'other', 'label': "Other/Won't Say"}]}],
+            'subform_details': [{'name': 'liverEnzymeLevelsAlt', 'label': 'Liver Enzyme Levels Alt', 'type': 'int', 'value': 75, 'options': None}, {'name': 'gender', 'label': 'Gender', 'type': 'select', 'value': 'M', 'options': [{'value': '', 'label': 'Unknown'}, {'value': 'M', 'label': 'Male'}, {'value': 'F', 'label': 'Female'}]}, {'name': 'race', 'label': 'Race', 'type': 'string', 'value': 'White', 'options': None}],
             'type': 'string',
             'value': '1.5 - 2.0',
             'options': None,
@@ -203,7 +204,7 @@ class TestTrialTemplates:
             'name': 'liverEnzymeLevelAltUlnMin',
             'label': 'Liver Enzyme Level Alt ULN Minimum',
             'type': 'float',
-            'subform_details': [{'name': 'liverEnzymeLevelsAlt', 'label': 'Liver Enzyme Levels Alt', 'type': 'int', 'value': 75, 'options': None}, {'name': 'gender', 'label': 'Gender', 'type': 'select', 'value': 'M', 'options': [{'value': '', 'label': 'Unknown'}, {'value': 'M', 'label': 'Male'}, {'value': 'F', 'label': 'Female'}]}, {'name': 'ethnicity', 'label': 'Ethnicity', 'type': 'select', 'value': 'Caucasian/European', 'options': [{'value': 'caucasian_or_european', 'label': 'Caucasian/European'}, {'value': 'african_or_black', 'label': 'African/Black'}, {'value': 'asian', 'label': 'Asian'}, {'value': 'native_american', 'label': 'Native American'}, {'value': 'other', 'label': "Other/Won't Say"}]}],
+            'subform_details': [{'name': 'liverEnzymeLevelsAlt', 'label': 'Liver Enzyme Levels Alt', 'type': 'int', 'value': 75, 'options': None}, {'name': 'gender', 'label': 'Gender', 'type': 'select', 'value': 'M', 'options': [{'value': '', 'label': 'Unknown'}, {'value': 'M', 'label': 'Male'}, {'value': 'F', 'label': 'Female'}]}, {'name': 'race', 'label': 'Race', 'type': 'string', 'value': 'White', 'options': None}],
             'value': 1.5,
             'options': None,
             'ufield': 'liverEnzymeLevelsAlt',
@@ -220,7 +221,7 @@ class TestTrialTemplates:
             'name': 'liverEnzymeLevelAltUlnMax',
             'label': 'Liver Enzyme Level Alt ULN Maximum',
             'type': 'float',
-            'subform_details': [{'name': 'liverEnzymeLevelsAlt', 'label': 'Liver Enzyme Levels Alt', 'type': 'int', 'value': 75, 'options': None}, {'name': 'gender', 'label': 'Gender', 'type': 'select', 'value': 'M', 'options': [{'value': '', 'label': 'Unknown'}, {'value': 'M', 'label': 'Male'}, {'value': 'F', 'label': 'Female'}]}, {'name': 'ethnicity', 'label': 'Ethnicity', 'type': 'select', 'value': 'Caucasian/European', 'options': [{'value': 'caucasian_or_european', 'label': 'Caucasian/European'}, {'value': 'african_or_black', 'label': 'African/Black'}, {'value': 'asian', 'label': 'Asian'}, {'value': 'native_american', 'label': 'Native American'}, {'value': 'other', 'label': "Other/Won't Say"}]}],
+            'subform_details': [{'name': 'liverEnzymeLevelsAlt', 'label': 'Liver Enzyme Levels Alt', 'type': 'int', 'value': 75, 'options': None}, {'name': 'gender', 'label': 'Gender', 'type': 'select', 'value': 'M', 'options': [{'value': '', 'label': 'Unknown'}, {'value': 'M', 'label': 'Male'}, {'value': 'F', 'label': 'Female'}]}, {'name': 'race', 'label': 'Race', 'type': 'string', 'value': 'White', 'options': None}],
             'value': 2.0,
             'options': None,
             'ufield': 'liverEnzymeLevelsAlt',

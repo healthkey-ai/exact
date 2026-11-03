@@ -106,12 +106,34 @@ function dateDraft(value: unknown, control: EditControl): string {
   return match[2] ? `${match[1]}T${match[2]}` : `${match[1]}T00:00`;
 }
 
-function draftFrom(value: unknown, control: EditControl): string | string[] {
+/** The option VALUE that represents a stored value.
+ *
+ *  Demographics arrive from EXACT as OMOP codes (`F`) while PROMOP's choices
+ *  carry the stored display value (`Female`) and the code beside it (`code:
+ *  `F``). Without this lookup the select shows `F (not in the list)` even
+ *  though the record's answer is on the list. A save still sends the option's
+ *  `value`, which is what the record stores.
+ */
+function optionValue(value: unknown, options: FieldOption[]): string {
+  const text = String(value ?? "");
+  const match = options.find((option) => option.value === text)
+    ?? options.find((option) => option.code === text);
+  return match ? match.value : text;
+}
+
+function draftFrom(
+  value: unknown,
+  control: EditControl,
+  options: FieldOption[] = [],
+): string | string[] {
   if (control === "date" || control === "datetime") return dateDraft(value, control);
   // Comma-joined, not a list: see `splitJoined`. Wrapping the raw string in
   // an array instead would select nothing and offer one option that is not on
   // the list.
-  if (control === "multiselect") return splitJoined(value);
+  if (control === "multiselect") {
+    return splitJoined(value).map((item) => optionValue(item, options));
+  }
+  if (control === "select") return optionValue(value, options);
   if (control === "boolean") {
     if (value === true) return "true";
     if (value === false) return "false";
@@ -233,7 +255,9 @@ export function FieldEdit({
   onOpenChange,
 }: FieldEditProps) {
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState<string | string[]>(() => draftFrom(value, control));
+  const [draft, setDraft] = useState<string | string[]>(() =>
+    draftFrom(value, control, options),
+  );
   const [error, setError] = useState<string | null>(null);
   const firstControl = useRef<HTMLInputElement | HTMLSelectElement | null>(null);
   const pencil = useRef<HTMLButtonElement | null>(null);
@@ -246,8 +270,8 @@ export function FieldEdit({
   // record changed underneath — a save elsewhere, a refetch — must not bring
   // back the value from last time.
   useEffect(() => {
-    if (!open) setDraft(draftFrom(value, control));
-  }, [open, value, control]);
+    if (!open) setDraft(draftFrom(value, control, options));
+  }, [open, value, control, options]);
 
   useEffect(() => {
     if (open) {

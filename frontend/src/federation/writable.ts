@@ -66,6 +66,11 @@ export type WritableFields = Record<string, WritableFieldEntry>;
 export interface FieldOption {
   value: string;
   label: string;
+  /** The record's stored code for this choice, where it differs from the
+   *  display value. Demographics are the live case: PROMOP stores `Female`
+   *  but EXACT's row carries the OMOP code `F`. The editor matches both; a
+   *  save still sends `value`, because that is what the record stores. */
+  code?: string;
 }
 
 /** An option's `value` is the string to write. Everything beside it is coding.
@@ -108,10 +113,12 @@ export function optionsOf(
     if (item && typeof item === "object") {
       const value = (item as { value?: unknown }).value;
       const label = (item as { label?: unknown }).label;
+      const code = (item as { code?: unknown }).code;
       if (value == null || value === "") continue;
       out.push({
         value: String(value),
         label: typeof label === "string" && label !== "" ? label : String(value),
+        ...(typeof code === "string" && code !== "" ? { code } : {}),
       });
     }
   }

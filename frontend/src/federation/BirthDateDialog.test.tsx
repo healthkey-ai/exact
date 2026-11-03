@@ -123,7 +123,7 @@ describe("the birth date inside a ULN subform", () => {
     subform_details: [
       entry({ name: "liverEnzymeLevelsAlp", label: "Liver Enzyme Levels Alp", value: 75, upatientField: "liver_enzyme_levels_alp" }),
       entry({ name: "gender", label: "Gender", type: "select", value: "F", upatientField: "gender" }),
-      entry({ name: "ethnicity", label: "Ethnicity", type: "select", value: null, upatientField: "ethnicity" }),
+      entry({ name: "race", label: "Race", type: "select", value: null, upatientField: "race" }),
       entry({ name: "patientAge", label: "Patient Age", type: "int", value: 68, upatientField: "patient_age" }),
       entry({ name: "dateOfBirth", label: "Date Of Birth", value: "1980-05-20", upatientField: "date_of_birth" }),
       entry({
@@ -143,7 +143,7 @@ describe("the birth date inside a ULN subform", () => {
     },
     alkaline_phosphatase_u_l: { kind: "direct", writable: true, value_kind: "number", unit: "U/L" },
     gender: { kind: "direct", writable: true, value_kind: "string", projection_target: "person", options: [{ value: "F" }, { value: "M" }] },
-    ethnicity: { kind: "direct", writable: true, value_kind: "string", projection_target: "person" },
+    race: { kind: "direct", writable: true, value_kind: "string", projection_target: "person" },
     date_of_birth: { kind: "direct", writable: true, value_kind: "date" },
     date_of_birth_precision: {
       kind: "direct", writable: true, value_kind: "string",
@@ -173,7 +173,7 @@ describe("the birth date inside a ULN subform", () => {
     // demographics have their own controls.
     expect(await screen.findByText(/apply to the whole patient record/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit Gender" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit Ethnicity" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Race" })).toBeInTheDocument();
 
     const date = screen.getByLabelText("Date Of Birth");
     await userEvent.clear(date);

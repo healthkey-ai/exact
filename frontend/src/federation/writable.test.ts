@@ -18,12 +18,15 @@ describe("the two shapes PROMOP sends options in", () => {
 
   it("writes the value and never the code beside it", () => {
     // The shape PROMOP actually sends for curator-managed choices and for
-    // demographics. `code` is vocabulary metadata for the OMOP projection;
-    // sending it would put `254837009` where the record wants a word.
+    // demographics. `code` is carried so the editor can match EXACT's stored
+    // code (gender `F` against the `Female` choice), but the value sent is
+    // still the record's word: `254837009` must never reach the wire.
     const opts = optionsOf(entry({
       options: [{ value: "Invasive ductal", code: "254837009" }],
     }));
-    expect(opts).toEqual([{ value: "Invasive ductal", label: "Invasive ductal" }]);
+    expect(opts).toEqual([
+      { value: "Invasive ductal", label: "Invasive ductal", code: "254837009" },
+    ]);
     expect(opts[0].value).not.toBe("254837009");
   });
 
@@ -36,7 +39,9 @@ describe("the two shapes PROMOP sends options in", () => {
         concept_id: 4300134, display: "Deletion of short arm of chromosome 17",
       }],
     }));
-    expect(opts).toEqual([{ value: "del(17p)", label: "del(17p)" }]);
+    expect(opts).toEqual([
+      { value: "del(17p)", label: "del(17p)", code: "1220582008" },
+    ]);
   });
 
   it("keeps the value when a choice has no code at all", () => {

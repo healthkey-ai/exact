@@ -214,6 +214,41 @@ JSON_FIELDS = frozenset({
 })
 
 
+#: PROMOP keeps `race` (White/Black/Asian/…) and `ethnicity` (Hispanic or
+#: not) as separate axes; EXACT has one `ethnicity` field whose codes are the
+#: RACE categories the ULN calculators read. Reading PROMOP's ethnicity alone
+#: therefore left the ULN adjustment unset (its values are Hispanic/Not
+#: Hispanic, which map to "other"), and the reader could not correct the race
+#: the ratio depends on (#5672).
+RACE_TO_EXACT_ETHNICITY = {
+    # Labels, as PROMOP's PatientRecord stores them.
+    'american indian or alaska native': 'native_american',
+    'asian': 'asian',
+    'black or african american': 'african_or_black',
+    'native hawaiian or other pacific islander': 'other',
+    'white': 'caucasian_or_european',
+    # OMOP race codes, for a row that carries the code rather than the label.
+    '1': 'native_american',
+    '2': 'asian',
+    '3': 'african_or_black',
+    '4': 'other',
+    '5': 'caucasian_or_european',
+}
+
+
+def _ethnicity_from_race(row):
+    """The race category EXACT's ULN ratio needs, or None.
+
+    Called before the ethnicity resolver so the race axis wins: the ULN
+    adjustments are keyed on it, and "Hispanic or Latino" is not one of their
+    categories.
+    """
+    race = row.get('race')
+    if not isinstance(race, str):
+        return None
+    return RACE_TO_EXACT_ETHNICITY.get(race.strip().casefold())
+
+
 #: The record stores the POSITIVE viral status; trials ask the negated question
 #: ("No HIV required"). PROMOP removed the `no_*` columns in #2119, so EXACT
 #: reading them found its own class default (`True`) — a confirmed "does not
@@ -446,6 +481,14 @@ def normalize_promop_row(row: dict) -> dict:
             continue
         answer = _boolean_answer(row.pop(positive))
         row[negated] = None if answer is None else not answer
+
+    # ── Race -> the ethnicity axis the ULN ratios use ───────────────────
+    # PROMOP's `ethnicity` is the Hispanic axis; EXACT's `ethnicity` holds the
+    # race categories. Keep the separate value on `race`, but drive the
+    # matcher's field from race when it is answered.
+    race_ethnicity = _ethnicity_from_race(row)
+    if race_ethnicity is not None:
+        row['ethnicity'] = race_ethnicity
 
     # ── Receptor statuses ──────────────────────────────────────────────
     # Reuse package semantics: Positive supplies no expression level, and

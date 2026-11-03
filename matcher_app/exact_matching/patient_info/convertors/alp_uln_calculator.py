@@ -18,9 +18,11 @@ class AlpUlnCalculator:
             else:
                 base_uln = 130 if gender == "M" else 105
                 # Ethnicity adjustment
-                if ethnicity == "African/Black":
+                # EXACT's stored value is the code; the title spellings are
+                # kept for callers that pass a catalog title (CB's old rows).
+                if ethnicity in ("african_or_black", "African/Black"):
                     return base_uln + 10
-                elif ethnicity == "Asian":
+                elif ethnicity in ("asian", "Asian"):
                     return base_uln - 10
                 else:
                     return base_uln

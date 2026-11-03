@@ -61,6 +61,10 @@ _FIELDS = [
     _f(CharField, 'height_units', default='cm', max_length=2),
     _f(FloatField, 'bmi'),
     _f(TextField, 'ethnicity'),
+    # PROMOP's race axis. The matcher's `ethnicity` is derived from it above
+    # (the ULN ratios are keyed on race categories); carried so the ULN dialog
+    # can offer the value the reader actually corrects.
+    _f(CharField, 'race', max_length=255),
     _f(IntegerField, 'systolic_blood_pressure'),
     _f(IntegerField, 'diastolic_blood_pressure'),
     # Location

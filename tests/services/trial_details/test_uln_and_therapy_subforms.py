@@ -19,7 +19,7 @@ pytestmark = pytest.mark.django_db
 
 def test_the_alp_uln_group_names_the_demographics_and_the_birth_date():
     expected = [
-        'liver_enzyme_levels_alp', 'gender', 'ethnicity', 'patient_age',
+        'liver_enzyme_levels_alp', 'gender', 'race', 'patient_age',
         'date_of_birth', 'date_of_birth_precision',
     ]
 
