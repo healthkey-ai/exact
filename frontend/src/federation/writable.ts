@@ -255,6 +255,14 @@ export type Editability =
        *  array would 400 every time. The read side already knows this shape
        *  — see `splitJoined`; this is its other half. */
       joined: boolean;
+      /** The row asks the opposite of the field it writes.
+       *
+       *  `no_hiv_status` is the trial's "No HIV required", while the record
+       *  stores `hiv_status`; the row is therefore the negation of the column
+       *  both on screen and on save. PROMOP declares the pair as
+       *  `kind: "negated"`, and this carries that fact to the one place that
+       *  crosses the boundary. */
+      invert: boolean;
     }
   | {
       can: "no";
@@ -475,6 +483,33 @@ export function editabilityOf(
       && fields[entry.canonical]) {
     return editabilityOf(entry.canonical, fields, row);
   }
+  // A negated view asks the opposite question, and the answer lives in the
+  // positive column the descriptor names. Offer THAT field as the editor and
+  // remember the polarity: the trial's "No HIV" is the record's `hiv_status`
+  // with the value crossed. Refusing here would leave every "No HIV required"
+  // row unanswerable; editing the displayed value straight into the positive
+  // column would store the opposite of what the reader answered.
+  if (entry.kind === "negated" && typeof entry.canonical === "string") {
+    const target = editabilityOf(entry.canonical, fields, row);
+    // `value_kind: boolean` is the contract. A different control here would
+    // be a yes/no view over something that is not yes/no, and drawing it
+    // would invite a write whose polarity cannot be carried.
+    if (target.can === "edit") {
+      if (target.control === "boolean") {
+        return { ...target, field: entry.canonical, invert: true };
+      }
+      return {
+        can: "no",
+        field: entry.canonical,
+        entry: target.entry,
+        why: "This row is an inverted yes/no view, but the field behind it is not a yes/no value.",
+        // No control was offered for this row before the descriptor described
+        // it as negated, so nothing went missing on screen.
+        announce: false,
+      };
+    }
+    return target;
+  }
   // Writable, but not through this endpoint. `genetic_mutations` is
   // `writable: true` with `target: "genomics"` and a reason naming the tab to
   // edit it in; PATCHing the record would write nothing. Its own reason is
@@ -556,7 +591,19 @@ export function editabilityOf(
     options:
       fromDescriptor.length > 0 ? fromDescriptor : picker ? optionsOf(row) : [],
     joined: control === "multiselect" && entry.multiple !== true,
+    invert: false,
   };
+}
+
+/** The other side of an inverted view.
+ *
+ *  The page shows the negation of the stored boolean and sends the negation
+ *  back, so one function answers both directions. Anything that is not a
+ *  boolean is passed through: an unknown is unknown, and `!null` would turn a
+ *  missing answer into a confident one.
+ */
+export function invertBoolean(value: unknown): unknown {
+  return typeof value === "boolean" ? !value : value;
 }
 
 /** Split a multi-valued text column back into its values.

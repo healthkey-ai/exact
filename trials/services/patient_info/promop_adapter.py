@@ -190,7 +190,8 @@ SKIP_COLUMNS = frozenset({
     'therapy_lines_count', 'line_of_therapy',
     # Legacy duplicate lab fields (EXACT uses named variants)
     'liver_enzyme_levels', 'serum_bilirubin_level',
-    # Legacy viral flags (EXACT uses no_hiv_status / no_hepatitis_*_status)
+    # The positive viral status is translated to EXACT's negated field by
+    # `normalize_promop_row`; it has no PatientInfo column of its own.
     'hiv_status', 'hepatitis_b_status', 'hepatitis_c_status',
     # PROMOP-only fields with no direct PatientInfo equivalent
     # (metastatic_status is derived by normalize.py from stage; lymph_node and
@@ -209,6 +210,44 @@ JSON_FIELDS = frozenset({
     'later_therapies', 'supportive_therapies',
     'genetic_mutations', 'stem_cell_transplant_history',
 })
+
+
+#: The record stores the POSITIVE viral status; trials ask the negated question
+#: ("No HIV required"). PROMOP removed the `no_*` columns in #2119, so EXACT
+#: reading them found its own class default (`True`) — a confirmed "does not
+#: have HIV" for every patient, including one with a positive status (#5663).
+#:
+#: The negation is derived here, at the vocabulary boundary, and the same pair
+#: is what the descriptor tells an editor to write: the positive field with the
+#: answer inverted. Keep the pairs identical on both sides; the polarity tests
+#: in `tests/services/patient_info/test_negated_viral_status.py` pin them.
+PROMOP_NEGATED_FIELDS = {
+    'no_hiv_status': 'hiv_status',
+    'no_hepatitis_b_status': 'hepatitis_b_status',
+    'no_hepatitis_c_status': 'hepatitis_c_status',
+}
+
+_TRUE_ANSWERS = frozenset({'yes', 'true', 'positive', '1'})
+_FALSE_ANSWERS = frozenset({'no', 'false', 'negative', '0'})
+
+
+def _boolean_answer(value):
+    """A stored boolean, 0/1, or a yes/no label; anything else is unknown.
+
+    Deliberately not `bool(value)`: `"False"` is a truthy string, and inventing
+    an answer on an eligibility gate is worse than leaving it unknown.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        label = value.strip().casefold()
+        if label in _TRUE_ANSWERS:
+            return True
+        if label in _FALSE_ANSWERS:
+            return False
+    return None
 
 
 REFRACTORY_MAP = {
@@ -393,6 +432,18 @@ def normalize_promop_row(row: dict) -> dict:
     # Explicit null also wins over a stale internal alias supplied alongside it.
     if 'sct_date' in row:
         row['stem_cell_transplant_date'] = row['sct_date']
+
+    # ── Viral status: the record stores the positive answer ─────────────
+    # The trial text is "No Hepatitis B required", and that is what the row
+    # asks; `no_hiv_status` is the negated view of `hiv_status`, not a column.
+    # Popping the positive field keeps this idempotent: a second call has
+    # nothing left to invert. An unreadable or missing answer stays None —
+    # "unknown" is not "No".
+    for negated, positive in PROMOP_NEGATED_FIELDS.items():
+        if positive not in row:
+            continue
+        answer = _boolean_answer(row.pop(positive))
+        row[negated] = None if answer is None else not answer
 
     # ── Receptor statuses ──────────────────────────────────────────────
     # Reuse package semantics: Positive supplies no expression level, and

@@ -37,7 +37,7 @@ import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { splitJoined } from "./writable";
-import { editabilityOf } from "./writable";
+import { editabilityOf, invertBoolean } from "./writable";
 import type { WritableFields } from "./writable";
 
 /** Everything the two writing controls need, as plain values and callbacks.
@@ -203,6 +203,7 @@ function failedFieldLabels(
   failed: Record<string, unknown>,
   editableRows: Set<string>,
   openHere: Set<string>,
+  descriptor?: WritableFields,
 ): string[] {
   const names = Object.keys(failed);
   if (names.length === 0) return [];
@@ -211,9 +212,23 @@ function failedFieldLabels(
   for (const field of fields) {
     if (field.upatientField) {
       labels.set(field.upatientField, field.label);
+      // The write lands in another field for two shapes: an alias names its
+      // canonical, and a negated view names the positive status. The queue
+      // reports a refusal under THAT name, so the row's label has to answer
+      // for both or the sentence loses the only name the reader recognises.
+      const entry = descriptor?.[field.upatientField];
+      const target =
+        (entry?.kind === "alias" || entry?.kind === "negated")
+        && typeof entry.canonical === "string"
+          ? entry.canonical
+          : null;
+      if (target) labels.set(target, field.label);
       // A row that carries the control says so itself, in place. Repeating it
       // up here would put two alerts on screen about one refusal.
-      if (editableRows.has(field.name)) spokenFor.add(field.upatientField);
+      if (editableRows.has(field.name)) {
+        spokenFor.add(field.upatientField);
+        if (target) spokenFor.add(target);
+      }
     }
     for (const entry of field.subform_details ?? []) {
       if (entry.upatientField) labels.set(entry.upatientField, entry.label);
@@ -305,27 +320,6 @@ function EligibilityRow({
   // not a requirement at all.
   const notEvaluated = field.matchingType === "not_evaluated";
   const required = formatValue(field.value, field.options);
-  // The reader's own value wins over the record's while a write is out. Not
-  // cosmetic: the record genuinely does not hold it yet, and showing the old
-  // one for as long as that takes reads as a save that did not take.
-  // Only the row that carries the control carries its optimistic value. The
-  // others name the same attribute — a min, a max, and a "× upper limit of
-  // normal" pair — and the ×ULN row shows a RATIO, so painting the written
-  // number there would put a clinically false figure on screen, briefly, in a
-  // table a patient reads.
-  const attribute = editableHere ? field.upatientField : null;
-  const pendingValue =
-    attribute && editing && attribute in editing.outstanding
-      ? editing.outstanding[attribute]
-      : undefined;
-  const writePending = attribute != null && editing != null
-    && attribute in editing.outstanding;
-  const writeFailed = Boolean(attribute && editing && attribute in editing.failed);
-  const yours = formatValue(
-    writePending ? pendingValue : field.uvalue,
-    field.uoptions ?? field.options,
-  );
-  const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
   // `edit` puts a control on screen; `no` may put a sentence there. PROMOP's
   // own `reason` strings never reach it — they are written for whoever is
   // integrating, and one points at `docs/omop_to_patientrecord.md`. What the
@@ -351,6 +345,36 @@ function EligibilityRow({
           options: field.uoptions,
         })
       : ({ can: "unknown" } as const);
+  // The queue is keyed by the field the write LANDS IN, not by the row's own
+  // attribute: an alias writes its canonical field and a negated view writes
+  // the positive one, so a pending or refused value under the row's name
+  // would never be found. `editable.field` is that name, and for a negated
+  // view the value crosses a polarity boundary in both directions.
+  const attribute =
+    editableHere && editable.can === "edit" ? editable.field : null;
+  const inverted = editableHere && editable.can === "edit" && editable.invert;
+  const pendingValue =
+    attribute && editing && attribute in editing.outstanding
+      ? inverted
+        ? invertBoolean(editing.outstanding[attribute])
+        : editing.outstanding[attribute]
+      : undefined;
+  const writePending = attribute != null && editing != null
+    && attribute in editing.outstanding;
+  const writeFailed = Boolean(attribute && editing && attribute in editing.failed);
+  // The reader's own value wins over the record's while a write is out. Not
+  // cosmetic: the record genuinely does not hold it yet, and showing the old
+  // one for as long as that takes reads as a save that did not take.
+  // Only the row that carries the control carries its optimistic value. The
+  // others name the same attribute — a min, a max, and a "× upper limit of
+  // normal" pair — and the ×ULN row shows a RATIO, so painting the written
+  // number there would put a clinically false figure on screen, briefly, in a
+  // table a patient reads.
+  const yours = formatValue(
+    writePending ? pendingValue : field.uvalue,
+    field.uoptions ?? field.options,
+  );
+  const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
 
   return (
     <div className="exact-elig__row">
@@ -465,7 +489,9 @@ function EligibilityRow({
             // typed.
             value={
               writeFailed && attribute
-                ? editing.failed[attribute]
+                ? inverted
+                  ? invertBoolean(editing.failed[attribute])
+                  : editing.failed[attribute]
                 : writePending
                   ? pendingValue
                   : field.uvalue
@@ -473,7 +499,15 @@ function EligibilityRow({
             // The record's own value, with neither of those in front of it.
             recordValue={field.uvalue}
             units={field.uunits ?? field.units}
-            onSave={(value) => editing.save(editable.field, value)}
+            // A negated view crosses the polarity boundary here: the box holds
+            // the row's answer ("No HIV: Yes"), and the record stores the
+            // positive status with the opposite value.
+            onSave={(value) =>
+              editing.save(
+                editable.field,
+                editable.invert ? invertBoolean(value) : value,
+              )
+            }
             onOpenChange={setEditorOpen}
           />
         ) : null}
@@ -730,8 +764,9 @@ export function TrialDetailPage({
         editing?.failed ?? {},
         editableRows,
         openSubformFields,
+        editing?.fields,
       ),
-    [eligibility, editing?.failed, editableRows, openSubformFields],
+    [eligibility, editing?.failed, editing?.fields, editableRows, openSubformFields],
   );
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
