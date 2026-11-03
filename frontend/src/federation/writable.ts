@@ -188,7 +188,14 @@ export function controlFor(
   // number box into a select would start sending "3" where the column had
   // been getting 3. A picker there may well be the better control; it is a
   // different change from this one.
-  if (fromKind === "text" && optionsOf(row).length > 0) {
+  // A numeric column with a row vocabulary is a score, not a measurement:
+  // ECOG, Karnofsky, neuropathy grade, toxicity grade and biopsy grade are
+  // ordinals whose allowed values EXACT already ships. A free number box
+  // invites 7 on a 0-5 scale and 2.5 on a grade. The earlier version kept the
+  // box because a select sends "3" where the column had been getting 3; the
+  // queue compares numerically and PROMOP's IntegerField coerces, so that
+  // concern does not survive the seam. `text` keeps its old rule below.
+  if ((fromKind === "text" || fromKind === "number") && optionsOf(row).length > 0) {
     // `entry.multiple` is the descriptor's statement about the column's
     // shape and outranks the row's guess at the widget. PROMOP cannot emit
     // this shape today — `write_descriptor` only ever sets `multiple` in the

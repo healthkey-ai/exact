@@ -2114,6 +2114,15 @@
 .exact-root .exact-subform__value {
   font-size: 0.875rem;
 }
+.exact-root .exact-subform__row input[type="date"],
+.exact-root .exact-subform__row select {
+  padding: 2px 6px;
+  border: 1px solid var(--exact-color-border);
+  border-radius: var(--exact-border-radius);
+  background: var(--exact-color-surface);
+  font-size: 0.8125rem;
+  color: var(--exact-color-text);
+}
 
 /* The explicit pre-existing-conditions answer (#5665). A radio pair, a
    checkbox list that appears only for the second answer, and the snapshot

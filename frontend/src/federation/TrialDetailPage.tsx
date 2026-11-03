@@ -346,6 +346,7 @@ function EligibilityRow({
   // subform row is `ureadonly` by construction and would fail that gate.
   const birthHere = Boolean(
     editing
+    && field.upatientField === "patient_age"
     && field.subform_details?.some(
       (entry) => entry.upatientField === "date_of_birth",
     ),

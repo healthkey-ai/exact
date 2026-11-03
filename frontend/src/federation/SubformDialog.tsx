@@ -12,6 +12,8 @@
 // Which inputs it can actually offer is a narrower question than "does the
 // row have any" — see `entryIsOffered`.
 
+import { useState } from "react";
+
 import { Dialog } from "./Dialog";
 import { FieldEdit } from "./FieldEdit";
 import { editabilityOf } from "./writable";
@@ -29,21 +31,19 @@ export interface SubformDialogProps {
 
 /** Whether an entry is one this dialog can actually offer.
  *
- *  Three refusals, and the third is the one that is easy to miss.
- *
- *  EXACT recomputing it is the first: the write would be undone.
- *
+ *  Two refusals. EXACT recomputing it is the first: the write would be undone.
  *  PROMOP refusing it is the second — most of the ULN groups' own labs are
  *  `alias` entries there, mirrors of a canonical field, so the lab a
  *  threshold is about is not writable at all.
  *
- *  And the demographics are the third. `gender` and `ethnicity` sit in six
- *  subform groups, because a creatinine or bilirubin limit is calculated
- *  against them — but they project onto the OMOP PERSON, not onto any
- *  measurement. They are writable, so counting them makes a dialog captioned
- *  "the values it is computed from" whose only two controls change the
- *  patient's demographics, record-wide, from a threshold row. That is not a
- *  door onto a wall; it is a door into the wrong room.
+ *  Demographics used to be a third. `gender`, `ethnicity` and `date_of_birth`
+ *  sit in the ULN groups because the limit is calculated against them, and
+ *  they project onto the OMOP PERSON, not onto a measurement. An earlier
+ *  version refused them as "a door into the wrong room"; the reader who is
+ *  looking at a wrong ratio, however, needs exactly those fields — refusing
+ *  them leaves the row unanswerable. They are offered now, and the dialog
+ *  says out loud that they apply to the whole patient record, which is the
+ *  part that was actually missing.
  */
 function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
   // Recomputed here means EXACT derives it, so there is nothing to say and
@@ -56,23 +56,10 @@ function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
   // that carries its own options and `multiple` still yields a multiselect,
   // as it does anywhere else. Passed rather than hard-coded, so the day the
   // server stops overwriting this does not have to be found again.
-  const verdict = editabilityOf(entry.upatientField, editing.fields, {
+  return editabilityOf(entry.upatientField, editing.fields, {
     type: entry.type,
     options: entry.options,
   });
-  if (verdict.can !== "edit") return verdict;
-  // A demographic reached through a threshold row is a door into the wrong
-  // room, not a refusal worth explaining — see the note above.
-  //
-  // The birth date is the exception, and not a hole in the rule: it is the
-  // age row's OWN input (#5664). Editing the age means editing the date it is
-  // computed from; `gender` and `ethnicity` only feed a ratio's denominator
-  // and stay refused.
-  const projection = verdict.entry.projection_target;
-  const demographic = projection === "person" || projection === "location";
-  return demographic && verdict.field !== "date_of_birth"
-    ? { can: "unknown" }
-    : verdict;
 }
 
 function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
@@ -93,7 +80,101 @@ export function subformCanBeEdited(
   return entries.some((entry) => entryIsOffered(entry, editing));
 }
 
+const PRECISIONS = [
+  { value: "year", label: "Year only" },
+  { value: "month", label: "Month and year" },
+  { value: "day", label: "Full date" },
+];
+
+function dateDraft(value: unknown): string {
+  if (value == null || value === "") return "";
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : "";
+}
+
+/** The birth date and its precision as ONE row.
+ *
+ *  Every ULN group that reads an age now carries both entries. Saving them
+ *  through the generic per-entry controls would truncate a full date against
+ *  a year-only precision and then promote the placeholder — the trap
+ *  `BirthDateDialog` was built for. Two calls in the same tick are merged by
+ *  the field queue into one PATCH, so the date and precision land together.
+ */
+function BirthDateRow({
+  entries,
+  editing,
+}: {
+  entries: SubformEntry[];
+  editing: RowEditing;
+}) {
+  const date = entries.find((entry) => entry.upatientField === "date_of_birth");
+  const precision = entries.find(
+    (entry) => entry.upatientField === "date_of_birth_precision",
+  );
+  const [draft, setDraft] = useState(() => dateDraft(date?.value));
+  const [precisionValue, setPrecisionValue] = useState(
+    () => (typeof precision?.value === "string" && precision.value) || "day",
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const save = () => {
+    if (!draft) {
+      setError("Enter the date of birth.");
+      return;
+    }
+    setError(null);
+    editing.save("date_of_birth", draft);
+    editing.save("date_of_birth_precision", precisionValue);
+  };
+
+  return (
+    <li className="exact-subform__row">
+      <span className="exact-subform__label">{date?.label ?? "Date Of Birth"}</span>
+      <input
+        type="date"
+        value={draft}
+        aria-label={date?.label ?? "Date Of Birth"}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <select
+        value={precisionValue}
+        aria-label="Date of birth precision"
+        onChange={(event) => setPrecisionValue(event.target.value)}
+      >
+        {PRECISIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <button type="button" onClick={save}>
+        Save date
+      </button>
+      {error ? (
+        <span className="exact-elig__error" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </li>
+  );
+}
+
 export function SubformDialog({ field, entries, editing, onClose }: SubformDialogProps) {
+  const hasBirthPair = entries.some(
+    (entry) => entry.upatientField === "date_of_birth",
+  ) && entries.some(
+    (entry) => entry.upatientField === "date_of_birth_precision",
+  );
+  // These entries change the PERSON, not the measurement the row is about.
+  // That is legitimate here — they are the numerator/denominator — but the
+  // reader has to know the change reaches beyond this row.
+  const patientWide = entries.some((entry) => {
+    const projection = entry.upatientField
+      ? editing.fields?.[entry.upatientField]?.projection_target
+      : undefined;
+    return projection === "person" || projection === "location";
+  });
+
   return (
     <Dialog
       label={`${field.label}: the values it is computed from`}
@@ -104,9 +185,21 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
           This value is worked out from the ones below. Change those and it
           follows.
         </p>
+        {patientWide ? (
+          <p className="exact-subform__note">
+            Gender, ethnicity and date of birth apply to the whole patient
+            record, not only to this row.
+          </p>
+        ) : null}
 
         <ul className="exact-subform__list">
           {entries.map((entry) => {
+            if (hasBirthPair && entry.upatientField === "date_of_birth_precision") {
+              return null;
+            }
+            if (hasBirthPair && entry.upatientField === "date_of_birth") {
+              return <BirthDateRow key={entry.name} entries={entries} editing={editing} />;
+            }
             const editable = verdictFor(entry, editing);
             const attribute = entry.upatientField;
             const pending =

@@ -671,11 +671,12 @@ describe("saving", () => {
     await waitFor(() => expect(state.record.staging_modalities).toBe("CT,PET"));
   });
 
-  it("keeps the number box for a numeric column that has a row vocabulary", async () => {
+  it("uses the row's picker for a numeric score", async () => {
     // Five attributes are `value_kind: "number"` in the descriptor and carry
-    // an option list on the row (`ecog_performance_status` among them). The
-    // row's list does not get to turn those into a select: the box sends 3,
-    // a select would send "3", and that is a different change from this one.
+    // an option list on the row (`ecog_performance_status` among them). They
+    // are ordinals, so a free box invites 7 on a 0-5 scale; the row's list is
+    // the control. A select sends "2" where the column had been getting 2 —
+    // the queue compares numerically and PROMOP's IntegerField coerces.
     const state = fakeState({
       writable: {
         ecog_performance_status: { kind: "direct", writable: true, value_kind: "number" },
@@ -695,12 +696,11 @@ describe("saving", () => {
       }),
     ]);
 
-    const box = screen.getByRole("textbox", { name: "ECOG" });
-    await userEvent.clear(box);
-    await userEvent.type(box, "2");
+    const picker = screen.getByRole("combobox", { name: "ECOG" });
+    await userEvent.selectOptions(picker, "2");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(state.record.ecog_performance_status).toBe(2));
+    await waitFor(() => expect(state.record.ecog_performance_status).toBe("2"));
   });
 
   it("offers a value the option list has never heard of, rather than showing it as blank", async () => {

@@ -106,3 +106,89 @@ describe("the age row's birth date", () => {
     });
   });
 });
+
+describe("the birth date inside a ULN subform", () => {
+  const ULN: TrialDetailField = {
+    name: "liverEnzymeLevelAlpUlnMax",
+    label: "Liver Enzyme Level Alp ULN Maximum",
+    type: "string",
+    value: "2.0",
+    ureadonly: true,
+    ufield: "liverEnzymeLevelsAlp",
+    upatientField: "liver_enzyme_levels_alp",
+    upatientRecomputed: false,
+    uvalue: 1.6,
+    utype: "float",
+    matchingType: "matched",
+    subform_details: [
+      entry({ name: "liverEnzymeLevelsAlp", label: "Liver Enzyme Levels Alp", value: 75, upatientField: "liver_enzyme_levels_alp" }),
+      entry({ name: "gender", label: "Gender", type: "select", value: "F", upatientField: "gender" }),
+      entry({ name: "ethnicity", label: "Ethnicity", type: "select", value: null, upatientField: "ethnicity" }),
+      entry({ name: "patientAge", label: "Patient Age", type: "int", value: 68, upatientField: "patient_age" }),
+      entry({ name: "dateOfBirth", label: "Date Of Birth", value: "1980-05-20", upatientField: "date_of_birth" }),
+      entry({
+        name: "dateOfBirthPrecision",
+        label: "Date Of Birth Precision",
+        type: "string",
+        value: "year",
+        upatientField: "date_of_birth_precision",
+      }),
+    ],
+  };
+
+  const WRITABLE_ULN: WritableFields = {
+    liver_enzyme_levels_alp: {
+      kind: "alias", writable: false, canonical: "alkaline_phosphatase_u_l",
+      reason: "Mirrors alkaline_phosphatase_u_l; edit that field instead.",
+    },
+    alkaline_phosphatase_u_l: { kind: "direct", writable: true, value_kind: "number", unit: "U/L" },
+    gender: { kind: "direct", writable: true, value_kind: "string", projection_target: "person", options: [{ value: "F" }, { value: "M" }] },
+    ethnicity: { kind: "direct", writable: true, value_kind: "string", projection_target: "person" },
+    date_of_birth: { kind: "direct", writable: true, value_kind: "date" },
+    date_of_birth_precision: {
+      kind: "direct", writable: true, value_kind: "string",
+      options: [
+        { value: "year", label: "Year only" },
+        { value: "month", label: "Month and year" },
+        { value: "day", label: "Full date" },
+      ],
+    },
+  };
+
+  it("offers the demographics and saves the date and precision together", async () => {
+    const api = fakeApi();
+    api.setDetail(trialDetail(1, {
+      details: { trialEligibilityAttributes: [ULN] },
+    } as never));
+    const state = fakeState({ writable: WRITABLE_ULN });
+    renderTrialMatches(api, { state: state.adapter });
+    const cards = await screen.findAllByRole("button", { name: "View Trial" });
+    await userEvent.click(cards[0]);
+    await screen.findByText("Back to all trials");
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what Liver Enzyme Level Alp ULN Maximum/ }),
+    );
+
+    // The dialog says the values reach the whole record, and the two
+    // demographics have their own controls.
+    expect(await screen.findByText(/apply to the whole patient record/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Gender" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Ethnicity" })).toBeInTheDocument();
+
+    const date = screen.getByLabelText("Date Of Birth");
+    await userEvent.clear(date);
+    await userEvent.type(date, "1980-12-20");
+    await userEvent.selectOptions(
+      screen.getByLabelText("Date of birth precision"),
+      "day",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save date" }));
+
+    await waitFor(() => expect(state.adapter.setPatientFields).toHaveBeenCalled());
+    expect(state.adapter.setPatientFields).toHaveBeenCalledTimes(1);
+    expect(state.adapter.setPatientFields).toHaveBeenCalledWith({
+      date_of_birth: "1980-12-20",
+      date_of_birth_precision: "day",
+    });
+  });
+});

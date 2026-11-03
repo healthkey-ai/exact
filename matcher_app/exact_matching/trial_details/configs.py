@@ -262,6 +262,10 @@ SUBFORM_ATTRS_MAPPING = {
     'bmi': ['weight', 'height'],
     'bmi_min': ['weight', 'height'],
     'bmi_max': ['weight', 'height'],
+    # The count is authored from the therapy episodes; the row had no door at
+    # all, so the only way to change it was to leave the page. The dialog is
+    # the same line editor the therapy groups use.
+    'prior_therapy': get_treatment_attrs,
     'washout_period_duration': get_treatment_attrs,
     'therapies_required': get_treatment_attrs,
     'therapies_excluded': get_treatment_attrs,
@@ -275,8 +279,14 @@ SUBFORM_ATTRS_MAPPING = {
     'liver_enzyme_level_ast_uln_max': ['liver_enzyme_levels_ast', 'gender', 'ethnicity'],
     'liver_enzyme_level_alt_uln_min': ['liver_enzyme_levels_alt', 'gender', 'ethnicity'],
     'liver_enzyme_level_alt_uln_max': ['liver_enzyme_levels_alt', 'gender', 'ethnicity'],
-    'liver_enzyme_level_alp_uln_min': ['liver_enzyme_levels_alp', 'gender', 'ethnicity', 'patient_age'],
-    'liver_enzyme_level_alp_uln_max': ['liver_enzyme_levels_alp', 'gender', 'ethnicity', 'patient_age'],
+    'liver_enzyme_level_alp_uln_min': [
+        'liver_enzyme_levels_alp', 'gender', 'ethnicity', 'patient_age',
+        'date_of_birth', 'date_of_birth_precision',
+    ],
+    'liver_enzyme_level_alp_uln_max': [
+        'liver_enzyme_levels_alp', 'gender', 'ethnicity', 'patient_age',
+        'date_of_birth', 'date_of_birth_precision',
+    ],
     'serum_bilirubin_total_level_uln_min': ['serum_bilirubin_level_total', 'ethnicity'],
     'serum_bilirubin_total_level_uln_max': ['serum_bilirubin_level_total', 'ethnicity'],
     'serum_bilirubin_direct_level_uln_min': ['serum_bilirubin_level_direct', 'ethnicity'],

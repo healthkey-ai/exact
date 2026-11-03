@@ -179,12 +179,11 @@ describe("when the door is offered", () => {
     expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
   });
 
-  it("does not offer it when the only writable inputs are demographics", async () => {
-    // Found by /qa on 2026-09-14. Six ULN groups are [the lab, gender,
-    // ethnicity]: the lab is an `alias` in PROMOP and not writable, while
-    // gender and ethnicity are — so the door opened onto a dialog captioned
-    // "the values it is computed from" whose only two controls change the
-    // patient's demographics, record-wide, from a threshold row.
+  it("offers the demographics a ratio is worked out from, and says they are patient-wide", async () => {
+    // These were refused for a while: a threshold row that changes gender
+    // record-wide is a surprise. But when the ratio is wrong BECAUSE the
+    // recorded gender/ethnicity is wrong, refusing them leaves the row with
+    // no route at all. Offered now, with the scope said out loud.
     const api = fakeApi();
     api.setDetail(
       detailWith([
@@ -212,7 +211,6 @@ describe("when the door is offered", () => {
     renderTrialMatches(api, {
       state: fakeState({
         writable: {
-          // What PROMOP really says about these three.
           liver_enzyme_levels_alt: {
             kind: "alias", writable: false, canonical: "alt_u_l",
             reason: "Mirrors alt_u_l; edit that field instead.",
@@ -229,9 +227,13 @@ describe("when the door is offered", () => {
       }).adapter,
     });
     await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Change what ALT ×ULN/ }),
+    );
 
-    expect(await screen.findByText("ALT ×ULN")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
+    expect(await screen.findByText(/apply to the whole patient record/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Gender" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Ethnicity" })).toBeInTheDocument();
   });
 
   it("offers the birth date from the age row, though it is a Person field", async () => {

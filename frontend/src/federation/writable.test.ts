@@ -479,26 +479,29 @@ describe("the vocabulary the row carries", () => {
     expect(control).toBe("select");
   });
 
-  it("leaves a kind the descriptor named alone", () => {
+  it("uses the row's picker for a numeric score", () => {
     // `ecog_performance_status` and four others are `value_kind: "number"`
-    // with an option list on the row. A select there would send "3" where the
-    // column had been getting 3, which is a change this one is not making.
+    // with an option list on the row. They are ordinals: a free box invites 7
+    // on a 0-5 scale. The select sends "2" where the column had been getting
+    // 2; the queue compares numerically and PROMOP's IntegerField coerces.
     const control = controlFor(entry({ value_kind: "number" }), {
       type: "select",
       options: [{ value: 0 }, { value: 2 }],
     });
 
-    expect(control).toBe("number");
+    expect(control).toBe("select");
   });
 
-  it("hands a picker no list it will not draw", () => {
+  it("hands a numeric picker the row's list", () => {
     const answer = editabilityOf(
       "some_other_note",
       { some_other_note: entry({ value_kind: "number" }) } as WritableFields,
       { type: "select", options: [{ value: 0 }] },
     );
 
-    expect(answer.can === "edit" && answer.options).toEqual([]);
+    expect(answer.can === "edit" && answer.options).toEqual([
+      { value: "0", label: "0" },
+    ]);
   });
 
   it("lets the descriptor's `multiple` outrank the row's widget", () => {
