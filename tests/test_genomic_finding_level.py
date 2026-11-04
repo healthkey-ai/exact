@@ -32,20 +32,20 @@ def envelope(*terms, role='required'):
     }
 
 
-def subject(concept_id, code='x'):
+def subject(concept_id, code='x', concept_class='Genetic Variation'):
     return {
         'kind': 'genomic_subject',
         'feature': {
             'domain_id': 'Measurement', 'concept_id': str(concept_id),
             'concept_code': code, 'vocabulary_id': 'OMOP Genomic',
-            'concept_class_id': 'Genetic Variation',
+            'concept_class_id': concept_class,
         },
         'association': 'same_finding', 'status_filter': None,
     }
 
 
-def bound(concept_id, question, answer_id, code='x'):
-    term = subject(concept_id, code)
+def bound(concept_id, question, answer_id, code='x', concept_class='Genetic Variation'):
+    term = subject(concept_id, code, concept_class)
     term['qualifier'] = {
         'question': {
             'source_value': question, 'unit': '', 'domain_id': 'Measurement',
@@ -90,7 +90,9 @@ def trial(**fields):
         if genes:
             data['omop_mutation_genes_required'] = [envelope(*[subject(BRCA1 if g == 'brca1' else BRCA2 if g == 'brca2' else TP53) for g in genes])]
         if variants:
-            data['omop_mutation_variants_required'] = [envelope(subject(VARIANT_X))]
+            data['omop_mutation_variants_required'] = [
+                envelope(subject(VARIANT_X, concept_class='Gene RNA Variant'))
+            ]
         if origins:
             data['omop_mutation_origins_required'] = [
                 envelope(*[bound(BRCA1, 'genomics:origin', SOMATIC)])
@@ -390,3 +392,42 @@ def test_a_gene_outside_the_24_gene_crosswalk_uses_the_genetic_variation_class()
     )
     finding = {'gene': 'not_in_the_catalog', 'gene_concept_id': non_catalog_gene, 'origin': 'somatic'}
     assert state(t, [finding]) == 'matched'
+
+
+# ── variant-subject fallback must stay term-specific (review findings) ─
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_variant_origin_term_cannot_be_satisfied_by_a_different_variant_from_the_variant_axis():
+    v1, v2 = 90000001, 90000002
+    t = TrialFactory(
+        mutation_variants_required=['v1', 'v2'],
+        omop_mutation_variants_required=[
+            envelope(subject(v1, concept_class='Gene RNA Variant'),
+                     subject(v2, concept_class='Gene RNA Variant'))
+        ],
+        mutation_origins_required=['somatic__v1'],
+        omop_mutation_origins_required=[
+            envelope(bound(v1, 'genomics:origin', SOMATIC, concept_class='Gene RNA Variant'))
+        ],
+    )
+    findings = [
+        {'variant': 'v1', 'origin': 'germline'},
+        {'variant': 'v2', 'origin': 'somatic'},
+    ]
+    assert state(t, findings) == 'not_matched'
+    assert t.id not in search(findings)
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_variant_origin_term_uses_its_own_origin_token_without_a_variant_axis():
+    v1 = 90000003
+    t = TrialFactory(
+        mutation_variants_required=[],
+        mutation_origins_required=['somatic__v1'],
+        omop_mutation_origins_required=[
+            envelope(bound(v1, 'genomics:origin', SOMATIC, concept_class='Gene RNA Variant'))
+        ],
+    )
+    findings = [{'variant': 'v1', 'origin': 'somatic'}]
+    assert state(t, findings) == 'matched'
+    assert t.id in search(findings)
