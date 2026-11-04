@@ -240,6 +240,10 @@ export interface TrialStateAdapter extends TrialPreferenceStore {
    *  Optional, and paired: `canAnswerPreExistingConditions` refuses half a
    *  pair, for the same reason `canEditFields` does. */
   preExistingConditionsAnswer?: ExplicitAnswerAdapter;
+  /** The explicit negative confirmations (no active infection / no other
+   *  active malignancy) (#5666). Their own endpoint and snapshot, like the
+   *  pre-existing-conditions answer. */
+  negativeAnswers?: NegativeAnswerAdapter;
 }
 
 /** What a reader said about their pre-existing conditions.
@@ -269,6 +273,30 @@ export type PreExistingConditionsWrite =
 export interface ExplicitAnswerAdapter {
   read(): Promise<PreExistingConditionsAnswer>;
   write(answer: PreExistingConditionsWrite): Promise<PreExistingConditionsAnswer>;
+}
+
+export type NegativeAnswerField =
+  | "no_active_infection_status"
+  | "no_other_active_malignancies";
+
+/** What the record holds for one explicit negative confirmation. */
+export interface NegativeAnswer {
+  field: NegativeAnswerField;
+  value: boolean | null;
+  confirmed: boolean;
+  source: unknown;
+}
+
+export type NegativeAnswerWrite = {
+  field: NegativeAnswerField;
+  action: "confirm_negative" | "withdraw";
+  expected_value: boolean | null;
+  expected_source: unknown;
+};
+
+export interface NegativeAnswerAdapter {
+  read(field: NegativeAnswerField): Promise<NegativeAnswer>;
+  write(answer: NegativeAnswerWrite): Promise<NegativeAnswer>;
 }
 
 /** What the record showed after a write.
@@ -319,6 +347,13 @@ export function canAnswerPreExistingConditions(
   adapter: TrialStateAdapter | undefined,
 ): boolean {
   return Boolean(adapter?.preExistingConditionsAnswer);
+}
+
+/** Whether the host can answer the two derived negative confirmations. */
+export function canAnswerNegativeAnswers(
+  adapter: TrialStateAdapter | undefined,
+): boolean {
+  return Boolean(adapter?.negativeAnswers);
 }
 
 interface PromopStateArgs {
@@ -412,6 +447,7 @@ export function createPromopState({
   const preferences = `${basePath}/trial-search-preferences`;
   const records = `${basePath}/patient-records`;
   const preexistingAnswer = `${records}/${person}/preexisting-conditions-answer/`;
+  const negativeAnswer = `${records}/${person}/negative-answer/`;
 
   const ids = async (params: Record<string, string>): Promise<TrialId[]> => {
     const response = await client.get<{ trial_ids: TrialId[]; count: number }>(
@@ -668,6 +704,25 @@ export function createPromopState({
         return normaliseAnswer(response.data);
       },
     },
+
+    negativeAnswers: {
+      read: async (field) => {
+        const response = await client.get<NegativeAnswer>(negativeAnswer, {
+          params: { field },
+        });
+        return normaliseNegativeAnswer(response.data);
+      },
+      write: async (answer) => {
+        const response = await client
+          .post<NegativeAnswer>(negativeAnswer, answer)
+          .catch((error: unknown) => {
+            const status = (error as { response?: { status?: number } })
+              ?.response?.status;
+            throw status === 409 ? new AnswerChanged() : error;
+          });
+        return normaliseNegativeAnswer(response.data);
+      },
+    },
   };
 }
 
@@ -684,6 +739,17 @@ function normaliseAnswer(
   return {
     no_pre_existing_conditions: body?.no_pre_existing_conditions ?? null,
     preexisting_conditions: body?.preexisting_conditions ?? null,
+  };
+}
+
+function normaliseNegativeAnswer(
+  body: Partial<NegativeAnswer> | null | undefined,
+): NegativeAnswer {
+  return {
+    field: body?.field ?? "no_active_infection_status",
+    value: body?.value ?? null,
+    confirmed: body?.confirmed === true,
+    source: body?.source ?? null,
   };
 }
 

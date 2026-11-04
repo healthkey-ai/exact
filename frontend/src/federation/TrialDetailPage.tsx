@@ -37,12 +37,18 @@ import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
 import { BirthDateDialog } from "./BirthDateDialog";
 import { ExplicitAnswerDialog } from "./ExplicitAnswerDialog";
+import { NegativeAnswerDialog } from "./NegativeAnswerDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { splitJoined } from "./writable";
 import { editabilityOf, invertBoolean } from "./writable";
 import type { WritableFields } from "./writable";
-import type { ExplicitAnswerAdapter } from "./state";
-import type { PreExistingConditionsAnswer } from "./state";
+import type {
+  ExplicitAnswerAdapter,
+  NegativeAnswer,
+  NegativeAnswerAdapter,
+  NegativeAnswerField,
+  PreExistingConditionsAnswer,
+} from "./state";
 
 /** Everything the two writing controls need, as plain values and callbacks.
  *
@@ -188,9 +194,12 @@ export interface RowEditing {
   /** The explicit-answer endpoint, when the host implements it. Separate from
    *  `save`: an attestation is not a field PATCH and carries a snapshot. */
   answers?: ExplicitAnswerAdapter;
+  /** The explicit negative confirmations (#5666). Separate adapter and
+   *  endpoint from the pre-existing-conditions answer. */
+  negativeAnswers?: NegativeAnswerAdapter;
   /** Re-read the trial after an explicit answer lands, and give the host the
    *  answer so an inline profile it sends is refreshed too. */
-  onAnswered?: (answer: PreExistingConditionsAnswer) => void;
+  onAnswered?: (answer: NegativeAnswer | PreExistingConditionsAnswer) => void;
 }
 
 /** The fields whose last write was refused, named the way the reader saw them.
@@ -356,9 +365,12 @@ function EligibilityRow({
   // host decides whether it can speak to it; without that half we draw no
   // control rather than a door that cannot save.
   const explicitEntry = editing?.fields?.[field.upatientField ?? ""];
+  const explicitAdapter = explicitEntry?.endpoint === "negative-answer"
+    ? editing?.negativeAnswers
+    : editing?.answers;
   const explicitHere = Boolean(
     editableHere
-    && editing?.answers
+    && explicitAdapter
     && explicitEntry?.kind === "explicit-answer"
     // The endpoint has its own permission, and the descriptor's caller-aware
     // answer clears this for a read-only reader whose `writable` was already
@@ -532,14 +544,25 @@ function EligibilityRow({
             <PencilIcon />
           </button>
         ) : null}
-        {answerOpen && explicitHere && editing?.answers && explicitEntry ? (
-          <ExplicitAnswerDialog
-            label={field.label}
-            entry={explicitEntry}
-            answers={editing.answers}
-            onClose={() => setAnswerOpen(false)}
-            onAnswered={editing.onAnswered}
-          />
+        {answerOpen && explicitHere && explicitEntry ? (
+          explicitEntry.endpoint === "negative-answer" && editing?.negativeAnswers ? (
+            <NegativeAnswerDialog
+              label={field.label}
+              field={(field.upatientField ?? "") as NegativeAnswerField}
+              entry={explicitEntry}
+              answers={editing.negativeAnswers}
+              onClose={() => setAnswerOpen(false)}
+              onAnswered={editing.onAnswered}
+            />
+          ) : editing?.answers ? (
+            <ExplicitAnswerDialog
+              label={field.label}
+              entry={explicitEntry}
+              answers={editing.answers}
+              onClose={() => setAnswerOpen(false)}
+              onAnswered={editing.onAnswered}
+            />
+          ) : null
         ) : null}
         {editable.can === "edit" && editing ? (
           <FieldEdit

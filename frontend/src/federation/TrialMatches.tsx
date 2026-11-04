@@ -1862,6 +1862,8 @@ function TrialMatchesInner({
                 // explicit pre-existing-conditions question gets no control
                 // for that row, and every other row is unaffected.
                 answers: state?.preExistingConditionsAnswer,
+                // The same for the two derived negative confirmations (#5666).
+                negativeAnswers: state?.negativeAnswers,
                 onAnswered: (answer) => {
                   // The dialog outlives a patient switch by exactly as long
                   // as its request; the handle names the patient AND the
@@ -1879,10 +1881,14 @@ function TrialMatchesInner({
                   // callback that throws is its own problem; the write has
                   // already landed and must not be reported as failed.
                   try {
-                    onPatientRecordChanged?.({
-                      no_pre_existing_conditions: answer.no_pre_existing_conditions,
-                      preexisting_conditions: answer.preexisting_conditions,
-                    });
+                    if ('field' in answer) {
+                      onPatientRecordChanged?.({ [answer.field]: answer.value });
+                    } else {
+                      onPatientRecordChanged?.({
+                        no_pre_existing_conditions: answer.no_pre_existing_conditions,
+                        preexisting_conditions: answer.preexisting_conditions,
+                      });
+                    }
                   } catch {
                     // Nothing to tell the reader: the answer is saved.
                   }
