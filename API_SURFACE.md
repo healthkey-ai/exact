@@ -122,7 +122,7 @@ trial-search request.
 | `register` | string | Filter by trial register (e.g. `clinicaltrials.gov`) |
 | `trialType` | string | Filter by trial-type code |
 | `trialPurpose` | string, repeatable | Filter by trial-purpose code (`treatment`, `screening`, …), case-insensitive. Several purposes are a union — a trial matching any of them comes back: repeat the param (`?trialPurpose=treatment&trialPurpose=supportive_care`) or pass one comma-separated value. Trials whose purpose was never extracted are not returned. |
-| `genomicRequirement` | `required` | Eligibility filter: only trials whose `mutation_genes_required`, `molecular_markers_required` or `cytogenic_markers_required` list is non-empty. This is **not** a trial type — a trial requiring BRCA1/2 or ESR1 need not be typed as genomic, and trials with no type are included. Any other value is ignored. |
+| `genomicRequirement` | `required` (alias `true`, case-insensitive) | Eligibility filter: only trials whose `mutation_genes_required`, `molecular_markers_required` or `cytogenic_markers_required` list is non-empty. This is **not** a trial type — a trial requiring BRCA1/2 or ESR1 need not be typed as genomic, and trials with no type are included unless an excluding `trialType` is also sent. Any other value is ignored, as is a blank or absent one. |
 | `validatedOnly` | boolean | Only return manually validated trials |
 | `distance` | number | Maximum distance from patient location |
 | `distanceUnits` | `km` \| `miles` | Units for `distance` (default `km`) |

@@ -737,10 +737,11 @@ class TrialQuerySet(models.QuerySet):
         # `NOT (field = '[]')` is not the same as "a non-empty list": JSON
         # `null`, an object and a scalar are all unequal to `[]`, and NOT NULL
         # does not forbid them. `jsonb_array_length` would raise on those, so
-        # the type is checked first — an empty array and any non-array value
-        # are both "no requirement".
+        # CASE guards the type — an empty array and any non-array value are
+        # both "no requirement".
         condition = ' OR '.join(
-            f"(jsonb_typeof({field}) = 'array' AND jsonb_array_length({field}) > 0)"
+            f"(CASE WHEN jsonb_typeof({field}) = 'array' "
+            f"THEN jsonb_array_length({field}) > 0 ELSE false END)"
             for field in self.GENOMIC_REQUIREMENT_FIELDS
         )
         return self.annotate(
