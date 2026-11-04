@@ -14,6 +14,8 @@ from exact_matching.patient_info.language_capability import (
     held_codes as legacy_held_codes,
     verdict as legacy_language_verdict,
 )
+from exact_matching.omop.genomic_findings import MUTATION_COLUMNS
+from exact_matching.omop.genomics import omop_genomics_enabled
 from exact_matching.omop.languages_verdict import language_verdict, language_verdict_sql
 from exact_matching.patient_info.configs import (
     THERAPY_LINES_ATTRS_UNDERSCORED,
@@ -341,7 +343,18 @@ class UserToTrialAttrsMapper:
 
                 if not is_blank:
                     is_filled_by_user = True
-                    # continue
+
+                if (user_attr == 'genetic_mutations' and not is_filled_by_user
+                        and omop_genomics_enabled()):
+                    # The finding-level engine also honours typed-only mutation
+                    # columns. A blank payload is potential for any of the eight,
+                    # not just the four legacy mirrors the generic SQL reads.
+                    all_empty = ' AND '.join(
+                        f"({column} IS NULL OR {column} = '[]'::jsonb)"
+                        for column in MUTATION_COLUMNS
+                    )
+                    attrs2check[user_attr] = f'(CASE WHEN {all_empty} THEN NULL ELSE 1 END)'
+                    continue
 
                 # A therapy-line answer the therapy graph cannot expand is not an
                 # answer the matcher can use (#5013). `_match_therapy_lines_attr`

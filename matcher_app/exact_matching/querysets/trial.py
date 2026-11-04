@@ -32,9 +32,8 @@ from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PR
 from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
-from exact_matching.omop.genomics import (
-    gene_criterion_matches, gene_requirements, omop_genomics_enabled,
-)
+from exact_matching.omop.genomic_findings import MUTATION_COLUMNS, genomic_mutation_state
+from exact_matching.omop.genomics import omop_genomics_enabled
 from exact_matching.patient_info.language_capability import LanguagesKept, asked_languages
 from exact_matching.omop.languages_verdict import language_verdict_sql
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
@@ -1262,50 +1261,46 @@ class TrialQuerySet(models.QuerySet):
                 None, 'therapy_lines_count_max', int_value, skip_blank=False)
         return self.eligible_for_min_max_value('therapy_lines_count_min', 'therapy_lines_count_max', int_value, skip_blank=False)
 
-    def _eligible_for_genetic_mutation_genes_omop(self, genetic_mutations):
-        """Keep trials whose gene axis the shared rule says the patient satisfies.
+    @classmethod
+    def _mutation_empty_q(cls):
+        q = Q()
+        for column in MUTATION_COLUMNS:
+            q &= (Q(**{f'{column}__exact': []}) | Q(**{f'{column}__isnull': True}))
+        return q
 
-        The search and the per-trial matcher must agree, so this evaluates the
-        same parser and the same ``gene_criterion_matches`` helper over the
-        trials that carry either column. Only trials with a gene requirement are
-        fetched; a trial with neither column is left to the caller's other
-        filters (it has no gene requirement).
+    def _eligible_for_genetic_mutations_omop(self, genetic_mutations):
+        """Keep trials the finding-level evaluator says the patient satisfies.
+
+        Same evaluator as the per-trial matcher: one finding carries its own
+        gene/variant and its bound origin/interpretation. The four axes remain
+        independent existential requirements. A non-empty payload that lacks a
+        required subject/qualifier is ``not_matched`` (CB parity), so only
+        matched trials and trials with no mutation requirement survive.
         """
-        keys, patient_symbols = GeneticMutations.gene_match_context(genetic_mutations)
-        rows = (
-            self.exclude(
-                Q(mutation_genes_required__exact=[])
-                & Q(omop_mutation_genes_required__exact=[])
-            )
-            .values_list('id', 'mutation_genes_required', 'omop_mutation_genes_required')
-        )
+        from types import SimpleNamespace
+
+        empty = self._mutation_empty_q()
+        rows = self.exclude(empty).values_list('id', *MUTATION_COLUMNS)
         matches = []
-        for trial_id, legacy, envelopes in rows.iterator():
-            if gene_criterion_matches(
-                    gene_requirements(envelopes), legacy or [], keys, patient_symbols):
-                matches.append(trial_id)
-        # A trial with no gene column has no gene requirement; keep it, as the
-        # legacy empty-list filter did. The scan above only covers trials that
-        # carry one column.
-        no_gene_requirement = Q(mutation_genes_required__exact=[]) & (
-            Q(omop_mutation_genes_required__exact=[])
-            | Q(omop_mutation_genes_required__isnull=True)
-        )
-        return self.filter(no_gene_requirement | Q(pk__in=matches))
+        for row in rows.iterator():
+            trial = SimpleNamespace(**dict(zip(MUTATION_COLUMNS, row[1:])))
+            if genomic_mutation_state(trial, genetic_mutations, False) == 'matched':
+                matches.append(row[0])
+        return self.filter(empty | Q(pk__in=matches))
 
     def eligible_for_genetic_mutations(self, genetic_mutations):
         if genetic_mutations == []:
             return self
 
         if omop_genomics_enabled():
-            scope = self._eligible_for_genetic_mutation_genes_omop(genetic_mutations)
-        else:
-            genes = GeneticMutations.mutation_genes(genetic_mutations)
-            scope = self.eligible_for_required_lists(
-                values=genes,
-                required_attr_name='mutation_genes_required',
-                allow_empty_list=False
-            )
+            return self._eligible_for_genetic_mutations_omop(genetic_mutations)
+
+        genes = GeneticMutations.mutation_genes(genetic_mutations)
+        scope = self.eligible_for_required_lists(
+            values=genes,
+            required_attr_name='mutation_genes_required',
+            allow_empty_list=False
+        )
 
         variants = GeneticMutations.mutation_variants(genetic_mutations)
         scope = scope.eligible_for_required_lists(

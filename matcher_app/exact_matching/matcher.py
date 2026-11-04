@@ -38,9 +38,8 @@ from exact_matching.patient_info.configs import (
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
     sct_value_is_none,
 )
-from exact_matching.omop.genomics import (
-    gene_criterion_matches, omop_genomics_enabled, trial_gene_requirements,
-)
+from exact_matching.omop.genomic_findings import genomic_mutation_state
+from exact_matching.omop.genomics import omop_genomics_enabled
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
@@ -879,6 +878,13 @@ class UserToTrialAttrMatcher:
             return 'matched'
 
     def _match_genetic_mutations(self, ctx):
+        if omop_genomics_enabled():
+            # #5672: one finding at a time. Gene/variant subjects and their
+            # origin/interpretation qualifiers are evaluated on the same
+            # finding; the four axes remain independent existential
+            # requirements. Off, the legacy global-set path below is untouched.
+            return genomic_mutation_state(self.trial, ctx.value, ctx.is_blank)
+
         trial_mutation_genes_required = getattr(self.trial, 'mutation_genes_required')
         trial_mutation_variants_required = getattr(self.trial, 'mutation_variants_required')
         trial_mutation_origins_required = getattr(self.trial, 'mutation_origins_required')
@@ -887,14 +893,8 @@ class UserToTrialAttrMatcher:
         pi_variants = GeneticMutations.mutation_variants(ctx.value)
         pi_origins = GeneticMutations.mutation_origins(ctx.value)
         pi_interpretations = GeneticMutations.mutation_interpretations(ctx.value)
-        # #5673: the trial's typed envelope carries the reviewed gene concept
-        # ids. None means missing/unsupported, and the legacy symbol columns
-        # stay in charge for this trial.
-        parsed_genes = trial_gene_requirements(self.trial) if omop_genomics_enabled() else None
-        has_gene_requirement = bool(trial_mutation_genes_required) or bool(
-            parsed_genes and (parsed_genes[0] or parsed_genes[1]))
 
-        if (not has_gene_requirement and trial_mutation_variants_required == []
+        if (trial_mutation_genes_required == [] and trial_mutation_variants_required == []
                 and trial_mutation_origins_required == []
                 and trial_mutation_interpretations_required == []):
             return 'matched'
@@ -902,23 +902,8 @@ class UserToTrialAttrMatcher:
             return 'unknown'
 
         # match genes
-        if parsed_genes is not None:
-            keys, patient_symbols = GeneticMutations.gene_match_context(ctx.value)
-            if not gene_criterion_matches(
-                    parsed_genes, trial_mutation_genes_required, keys, patient_symbols):
-                return 'not_matched'
-        elif len(trial_mutation_genes_required) > 0:
-            if omop_genomics_enabled():
-                # A trial with no usable envelope still holds legacy symbols.
-                # The shared context maps a finding's id (explicit or derived
-                # from a legacy symbol) back to every reviewed spelling; a
-                # mapped finding never contributes its own contradictory text.
-                _, patient_symbols = GeneticMutations.gene_match_context(ctx.value)
-                if not gene_criterion_matches(
-                        None, trial_mutation_genes_required, set(), patient_symbols):
-                    return 'not_matched'
-            elif not get_overlap(pi_genes, trial_mutation_genes_required):
-                return 'not_matched'
+        if len(trial_mutation_genes_required) > 0 and len(get_overlap(pi_genes, trial_mutation_genes_required)) == 0:
+            return 'not_matched'
         # match variants
         if len(trial_mutation_variants_required) > 0 and len(get_overlap(pi_variants, trial_mutation_variants_required)) == 0:
             return 'not_matched'
