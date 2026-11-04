@@ -8,9 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from django.db import connection
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from tests.factories import TrialFactory
+from tests.factories import TrialFactory, TrialTypeFactory
 from trials.api.trials_views import TrialsViewSet
 from trials.models import Trial
 from trials.services.study_preferences import (
@@ -86,6 +87,34 @@ class TestTheQuerysetFilter:
         )
         kept = Trial.objects.all().by_genomic_requirement('required')
         assert list(kept.values_list('pk', flat=True)) == [row.pk]
+
+    @pytest.mark.parametrize('stored', ['null', '{}', 'false', '0', '" "'])
+    def test_a_non_array_value_is_not_a_requirement(self, stored):
+        """NOT NULL does not forbid JSON null, objects or scalars, and
+        `field != '[]'` would have counted every one of them as a match."""
+        row = TrialFactory(
+            mutation_genes_required=[],
+            molecular_markers_required=[],
+            cytogenic_markers_required=[],
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE trials_trial SET mutation_genes_required = %s::jsonb "
+                "WHERE id = %s",
+                [stored, row.pk],
+            )
+        assert not Trial.objects.all().by_genomic_requirement('required').filter(
+            pk=row.pk).exists()
+
+    def test_combines_with_trial_type_as_an_intersection(self):
+        trial_type = TrialTypeFactory(code='qa_genomic_type')
+        typed = TrialFactory(
+            mutation_genes_required=['brca1'], trial_type=trial_type)
+        TrialFactory(mutation_genes_required=['brca1'], trial_type=None)
+        prefs = StudyPreferences(
+            trial_type=trial_type.code, genomic_requirement='required')
+        query, _ = Trial.objects.all().filter_by_study_info(prefs)
+        assert list(query.values_list('pk', flat=True)) == [typed.pk]
 
     def test_the_standard_search_path_applies_it(self):
         mutation, molecular, cytogenic, _ = self._trials()

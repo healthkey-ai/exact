@@ -734,10 +734,20 @@ class TrialQuerySet(models.QuerySet):
         """
         if str(requirement or '').strip().lower() not in ('required', 'true'):
             return self
-        condition = Q()
-        for field in self.GENOMIC_REQUIREMENT_FIELDS:
-            condition |= ~Q(**{field: []})
-        return self.filter(condition)
+        # `NOT (field = '[]')` is not the same as "a non-empty list": JSON
+        # `null`, an object and a scalar are all unequal to `[]`, and NOT NULL
+        # does not forbid them. `jsonb_array_length` would raise on those, so
+        # the type is checked first — an empty array and any non-array value
+        # are both "no requirement".
+        condition = ' OR '.join(
+            f"(jsonb_typeof({field}) = 'array' AND jsonb_array_length({field}) > 0)"
+            for field in self.GENOMIC_REQUIREMENT_FIELDS
+        )
+        return self.annotate(
+            _has_genomic_requirement=RawSQL(
+                condition, [], output_field=BooleanField(),
+            ),
+        ).filter(_has_genomic_requirement=True)
 
     def by_trial_purpose(self, trial_purpose):
         """Filter by Trial.purpose. Accepts a list of codes (CB #4663), a single
