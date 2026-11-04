@@ -549,6 +549,15 @@ EXACT_OMOP_THERAPY = os.environ.get('EXACT_OMOP_THERAPY', '').lower() in ('1', '
 # just a CB-code languages_skills reads as unknown.
 EXACT_OMOP_LANGUAGES = os.environ.get('EXACT_OMOP_LANGUAGES', '').lower() in ('1', 'true', 'yes', 'on')
 
+# Gene-level genomic subject matching (#5673). ON: the matcher reads the gene
+# concept ids in the trial's typed `omop_mutation_genes_required` envelope and
+# compares them with the patient finding's `gene_concept_id`. OFF: legacy gene
+# symbols. A missing/malformed envelope, or a legacy finding without an id,
+# falls back to the symbol columns rather than guessing; a mapped finding never
+# contributes its symbol, so a contradictory id cannot be rescued by text.
+# Flip after `check_omop_genomics_readiness` is clean.
+EXACT_OMOP_GENOMICS = os.environ.get('EXACT_OMOP_GENOMICS', '').lower() in ('1', 'true', 'yes', 'on')
+
 # Single public flag for the remaining non-therapy Trial criteria (the all-55
 # typed runtime, #661/#662). OFF by default. When ON, EXACT uses the typed
 # runtime and FAILS CLOSED with `typed_matching_unavailable` (503) until a
