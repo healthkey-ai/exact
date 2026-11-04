@@ -152,6 +152,27 @@ def trial_gene_requirements(trial):
     return gene_requirements(getattr(trial, 'omop_mutation_genes_required', None))
 
 
+def gene_criterion_matches(requirements, legacy_symbols, patient_keys, patient_symbols):
+    """The one gene-axis rule shared by search and the per-trial matcher.
+
+    ``requirements`` is ``gene_requirements()`` or None (fall back to the
+    legacy symbol column). ``patient_keys`` are the per-finding ids/unknown
+    symbols; ``patient_symbols`` are the spellings a legacy trial can compare
+    (only findings without an id, plus ids mapped back to reviewed aliases).
+    """
+    legacy = set(legacy_symbols or ())
+    if requirements is None:
+        return not legacy or bool(legacy & set(patient_symbols))
+    required, excluded = requirements
+    keys = set(patient_keys)
+    if excluded & keys:
+        return False
+    if required and not (required & keys):
+        unknown = {key for key in keys if not key.isdigit()}
+        return bool(unknown & legacy)
+    return True
+
+
 def legacy_gene_ids(symbols):
     """Map legacy trial symbols to concept ids; None if any symbol is unreviewed."""
     if not symbols:

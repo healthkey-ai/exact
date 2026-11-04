@@ -234,3 +234,59 @@ class TestReadinessCommand:
         TrialFactory(mutation_genes_required=['not-a-gene'])
         with pytest.raises(CommandError, match='not ready'):
             self._run()
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_contradictory_id_is_not_rescued_by_its_symbol_on_the_legacy_path():
+    """A trial without an envelope must still respect the finding's id."""
+    trial = TrialFactory(mutation_genes_required=['brca1'])
+    finding = {'gene': 'brca1', 'gene_concept_id': int(TP53)}
+    assert verdict(trial, finding) == 'not_matched'
+    assert not Trial.objects.eligible_for_genetic_mutations(
+        [finding]).filter(id=trial.id).exists()
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_excluded_envelope_search_and_matcher_agree():
+    trial = TrialFactory(
+        mutation_genes_required=['brca1'],
+        omop_mutation_genes_required=[gene_envelope(TP53, role='excluded')],
+    )
+    excluded = [{'gene': 'tp53', 'gene_concept_id': int(TP53)}]
+    allowed = [{'gene': 'brca1', 'gene_concept_id': int(BRCA1)}]
+    assert verdict(trial, *excluded) == 'not_matched'
+    assert not Trial.objects.eligible_for_genetic_mutations(
+        excluded).filter(id=trial.id).exists()
+    assert verdict(trial, *allowed) == 'matched'
+    assert Trial.objects.eligible_for_genetic_mutations(
+        allowed).filter(id=trial.id).exists()
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_unsupported_envelope_search_falls_back_like_the_matcher():
+    trial = TrialFactory(
+        mutation_genes_required=['tp53'],
+        omop_mutation_genes_required=[{**gene_envelope(BRCA1), 'schema': 'other'}],
+    )
+    finding = [{'gene': 'brca1', 'gene_concept_id': int(BRCA1)}]
+    assert verdict(trial, *finding) == 'not_matched'
+    assert not Trial.objects.eligible_for_genetic_mutations(
+        finding).filter(id=trial.id).exists()
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_search_accepts_a_flat_id_list():
+    trial = TrialFactory(
+        mutation_genes_required=['brca1'], omop_mutation_genes_required=[BRCA1],
+    )
+    finding = [{'gene_concept_id': int(BRCA1)}]
+    assert verdict(trial, *finding) == 'matched'
+    assert Trial.objects.eligible_for_genetic_mutations(
+        finding).filter(id=trial.id).exists()
+
+
+class TestReadinessCommandMalformed:
+    def test_malformed_orphan_envelope_fails(self):
+        TrialFactory(mutation_genes_required=[], omop_mutation_genes_required={'bad': 'object'})
+        with pytest.raises(CommandError, match='not ready'):
+            call_command('check_omop_genomics_readiness', stdout=StringIO())

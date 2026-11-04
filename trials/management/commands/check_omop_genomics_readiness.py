@@ -39,10 +39,17 @@ class Command(BaseCommand):
         ).iterator()
         for trial in rows:
             legacy = list(trial.mutation_genes_required or [])
+            envelopes = trial.omop_mutation_genes_required
+            has_envelope = envelopes not in (None, [], '')
             parsed = trial_gene_requirements(trial)
             if not legacy:
                 if parsed and (parsed[0] or parsed[1]):
                     status = 'orphan_envelope'
+                elif has_envelope and parsed is None:
+                    # A non-empty value that is not an envelope (a dict, a
+                    # scalar, a malformed list) is a data error even though it
+                    # carries no legacy requirement.
+                    status = 'malformed_envelope'
                 else:
                     continue
             else:
@@ -50,7 +57,7 @@ class Command(BaseCommand):
                 if expected is None:
                     status = 'unmapped_symbol'
                 elif parsed is None:
-                    status = 'missing_envelope'
+                    status = 'malformed_envelope' if has_envelope else 'missing_envelope'
                 elif parsed[0] != expected or parsed[1]:
                     status = 'mismatch'
                 else:

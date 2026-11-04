@@ -39,7 +39,8 @@ from exact_matching.patient_info.configs import (
     sct_value_is_none,
 )
 from exact_matching.omop.genomics import (
-    gene_symbols_for_concept_ids, omop_genomics_enabled, trial_gene_requirements,
+    gene_criterion_matches, gene_symbols_for_concept_ids, omop_genomics_enabled,
+    trial_gene_requirements,
 )
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
@@ -903,26 +904,26 @@ class UserToTrialAttrMatcher:
 
         # match genes
         if parsed_genes is not None:
-            required, excluded = parsed_genes
-            keys = set(GeneticMutations.mutation_gene_keys(ctx.value))
-            if excluded & keys:
+            patient_symbols = set(GeneticMutations.mutation_legacy_gene_symbols(ctx.value))
+            patient_symbols |= set(gene_symbols_for_concept_ids(
+                GeneticMutations.mutation_gene_concept_ids(ctx.value)))
+            if not gene_criterion_matches(
+                    parsed_genes, trial_mutation_genes_required,
+                    GeneticMutations.mutation_gene_keys(ctx.value), patient_symbols):
                 return 'not_matched'
-            if required and not (required & keys):
-                # A legacy finding with no reviewed id keeps its symbol; a
-                # mapped finding never contributes one, so its id cannot be
-                # overridden by contradictory text.
-                unknown_symbols = {key for key in keys if not key.isdigit()}
-                if not (unknown_symbols & set(trial_mutation_genes_required or [])):
-                    return 'not_matched'
         elif len(trial_mutation_genes_required) > 0:
-            # With the flag on, a finding that only carries a concept id still
-            # has a legacy spelling on a trial with no envelope; map the id
-            # back rather than dropping the finding. Off, keep the old path.
-            patient_symbols = set(pi_genes)
             if omop_genomics_enabled():
+                # A finding that only carries a concept id still has a legacy
+                # spelling on a trial with no usable envelope; map the id back
+                # rather than dropping the finding. A mapped finding never
+                # contributes its own symbol.
+                patient_symbols = set(GeneticMutations.mutation_legacy_gene_symbols(ctx.value))
                 patient_symbols |= set(gene_symbols_for_concept_ids(
                     GeneticMutations.mutation_gene_concept_ids(ctx.value)))
-            if not get_overlap(sorted(patient_symbols), trial_mutation_genes_required):
+                if not gene_criterion_matches(
+                        None, trial_mutation_genes_required, set(), patient_symbols):
+                    return 'not_matched'
+            elif not get_overlap(pi_genes, trial_mutation_genes_required):
                 return 'not_matched'
         # match variants
         if len(trial_mutation_variants_required) > 0 and len(get_overlap(pi_variants, trial_mutation_variants_required)) == 0:
