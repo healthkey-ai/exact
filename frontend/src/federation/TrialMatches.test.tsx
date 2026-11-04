@@ -132,6 +132,28 @@ describe("filters", () => {
     vi.useRealTimers();
   });
 
+  it("sends the genomic requirement as an eligibility filter, not a type", async () => {
+    // #5675: a trial requiring BRCA1/2 or ESR1 is not necessarily typed as
+    // genomic, so `trialType` answered with nothing. The control has to say
+    // what it narrows on and put its own param on the wire.
+    const api = fakeApi();
+    renderTrialMatches(api, { patientInfo: { disease: "breast cancer", country: "US" } });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    await userEvent.click(screen.getByRole("button", { name: /Filter Results/ }));
+    await userEvent.selectOptions(
+      await screen.findByLabelText("Genomic requirement"),
+      "required",
+    );
+
+    await waitFor(() => expect(listed(api).length).toBe(2));
+    expect(listed(api)[1].params.genomicRequirement).toBe("required");
+    expect(listed(api)[1].params.trialType).toBeUndefined();
+    expect(
+      await screen.findByRole("button", { name: /Filters \(1\)/ }),
+    ).toBeInTheDocument();
+  });
+
   it("counts only what the reader changed", async () => {
     const api = fakeApi();
     renderTrialMatches(api, { patientInfo: { disease: "multiple myeloma", country: "US" } });

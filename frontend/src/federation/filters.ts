@@ -29,6 +29,7 @@ const PANEL_FIELDS = [
   "sponsor",
   "trialType",
   "trialPurpose",
+  "genomicRequirement",
   "recruitmentStatus",
   "phase",
   "register",

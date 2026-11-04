@@ -32,6 +32,12 @@ interface Option {
   label: string;
 }
 
+/** The one eligibility value the server understands. No empty entry: the
+ *  select adds its own "Any", so the control always has a way back. */
+const GENOMIC_REQUIREMENT_OPTIONS: Option[] = [
+  { value: "required", label: "Requires a genomic marker" },
+];
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="exact-filter">
@@ -276,6 +282,18 @@ export function FilterPanel({
           value={filters.trialType}
           options={options("trialType")}
           onChange={(v) => set({ trialType: v })}
+        />
+
+        {/* An eligibility filter, not a trial type (#5675). A trial requiring
+            BRCA1/2 or ESR1 need not be typed as genomic — 81 of the 319 BC
+            trials with a mutation requirement have no type at all — so asking
+            the type filter for "Genomic" answered with nothing. The label says
+            what the filter actually narrows on. */}
+        <SelectFilter
+          label="Genomic requirement"
+          value={filters.genomicRequirement}
+          options={GENOMIC_REQUIREMENT_OPTIONS}
+          onChange={(v) => set({ genomicRequirement: v })}
         />
 
         <TextFilter

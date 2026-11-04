@@ -348,6 +348,11 @@ export interface FilterState {
    *  param — see `filterStateToParams`. */
   trialPurpose?: string[];
   studyType?: string;
+  /** An eligibility requirement, not a trial type (#5675): the trial requires
+   *  a mutation gene, molecular marker or cytogenic marker. `required` is the
+   *  only value the panel sends; the server narrows on the union of the three
+   *  requirement lists, so a trial with no trial type is still found. */
+  genomicRequirement?: string;
   distance?: number;
   distanceUnits?: "km" | "miles";
   validatedOnly?: boolean;

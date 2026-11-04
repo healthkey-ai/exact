@@ -344,6 +344,7 @@ describe("what the stored set is trusted to contain", () => {
       sponsor: "Acme",
       trialType: "drug",
       trialPurpose: "treatment",
+      genomicRequirement: "required",
       recruitmentStatus: "RECRUITING",
       phase: "PHASE3",
       register: "NCT",

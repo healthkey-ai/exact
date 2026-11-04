@@ -443,6 +443,11 @@ export function filterStateToParams(filters?: FilterState): Record<string, strin
   if (filters.country) out.country = filters.country;
   if (filters.region) out.region = filters.region;
   if (filters.trialType) out.trialType = filters.trialType;
+  // An eligibility requirement, not a type: the server matches the union of
+  // the mutation-gene, molecular-marker and cytogenic-marker lists (#5675).
+  if (filters.genomicRequirement) {
+    out.genomicRequirement = filters.genomicRequirement;
+  }
   // Comma-separated rather than a repeated param. Repetition is the
   // query-string convention and `_str_list` reads it, but axios's default
   // serializer spells an array `trialPurpose[]=a&trialPurpose[]=b`, and
