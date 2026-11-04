@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AxiosInstance } from "axios";
 
-import { canAnswerPreExistingConditions, canEditFields, createPromopState, AnswerChanged } from "./state";
+import { canAnswerNegativeAnswers, canAnswerPreExistingConditions, canEditFields, createPromopState, AnswerChanged } from "./state";
 
 function fakeClient(data: unknown = {}) {
   const get = vi.fn().mockResolvedValue({ data });
@@ -714,6 +714,79 @@ describe("the explicit pre-existing-conditions answer", () => {
         preExistingConditionsAnswer: {
           read: async () => ({ no_pre_existing_conditions: null, preexisting_conditions: null }),
           write: async () => ({ no_pre_existing_conditions: null, preexisting_conditions: null }),
+        },
+      }),
+    ).toBe(true);
+  });
+});
+
+
+describe("the explicit negative confirmations", () => {
+  const answer = {
+    field: "no_active_infection_status" as const,
+    value: null,
+    confirmed: false,
+    source: null,
+  };
+
+  it("reads through the negative-answer endpoint with the field", async () => {
+    const client = fakeClient(answer);
+    expect(
+      await adapter(client).negativeAnswers!.read("no_active_infection_status"),
+    ).toEqual(answer);
+    expect(client.get).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/negative-answer/",
+      { params: { field: "no_active_infection_status" } },
+    );
+  });
+
+  it("posts the value and source snapshot", async () => {
+    const client = fakeClient({ ...answer, value: true, confirmed: true });
+    const body = {
+      field: "no_active_infection_status" as const,
+      action: "confirm_negative" as const,
+      expected_value: null,
+      expected_source: null,
+    };
+    await adapter(client).negativeAnswers!.write(body);
+    expect(client.post).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/negative-answer/",
+      body,
+    );
+  });
+
+  it("names a 409 so the dialog can re-read", async () => {
+    const client = fakeClient();
+    client.post.mockRejectedValueOnce({ response: { status: 409 } });
+    await expect(
+      adapter(client).negativeAnswers!.write({
+        field: "no_active_infection_status",
+        action: "withdraw",
+        expected_value: true,
+        expected_source: null,
+      }),
+    ).rejects.toBeInstanceOf(AnswerChanged);
+  });
+
+  it("is a pair", () => {
+    const bare = {
+      listFavoriteIds: async () => [],
+      setFavorite: async () => undefined,
+      listRegisteredIds: async () => [],
+      setRegistered: async () => undefined,
+      listAdvancedEnrollments: async () => ({}),
+      getPreferences: async () => ({}),
+      savePreferences: async () => undefined,
+      resetPreferences: async () => undefined,
+    };
+    expect(canAnswerNegativeAnswers(undefined)).toBe(false);
+    expect(canAnswerNegativeAnswers(bare)).toBe(false);
+    expect(
+      canAnswerNegativeAnswers({
+        ...bare,
+        negativeAnswers: {
+          read: async () => answer,
+          write: async () => answer,
         },
       }),
     ).toBe(true);
