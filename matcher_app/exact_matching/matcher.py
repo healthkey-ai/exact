@@ -38,6 +38,9 @@ from exact_matching.patient_info.configs import (
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
     sct_value_is_none,
 )
+from exact_matching.omop.genomics import (
+    gene_symbols_for_concept_ids, omop_genomics_enabled, trial_gene_requirements,
+)
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
@@ -884,25 +887,53 @@ class UserToTrialAttrMatcher:
         pi_variants = GeneticMutations.mutation_variants(ctx.value)
         pi_origins = GeneticMutations.mutation_origins(ctx.value)
         pi_interpretations = GeneticMutations.mutation_interpretations(ctx.value)
+        # #5673: the trial's typed envelope carries the reviewed gene concept
+        # ids. None means missing/unsupported, and the legacy symbol columns
+        # stay in charge for this trial.
+        parsed_genes = trial_gene_requirements(self.trial) if omop_genomics_enabled() else None
+        has_gene_requirement = bool(trial_mutation_genes_required) or bool(
+            parsed_genes and (parsed_genes[0] or parsed_genes[1]))
 
-        if trial_mutation_genes_required == [] and trial_mutation_variants_required == [] and trial_mutation_origins_required == [] and trial_mutation_interpretations_required == []:
+        if (not has_gene_requirement and trial_mutation_variants_required == []
+                and trial_mutation_origins_required == []
+                and trial_mutation_interpretations_required == []):
             return 'matched'
         elif ctx.is_blank:
             return 'unknown'
-        else:
-            # match genes
-            if len(trial_mutation_genes_required) > 0 and len(get_overlap(pi_genes, trial_mutation_genes_required)) == 0:
+
+        # match genes
+        if parsed_genes is not None:
+            required, excluded = parsed_genes
+            keys = set(GeneticMutations.mutation_gene_keys(ctx.value))
+            if excluded & keys:
                 return 'not_matched'
-            # match variants
-            elif len(trial_mutation_variants_required) > 0 and len(get_overlap(pi_variants, trial_mutation_variants_required)) == 0:
+            if required and not (required & keys):
+                # A legacy finding with no reviewed id keeps its symbol; a
+                # mapped finding never contributes one, so its id cannot be
+                # overridden by contradictory text.
+                unknown_symbols = {key for key in keys if not key.isdigit()}
+                if not (unknown_symbols & set(trial_mutation_genes_required or [])):
+                    return 'not_matched'
+        elif len(trial_mutation_genes_required) > 0:
+            # With the flag on, a finding that only carries a concept id still
+            # has a legacy spelling on a trial with no envelope; map the id
+            # back rather than dropping the finding. Off, keep the old path.
+            patient_symbols = set(pi_genes)
+            if omop_genomics_enabled():
+                patient_symbols |= set(gene_symbols_for_concept_ids(
+                    GeneticMutations.mutation_gene_concept_ids(ctx.value)))
+            if not get_overlap(sorted(patient_symbols), trial_mutation_genes_required):
                 return 'not_matched'
-            # match origins
-            elif len(trial_mutation_origins_required) > 0 and len(get_overlap(pi_origins, trial_mutation_origins_required)) == 0:
-                return 'not_matched'
-            # match interpretations
-            elif len(trial_mutation_interpretations_required) > 0 and len(get_overlap(pi_interpretations, trial_mutation_interpretations_required)) == 0:
-                return 'not_matched'
-            return 'matched'
+        # match variants
+        if len(trial_mutation_variants_required) > 0 and len(get_overlap(pi_variants, trial_mutation_variants_required)) == 0:
+            return 'not_matched'
+        # match origins
+        if len(trial_mutation_origins_required) > 0 and len(get_overlap(pi_origins, trial_mutation_origins_required)) == 0:
+            return 'not_matched'
+        # match interpretations
+        if len(trial_mutation_interpretations_required) > 0 and len(get_overlap(pi_interpretations, trial_mutation_interpretations_required)) == 0:
+            return 'not_matched'
+        return 'matched'
 
     # ── custom_search fallbacks ─────────────────────────────────────
 

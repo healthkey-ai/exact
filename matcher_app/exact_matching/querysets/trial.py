@@ -32,6 +32,7 @@ from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PR
 from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
+from exact_matching.omop.genomics import gene_symbols_for_concept_ids, omop_genomics_enabled
 from exact_matching.patient_info.language_capability import LanguagesKept, asked_languages
 from exact_matching.omop.languages_verdict import language_verdict_sql
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
@@ -1259,16 +1260,75 @@ class TrialQuerySet(models.QuerySet):
                 None, 'therapy_lines_count_max', int_value, skip_blank=False)
         return self.eligible_for_min_max_value('therapy_lines_count_min', 'therapy_lines_count_max', int_value, skip_blank=False)
 
+    # #5673: the trial column holds the CB typed envelope (or, on older data,
+    # a flat id list). Gene ids live in item.terms[].feature.concept_id.
+    _GENE_ENVELOPE_OVERLAP = """
+        EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(
+                COALESCE(omop_mutation_genes_required, '[]'::jsonb)
+            ) AS item
+            WHERE (
+                jsonb_typeof(item) IN ('number', 'string')
+                AND btrim(item::text, '"') = ANY(%s)
+            ) OR (
+                jsonb_typeof(item) = 'object'
+                AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                        COALESCE(item->'terms', '[]'::jsonb)
+                    ) AS term
+                    WHERE term->'feature'->>'concept_id' = ANY(%s)
+                )
+            )
+        )
+    """
+
+    def _eligible_for_genetic_mutation_genes_omop(self, genetic_mutations):
+        """Keep trials whose typed gene envelope overlaps the patient's ids.
+
+        A trial with no envelope keeps the legacy symbol path. A trial whose
+        envelope is present but unsupported is dropped until the readiness
+        command reports it clean; the per-trial matcher would fall back, but a
+        SQL filter cannot evaluate that shape, so the flag must not be flipped
+        before the audit passes.
+        """
+        keys = GeneticMutations.mutation_gene_keys(genetic_mutations)
+        patient_ids = [key for key in keys if key.isdigit()]
+        patient_symbols = set(GeneticMutations.mutation_legacy_gene_symbols(genetic_mutations))
+        # A trial with no envelope still holds legacy symbols. Map the patient's
+        # authoritative ids back to every reviewed spelling so that a mapped
+        # finding is not lost just because the trial backfill has not run.
+        patient_symbols |= set(gene_symbols_for_concept_ids(patient_ids))
+        no_envelope = (
+            Q(omop_mutation_genes_required__exact=[])
+            | Q(omop_mutation_genes_required__isnull=True)
+        )
+        legacy = Q(mutation_genes_required__exact=[])
+        if patient_symbols:
+            legacy |= Q(mutation_genes_required__has_any_keys=sorted(patient_symbols))
+        base = no_envelope & legacy
+        if not patient_ids:
+            return self.filter(base)
+        overlap = self.filter(RawSQL(
+            self._GENE_ENVELOPE_OVERLAP, [patient_ids, patient_ids],
+            output_field=BooleanField(),
+        ))
+        return self.filter(Q(pk__in=overlap.values('pk')) | base)
+
     def eligible_for_genetic_mutations(self, genetic_mutations):
         if genetic_mutations == []:
             return self
 
-        genes = GeneticMutations.mutation_genes(genetic_mutations)
-        scope = self.eligible_for_required_lists(
-            values=genes,
-            required_attr_name='mutation_genes_required',
-            allow_empty_list=False
-        )
+        if omop_genomics_enabled():
+            scope = self._eligible_for_genetic_mutation_genes_omop(genetic_mutations)
+        else:
+            genes = GeneticMutations.mutation_genes(genetic_mutations)
+            scope = self.eligible_for_required_lists(
+                values=genes,
+                required_attr_name='mutation_genes_required',
+                allow_empty_list=False
+            )
 
         variants = GeneticMutations.mutation_variants(genetic_mutations)
         scope = scope.eligible_for_required_lists(
