@@ -33,8 +33,7 @@ from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
 from exact_matching.omop.genomics import (
-    gene_criterion_matches, gene_requirements, gene_symbols_for_concept_ids,
-    omop_genomics_enabled,
+    gene_criterion_matches, gene_requirements, omop_genomics_enabled,
 )
 from exact_matching.patient_info.language_capability import LanguagesKept, asked_languages
 from exact_matching.omop.languages_verdict import language_verdict_sql
@@ -1272,13 +1271,7 @@ class TrialQuerySet(models.QuerySet):
         fetched; a trial with neither column is left to the caller's other
         filters (it has no gene requirement).
         """
-        keys = set(GeneticMutations.mutation_gene_keys(genetic_mutations))
-        patient_symbols = set(GeneticMutations.mutation_legacy_gene_symbols(genetic_mutations))
-        patient_ids = [key for key in keys if key.isdigit()]
-        # A trial with no envelope still holds legacy symbols. Map the patient's
-        # authoritative ids back to every reviewed spelling so that a mapped
-        # finding is not lost just because the trial backfill has not run.
-        patient_symbols |= set(gene_symbols_for_concept_ids(patient_ids))
+        keys, patient_symbols = GeneticMutations.gene_match_context(genetic_mutations)
         rows = (
             self.exclude(
                 Q(mutation_genes_required__exact=[])
@@ -1291,7 +1284,14 @@ class TrialQuerySet(models.QuerySet):
             if gene_criterion_matches(
                     gene_requirements(envelopes), legacy or [], keys, patient_symbols):
                 matches.append(trial_id)
-        return self.filter(pk__in=matches)
+        # A trial with no gene column has no gene requirement; keep it, as the
+        # legacy empty-list filter did. The scan above only covers trials that
+        # carry one column.
+        no_gene_requirement = Q(mutation_genes_required__exact=[]) & (
+            Q(omop_mutation_genes_required__exact=[])
+            | Q(omop_mutation_genes_required__isnull=True)
+        )
+        return self.filter(no_gene_requirement | Q(pk__in=matches))
 
     def eligible_for_genetic_mutations(self, genetic_mutations):
         if genetic_mutations == []:

@@ -39,8 +39,7 @@ from exact_matching.patient_info.configs import (
     sct_value_is_none,
 )
 from exact_matching.omop.genomics import (
-    gene_criterion_matches, gene_symbols_for_concept_ids, omop_genomics_enabled,
-    trial_gene_requirements,
+    gene_criterion_matches, omop_genomics_enabled, trial_gene_requirements,
 )
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
@@ -904,22 +903,17 @@ class UserToTrialAttrMatcher:
 
         # match genes
         if parsed_genes is not None:
-            patient_symbols = set(GeneticMutations.mutation_legacy_gene_symbols(ctx.value))
-            patient_symbols |= set(gene_symbols_for_concept_ids(
-                GeneticMutations.mutation_gene_concept_ids(ctx.value)))
+            keys, patient_symbols = GeneticMutations.gene_match_context(ctx.value)
             if not gene_criterion_matches(
-                    parsed_genes, trial_mutation_genes_required,
-                    GeneticMutations.mutation_gene_keys(ctx.value), patient_symbols):
+                    parsed_genes, trial_mutation_genes_required, keys, patient_symbols):
                 return 'not_matched'
         elif len(trial_mutation_genes_required) > 0:
             if omop_genomics_enabled():
-                # A finding that only carries a concept id still has a legacy
-                # spelling on a trial with no usable envelope; map the id back
-                # rather than dropping the finding. A mapped finding never
-                # contributes its own symbol.
-                patient_symbols = set(GeneticMutations.mutation_legacy_gene_symbols(ctx.value))
-                patient_symbols |= set(gene_symbols_for_concept_ids(
-                    GeneticMutations.mutation_gene_concept_ids(ctx.value)))
+                # A trial with no usable envelope still holds legacy symbols.
+                # The shared context maps a finding's id (explicit or derived
+                # from a legacy symbol) back to every reviewed spelling; a
+                # mapped finding never contributes its own contradictory text.
+                _, patient_symbols = GeneticMutations.gene_match_context(ctx.value)
                 if not gene_criterion_matches(
                         None, trial_mutation_genes_required, set(), patient_symbols):
                     return 'not_matched'

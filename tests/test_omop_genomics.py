@@ -290,3 +290,25 @@ class TestReadinessCommandMalformed:
         TrialFactory(mutation_genes_required=[], omop_mutation_genes_required={'bad': 'object'})
         with pytest.raises(CommandError, match='not ready'):
             call_command('check_omop_genomics_readiness', stdout=StringIO())
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_search_keeps_a_trial_with_no_gene_requirement():
+    trial = TrialFactory(mutation_genes_required=[], omop_mutation_genes_required=[])
+    finding = [{'gene': 'brca1'}]
+    assert verdict(trial, *finding) == 'matched'
+    assert Trial.objects.eligible_for_genetic_mutations(
+        finding).filter(id=trial.id).exists()
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+@pytest.mark.parametrize('trial_symbol,finding_symbol', [
+    ('palb2', 'palb1'), ('palb1', 'palb2'),
+    ('tent5c', 'fam46c'), ('fam46c', 'tent5c'),
+])
+def test_legacy_alias_parity_between_search_and_matcher(trial_symbol, finding_symbol):
+    trial = TrialFactory(mutation_genes_required=[trial_symbol])
+    finding = [{'gene': finding_symbol}]
+    assert verdict(trial, *finding) == 'matched'
+    assert Trial.objects.eligible_for_genetic_mutations(
+        finding).filter(id=trial.id).exists()

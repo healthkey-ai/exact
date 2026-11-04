@@ -1,4 +1,4 @@
-from exact_matching.omop.genomics import gene_concept_id
+from exact_matching.omop.genomics import gene_concept_id, gene_symbols_for_concept_ids
 
 
 def _concept_key(value):
@@ -40,6 +40,22 @@ class GeneticMutations:
             if gene:
                 symbols.add(gene.lower())
         return sorted(symbols)
+
+    @staticmethod
+    def gene_match_context(pi_genetic_mutations):
+        """The patient side of the gene rule, shared by search and matcher.
+
+        Returns ``(keys, symbols)``: ``keys`` are the per-finding ids (or an
+        unreviewed symbol), and ``symbols`` are the spellings a legacy trial
+        can compare — only findings without an id, plus every reviewed spelling
+        of the ids (including aliases) so a mapped finding never contributes
+        its own contradictory text.
+        """
+        keys = set(GeneticMutations.mutation_gene_keys(pi_genetic_mutations))
+        ids = {key for key in keys if key.isdigit()}
+        symbols = set(GeneticMutations.mutation_legacy_gene_symbols(pi_genetic_mutations))
+        symbols |= set(gene_symbols_for_concept_ids(ids))
+        return keys, symbols
 
     @staticmethod
     def mutation_gene_keys(pi_genetic_mutations):
