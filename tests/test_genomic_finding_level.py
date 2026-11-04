@@ -431,3 +431,45 @@ def test_a_variant_origin_term_uses_its_own_origin_token_without_a_variant_axis(
     findings = [{'variant': 'v1', 'origin': 'somatic'}]
     assert state(t, findings) == 'matched'
     assert t.id in search(findings)
+
+
+# ── mapped id is authoritative; unknown symbols still have a term fallback ─
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_contradictory_variant_concept_id_is_not_rescued_by_the_legacy_code():
+    v1, v2 = 90000011, 90000012
+    t = TrialFactory(
+        mutation_origins_required=['somatic__v1'],
+        omop_mutation_origins_required=[
+            envelope(bound(v1, 'genomics:origin', SOMATIC, concept_class='Gene RNA Variant'))
+        ],
+    )
+    finding = {'variant': 'v1', 'variant_concept_id': v2, 'origin': 'somatic'}
+    assert state(t, [finding]) == 'not_matched'
+    assert t.id not in search([finding])
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_gene_outside_the_catalog_keeps_its_symbol_fallback_on_the_gene_axis():
+    non_catalog_gene = 123456780
+    t = TrialFactory(
+        mutation_genes_required=['outside'],
+        omop_mutation_genes_required=[envelope(subject(non_catalog_gene))],
+    )
+    finding = {'gene': 'outside'}
+    assert state(t, [finding]) == 'matched'
+    assert t.id in search([finding])
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_gene_outside_the_catalog_keeps_its_symbol_fallback_on_a_bound_origin():
+    non_catalog_gene = 123456781
+    t = TrialFactory(
+        mutation_origins_required=['somatic__outside'],
+        omop_mutation_origins_required=[
+            envelope(bound(non_catalog_gene, 'genomics:origin', SOMATIC))
+        ],
+    )
+    finding = {'gene': 'outside', 'origin': 'somatic'}
+    assert state(t, [finding]) == 'matched'
+    assert t.id in search([finding])

@@ -292,23 +292,56 @@ def _variant_subject_codes(term, field, legacy_values, variant_values):
     return set()
 
 
+def _gene_symbol_fallback(term, finding, field, legacy_values):
+    """Term-specific legacy fallback for a finding with no gene concept id."""
+    gene = str(finding.get('gene') or '').strip().lower()
+    if not gene:
+        return False
+    if field == 'mutation_genes_required':
+        # The gene axis is any_of over the whole legacy list; there is no
+        # qualifier to bind, so a listed symbol is enough.
+        return gene in set(legacy_values or [])
+    if field == 'mutation_origins_required':
+        origin = _ORIGIN_CODES.get(term.answer_id)
+        if not origin:
+            return False
+        prefix = f'{origin}__'
+        tokens = {
+            token for token in (legacy_values or [])
+            if isinstance(token, str) and token.startswith(prefix)
+        }
+        return bool(_origin_tokens(finding) & tokens)
+    if field == 'mutation_interpretations_required':
+        interpretation = next(
+            (code for code, concept_id in GENOMIC_CONCEPTS['interpretation'].items()
+             if concept_id == term.answer_id), None)
+        if not interpretation:
+            return False
+        suffix = f'__{interpretation}'
+        tokens = {
+            token for token in (legacy_values or [])
+            if isinstance(token, str) and token.endswith(suffix)
+        }
+        return bool(_interpretation_tokens(finding) & tokens)
+    return False
+
+
 def _term_matches(term, finding, field, legacy_values, variant_values):
     """One finding vs one term. All conditions are on this finding."""
     if term.subject_kind == 'gene':
         if _finding_gene_id(finding) != term.subject_id:
-            # A legacy finding with an unreviewed symbol may still match this
-            # term only when the symbol is the term's reviewed spelling. A
-            # finding that carries an id never falls back to its own text.
-            gene = str(finding.get('gene') or '').strip().lower()
-            term_symbols = set(gene_symbols_for_concept_ids([term.subject_id]))
-            if _finding_gene_id(finding) is not None or gene not in term_symbols:
+            # A finding that carries an id never falls back to its own text.
+            if _finding_gene_id(finding) is not None:
+                return False
+            if not _gene_symbol_fallback(term, finding, field, legacy_values):
                 return False
         return _qualifier_matches(term, finding, legacy_values)
 
     # Variant subject. Patient variant concept ids are #5674; without one, the
     # term-specific legacy code must match on this finding.
-    if _finding_variant_id(finding) == term.subject_id:
-        matched = True
+    variant_id = _finding_variant_id(finding)
+    if variant_id is not None:
+        matched = variant_id == term.subject_id
     else:
         subject_codes = _variant_subject_codes(term, field, legacy_values, variant_values)
         matched = bool(_finding_variant_code(finding) and
