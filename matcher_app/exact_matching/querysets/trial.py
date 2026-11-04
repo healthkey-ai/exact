@@ -427,6 +427,9 @@ class TrialQuerySet(models.QuerySet):
         query = query.by_study_id(study_info.study_id)
         query = query.by_register(study_info.register)
         query = query.by_trial_type(study_info.trial_type)
+        query = query.by_genomic_requirement(
+            getattr(study_info, 'genomic_requirement', None),
+        )
         # apply_trial_purpose=False for favorites / my_trials (hand-picked lists) so the
         # purpose filter doesn't remove saved trials — the caller decides. Matches CB.
         if apply_trial_purpose:
@@ -502,6 +505,18 @@ class TrialQuerySet(models.QuerySet):
             traces.append({
                 'attr': 'study_info.trial_type',
                 'val': study_info.trial_type,
+                'records': new_count,
+                'dropped': count-new_count
+            })
+            count = new_count
+
+        genomic_requirement = getattr(study_info, 'genomic_requirement', None)
+        query = query.by_genomic_requirement(genomic_requirement)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.genomic_requirement',
+                'val': genomic_requirement,
                 'records': new_count,
                 'dropped': count-new_count
             })
@@ -694,6 +709,35 @@ class TrialQuerySet(models.QuerySet):
 
     def by_trial_type(self, trial_type):
         return self.eligible_for_relation('trial_type__code', trial_type)
+
+    #: Where a genomic eligibility requirement can live (#5675). The three
+    #: lists are independent: a trial can require a molecular marker without
+    #: listing a gene, and vice versa.
+    GENOMIC_REQUIREMENT_FIELDS = (
+        'mutation_genes_required',
+        'molecular_markers_required',
+        'cytogenic_markers_required',
+    )
+
+    def by_genomic_requirement(self, requirement):
+        """Narrow to trials that require a genomic marker (#5675).
+
+        This is an ELIGIBILITY filter, deliberately separate from
+        `by_trial_type`: a trial requiring BRCA1/2 or ESR1 is not necessarily
+        typed as genomic, and 81 of the breast-cancer trials with a mutation
+        requirement carry no trial type at all. Selecting the genomic trial
+        type therefore answered with nothing.
+
+        `required` is the only value the filter panel sends; anything else is
+        a no-op, like every other unset study preference. The lists are ORed
+        so a trial is kept when any one of them is non-empty.
+        """
+        if str(requirement or '').strip().lower() not in ('required', 'true'):
+            return self
+        condition = Q()
+        for field in self.GENOMIC_REQUIREMENT_FIELDS:
+            condition |= ~Q(**{field: []})
+        return self.filter(condition)
 
     def by_trial_purpose(self, trial_purpose):
         """Filter by Trial.purpose. Accepts a list of codes (CB #4663), a single
