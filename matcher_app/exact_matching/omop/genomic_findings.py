@@ -47,6 +47,10 @@ GENOMIC_CONCEPTS = {
     },
 }
 _GENE_CONCEPT_IDS = {str(concept_id) for _, concept_id in GENE_CONCEPTS.values()}
+_GENOMIC_CLASSES = frozenset({
+    'Genetic Variation', 'Gene DNA Variant', 'Gene RNA Variant',
+    'Gene Protein Variant', 'Structural Variant',
+})
 
 MUTATION_COLUMNS = (
     'mutation_genes_required', 'mutation_variants_required',
@@ -85,6 +89,8 @@ def _feature(term):
         return None
     if feature.get('vocabulary_id') != 'OMOP Genomic' or feature.get('domain_id') != 'Measurement':
         return None
+    if feature.get('concept_class_id') not in _GENOMIC_CLASSES:
+        return None
     concept_id = _concept_id(feature.get('concept_id'))
     return (str(concept_id), feature) if concept_id else None
 
@@ -115,14 +121,17 @@ def _qualifier(term, field):
     return None
 
 
-def _subject_kind(field, concept_id):
+def _subject_kind(field, concept_id, concept_class):
     if field == 'mutation_genes_required':
         return 'gene'
     if field == 'mutation_variants_required':
         return 'variant'
-    # Origin/interpretation may bind a gene or a variant. A gene is identified
-    # by the reviewed HGNC crosswalk; anything else is the trial's variant.
-    return 'gene' if concept_id in _GENE_CONCEPT_IDS else 'variant'
+    # Origin/interpretation may bind a gene or a variant. Gene concepts are the
+    # catalog's genetic-variation class, including genes outside the 24-gene
+    # crosswalk; the variant classes are the diagnostic variant concepts.
+    if concept_id in _GENE_CONCEPT_IDS or concept_class == 'Genetic Variation':
+        return 'gene'
+    return 'variant'
 
 
 def genomic_terms(envelopes, field):
@@ -161,8 +170,8 @@ def genomic_terms(envelopes, field):
         feature = _feature(term)
         if feature is None:
             return None
-        concept_id, _ = feature
-        subject_kind = _subject_kind(field, concept_id)
+        concept_id, feature_data = feature
+        subject_kind = _subject_kind(field, concept_id, feature_data.get('concept_class_id'))
         qualifier = _qualifier(term, field)
         if field in ('mutation_origins_required', 'mutation_interpretations_required'):
             if qualifier is None:

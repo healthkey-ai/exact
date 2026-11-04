@@ -365,3 +365,28 @@ def test_a_mapped_qualifier_is_not_rescued_by_a_contradictory_legacy_token():
     )
     assert state(interpretation_trial,
                  [{'gene': 'brca1', 'interpretation': 'benign'}]) == 'not_matched'
+
+
+@override_settings(EXACT_OMOP_GENOMICS=True)
+def test_a_gene_outside_the_24_gene_crosswalk_uses_the_genetic_variation_class():
+    non_catalog_gene = 123456789
+    t = TrialFactory(
+        mutation_origins_required=['somatic__not_in_the_catalog'],
+        omop_mutation_origins_required=[
+            envelope({
+                'kind': 'genomic_subject',
+                'feature': {
+                    'domain_id': 'Measurement', 'concept_id': str(non_catalog_gene),
+                    'concept_code': 'x', 'vocabulary_id': 'OMOP Genomic',
+                    'concept_class_id': 'Genetic Variation',
+                },
+                'association': 'same_finding', 'status_filter': None,
+                'qualifier': {
+                    'question': {'source_value': 'genomics:origin'},
+                    'answer': {'concept_id': str(SOMATIC)},
+                },
+            })
+        ],
+    )
+    finding = {'gene': 'not_in_the_catalog', 'gene_concept_id': non_catalog_gene, 'origin': 'somatic'}
+    assert state(t, [finding]) == 'matched'
