@@ -228,6 +228,32 @@ PROMOP_NEGATED_FIELDS = {
     'no_hepatitis_c_status': 'hepatitis_c_status',
 }
 
+
+def capture_negated_sources(row: dict) -> dict:
+    """Provenance for the canonical positive fields, captured before the pop (#5667).
+
+    `normalize_promop_row` pops the positive key and `_build_in_memory` strips
+    nulls, and after those two steps "the field was answered null" and "the
+    field was absent" have the same shape. The negated row cannot recover the
+    difference from `uvalue`, so it is recorded here, at the raw boundary.
+
+    Availability is KEY PRESENCE, not truthiness: `{'hiv_status': None}` is an
+    answer of "unknown", while a row without the key says the context never
+    carried it. A negated key alone proves nothing about the positive one. The
+    value is the RAW answer, not the inverted display value.
+    """
+    out = {}
+    for positive in PROMOP_NEGATED_FIELDS.values():
+        entry = {
+            'upatientField': positive,
+            'type': 'boolean',
+            'available': positive in row,
+        }
+        if positive in row:
+            entry['value'] = row[positive]
+        out[positive] = entry
+    return out
+
 _TRUE_ANSWERS = frozenset({'yes', 'true', 'positive', '1'})
 _FALSE_ANSWERS = frozenset({'no', 'false', 'negative', '0'})
 
@@ -433,6 +459,21 @@ def normalize_promop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # Provenance for the negated rows (#5667), recorded before the positive
+    # keys are popped below. Kept if a previous pass already recorded it: on
+    # the second call the raw keys are gone, and recapturing would turn
+    # "answered null" into "never in the context". This also carries the
+    # entries through `/normalize-promop-row/`, whose response the federated
+    # host sends back as its inline payload.
+    if '_negated_sources' not in row:
+        sources = capture_negated_sources(row)
+        # Only when the context actually carried one of them: an all-absent
+        # block says nothing a client cannot read from the ordinary absence of
+        # the row, and `/normalize-promop-row/` should not grow a key for every
+        # body it is handed.
+        if any(entry['available'] for entry in sources.values()):
+            row['_negated_sources'] = sources
+
     # PROMOP owns the source name; translate before the DTO drops unknown keys.
     # Explicit null also wins over a stale internal alias supplied alongside it.
     if 'sct_date' in row:
@@ -735,6 +776,8 @@ def build_patient_info_from_promop_row(row: dict):
     from trials.services.patient_info.resolve import translate_language_capabilities
 
     row = normalize_promop_row(row)
+    # Recorded by `normalize_promop_row` before it popped the positive fields.
+    negated_sources = row.pop('_negated_sources', None)
     # Language booleans -> legacy codes/asked and OMOP pairs BEFORE the None-stripping
     # below: an all-NULL row must still drop PROMOP's display string and, on the OMOP
     # path, become [] (asked about nothing), not vanish.
@@ -763,4 +806,8 @@ def build_patient_info_from_promop_row(row: dict):
     # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info.
     # The adequacy fields are named even though PROMOP has no column for them,
     # so missing liver/blood labs stay unknown instead of becoming a refusal.
-    return _build_in_memory(cleaned, named_null_fields=PROMOP_NAMED_NULL_FIELDS)
+    return _build_in_memory(
+        cleaned,
+        named_null_fields=PROMOP_NAMED_NULL_FIELDS,
+        negated_sources=negated_sources,
+    )

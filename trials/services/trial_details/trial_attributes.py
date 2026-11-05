@@ -6,6 +6,7 @@ import re
 from django.db import models
 from django.db.models import Q
 
+from trials.services.patient_info.promop_adapter import PROMOP_NEGATED_FIELDS
 from trials.services.patient_info.normalize import (
     recompute_note, therapy_line_is_authorable,
 )
@@ -457,10 +458,22 @@ class TrialAttributes:
             **out,
             **computed_fields,
             **therapies,
-        })
+        }, negated_sources=self._patient_negated_sources())
+
+    def _patient_negated_sources(self):
+        """The canonical answers captured before the record was normalized.
+
+        Empty when the caller built this patient without provenance (an old
+        management command, a fixture): the row then carries no
+        `negative_source`, and the client opens no editor — the fail-closed
+        default (#5667).
+        """
+        if not self._patient_info:
+            return {}
+        return getattr(self._patient_info, '_negated_sources', None) or {}
 
     @staticmethod
-    def with_patient_field_names(fields):
+    def with_patient_field_names(fields, negated_sources=None):
         """Stamp every row with the patient attribute it is about, in snake_case.
 
         `ufield` is camelCase for the UI, and a client that wants to WRITE
@@ -531,6 +544,15 @@ class TrialAttributes:
             field['upatientField'] = (
                 patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
             )
+            # The negated row's canonical answer, with the availability the
+            # raw boundary saw (#5667). `uvalue` cannot carry this: null means
+            # both "answered unknown" and "never in the context". A separate
+            # key, not `subform_details`, so an old client does not read it as
+            # a computed subform.
+            canonical = PROMOP_NEGATED_FIELDS.get(field['upatientField'])
+            source = (negated_sources or {}).get(canonical) if canonical else None
+            if source is not None:
+                field['negative_source'] = source
             # Whether a stored value for it survives. EXACT recomputes these
             # on every match from the inputs it was given, so a write upstream
             # is replaced before the matcher ever sees it — accepted, then

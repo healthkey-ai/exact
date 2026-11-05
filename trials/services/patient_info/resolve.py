@@ -311,7 +311,8 @@ def translate_language_capabilities(data):
     return language_skill_concept_ids_from_capabilities(languages_skills_from_capabilities(data))
 
 
-def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 'PatientInfo':
+def _build_in_memory(data: dict, strict: bool = False, named_null_fields=(),
+                     negated_sources=None) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields.
 
     `strict` refuses a malformed value instead of falling back to the
@@ -339,6 +340,17 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 
     snake_data = _to_snake_case(data)
     # Names the producer spells differently from EXACT's own column (#593).
     snake_data = _apply_inbound_aliases(snake_data)
+    # Provenance for the negated row's canonical field (#5667). A row that
+    # came through `normalize_promop_row` (the adapter, or the federated host
+    # posting `/normalize-promop-row/`'s response back inline) already carries
+    # it, because by then the positive keys have been popped. An untouched
+    # inline payload is captured from its own spelling, before the model-field
+    # filter drops it.
+    if negated_sources is None:
+        negated_sources = data.pop('_negated_sources', None) if isinstance(data, dict) else None
+    if negated_sources is None:
+        from trials.services.patient_info.promop_adapter import capture_negated_sources
+        negated_sources = capture_negated_sources(snake_data)
     # PROMOP's language booleans -> legacy codes/asked languages and, on the OMOP
     # path, concept pairs, before the field filter below drops them (#605, CB #5350).
     snake_data = translate_language_capabilities(snake_data)
@@ -402,6 +414,7 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 
     # `tp53_disruption` is already exempted from it, upstream nulls would start
     # reading as caller assertions.
     pi._provided_fields = frozenset(filtered)
+    pi._negated_sources = negated_sources
     if 'tp53_disruption' in filtered:
         value = filtered['tp53_disruption']
         if value is not None and type(value) is not bool and strict:
