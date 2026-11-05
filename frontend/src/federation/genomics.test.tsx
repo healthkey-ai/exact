@@ -169,7 +169,7 @@ describe("GenomicsFindingsDialog", () => {
 
     await waitFor(() => expect(genomics.update).toHaveBeenCalled());
     const payload = (genomics.update as ReturnType<typeof vi.fn>).mock.calls[0][1];
-    expect(payload.marker_key).toBeUndefined();
+    expect(payload.marker_key).toBeNull();
   });
 
   it("adds a finding and keeps the gene choices from the catalog", async () => {

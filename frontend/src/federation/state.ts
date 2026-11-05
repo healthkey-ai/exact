@@ -250,7 +250,7 @@ export interface GenomicFinding {
   origin?: string;
   interpretation?: string;
   status?: string;
-  marker_key?: string;
+  marker_key?: string | null;
   [key: string]: unknown;
 }
 

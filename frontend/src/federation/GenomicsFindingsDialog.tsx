@@ -74,6 +74,10 @@ export function GenomicsFindingsDialog({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [draft, setDraft] = useState<GenomicFinding | null>(null);
+  // The finding as it was opened. `normalize_variant` merges the PATCH body
+  // over the stored row, so omitting `marker_key` would keep the old marker;
+  // a changed gene needs an explicit `null` to clear it.
+  const [original, setOriginal] = useState<GenomicFinding | null>(null);
   const [deleting, setDeleting] = useState<GenomicFinding | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -136,12 +140,17 @@ export function GenomicsFindingsDialog({
         feature_type: structural ? draft.feature_type : "Gene",
         variant,
       };
-      // A priority finding carries the marker it was created from. Changing
-      // the gene makes that identity stale; send no marker_key so PROMOP
-      // derives the new one instead of rejecting the mismatch.
-      const marker = markers.find((item) => item.key === draft.marker_key);
-      if (marker?.gene && marker.gene.toUpperCase() !== gene) {
-        delete payload.marker_key;
+      // A priority finding carries the marker it was created from. PROMOP's
+      // PATCH merges over the stored row, so omitting the key would keep the
+      // old marker; an explicit null clears it and lets the gene derive the
+      // new one. Compared against the row as opened, not against the
+      // disease-specific catalog, which may not carry that marker.
+      const geneChanged =
+        Boolean(original?.gene) && original!.gene!.toUpperCase() !== gene;
+      const marker = markers.find((item) => item.key === payload.marker_key);
+      if ((original?.marker_key && geneChanged) ||
+          (marker?.gene && marker.gene.toUpperCase() !== gene)) {
+        payload.marker_key = null;
       }
       if (draft.id != null) {
         await adapter.update(draft.id, payload);
@@ -151,6 +160,7 @@ export function GenomicsFindingsDialog({
         setStatus("Finding added.");
       }
       setDraft(null);
+      setOriginal(null);
       try {
         await refresh();
       } catch {
@@ -239,6 +249,7 @@ export function GenomicsFindingsDialog({
                         aria-label={`Edit ${geneOf(finding) || "finding"}`}
                         disabled={busy}
                         onClick={() => {
+                          setOriginal(finding);
                           setDraft(draftFor(finding));
                           setDeleting(null);
                           setError("");
@@ -398,6 +409,7 @@ export function GenomicsFindingsDialog({
                 className="exact-btn-view"
                 disabled={busy || Boolean(deleting)}
                 onClick={() => {
+                  setOriginal(null);
                   setDraft(draftFor());
                   setError("");
                   setStatus("");
