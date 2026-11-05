@@ -196,6 +196,26 @@ class UserToTrialAttrsMapper:
             f"AS _e(code) WHERE _e.code IN ({in_list}))"
         )
 
+    @staticmethod
+    def _jsonb_common_codes_sql(required_column, excluded_column, codes):
+        """SQL: does the patient have a code present in BOTH trial lists?
+
+        Intersecting each list with the patient separately is not enough: a
+        patient with a required-only code and a different excluded-only code
+        would look contradictory. This joins the two lists so only a shared
+        code counts.
+        """
+        safe = [c for c in codes if re.fullmatch(r'[a-zA-Z0-9_]+', c or '')]
+        if not safe:
+            return 'FALSE'
+        in_list = ', '.join(f"'{c}'" for c in sorted(set(safe)))
+        return (
+            f"(EXISTS (SELECT 1 FROM "
+            f"jsonb_array_elements_text(COALESCE({required_column}, '[]'::jsonb)) AS _r(code) "
+            f"JOIN jsonb_array_elements_text(COALESCE({excluded_column}, '[]'::jsonb)) AS _e(code) "
+            f"ON _r.code = _e.code WHERE _r.code IN ({in_list})))"
+        )
+
     def _criteria_count_match_expressions(self, trial_attr_meta, service):
         """SQL booleans ``(gating, matched)`` for a per-criterion attribute.
 
@@ -472,7 +492,8 @@ class UserToTrialAttrsMapper:
             # trial cannot decide whether it requires or excludes the marker
             # (cancerbot#5689). The verdict is `unknown`, so the trial belongs
             # in Potential and must not contribute to the match-score numerator.
-            if user_attr in ('molecular_markers', 'cytogenic_markers') and is_filled_by_user:
+            if (omop_genomics_enabled() and user_attr in ('molecular_markers', 'cytogenic_markers')
+                    and is_filled_by_user):
                 required_attr, excluded_attr = trial_attr_meta['attr']
                 raw = next(iter(trial_attr_meta['uvalue_function'].values()))(patient_info)
                 if isinstance(raw, (list, tuple, set, frozenset)):
@@ -482,9 +503,8 @@ class UserToTrialAttrsMapper:
                         code.strip() for code in str(raw or '').split(',')
                         if code.strip()
                     }
-                required_hit = self._jsonb_intersect_count(required_attr, codes)
-                excluded_hit = self._jsonb_intersect_count(excluded_attr, codes)
-                contradiction = f'({required_hit} > 0 AND {excluded_hit} > 0)'
+                contradiction = self._jsonb_common_codes_sql(
+                    required_attr, excluded_attr, codes)
                 required_len = f"jsonb_array_length(COALESCE({required_attr}, '[]'::jsonb))"
                 excluded_len = f"jsonb_array_length(COALESCE({excluded_attr}, '[]'::jsonb))"
                 gating = f'({required_len} > 0 OR {excluded_len} > 0)'

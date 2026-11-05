@@ -473,6 +473,34 @@ class TestTheSearchPath:
         assert Trial.objects.all().eligible_for_molecular_marker(
             ['krasMutation']).count() == 0
 
+    def test_different_required_and_excluded_codes_are_not_a_contradiction(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            disease='multiple myeloma',
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=['krasMutation'],
+        )
+        patient = PatientInfo(
+            disease='multiple myeloma', molecular_markers='tp53Mutation,krasMutation',
+        )
+        row = Trial.objects.all().with_potential_attrs_count(patient).first()
+        assert row is not None
+        assert row.potential_attrs_count == 0
+
+    def test_the_contradiction_potential_is_off_without_omop(self, settings):
+        settings.EXACT_OMOP_GENOMICS = False
+        self._trial(
+            disease='multiple myeloma',
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=['tp53Mutation'],
+        )
+        patient = PatientInfo(
+            disease='multiple myeloma', molecular_markers='tp53Mutation',
+        )
+        row = Trial.objects.all().with_potential_attrs_count(patient).first()
+        assert row is not None
+        assert row.potential_attrs_count == 0
+
     def test_a_contradictory_trial_is_potential_not_eligible(self, settings):
         settings.EXACT_OMOP_GENOMICS = True
         self._trial(
