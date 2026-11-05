@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { controlFor, editabilityOf, invertBoolean, optionsOf } from "./writable";
+import { controlFor, editabilityOf, invertBoolean, negatedEditability, optionsOf } from "./writable";
 import type { WritableFieldEntry, WritableFields } from "./writable";
 
 const entry = (over: Partial<WritableFieldEntry> = {}): WritableFieldEntry => ({
@@ -639,3 +639,79 @@ describe("the vocabulary the row carries", () => {
     expect(answer.can).toBe("no");
   });
 });
+
+describe("the dedicated negated dialog (#5667)", () => {
+  const fields: WritableFields = {
+    no_hiv_status: entry({
+      kind: "negated",
+      writable: false,
+      canonical: "hiv_status",
+      inverted: true,
+      value_kind: "boolean",
+      inputs: ["hiv_status"],
+    }),
+    hiv_status: entry({
+      value_kind: "boolean",
+      target: "patient_record",
+      answer_labels: { true: "HIV Positive", false: "No HIV" },
+    }),
+  };
+  const source = {
+    upatientField: "hiv_status",
+    type: "boolean",
+    available: true,
+    value: null as unknown,
+  };
+
+  it("offers the canonical field with the positive answer labels", () => {
+    const answer = negatedEditability("no_hiv_status", fields, source);
+    if (answer.can !== "edit") throw new Error("expected edit");
+    expect(answer.field).toBe("hiv_status");
+    expect(answer.control).toBe("boolean");
+    expect(answer.invert).toBe(true);
+    expect(answer.negative?.positive).toBe("HIV Positive");
+    expect(answer.negative?.negative).toBe("No HIV");
+    expect(answer.negative?.source.value).toBe(null);
+  });
+
+  it("does not offer an editor where the context never carried the field", () => {
+    // `available: false` is not "answered unknown": there is no seed and no
+    // evidence the row is answerable here, so the dialog is not drawn.
+    const answer = negatedEditability(
+      "no_hiv_status", fields, { ...source, available: false },
+    );
+    expect(answer.can).toBe("no");
+  });
+
+  it.each([
+    ["provenance for another field", { ...source, upatientField: "hepatitis_b_status" }, fields],
+    ["provenance with no available flag", { ...source, available: undefined as unknown as boolean }, fields],
+    ["provenance that says available but carries no value", { available: true, upatientField: "hiv_status" }, fields],
+    ["provenance carrying a non-boolean answer", { ...source, value: "yes" }, fields],
+    ["provenance naming another type", { ...source, type: "number" }, fields],
+    ["inputs that name a different field", source, { ...fields, no_hiv_status: entry({ ...fields.no_hiv_status, inputs: ["hepatitis_b_status"] }) }],
+    ["two inputs where the pair is one", source, { ...fields, no_hiv_status: entry({ ...fields.no_hiv_status, inputs: ["hiv_status", "hepatitis_b_status"] }) }],
+    ["no explicit inversion", source, { ...fields, no_hiv_status: entry({ ...fields.no_hiv_status, inverted: false }) }],
+    ["a canonical that is not direct", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, kind: "alias" }) }],
+    ["a canonical that is not writable", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, writable: false }) }],
+    ["a canonical targeting another resource", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, target: "genomics" }) }],
+    ["a canonical that is not a boolean", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, value_kind: "number" }) }],
+    ["an options-driven control posing as yes/no", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, options: [{ value: "pos" }] }) }],
+    ["no answer labels on the canonical", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, answer_labels: undefined }) }],
+    ["half an answer label pair", source, { ...fields, hiv_status: entry({ ...fields.hiv_status, answer_labels: { true: "HIV Positive" } }) }],
+  ])("refuses %s", (_name, provenance, descriptor) => {
+    const answer = negatedEditability(
+      "no_hiv_status", descriptor as WritableFields, provenance as typeof source,
+    );
+    expect(answer.can).not.toBe("edit");
+  });
+
+  it("keeps the legacy generic editor for a descriptor without the pair", () => {
+    // The page chooses this guard over `editabilityOf` when the negated entry
+    // carries the `inputs` key. A descriptor that predates the pair has no
+    // such key, and its rows must keep the editor they had.
+    const answer = editabilityOf("no_hiv_status", fields);
+    expect(answer.can).toBe("edit");
+  });
+});
+

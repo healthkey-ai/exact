@@ -130,6 +130,16 @@ export type RecomputedWhen =
  *  — with one exception worth knowing: the therapy groups, where
  *  `first_line_therapy` and its date and outcome are derived as well and
  *  therefore say so. */
+/** Provenance for an inverted row's canonical field (#5667). */
+export interface NegativeSource {
+  upatientField: string;
+  type?: string;
+  /** Whether the raw patient context carried the canonical key at all. */
+  available: boolean;
+  /** The raw answer. Present only when `available` is true. */
+  value?: unknown;
+}
+
 export interface SubformEntry {
   /** camelCase, for display and for React keys. */
   name: string;
@@ -213,6 +223,13 @@ export interface TrialDetailField {
   /** The values this row is computed from, when it is computed from any.
    *  Snake_case on the wire. */
   subform_details?: SubformEntry[] | null;
+  /** Provenance for an inverted row's canonical field (#5667).
+   *
+   *  `uvalue` cannot carry it: `null` there means both "the patient answered
+   *  unknown" and "the positive field was never in the context". The server
+   *  records which, before it pops the positive key. Only the three viral
+   *  negated rows carry this key today; absent means an older payload. */
+  negative_source?: NegativeSource | null;
   uvalue?: unknown;
   utype?: string;
   uoptions?: { value: unknown; label: string }[] | null;
