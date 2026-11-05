@@ -5,8 +5,10 @@ legacy lists and the envelopes are not guaranteed to agree. This read-only
 command reports, per field:
 
 - ``ok``                 a valid envelope whose concepts are in the reviewed map;
-- ``missing_envelope``   a legacy requirement with no typed envelope (per-trial
-                         fallback; the 40 known molecular gaps);
+- ``missing_envelope``   a legacy required marker with no typed envelope
+                         (per-trial fallback; the 40 known molecular gaps);
+- ``missing_excluded_envelope`` a legacy excluded-only marker with no typed
+                         envelope (the 147 gaps that carry no required marker);
 - ``orphan_envelope``    an envelope with no legacy requirement;
 - ``malformed_envelope`` a non-envelope/structurally invalid value;
 - ``unresolved_code``    an unresolved code outside the reviewed set
@@ -19,6 +21,12 @@ It writes nothing. ``--strict`` exits 1 for the structural problems
 (malformed/unresolved/unmapped/contradiction); ``missing_envelope`` is a
 reported gap because the evaluator falls back per trial, not a structural
 failure.
+
+``unmapped_concept`` checks that the envelope's concept is in the reviewed
+table, not that it matches the legacy code's own identity. A TP53 legacy row
+whose envelope names ATR is still ``ok`` for mapping coverage; the code-level
+agreement is a separate review (the six contradictions above are the known
+example).
 """
 import json
 from collections import Counter
@@ -66,8 +74,12 @@ def audit_field(trial, field):
 
     if set(legacy) & set(excluded):
         return 'contradiction'
-    if typed in (None, [], ''):
-        return 'missing_envelope' if (legacy or excluded) else None
+    if typed is None or typed == []:
+        if legacy:
+            return 'missing_envelope'
+        if excluded:
+            return 'missing_excluded_envelope'
+        return None
     if not isinstance(typed, list) or not _valid_typed(typed):
         return 'malformed_envelope'
     unresolved = _envelope_unresolved(typed)
@@ -108,7 +120,7 @@ class Command(BaseCommand):
                     continue
                 scanned += 1
                 counts[status] += 1
-                samples.setdefault(status, []).append(trial.pk)
+                samples.setdefault(status, []).append(f'{trial.pk}:{field}')
 
         payload = {
             'scanned': scanned,

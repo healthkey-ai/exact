@@ -139,3 +139,77 @@ def test_a_composite_envelope_is_known():
     )
     payload = _json()
     assert payload['statuses']['ok'] == 1
+
+
+def test_an_excluded_only_legacy_trial_is_reported_separately():
+    TrialFactory(molecular_markers_required=[], molecular_markers_excluded=['tp53Mutation'])
+    payload = _json()
+    assert payload['statuses']['missing_excluded_envelope'] == 1
+
+
+def test_a_blank_string_is_not_a_missing_envelope():
+    TrialFactory(molecular_markers_required=['tp53Mutation'],
+                 omop_molecular_markers_required='')
+    payload = _json()
+    assert payload['statuses']['malformed_envelope'] == 1
+
+
+def test_a_blank_typed_only_string_is_malformed_and_strict():
+    TrialFactory(molecular_markers_required=[], omop_molecular_markers_required='')
+    payload = _json()
+    assert payload['statuses']['malformed_envelope'] == 1
+    with pytest.raises(CommandError):
+        _run('--strict')
+
+
+def test_a_blank_unresolved_code_is_malformed():
+    TrialFactory(
+        molecular_markers_required=['tp53Mutation'],
+        omop_molecular_markers_required=[
+            {'schema': 'cb-trial-criteria-1', 'role': 'required',
+             'operator': 'any_of', 'terms': [], 'unresolved_codes': [' ']},
+        ],
+    )
+    payload = _json()
+    assert payload['statuses']['malformed_envelope'] == 1
+
+
+def test_a_no_requirement_trial_is_not_scanned():
+    TrialFactory(molecular_markers_required=[], molecular_markers_excluded=[],
+                 omop_molecular_markers_required=[])
+    payload = _json()
+    assert payload['scanned'] == 0
+
+
+def test_an_unresolved_only_known_code_is_ok():
+    TrialFactory(
+        molecular_markers_required=['bcmaExpression'],
+        omop_molecular_markers_required=[
+            _envelope(unresolved=['bcmaExpression']),
+        ],
+    )
+    payload = _json()
+    assert payload['statuses']['ok'] == 1
+
+
+def test_an_atm_composite_envelope_is_known():
+    TrialFactory(
+        molecular_markers_required=['atmOrAtrMutations'],
+        omop_molecular_markers_required=[
+            _envelope(_term('35960740'), _term('35963934'))
+        ],
+    )
+    payload = _json()
+    assert payload['statuses']['ok'] == 1
+
+
+def test_strict_json_still_emits_json_and_fails():
+    TrialFactory(
+        molecular_markers_required=['tp53Mutation'],
+        omop_molecular_markers_required=[{}],
+    )
+    out = StringIO()
+    with pytest.raises(CommandError):
+        call_command('check_omop_genomic_markers_readiness', '--json', '--strict', stdout=out)
+    payload = json.loads(out.getvalue())
+    assert payload['statuses']['malformed_envelope'] == 1
