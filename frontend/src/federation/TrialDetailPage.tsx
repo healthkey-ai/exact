@@ -353,9 +353,12 @@ function EligibilityRow({
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
   // `genetic_mutations` is structured, so the generic dialog refuses it. This
-  // is the same source, opened through the endpoint that owns it.
+  // is the same source, opened through the endpoint that owns it — and only
+  // when the descriptor says this caller may write it. The adapter exists for
+  // read-only hosts too; the pencil must not promise a save they will refuse.
   const genomicsHere = Boolean(
     editing?.genomics &&
+      editing.fields?.genetic_mutations?.writable === true &&
       field.subform_details?.some(
         (entry) => entry.upatientField === "genetic_mutations",
       ),

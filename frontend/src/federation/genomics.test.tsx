@@ -36,6 +36,7 @@ function renderDialog(genomics = adapter()) {
         save: vi.fn(),
         outstanding: {},
         failed: {},
+        fields: { genetic_mutations: { kind: "editable", writable: true } },
         genomics,
         onGenomicsChanged,
       }}
@@ -102,6 +103,73 @@ describe("GenomicsFindingsDialog", () => {
       ),
     );
     expect(onGenomicsChanged).toHaveBeenCalled();
+  });
+
+  it("does not offer an editor when the descriptor is read-only", async () => {
+    render(
+      <GenomicsFindingsDialog
+        label="Mutation Genes"
+        editing={{
+          save: vi.fn(),
+          outstanding: {},
+          failed: {},
+          fields: { genetic_mutations: { kind: "editable", writable: false } },
+          genomics: adapter(),
+        }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("You can view these findings, but not edit them.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add finding" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit BRCA1" })).not.toBeInTheDocument();
+  });
+
+  it("preserves a structural finding's feature type on save", async () => {
+    const structural = {
+      id: 2,
+      gene: "17P",
+      genomic_feature: "17p",
+      feature_type: "Chromosome arm/region",
+      variant: "del17p",
+    };
+    const { genomics } = renderDialog(adapter({ list: vi.fn().mockResolvedValue([structural]) }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit 17P" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save finding" }));
+
+    await waitFor(() =>
+      expect(genomics.update).toHaveBeenCalledWith(
+        2,
+        expect.objectContaining({
+          genomic_feature: "17p",
+          feature_type: "Chromosome arm/region",
+        }),
+      ),
+    );
+  });
+
+  it("drops a stale marker_key when the gene changes", async () => {
+    const marked = {
+      id: 3,
+      gene: "BRCA1",
+      marker_key: "brca1",
+      variant: "c.68_69delAG",
+      origin: "Germline",
+      interpretation: "Pathogenic",
+      status: "present",
+    };
+    const { genomics } = renderDialog(adapter({ list: vi.fn().mockResolvedValue([marked]) }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Edit BRCA1" }));
+    const gene = screen.getByLabelText("Gene");
+    await userEvent.clear(gene);
+    await userEvent.type(gene, "TP53");
+    await userEvent.click(screen.getByRole("button", { name: "Save finding" }));
+
+    await waitFor(() => expect(genomics.update).toHaveBeenCalled());
+    const payload = (genomics.update as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(payload.marker_key).toBeUndefined();
   });
 
   it("adds a finding and keeps the gene choices from the catalog", async () => {

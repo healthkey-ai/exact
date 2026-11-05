@@ -246,6 +246,7 @@ export interface GenomicFinding {
   variant_name?: string;
   genomic_dna_change?: string;
   amino_acid_change?: string;
+  finding_category?: string;
   origin?: string;
   interpretation?: string;
   status?: string;
