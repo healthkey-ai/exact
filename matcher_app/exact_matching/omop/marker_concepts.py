@@ -71,6 +71,18 @@ COMPOSITE_MARKER_CODES = frozenset({
     'notch1or2Mutations',
 })
 
+#: The member concepts a composite trial envelope uses. These are trial-side
+#: identities only: a patient composite code is not expanded into them, but the
+#: readiness audit must recognise the envelope as mapped.
+COMPOSITE_MARKER_CONCEPTS = {
+    'atmOrAtrMutations': ('35960740', '35963934'),   # ATM (795), ATR (882)
+    'notch1or2Mutations': ('35947617', '35960756'),  # NOTCH1 (7881), NOTCH2 (7882)
+}
+
+#: The full trial-side concept space: specific markers plus the member
+#: concepts of the composite requirements.
+TRIAL_MARKER_CONCEPTS = {**MARKER_CONCEPTS, **COMPOSITE_MARKER_CONCEPTS}
+
 #: Codes the envelopes list as unresolved. They are matched by the canonical
 #: marker code itself, never by a guessed concept.
 UNRESOLVED_MARKER_CODES = frozenset({'bcmaExpression'})
