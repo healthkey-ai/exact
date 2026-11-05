@@ -38,6 +38,9 @@ from exact_matching.patient_info.configs import (
     ATTR_MAPPING_TYPE_COMPUTED, SCT_HISTORY_EXCLUDED_MAPPING,
     sct_value_is_none,
 )
+from exact_matching.omop.genomic_findings import genomic_mutation_state
+from exact_matching.omop.genomic_markers import genomic_marker_state
+from exact_matching.omop.genomics import omop_genomics_enabled
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 from exact_matching.patient_info.patient_info_flipi_score import PatientInfoFlipyScore
@@ -83,6 +86,8 @@ _CUSTOM_SEARCH_NAMED_HANDLERS = {
     'flipi_score_options': '_match_flipi_score_options',
     'prior_therapy': '_match_prior_therapy',
     'genetic_mutations': '_match_genetic_mutations',
+    'molecular_markers': '_match_molecular_markers',
+    'cytogenic_markers': '_match_cytogenic_markers',
     'supportive_therapies': '_match_supportive_therapies',
     'languages_skills': '_match_languages_skills',
 }
@@ -876,6 +881,13 @@ class UserToTrialAttrMatcher:
             return 'matched'
 
     def _match_genetic_mutations(self, ctx):
+        if omop_genomics_enabled():
+            # #5672: one finding at a time. Gene/variant subjects and their
+            # origin/interpretation qualifiers are evaluated on the same
+            # finding; the four axes remain independent existential
+            # requirements. Off, the legacy global-set path below is untouched.
+            return genomic_mutation_state(self.trial, ctx.value, ctx.is_blank)
+
         trial_mutation_genes_required = getattr(self.trial, 'mutation_genes_required')
         trial_mutation_variants_required = getattr(self.trial, 'mutation_variants_required')
         trial_mutation_origins_required = getattr(self.trial, 'mutation_origins_required')
@@ -885,26 +897,40 @@ class UserToTrialAttrMatcher:
         pi_origins = GeneticMutations.mutation_origins(ctx.value)
         pi_interpretations = GeneticMutations.mutation_interpretations(ctx.value)
 
-        if trial_mutation_genes_required == [] and trial_mutation_variants_required == [] and trial_mutation_origins_required == [] and trial_mutation_interpretations_required == []:
+        if (trial_mutation_genes_required == [] and trial_mutation_variants_required == []
+                and trial_mutation_origins_required == []
+                and trial_mutation_interpretations_required == []):
             return 'matched'
         elif ctx.is_blank:
             return 'unknown'
-        else:
-            # match genes
-            if len(trial_mutation_genes_required) > 0 and len(get_overlap(pi_genes, trial_mutation_genes_required)) == 0:
-                return 'not_matched'
-            # match variants
-            elif len(trial_mutation_variants_required) > 0 and len(get_overlap(pi_variants, trial_mutation_variants_required)) == 0:
-                return 'not_matched'
-            # match origins
-            elif len(trial_mutation_origins_required) > 0 and len(get_overlap(pi_origins, trial_mutation_origins_required)) == 0:
-                return 'not_matched'
-            # match interpretations
-            elif len(trial_mutation_interpretations_required) > 0 and len(get_overlap(pi_interpretations, trial_mutation_interpretations_required)) == 0:
-                return 'not_matched'
-            return 'matched'
+
+        # match genes
+        if len(trial_mutation_genes_required) > 0 and len(get_overlap(pi_genes, trial_mutation_genes_required)) == 0:
+            return 'not_matched'
+        # match variants
+        if len(trial_mutation_variants_required) > 0 and len(get_overlap(pi_variants, trial_mutation_variants_required)) == 0:
+            return 'not_matched'
+        # match origins
+        if len(trial_mutation_origins_required) > 0 and len(get_overlap(pi_origins, trial_mutation_origins_required)) == 0:
+            return 'not_matched'
+        # match interpretations
+        if len(trial_mutation_interpretations_required) > 0 and len(get_overlap(pi_interpretations, trial_mutation_interpretations_required)) == 0:
+            return 'not_matched'
+        return 'matched'
 
     # ── custom_search fallbacks ─────────────────────────────────────
+
+    def _match_molecular_markers(self, ctx):
+        if omop_genomics_enabled():
+            return genomic_marker_state(
+                self.trial, 'molecular_markers', ctx.value, ctx.is_blank)
+        return self._match_computed_attr(ctx)
+
+    def _match_cytogenic_markers(self, ctx):
+        if omop_genomics_enabled():
+            return genomic_marker_state(
+                self.trial, 'cytogenic_markers', ctx.value, ctx.is_blank)
+        return self._match_computed_attr(ctx)
 
     def _match_supportive_therapies(self, ctx):
         """Enforce the trial's supportive_therapies_required/excluded pair (#4449).

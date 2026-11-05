@@ -33,6 +33,10 @@ from exact_matching.omop.demographics_match_profile import DEMOGRAPHICS_MATCH_PR
 from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
+from exact_matching.omop.genomic_findings import MUTATION_COLUMNS, genomic_mutation_state
+from exact_matching.omop.genomic_markers import genomic_marker_state
+from exact_matching.omop.genomics import omop_genomics_enabled
+from exact_matching.omop.marker_concepts import MARKER_FIELDS
 from exact_matching.patient_info.language_capability import LanguagesKept, asked_languages
 from exact_matching.omop.languages_verdict import language_verdict_sql
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
@@ -480,6 +484,9 @@ class TrialQuerySet(models.QuerySet):
         query = query.by_study_id(study_info.study_id)
         query = query.by_register(study_info.register)
         query = query.by_trial_type(study_info.trial_type)
+        query = query.by_genomic_requirement(
+            getattr(study_info, 'genomic_requirement', None),
+        )
         # apply_trial_purpose=False for favorites / my_trials (hand-picked lists) so the
         # purpose filter doesn't remove saved trials — the caller decides. Matches CB.
         if apply_trial_purpose:
@@ -555,6 +562,18 @@ class TrialQuerySet(models.QuerySet):
             traces.append({
                 'attr': 'study_info.trial_type',
                 'val': study_info.trial_type,
+                'records': new_count,
+                'dropped': count-new_count
+            })
+            count = new_count
+
+        genomic_requirement = getattr(study_info, 'genomic_requirement', None)
+        query = query.by_genomic_requirement(genomic_requirement)
+        if add_traces:
+            new_count = query.count()
+            traces.append({
+                'attr': 'study_info.genomic_requirement',
+                'val': genomic_requirement,
                 'records': new_count,
                 'dropped': count-new_count
             })
@@ -747,6 +766,46 @@ class TrialQuerySet(models.QuerySet):
 
     def by_trial_type(self, trial_type):
         return self.eligible_for_relation('trial_type__code', trial_type)
+
+    #: Where a genomic eligibility requirement can live (#5675). The three
+    #: lists are independent: a trial can require a molecular marker without
+    #: listing a gene, and vice versa.
+    GENOMIC_REQUIREMENT_FIELDS = (
+        'mutation_genes_required',
+        'molecular_markers_required',
+        'cytogenic_markers_required',
+    )
+
+    def by_genomic_requirement(self, requirement):
+        """Narrow to trials that require a genomic marker (#5675).
+
+        This is an ELIGIBILITY filter, deliberately separate from
+        `by_trial_type`: a trial requiring BRCA1/2 or ESR1 is not necessarily
+        typed as genomic, and 81 of the breast-cancer trials with a mutation
+        requirement carry no trial type at all. Selecting the genomic trial
+        type therefore answered with nothing.
+
+        `required` is the only value the filter panel sends; anything else is
+        a no-op, like every other unset study preference. The lists are ORed
+        so a trial is kept when any one of them is non-empty.
+        """
+        if str(requirement or '').strip().lower() not in ('required', 'true'):
+            return self
+        # `NOT (field = '[]')` is not the same as "a non-empty list": JSON
+        # `null`, an object and a scalar are all unequal to `[]`, and NOT NULL
+        # does not forbid them. `jsonb_array_length` would raise on those, so
+        # CASE guards the type — an empty array and any non-array value are
+        # both "no requirement".
+        condition = ' OR '.join(
+            f"(CASE WHEN jsonb_typeof({field}) = 'array' "
+            f"THEN jsonb_array_length({field}) > 0 ELSE false END)"
+            for field in self.GENOMIC_REQUIREMENT_FIELDS
+        )
+        return self.annotate(
+            _has_genomic_requirement=RawSQL(
+                condition, [], output_field=BooleanField(),
+            ),
+        ).filter(_has_genomic_requirement=True)
 
     def by_trial_purpose(self, trial_purpose):
         """Filter by Trial.purpose. Accepts a list of codes (CB #4663), a single
@@ -1314,9 +1373,39 @@ class TrialQuerySet(models.QuerySet):
                 None, 'therapy_lines_count_max', int_value, skip_blank=False)
         return self.eligible_for_min_max_value('therapy_lines_count_min', 'therapy_lines_count_max', int_value, skip_blank=False)
 
+    @classmethod
+    def _mutation_empty_q(cls):
+        q = Q()
+        for column in MUTATION_COLUMNS:
+            q &= (Q(**{f'{column}__exact': []}) | Q(**{f'{column}__isnull': True}))
+        return q
+
+    def _eligible_for_genetic_mutations_omop(self, genetic_mutations):
+        """Keep trials the finding-level evaluator says the patient satisfies.
+
+        Same evaluator as the per-trial matcher: one finding carries its own
+        gene/variant and its bound origin/interpretation. The four axes remain
+        independent existential requirements. A non-empty payload that lacks a
+        required subject/qualifier is ``not_matched`` (CB parity), so only
+        matched trials and trials with no mutation requirement survive.
+        """
+        from types import SimpleNamespace
+
+        empty = self._mutation_empty_q()
+        rows = self.exclude(empty).values_list('id', *MUTATION_COLUMNS)
+        matches = []
+        for row in rows.iterator():
+            trial = SimpleNamespace(**dict(zip(MUTATION_COLUMNS, row[1:])))
+            if genomic_mutation_state(trial, genetic_mutations, False) == 'matched':
+                matches.append(row[0])
+        return self.filter(empty | Q(pk__in=matches))
+
     def eligible_for_genetic_mutations(self, genetic_mutations):
         if genetic_mutations == []:
             return self
+
+        if omop_genomics_enabled():
+            return self._eligible_for_genetic_mutations_omop(genetic_mutations)
 
         genes = GeneticMutations.mutation_genes(genetic_mutations)
         scope = self.eligible_for_required_lists(
@@ -1607,7 +1696,42 @@ class TrialQuerySet(models.QuerySet):
             excluded_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_excluded
         )
 
+    @classmethod
+    def _marker_empty_q(cls, field):
+        legacy, typed, excluded = MARKER_FIELDS[field]
+        return (
+            (Q(**{f'{legacy}__exact': []}) | Q(**{f'{legacy}__isnull': True}))
+            & (Q(**{f'{typed}__exact': []}) | Q(**{f'{typed}__isnull': True}))
+            & (Q(**{f'{excluded}__exact': []}) | Q(**{f'{excluded}__isnull': True}))
+        )
+
+    def _eligible_for_markers_omop(self, field, values):
+        """Keep trials the marker-level evaluator says the patient satisfies.
+
+        Uses the already-populated typed envelopes when they carry a
+        requirement; a trial with only the legacy list is evaluated exactly as
+        before, so a partially backfilled catalog does not lose trials (#5674).
+        """
+        from types import SimpleNamespace
+
+        legacy, typed, excluded = MARKER_FIELDS[field]
+        empty = self._marker_empty_q(field)
+        rows = self.exclude(empty).values_list('id', legacy, typed, excluded)
+        matches = []
+        for row in rows.iterator():
+            trial = SimpleNamespace(**{
+                legacy: row[1], typed: row[2], excluded: row[3],
+            })
+            if genomic_marker_state(trial, field, values, False) == 'matched':
+                matches.append(row[0])
+        return self.filter(empty | Q(pk__in=matches))
+
     def eligible_for_cytogenic_markers(self, cytogenic_markers: list[str]) -> models.QuerySet:
+        if not cytogenic_markers:
+            return self
+        if omop_genomics_enabled():
+            return self._eligible_for_markers_omop(
+                'cytogenic_markers', cytogenic_markers)
         return self.eligible_for_required_and_excluded_lists(
             values=cytogenic_markers,
             required_attr_name='cytogenic_markers_required',
@@ -1615,6 +1739,11 @@ class TrialQuerySet(models.QuerySet):
         )
 
     def eligible_for_molecular_marker(self, molecular_markers: list[str]) -> models.QuerySet:
+        if not molecular_markers:
+            return self
+        if omop_genomics_enabled():
+            return self._eligible_for_markers_omop(
+                'molecular_markers', molecular_markers)
         return self.eligible_for_required_and_excluded_lists(
             values=molecular_markers,
             required_attr_name='molecular_markers_required',

@@ -30,6 +30,11 @@ class StudyPreferences:
     # ?trialPurpose= one or more times. Empty means no filter.
     trial_purpose: list[str] = field(default_factory=list)
     study_type: Optional[str] = None
+    # A genomic *eligibility* requirement, not a trial type (#5675): the
+    # trial's mutation/molecular/cytogenic marker lists are not empty. A trial
+    # requiring BRCA1/2 or ESR1 is not necessarily typed as genomic, so the
+    # trial-type filter cannot find it.
+    genomic_requirement: Optional[str] = None
 
     # Recruitment filter
     recruitment_status: Optional[str] = None
@@ -131,6 +136,7 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         trial_type=_str('trialType'),
         trial_purpose=_str_list('trialPurpose'),
         study_type=_str('studyType'),
+        genomic_requirement=_str('genomicRequirement'),
         recruitment_status=_str('recruitmentStatus'),
         country=_str('country'),
         region=_str('region'),

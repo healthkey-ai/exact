@@ -605,7 +605,9 @@ class TestTrialQuerySet:
         assert list(Trial.objects.eligible_for_washout_period_duration(last_treatment).order_by('id')) == [t1, t2, t3]
 
     @pytest.mark.django_db
-    def test_eligible_for_molecular_marker(self) -> None:
+    @pytest.mark.parametrize('flag', [False, True])
+    def test_eligible_for_molecular_marker(self, settings, flag) -> None:
+        settings.EXACT_OMOP_GENOMICS = flag
         t1 = TrialFactory(
             molecular_markers_required=[],
             molecular_markers_excluded=[],
