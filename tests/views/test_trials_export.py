@@ -378,3 +378,85 @@ class TestTrialsExport:
         title = rows[0]['Title']
         assert len(title) < 32_000
         assert title.endswith('more characters'), title[-40:]
+
+    def test_export_handles_the_typed_evaluation_sequence(self, authed_client, monkeypatch):
+        """Typed matching finalizes to a materialized sequence, not a queryset.
+
+        `get_queryset` returns `EvaluatedTrials` when `EXACT_OMOP_CRITERIA` is
+        on; that object has no `select_related` and no `iterator`, so an export
+        written only for the legacy queryset answered 500 before the first row
+        (#692).
+        """
+        from exact_matching.request_evaluation import EvaluatedTrials
+        from trials.api import trials_views
+
+        class _Evaluation:
+            def high_risk_breakdown(self, trial_id):
+                return None
+
+        trial = TrialFactory(
+            disease='multiple myeloma', study_id='NCT500', brief_title='Typed',
+        )
+        # The real sequence is annotated by `get_queryset` before it is
+        # materialized; the stub must carry the same two attrs the serializer
+        # reads.
+        trial.goodness_score = 0
+        trial.match_score = 0
+        finalized = object.__new__(EvaluatedTrials)
+        finalized._rows = (trial,)
+        finalized.evaluation = _Evaluation()
+        monkeypatch.setattr(
+            trials_views.TrialsViewSet,
+            'get_queryset',
+            lambda self, patient_info=None: finalized,
+        )
+
+        response = authed_client.post(
+            '/trials/export/',
+            {'patient_info': {'disease': 'multiple myeloma'}},
+            format='json',
+        )
+        assert response.status_code == 200
+        _, rows = _csv(response)
+        assert [row['Study ID'] for row in rows] == ['NCT500']
+
+
+class TestExportStreamContext:
+    def test_the_stream_reenters_the_dispatch_release_context(self, authed_client, monkeypatch):
+        """The release pin must outlive `dispatch`, not just the headers.
+
+        `dispatch` resets `MatchingReleaseContext` and the request caches when
+        it returns, but a streaming body runs later, when the server consumes
+        it. Re-opening the same context keeps the file on the generation the
+        response header names (#692).
+        """
+        from vocab_mirror import release_context
+
+        events = []
+
+        class FakeReleaseContext:
+            header = None
+
+            def __enter__(self):
+                events.append('enter')
+                return self
+
+            def __exit__(self, *exc):
+                events.append('exit')
+                return False
+
+        monkeypatch.setattr(
+            release_context, 'MatchingReleaseContext', FakeReleaseContext,
+        )
+        TrialFactory(disease='multiple myeloma', study_id='NCT600')
+
+        response = authed_client.post(
+            '/trials/export/',
+            {'patient_info': {'disease': 'multiple myeloma'}},
+            format='json',
+        )
+        # The view has returned: the dispatch block is already closed.
+        assert events == ['enter', 'exit']
+
+        b''.join(response.streaming_content)
+        assert events == ['enter', 'exit', 'enter', 'exit']

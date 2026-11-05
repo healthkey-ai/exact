@@ -121,6 +121,10 @@ class TrialsGraphViewSet(TrialsViewSet):
     match = None
     search_match = None
     match_detail = None
+    # Restored with #692; the graph has its own `graph/match` alias, and an
+    # inherited CSV export at /trials-graph/export/ is a second surface nobody
+    # asked for.
+    export = None
 
     @action(methods=["get"], detail=False, url_path="graph", url_name="graph")
     def graph(self, request, *args, **kwargs):

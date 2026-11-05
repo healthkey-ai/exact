@@ -52,11 +52,34 @@ class TestGraphViewValidation:
         assert resp.status_code == 400
         assert 'patient' in str(resp.data).lower()
 
+    def test_post_alias_renders_a_graph(self, authed_client):
+        """The success path the 400-only tests could not see (#692)."""
+        from trials.api.graph_view import TrialsGraphViewSet
+        from trials.models import Trial
+        from trials.services.patient_info.normalize import normalize_patient_info
+        from trials.services.patient_info.patient_info import PatientInfo
+
+        patient = PatientInfo(disease='multiple myeloma', patient_age=61)
+        normalize_patient_info(patient)
+        with patch(
+            'trials.api.trials_views.resolve_patient_info', return_value=patient,
+        ), patch.object(
+            TrialsGraphViewSet, 'get_queryset', return_value=Trial.objects.none(),
+        ):
+            resp = authed_client.post(
+                '/trials-graph/graph/match/',
+                {'patient_info': {'disease': 'multiple myeloma'}},
+                format='json',
+            )
+        assert resp.status_code == 200
+        assert resp.json()['trials'] == []
+
     def test_inherited_trials_post_actions_are_not_published(self, authed_client):
         """Widening `http_method_names` must not expose `/trials/`'s aliases."""
         for path in (
             '/trials-graph/match/',
             '/trials-graph/search/match/',
             '/trials-graph/1/match/',
+            '/trials-graph/export/',
         ):
             assert authed_client.post(path, {}, format='json').status_code in (404, 405)

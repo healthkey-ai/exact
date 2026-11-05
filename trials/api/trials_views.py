@@ -96,14 +96,28 @@ def _export_cell(value):
     return csv_safe_cell(_clip(value if isinstance(value, str) else str(value)))
 
 
-def _export_mcl_cell(trial, patient_info) -> str:
+def _export_mcl_cell(trial, patient_info, evaluation=None) -> str:
     """The high-risk MCL rule, flattened into one cell.
 
     Only for a trial that names criteria — the matcher is built per row here,
     and constructing one for every trial in an export to be told "no criteria"
     is a cost paid on the disease's whole corpus. The three lists are plain
     columns, so the question is answered before the matcher exists.
+
+    Under typed matching the answer comes from the request evaluation the list
+    already ran, never from a second legacy matcher that could disagree with
+    the screen (#692).
     """
+    if evaluation is not None:
+        breakdown = evaluation.high_risk_breakdown(trial.pk)
+        if not breakdown:
+            return ''
+        parts = [f"verdict={breakdown['status']}"]
+        if breakdown.get('knownViolation'):
+            parts.append('known violation')
+        for item in breakdown.get('fields', ()):
+            parts.append(f"{item['field']}={item['status']}")
+        return ' | '.join(parts)
     if patient_info is None:
         return ''
     if not any((
@@ -223,7 +237,38 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         with MatchingReleaseContext() as ctx, component_lookup_request_cache(), \
                 type_validation_request_cache(), patient_release_check_request_cache():
             self._release_ctx = ctx
-            return super().dispatch(request, *args, **kwargs)
+            response = super().dispatch(request, *args, **kwargs)
+        # A streaming response outlives this block: the generator body runs
+        # when the server consumes it, after the release pin and the request
+        # caches have been reset. Re-enter the SAME release id for the stream,
+        # so the CSV is built against the generation its header names instead
+        # of whatever is active by then (#692).
+        if getattr(response, 'streaming', False):
+            response.streaming_content = self._streaming_response_with_context(
+                response.streaming_content,
+                ctx,
+                (
+                    component_lookup_request_cache,
+                    type_validation_request_cache,
+                    patient_release_check_request_cache,
+                ),
+            )
+        return response
+
+    @staticmethod
+    def _streaming_response_with_context(content, release_ctx, cache_factories):
+        """Run a streaming body inside the request's release pin and caches."""
+        from contextlib import ExitStack
+
+        def stream():
+            with ExitStack() as stack:
+                if release_ctx is not None:
+                    stack.enter_context(release_ctx)
+                for factory in cache_factories:
+                    stack.enter_context(factory())
+                yield from content
+
+        return stream()
 
     def finalize_response(self, request, response, *args, **kwargs):
         response = super().finalize_response(request, response, *args, **kwargs)
@@ -944,10 +989,18 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         self.action = 'search'
         self._reject_unnarrowed_export()
         queryset = self.filter_queryset(self.get_queryset())
-        # The locations are prefetched by the `search` branch; the trial type
-        # is a plain FK the serializer reads per row, which on a page is one
-        # extra query and on an uncapped export is one per trial.
-        queryset = queryset.select_related('trial_type')
+        # Typed matching finalizes to `EvaluatedTrials`, a materialized
+        # sequence with neither `select_related` nor `iterator`; the legacy
+        # path still streams rows from the database. Both must export the same
+        # list the screen shows (#692).
+        from exact_matching.request_evaluation import EvaluatedTrials
+        evaluated = isinstance(queryset, EvaluatedTrials)
+        evaluation = getattr(queryset, 'evaluation', None) if evaluated else None
+        if not evaluated:
+            # The locations are prefetched by the `search` branch; the trial
+            # type is a plain FK the serializer reads per row, which on a page
+            # is one extra query and on an uncapped export is one per trial.
+            queryset = queryset.select_related('trial_type')
         # One serializer for the whole stream: `to_representation` reads only
         # `self.context`, and rebuilding the field map per trial is the
         # dominant cost on a corpus-sized export.
@@ -981,12 +1034,13 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
             patient_info = context.get('patient_info')
             written = 0
+            trials = queryset if evaluated else queryset.iterator(chunk_size=self.EXPORT_CHUNK)
             try:
-                for trial in queryset.iterator(chunk_size=self.EXPORT_CHUNK):
+                for trial in trials:
                     row = serializer.to_representation(trial)
                     writer.writerow(
                         [_export_cell(row.get(key)) for _, key in self.EXPORT_COLUMNS]
-                        + [_export_cell(_export_mcl_cell(trial, patient_info))]
+                        + [_export_cell(_export_mcl_cell(trial, patient_info, evaluation))]
                     )
                     written += 1
                     yield flush()
