@@ -6,10 +6,13 @@ import re
 from django.db import models
 from django.db.models import Q
 
-from trials.services.patient_info.normalize import recompute_note
+from trials.services.patient_info.normalize import (
+    recompute_note, therapy_line_is_authorable,
+)
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
-from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.therapy_match_profile import (
+    THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled)
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
@@ -198,20 +201,6 @@ class TrialAttributes:
 
         return out
 
-    @property
-    def _scoping_disease_code(self):
-        """Whose disease decides which criteria apply.
-
-        The patient's when there is one — a myeloma patient should not be shown
-        a mantle-cell criterion. With no patient, the TRIAL's, which is the
-        right answer anyway: the row belongs to the trial, and a trial has a
-        disease even when nobody is looking at it.
-        """
-        if self._patient_info is not None:
-            return self._patient_info_attr.disease_code
-        from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
-        return UserToTrialAttrMatcher.get_disease_code_from_trial(self._trial)
-
     def get_field_name(self, field):
         return AttributeNames.get_by_snake_case(field.name)
 
@@ -285,9 +274,6 @@ class TrialAttributes:
             return True
         elif value is False and field_name in ATTR_FALSE_VALUE_IS_BLANK:
             return True
-        # `.get`: `get_context_from_user` returns an EMPTY dict when there is
-        # no patient, so the subscript was a KeyError on the public-browsing
-        # path. With nobody to be male, the rule does not apply.
         elif self._context.get('gender') == 'M' and field_name in ATTR_SKIP_FOR_MALE:
             return True
         return False
@@ -337,7 +323,8 @@ class TrialAttributes:
             return 'select'
         return str(field_type)
 
-    def get_field(self, field, value, user_field, user_value, subform_details, units_data):
+    def get_field(self, field, value, user_field, user_value, subform_details, units_data,
+                  user_readonly=False):
 
         field_name = self.get_field_name(field)
 
@@ -346,7 +333,7 @@ class TrialAttributes:
         if subform_details:
             extra_attrs['subform_details'] = subform_details
 
-        ureadonly = subform_details is not None
+        ureadonly = user_readonly or subform_details is not None
 
         type = ATTR_TYPE_MAPPING.get(field_name)
         options = self.get_options(field_name)
@@ -414,21 +401,51 @@ class TrialAttributes:
             subform_details = subform_attrs[attr_name] if attr_name in subform_attrs else None
 
             units_data = {}
+            stored_value_used = False
             if attr_name in user_details:
                 user_data = user_details[attr_name]
+                # Port CB's patient-attribute resolution: patient and trial
+                # names may differ (e.g. measurable_disease_imwg_required).
+                subform_details = user_data.get('subform_details') or subform_attrs.get(attr_name)
                 user_field = AttributeNames.get_by_snake_case(user_data['ufield'])
                 user_value = user_data['uvalue']
+                canonical_value = user_value
 
                 if self._patient_info:
                     units_details = patient_info_attr_units_for(user_data['ufield'], self._patient_info)
-                    if units_details:
+                    uunits_label = (
+                        unit_label(units_details['options'], units_details['uvalue'])
+                        if units_details else None
+                    )
+                    # A ×ULN row shows a RATIO, not a physical measurement: the
+                    # stored unit label would describe a number that is not in
+                    # that unit (and the row is read-only anyway). An unknown
+                    # stored code is the other refusal: keeping the converted
+                    # value is better than pairing a raw number with the
+                    # DEFAULT unit label.
+                    if uunits_label is not None and 'uln' not in attr_name.lower():
                         units_data = {
-                            'units': units_details['options'].get(units_details['default']),
-                            'uunits': units_details['options'].get(units_details['uvalue']),
+                            'units': unit_label(units_details['options'], units_details['default']),
+                            'uunits': uunits_label,
                             'uunitsOptions': ValueOptions.to_value_and_label(units_details['options']),
                         }
+                        # `uvalue` is converted into the matcher's unit, while
+                        # `uunits` names the patient's STORED unit. Pairing them
+                        # printed 120 g/L as "12 g/Liter" and, on a writable row,
+                        # would seed the editor with the converted number.
+                        user_value = getattr(
+                            self._patient_info, user_data['ufield'], user_value)
+                        stored_value_used = True
 
-                field = self.get_field(attr, attr_value, user_field, user_value, subform_details, units_data)
+                field = self.get_field(
+                    attr, attr_value, user_field, user_value, subform_details, units_data,
+                    user_readonly=user_data['ureadonly'],
+                )
+                if stored_value_used:
+                    # The graph compares this value with the trial's, which is
+                    # in the matcher's unit. Keep it beside the stored display
+                    # value so that comparison does not silently change scale.
+                    field['uvalue_canonical'] = canonical_value
                 out[field['name']] = field
                 out[field['name']]['search_type'] = user_data.get('search_type')
             elif attr_name in ATTR_NAME_ALWAYS_INCLUDED:
@@ -568,13 +585,13 @@ class TrialAttributes:
         }
 
         goodness_score = getattr(self._trial, 'goodness_score', None)
-        if goodness_score is None:
+        if goodness_score is None and self._patient_info is not None:  # #318: no patient → leave blank
             goodness_score = self._trial.get_goodness_score(self._patient_info)
         computed_fields['goodnessScore'] = {
           "name": "goodnessScore",
           "label": "goodness Score",
           "type": "string",
-          "value": str(goodness_score),
+          "value": '' if goodness_score is None else str(goodness_score),
           "options": None,
           "ureadonly": True,
           "ufield": None,
@@ -584,7 +601,7 @@ class TrialAttributes:
           "dependencies": []
         }
 
-        match_score = self._trial.get_match_score(self._patient_info)
+        match_score = self._trial.get_match_score(self._patient_info) if self._patient_info is not None else None  # #318
         match_score_value = '' if match_score is None else f'{str(match_score)}%'
         computed_fields['matchScore'] = {
           "name": "matchScore",
@@ -600,17 +617,9 @@ class TrialAttributes:
           "dependencies": []
         }
 
-        # Empty with no patient, the way `matchScore` beside it already is.
-        # The SCORING neutral for "no distance known" is 0 — a located-less
-        # patient gets it too, so the model keeps it — but printing that 0 in a
-        # cell labelled "distance Penalty" reads as "this patient is next
-        # door", which is a claim about somebody who is not there.
-        if self._patient_info is None:
-            distance_penalty = ''
-        else:
-            distance_penalty = self._trial.get_distance_penalty(self._patient_info)
-            if distance_penalty:
-                distance_penalty = str(distance_penalty)
+        distance_penalty = self._trial.get_distance_penalty(self._patient_info)
+        if distance_penalty:
+            distance_penalty = str(distance_penalty)
 
         computed_fields['distancePenalty'] = {
           "name": "distancePenalty",
@@ -627,10 +636,7 @@ class TrialAttributes:
         }
 
         locations_name = self._trial.sorted_locations_by_distance(
-            # `None` with no patient: the sites are then in the trial's own
-            # order rather than nearest-first, which is the only honest answer
-            # to "closest to whom?" — and the method already takes it.
-            self._patient_info.geo_point if self._patient_info else None,
+            self._patient_info.geo_point if self._patient_info is not None else None,  # #318
             recruitment_status=recruitment_status
         )
         locations_name = [x.location.title for x in locations_name if x.location]
@@ -650,19 +656,102 @@ class TrialAttributes:
 
         return computed_fields
 
-    def therapies(self, subform_attrs):
-        """The trial's therapy criteria, with the patient's values where there
-        is a patient.
+    #: The trial vocabulary that owns each OMOP-mapped therapy level's titles.
+    #: Types are deliberately absent: they carry drug-class concept_ids but
+    #: EXACT has no curated title table for them (`TherapyComponentCategory.
+    #: omop_concept_id` is unused), so the release-pinned mirror is their only
+    #: source (#672).
+    _OMOP_THERAPY_VOCAB = {
+        'therapies_required': 'Therapy',
+        'therapies_excluded': 'Therapy',
+        'therapy_components_required': 'TherapyComponent',
+        'therapy_components_excluded': 'TherapyComponent',
+    }
 
-        Nothing below reads the patient — `user_value` is None throughout, and
-        the patient side of these rows is filled in later by the matcher. The
-        early return that used to stand here therefore dropped the trial's own
-        therapy requirements from a no-patient response: the one kind of
-        criterion a reader browsing a trial most wants to see, missing with no
-        indication it had been left out.
+    def _omop_field_ids(self):
+        """`{field_name: [concept_id_str]}` for the rows the OMOP profile flips."""
+        fields = {}
+        for field_name in THERAPIES_ATTRS_UNDERSCORED:
+            active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
+            if omop_therapy_enabled() and active_col != field_name:
+                fields[field_name] = [
+                    str(item) for item in (getattr(self._trial, active_col) or [])
+                ]
+        return fields
+
+    def _prefetch_omop_therapy_titles(self):
+        """Resolve every flipped row's titles once, for the whole detail.
+
+        One query per trial vocabulary (regimens and components share their
+        model between the required and excluded rows) plus one mirror call for
+        every id neither vocabulary knows, instead of a round per row.
         """
-        out = {}
+        fields = self._omop_field_ids()
+        ids_by_model = {}
+        for field_name, ids in fields.items():
+            model_name = self._OMOP_THERAPY_VOCAB.get(field_name)
+            if model_name:
+                ids_by_model.setdefault(model_name, set()).update(
+                    int(item) for item in ids if item.isdigit())
+        titles_by_model = {}
+        if ids_by_model:
+            from trials import models as trial_models
+            for model_name, numeric in ids_by_model.items():
+                model = getattr(trial_models, model_name)
+                titles_by_model[model_name] = {
+                    str(concept_id): title for concept_id, title in (
+                        model.objects.filter(omop_concept_id__in=sorted(numeric))
+                        .order_by('id')
+                        .values_list('omop_concept_id', 'title')
+                    )
+                }
+        cache = {}
+        unresolved = set()
+        for field_name, ids in fields.items():
+            titles = dict(titles_by_model.get(self._OMOP_THERAPY_VOCAB.get(field_name), {}))
+            cache[field_name] = titles
+            unresolved.update(item for item in ids if not titles.get(item))
+        if unresolved:
+            from exact_matching.matcher import _resolve_omop_concepts
+            mirrored = {
+                str(item['code']): item['title']
+                for item in _resolve_omop_concepts(sorted(unresolved))
+                if item.get('title')
+            }
+            for titles in cache.values():
+                for concept_id, title in mirrored.items():
+                    titles.setdefault(concept_id, title)
+        self._omop_title_cache = cache
 
+    def _omop_option_map(self, field_name, value):
+        """`[{value, label}]` for a row whose `value` is a list of concept_ids.
+
+        The trial's own vocabulary is the first source: its rows carry both the
+        concept id the backfill wrote and the title the legacy option map used,
+        so the label does not depend on a mirror release covering the concept.
+        The pinned mirror is the fallback (and the only source for therapy
+        types). An id neither source knows stays visible as
+        "Unknown concept (<id>)" rather than being dropped or inventing a title.
+        """
+        ids = [str(item) for item in (value or [])]
+        cache = getattr(self, '_omop_title_cache', None)
+        titles = cache.get(field_name) if cache is not None else None
+        if titles is None:
+            self._prefetch_omop_therapy_titles()
+            titles = getattr(self, '_omop_title_cache', {}).get(field_name, {})
+        return [
+            {'value': item,
+             'label': titles.get(item) or f'Unknown concept ({item})'}
+            for item in ids
+        ]
+
+    def therapies(self, subform_attrs):
+        # Renders the trial's therapy criteria; patient values (uvalue) are None
+        # here and the per-criterion match status is filled in by the caller. Runs
+        # with or without a patient — without one the criteria still render and the
+        # caller marks them 'unknown' (#318), consistent with the other criteria.
+        self._prefetch_omop_therapy_titles()
+        out = {}
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
             active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
@@ -671,6 +760,14 @@ class TrialAttributes:
             trial_field = self._trial.__class__._meta.get_field(field_name)
             trial_field_name = self.get_field_name(trial_field)
             options = self.get_options(trial_field_name)
+            if omop_therapy_enabled() and active_col != field_name:
+                # Under the OMOP profile the column holds concept_ids while the
+                # option map is keyed by the legacy code, so every row rendered a
+                # bare number (#672, #680). Resolve the ids to titles and keep an
+                # unresolved one visible rather than dropping it or inventing a
+                # title. Display-only: these rows are read-only and the editor
+                # reads `uoptions`, which stays None.
+                options = self._omop_option_map(field_name, value)
             uoptions = None
             subform_details = subform_attrs[field_name] if field_name in subform_attrs else None
 
@@ -881,12 +978,36 @@ class TrialAttributes:
                 # Once per entry, the way the row site does it, rather than
                 # once for the boolean and again for the note.
                 entry_note = recompute_note(pi_field_name)
+                if therapy_line_is_authorable(
+                        pi_field_name,
+                        getattr(self._patient_info, 'prior_therapy', None)):
+                    # The line this field projects is one the patient's own
+                    # history already claims, and PROMOP now writes it through
+                    # the therapy-line service. It is not recomputed behind the
+                    # reader, so the pencil is real.
+                    entry_note = None
                 if pi_field_name in out:
                     continue
 
                 field = self._patient_info.__class__._meta.get_field(pi_field_name)
                 field_name = self.get_field_name(field)
+                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
+                uunits_label = (
+                    unit_label(units_details['options'], units_details['uvalue'])
+                    if units_details else None
+                )
+                if units_details and uunits_label is None:
+                    # Unknown stored code: keep the matcher's value and attach
+                    # no label rather than mislabel it with the default unit.
+                    units_details = None
                 value = self._patient_info_attr.get_value(pi_field_name)
+                if units_details:
+                    # The editor shows and writes in the PATIENT's stored unit,
+                    # and `uunits` below names that unit. `get_value` converts
+                    # measurements into the matcher's unit, so using its number
+                    # here would put 12 (g/dL) beside "G/Liter" and submit 12
+                    # into a field that expects 120.
+                    value = getattr(self._patient_info, pi_field_name)
                 if pi_field_name in THERAPY_LINES_ATTRS_UNDERSCORED:
                     options = self.get_options_for(pi_field_name)
                 else:
@@ -945,10 +1066,9 @@ class TrialAttributes:
                 # are exactly these labs, converts through the stored one. A
                 # calcium typed in the wrong scale flips a clinical composite
                 # with nothing on screen to show which scale was meant.
-                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
                 if units_details:
-                    val['uunits'] = units_details['options'].get(units_details['uvalue'])
-                    val['units'] = units_details['options'].get(units_details['default'])
+                    val['uunits'] = uunits_label
+                    val['units'] = unit_label(units_details['options'], units_details['default'])
 
                 tmp[pi_field_name] = val
 
@@ -968,23 +1088,18 @@ class TrialAttributes:
         return out
 
     def get_user_details(self, subform_attrs):
-        """Which trial columns are eligibility criteria, and the patient's value
-        for each where there is a patient.
-
-        It used to return nothing at all without one — and `details()` only
-        emits a trial column that appears here or in `ATTR_NAME_ALWAYS_INCLUDED`,
-        so a detail response with no patient carried two rows out of twelve.
-        The trial's own requirements were not rendered verdict-less; they were
-        dropped, with nothing to say so.
-
-        Which columns are criteria is a property of the MAPPING, not of the
-        patient. The only patient-dependent parts are the value (None without
-        one) and the disease scoping, which falls back to the TRIAL's disease —
-        the right answer anyway, since the row belongs to the trial.
-        """
         out = {}
+        if not self._patient_info:
+            return out
 
         mapping = USER_TO_TRIAL_ATTRS_MAPPING
+
+        def user_value_for_trial(user_attr):
+            # A trial can state its own adequacy cutoffs; the stored patient-level
+            # boolean only encodes the defaults (ported from CB, #630).
+            if user_attr == 'haematological_adequacy_status':
+                return self._patient_info_attr.haematological_adequacy_status_for_trial(self._trial)
+            return self._patient_info_attr.get_value(user_attr)
 
         for user_attr in mapping.keys():
             trial_attr_meta = mapping[user_attr]
@@ -993,8 +1108,8 @@ class TrialAttributes:
             ureadonly = ('is_computed_value' in trial_attr_meta and trial_attr_meta['is_computed_value'] is True) or subform_details is not None
 
             if "disease" in trial_attr_meta and (
-                self._scoping_disease_code is None
-                or not disease_attr_applies(trial_attr_meta["disease"], self._scoping_disease_code)
+                self._patient_info_attr.disease_code is None
+                or not disease_attr_applies(trial_attr_meta["disease"], self._patient_info_attr.disease_code)
             ):
                 continue
 
@@ -1006,7 +1121,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -1019,7 +1134,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -1032,7 +1147,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -1044,7 +1159,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -1074,13 +1189,8 @@ class TrialAttributes:
                 if isinstance(attr_names, str):
                     attr_names = [attr_names]
                 for attr_name in attr_names:
-                    # The lambdas in `configs.py` dereference the patient
-                    # directly — `lambda patient_info: patient_info.ethnicity` —
-                    # so they are not asked when there is nobody to ask about.
-                    uvalue = None
-                    if self._patient_info is not None:
-                        uvalue_function = trial_attr_meta["uvalue_function"][attr_name]
-                        uvalue = uvalue_function(self._patient_info)
+                    uvalue_function = trial_attr_meta["uvalue_function"][attr_name]
+                    uvalue = uvalue_function(self._patient_info)
                     uvalue = self.get_uvalue(f'u{attr_name}', uvalue)
                     out[attr_name] = {
                         'ureadonly': ureadonly,
@@ -1096,10 +1206,13 @@ class TrialAttributes:
                 else:
                     attr_name = trial_attr_meta["attr"]
 
+                user_value = user_value_for_trial(user_attr)
+                if user_attr == 'hepatic_adequacy_status':
+                    user_value = self._patient_info_attr.hepatic_adequacy_status_for_trial(self._trial)
                 out[attr_name] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value),
                 }
                 if subform_details:
                     out[attr_name]['subform_details'] = subform_details

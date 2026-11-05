@@ -1,4 +1,8 @@
-"""The third language state: asked, and not able (P1-1, #591).
+"""The third language state on the LEGACY path: asked, and not able (#605, #591).
+
+Ported from cb-like-trials (#607). On 2omop a trial with no requirement reads
+`matched` (the computed-attr convention here), where the widget line says
+`not_evaluated`.
 
 Worked examples from `language_capability`. Each one is checked on every
 surface that decides a trial's fate -- the search (`filter_by_patient_info`),
@@ -105,7 +109,7 @@ class TestWorkedExamples:
     def test_no_requirement(self):
         trial = TrialFactory(languages_skills_required=[])
         kept, status, _p, _e = surfaces(trial, promop(english_speak=False))
-        assert kept and status == 'not_evaluated'
+        assert kept and status == 'matched'
 
 
 class TestPatientsAlsoGainTrials:
@@ -128,8 +132,8 @@ class TestNonCodeElements:
         trial = TrialFactory(languages_skills_required=required)
         carlos = promop(english_speak=False, english_read=True)
         kept, status, potential, _e = surfaces(trial, carlos)
-        assert kept and status == 'not_evaluated' and potential is None
-        assert verdict(required, [], ['en']) == 'not_evaluated'
+        assert kept and status == 'matched' and potential is None
+        assert verdict(required, [], ['en']) == 'matched'
 
     def test_non_codes_beside_a_code_are_ignored(self):
         trial = TrialFactory(languages_skills_required=[None, 'speak__en', ''])
@@ -192,7 +196,7 @@ class TestCallersSendingCodesAreUnchanged:
 
 class TestVerdictUnit:
     @pytest.mark.parametrize('required, held, asked, expected', [
-        ([], [], ['en'], 'not_evaluated'),
+        ([], [], ['en'], 'matched'),
         (['speak__en'], ['speak__en'], ['en'], 'matched'),
         (['speak__en'], [], ['en'], 'not_matched'),
         (['speak__es'], [], ['en'], 'unknown'),

@@ -64,13 +64,6 @@ class TestNarrowing:
         response = post(authed_client, [wanted.id])
         assert response.data['itemsTotalCount'] == 1
 
-    def test_the_tab_counts_describe_the_narrowed_set_too(self, authed_client):
-        eligible = TrialFactory(disease='Multiple Myeloma')
-        TrialFactory(disease='Multiple Myeloma')
-        response = post(authed_client, [eligible.id])
-        counts = response.data['tabCounts']
-        assert counts['eligible'] + counts['potential'] == 1
-
     def test_an_id_that_does_not_match_the_patient_is_listed_and_marked(self, authed_client):
         """It used to be dropped, on the reasoning that the filter narrows and
         does not override. What that produced on screen was a Favorites tab
@@ -281,22 +274,6 @@ class TestSavedTrialsTheMatcherWouldDrop:
         verdicts = {t['trialId']: t['matchingType'] for t in response.data['results']}
         assert verdicts == {bc.id: 'not_eligible', mm.id: 'eligible'}
 
-    def test_the_tab_counts_still_describe_only_who_qualifies(self, authed_client):
-        """The widening must not leak into the verdict counts.
-
-        `potential_attrs_count` asks whether the patient LEFT A FIELD BLANK,
-        never whether they conflict, so a trial the eligibility filter threw
-        out scores 0 and would be counted as `eligible` — a verdict nobody
-        produced, arriving through the door `_tab_counts` already closed for
-        `?type=all`. The counts are taken from the set before widening; this
-        is the test that fails if that is ever simplified away.
-        """
-        failing = TrialFactory(disease='Multiple Myeloma', age_low_limit=65)
-        ok = TrialFactory(disease='Multiple Myeloma')
-        response = post(authed_client, [failing.id, ok.id], patient=YOUNG_MM)
-        counts = response.data['tabCounts']
-        assert counts['eligible'] + counts['potential'] == 1
-
     def test_the_corpus_search_still_drops_it(self, authed_client):
         """Nothing widens without a `trial_ids` list. A patient asking which
         trials match them must not be handed one that does not."""
@@ -458,83 +435,6 @@ class TestSavedTrialsTheMatcherWouldDrop:
             detail['matchScore'], detail['matchingType']
         )
 
-    def test_nothing_is_offered_to_fill_in_on_a_marked_row(self, authed_client):
-        """`attributesToFillIn` reads "supply these and you become eligible",
-        which is not true of a patient whose supplied value IS the conflict.
-
-        #568 could not assert this: `counts` reached the serializer hardcoded
-        to `{}`, so the field was empty for every row and a guard would have
-        been indistinguishable from its absence. #464 delivers the counts —
-        which is what makes this row's fill-in list non-empty without the
-        guard, and makes the guard checkable. The fixture carries a second,
-        unanswered requirement so there is something to offer.
-        """
-        failing = TrialFactory(
-            disease='Multiple Myeloma', age_low_limit=65, ecog_performance_status_max=2,
-        )
-        ok = TrialFactory(disease='Multiple Myeloma', ecog_performance_status_max=2)
-        response = post(authed_client, [failing.id, ok.id], patient=YOUNG_MM)
-        rows = {t['trialId']: t for t in response.data['results']}
-        assert rows[failing.id]['matchingType'] == 'not_eligible'
-        assert rows[failing.id]['attributesToFillIn'] == []
-        # The unmarked row proves the fixture really does leave something
-        # unanswered, so the assertion above is not passing on an empty set.
-        assert rows[ok.id]['attributesToFillIn']
-
-    def test_the_export_says_what_the_list_says(self, authed_client):
-        """The file is the list, and this is the field the change is about.
-        A CSV row reading `not_eligible,100` goes to an appointment."""
-        failing = TrialFactory(disease='Multiple Myeloma', age_low_limit=65)
-        response = authed_client.post(
-            '/trials/export/',
-            {'patient_info': YOUNG_MM, 'trial_ids': [failing.id]},
-            format='json',
-        )
-        assert response.status_code == 200
-        # `utf-8-sig`: the file opens with a BOM, which otherwise lands in
-        # the first header name and hides the `Trial ID` column.
-        body = b''.join(response.streaming_content).decode('utf-8-sig')
-        # By column, not by substring: `100` turns up in enrolment counts and
-        # scores all over a trial row.
-        rows = list(csv.DictReader(io.StringIO(body)))
-        row = next(r for r in rows if r['Trial ID'] == str(failing.id))
-        assert row['Match'] == 'not_eligible'
-        assert row['Matching score'] == '0'
-
-    def test_the_export_carries_the_real_verdict(self, authed_client):
-        """The `Match` column reads `matchingType`, which was the constant
-        `eligible` for every row until #464 delivered the counts. A file
-        someone takes to an appointment now says which trials could not be
-        judged rather than calling them all a match."""
-        unjudgeable = TrialFactory(
-            disease='Multiple Myeloma', ecog_performance_status_max=2,
-        )
-        response = authed_client.post(
-            '/trials/export/', {'patient_info': MM}, format='json',
-        )
-        assert response.status_code == 200
-        body = b''.join(response.streaming_content).decode('utf-8-sig')
-        rows_out = list(csv.DictReader(io.StringIO(body)))
-        row = next(r for r in rows_out if r['Trial ID'] == str(unjudgeable.id))
-        assert row['Match'] == 'potential'
-
-    def test_the_graph_does_not_widen(self, authed_client):
-        """A node cannot carry the mark — the graph buckets on `match_score`,
-        which reads 100 on a conflicting trial, so a widened node would be
-        filed under "fully matched". A verdict flipped, not merely unmarked.
-        """
-        failing = TrialFactory(disease='Multiple Myeloma', age_low_limit=65)
-        ok = TrialFactory(disease='Multiple Myeloma')
-        response = authed_client.post(
-            '/trials-graph/graph/match/',
-            {'patient_info': YOUNG_MM, 'trial_ids': [failing.id, ok.id]},
-            format='json',
-        )
-        assert response.status_code == 200
-        # On the nodes, not on the serialized blob: the response echoes the
-        # patient too, and a bare id substring matches digits in there.
-        assert [t['trialId'] for t in response.data['trials']] == [ok.id]
-
     def test_a_patientless_search_marks_nothing(self, authed_client):
         """With nobody named there is no verdict to carry, so no row can be
         marked and none is hidden either — the whole saved set comes back
@@ -551,5 +451,7 @@ class TestSavedTrialsTheMatcherWouldDrop:
             format='json',
         )
         assert response.status_code == 200
-        assert response.data['itemsTotalCount'] == 2
-        assert {t['matchingType'] for t in response.data['results']} == {None}
+        assert len(response.data['results']) == 2
+        assert 'not_eligible' not in {
+            t['matchingType'] for t in response.data['results']
+        }

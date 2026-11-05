@@ -8,6 +8,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # apt is retried inside the step, which caps itself at 20m; this bounds a
+    # wedged runner.
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
@@ -23,28 +26,79 @@ jobs:
           ${{ runner.os }}-pip-
     - name: Install system dependencies
       run: |
+        set -euo pipefail
+        # apt has stalled this step for most of a job: in run 40485223864, test
+        # (1) spent 10:02:52 -> 10:42:36 (40 minutes) here and then ran the tests
+        # in 31 seconds, with no output at all because the calls used -qq. The
+        # same stall, caught with output enabled in CancerBot job 122379632179,
+        # timed out at rc=124 stopped mid-download on a 119 kB package, and its
+        # next attempt resumed at the sixth package rather than the first: apt
+        # keeps the .debs it already has, but its http timeout is
+        # inactivity-based, so a transfer that trickles never trips it, and
+        # default pipelining lets one stalled request block the queue. That is a
+        # hypothesis, not a proven cause, but it fits both jobs.
+        #
+        # So: turn pipelining off, and spend a fixed wall-clock budget on attempts
+        # instead of one long wait -- each attempt resumes where the last stopped.
+        budget=1200
+        deadline=$((SECONDS + budget))
+        start_all=$SECONDS
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        sudo apt-get -qq update && \
-        sudo apt-get -yqq install \
-          gcc \
-          libpq-dev \
-          gdal-bin \
-          libgdal-dev \
-          libgeos-dev \
-          postgresql-client
+        apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get
+             -o Acquire::Retries=2
+             -o Acquire::ForceIPv4=true
+             -o Acquire::http::Timeout=15
+             -o Acquire::https::Timeout=15
+             -o Acquire::http::Pipeline-Depth=0
+             -o APT::Update::Error-Mode=any
+             -o DPkg::Lock::Timeout=120)
+        log=$(mktemp)
+        attempt=0
+        while [ $((deadline - SECONDS)) -ge 120 ] && [ "$attempt" -lt 6 ]; do
+          attempt=$((attempt + 1))
+          start=$SECONDS
+          rc=0
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$cap" -lt 1 ]; then break; fi
+          timeout --kill-after=20 "$cap" "${apt[@]}" -q update >>"$log" 2>&1 || rc=$?
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$rc" -eq 0 ] && [ "$cap" -ge 60 ]; then
+            timeout --kill-after=20 "$cap" "${apt[@]}" -yq install \
+              gcc \
+              libpq-dev \
+              gdal-bin \
+              libgdal-dev \
+              libgeos-dev \
+              postgresql-client >>"$log" 2>&1 || rc=$?
+          elif [ "$rc" -eq 0 ]; then
+            # No budget left to install: that is not a success.
+            rc=124
+          fi
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          echo "::warning::apt attempt ${attempt} failed after $((SECONDS - start))s, rc=${rc}"
+          grep -iE 'lock|err:|fail|unable|could not' "$log" | tail -n 20 || true
+          tail -n 20 "$log"
+          if [ $((deadline - SECONDS)) -lt 120 ] || [ "$attempt" -ge 6 ]; then break; fi
+          sleep $((attempt * 10))
+        done
+        echo "::error::apt failed after ${attempt} attempts in $((SECONDS - start_all))s; the log above says why"
+        exit 1
     - name: Install Python dependencies
       # This job exists to fail fast on a bad `requirements.txt`, and to fill
       # `~/.cache/pip` before the three `test` jobs start — otherwise they
       # race to save the same key and two of them lose.
       #
       # It does NOT hand its `site-packages` to `test` any more. That is what
-      # broke CI. The step used to pin pip down to 24.0 INSIDE the directory
-      # the workflow cached, so the saved entry could never agree with the
-      # image it was restored onto (26.2.1), and `actions/cache` untars OVER
-      # a tree rather than replacing it. The union was neither version:
-      # 26.2.1's `build_env/` package survived beside 24.0's `build_env.py`
-      # and won the import, then asked 24.0's overwritten `cli/spinners.py`
-      # for `open_rich_spinner`. Every `python -m pip` died there.
+      # broke CI on the feature branches. The step used to pin pip down to
+      # 24.0 INSIDE the directory the workflow cached, so the saved entry
+      # could never agree with the image it was restored onto (26.2.1), and
+      # `actions/cache` untars OVER a tree rather than replacing it. The
+      # union was neither version: 26.2.1's `build_env/` package survived
+      # beside 24.0's `build_env.py` and won the import, then asked 24.0's
+      # overwritten `cli/spinners.py` for `open_rich_spinner`. Every
+      # `python -m pip` died there.
       #
       # No image upgrade was involved, which is why it read as random:
       # entries are scoped per `refs/pull/N/merge`, so each PR poisoned only
@@ -52,17 +106,20 @@ jobs:
       # written and failed. PR #432, eleven minutes apart on one image: run
       # 34570074256 missed and passed, run 34570854589 hit and died.
       #
-      # The pin is gone with it. `get_runnable_pip` was never removed in 24.1
-      # — it sits in `build_env.py` in 24.0 and 24.1 and moved to
-      # `utils/misc.py` by 26.2.1 — so the August ImportError the pin was
-      # added for was this same mixed tree, read from the other side. The
-      # image's own pip installs this file: docker run 33601218069 does it
-      # under 26.2.1, psycopg2's sdist build isolation included.
+      # The pin goes with it. `get_runnable_pip` was never removed in 24.1 —
+      # it sits in `build_env.py` in 24.0 and 24.1 and moved to
+      # `utils/misc.py` by 26.2.1 — so the ImportError the pin was added for
+      # was this same mixed tree read from the other side. The image's own
+      # pip installs this file: docker run 33601218069 does it under 26.2.1,
+      # psycopg2's sdist build isolation included.
       run: |
         python -m pip install -r requirements.txt
 
   test:
     runs-on: ubuntu-latest
+    # Normal run is ~2 minutes. Worst case is the 20m apt budget plus pip and the
+    # suite; the timeout is a ceiling, not a target.
+    timeout-minutes: 30
     needs: [build]
     strategy:
       matrix:
@@ -96,19 +153,70 @@ jobs:
           ${{ runner.os }}-pip-
     - name: Install system dependencies
       run: |
+        set -euo pipefail
+        # apt has stalled this step for most of a job: in run 40485223864, test
+        # (1) spent 10:02:52 -> 10:42:36 (40 minutes) here and then ran the tests
+        # in 31 seconds, with no output at all because the calls used -qq. The
+        # same stall, caught with output enabled in CancerBot job 122379632179,
+        # timed out at rc=124 stopped mid-download on a 119 kB package, and its
+        # next attempt resumed at the sixth package rather than the first: apt
+        # keeps the .debs it already has, but its http timeout is
+        # inactivity-based, so a transfer that trickles never trips it, and
+        # default pipelining lets one stalled request block the queue. That is a
+        # hypothesis, not a proven cause, but it fits both jobs.
+        #
+        # So: turn pipelining off, and spend a fixed wall-clock budget on attempts
+        # instead of one long wait -- each attempt resumes where the last stopped.
+        budget=1200
+        deadline=$((SECONDS + budget))
+        start_all=$SECONDS
         sudo rm -f /etc/apt/sources.list.d/azure-cli.list /etc/apt/sources.list.d/microsoft-prod.list
-        sudo apt-get -qq update && \
-        sudo apt-get -yqq install \
-          gcc \
-          libpq-dev \
-          gdal-bin \
-          libgdal-dev \
-          libgeos-dev \
-          libgeos-c1v5 \
-          postgresql-client
+        apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get
+             -o Acquire::Retries=2
+             -o Acquire::ForceIPv4=true
+             -o Acquire::http::Timeout=15
+             -o Acquire::https::Timeout=15
+             -o Acquire::http::Pipeline-Depth=0
+             -o APT::Update::Error-Mode=any
+             -o DPkg::Lock::Timeout=120)
+        log=$(mktemp)
+        attempt=0
+        while [ $((deadline - SECONDS)) -ge 120 ] && [ "$attempt" -lt 6 ]; do
+          attempt=$((attempt + 1))
+          start=$SECONDS
+          rc=0
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$cap" -lt 1 ]; then break; fi
+          timeout --kill-after=20 "$cap" "${apt[@]}" -q update >>"$log" 2>&1 || rc=$?
+          cap=$((deadline - SECONDS))
+          if [ "$cap" -gt 300 ]; then cap=300; fi
+          if [ "$rc" -eq 0 ] && [ "$cap" -ge 60 ]; then
+            timeout --kill-after=20 "$cap" "${apt[@]}" -yq install \
+              gcc \
+              libpq-dev \
+              gdal-bin \
+              libgdal-dev \
+              libgeos-dev \
+              libgeos-c1v5 \
+              postgresql-client >>"$log" 2>&1 || rc=$?
+          elif [ "$rc" -eq 0 ]; then
+            # No budget left to install: that is not a success.
+            rc=124
+          fi
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          echo "::warning::apt attempt ${attempt} failed after $((SECONDS - start))s, rc=${rc}"
+          grep -iE 'lock|err:|fail|unable|could not' "$log" | tail -n 20 || true
+          tail -n 20 "$log"
+          if [ $((deadline - SECONDS)) -lt 120 ] || [ "$attempt" -ge 6 ]; then break; fi
+          sleep $((attempt * 10))
+        done
+        echo "::error::apt failed after ${attempt} attempts in $((SECONDS - start_all))s; the log above says why"
+        exit 1
     - name: Install Python dependencies
-      # Its own, not `build`'s — see the comment there for what happened when
-      # this job had no install step and ran on a cached `site-packages`.
+      # Its own, not `build`'s — see the comment there for what happened
+      # when this job had no install step at all and ran on a cached
+      # `site-packages`.
       run: |
         python -m pip install -r requirements.txt
     - name: Set environment

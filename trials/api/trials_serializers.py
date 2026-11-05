@@ -51,6 +51,30 @@ class TrialSerializer(serializers.ModelSerializer):
         search_type = self.context.get('search_type')
         counts = self.context.get('counts') or {}
 
+        evaluation = self.context.get('typed_evaluation')
+        if evaluation is not None:
+            result = evaluation.result_for(instance.pk)
+            from trials.services.matching.typed_runtime import missing_attributes
+            response.update(result.summary())
+            response['attributesToFillIn'] = missing_attributes(result, counts)
+            response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
+            # Presentation only; no legacy clinical status or missing-attr inference.
+            locations = instance.sorted_locations_by_distance(
+                evaluation.patient_info.geo_point, recruitment_status=self.context.get('recruitment_status'))
+            response['location'] = [item.location.title for item in locations if item.location]
+            closest = locations[0].location.geo_point if locations and locations[0].location else None
+            response['closestLocationGeoPoint'] = ({'latitude': closest.y, 'longitude': closest.x}
+                                                   if closest is not None else None)
+            # Retain the transport key, but never infer a native display label
+            # from the legacy CB-coded stage column or stringify an envelope.
+            response['stage'] = None
+            distance = getattr(instance, 'distance', None)
+            units = self.context.get('distance_units') or 'km'
+            response['distance'] = (int((distance.mi if units == 'miles' else distance.km) + 0.5)
+                                    if distance is not None else None)
+            response['distanceUnits'] = units if distance is not None else None
+            return response
+
         if search_type == 'eligible' or getattr(instance, 'match_score', None) == 100:
             attrs_to_fill_in = []
         else:
@@ -92,37 +116,14 @@ class TrialSerializer(serializers.ModelSerializer):
                 response['distance'] = None
                 response['distanceUnits'] = None
 
-        # `eligible` is a claim about a PERSON: that this patient qualifies.
-        # There is no patient in the expression above it, so with none supplied
-        # `attrs_to_fill_in` is empty and every trial in the corpus came back
-        # `eligible` — a false statement, in a word the reader takes literally,
-        # about somebody the request never named (#456).
-        #
-        # `null` instead. That is also where the detail endpoint is headed on
-        # this path — its no-patient branch already sets `matchingType = None`
-        # — but it does not get there yet: on this base every patient-less
-        # detail request raises before reaching that branch (#455). So this
-        # does not YET make the two agree; it stops the list from being the
-        # one that speaks and claims the stronger thing.
-        #
-        # Only covers a request with no `patient_info`. A payload EXACT
-        # recognises no key of resolves to a blank PatientInfo — not None —
-        # and still answers `eligible` here and on the detail endpoint. That
-        # belongs at the resolver, where all three of `matchingType`,
-        # `matchScore` and `tabCounts` can agree at once, and is blocked on
-        # #455 for the same reason: #466.
-        #
         # `not_eligible` reaches this branch from one place only: a saved-ids
         # search that kept a trial the eligibility filter would have dropped
         # (#568). The id set comes from that filter itself, so the mark and
-        # the omission are the same judgement — see `_widened_saved`. Every
-        # other response carries an empty set and reads exactly as before.
+        # the omission are the same judgement.
         unmatched = self.context.get('unmatched_trial_ids') or frozenset()
         not_eligible = patient_info is not None and instance.id in unmatched
         response['matchingType'] = (
-            None
-            if patient_info is None
-            else 'not_eligible'
+            'not_eligible'
             if not_eligible
             else ('eligible' if not attrs_to_fill_in else 'potential')
         )
@@ -130,32 +131,11 @@ class TrialSerializer(serializers.ModelSerializer):
         # And the score that goes with that verdict. `match_score` here is the
         # SQL annotation counting which criteria could be EVALUATED; it never
         # compares values, so a trial the patient conflicts with still scores
-        # 100 — measured on a widened row, and reproduced with a plain age
-        # conflict, not just a disease one. Left alone it is a green pill
-        # arguing with the verdict beside it and an export column reading
-        # `not_eligible,100`.
-        #
-        # `0`, not `null`: the matcher does not treat the two as separable.
-        # `match_score_and_status` returns the pair `(0, 'not_eligible')`
-        # unconditionally — `if has_not_matched: return 0, 'not_eligible'` —
-        # so 0 is the score this verdict MEANS, and it is what the detail
-        # endpoint sends for the same trial. `null` would have made the list
-        # merely less wrong while still disagreeing with the page the card
-        # opens; this makes them say the same thing.
-        #
-        # `attributesToFillIn` goes with it, and this is the change that makes
-        # that necessary. The field reads "supply these and you become
-        # eligible", which is not true of a patient whose supplied value IS
-        # the conflict — it would invite them to answer a question that cannot
-        # change the answer. #568 left the guard out on purpose, because
-        # `counts` reached the serializer hardcoded to `{}` back then, so the
-        # list emitted `[]` for every row and a guard nobody could tell from
-        # its absence is one nobody can check. #464 delivers the counts, so
-        # the hole opens and closes in the same commit. It was filed as #570
-        # against exactly this moment.
+        # 100. `0`, not `null`: `match_score_and_status` returns the pair
+        # `(0, 'not_eligible')` unconditionally, and it is what the detail
+        # endpoint sends for the same trial.
         if not_eligible:
             response['matchScore'] = 0
-            response['attributesToFillIn'] = []
 
         if self.context.get('explain') and patient_info:
             from trials.services.trial_match_explainer import TrialMatchExplainer
@@ -234,6 +214,19 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         patient_info = self.context.get('patient_info')
         template = self.context.get('template')
         attrs_to_fill_in = self.context.get('attrs_to_fill_in', [])
+
+        evaluation = self.context.get('typed_evaluation')
+        if evaluation is not None:
+            from trials.services.matching.typed_runtime import details, evaluate, missing_attributes
+            result, = evaluate(evaluation, [instance])
+            presentation = details(evaluation, instance, template)
+            response.update(result.summary())
+            response['details'] = presentation['details']
+            response['groupNames'] = presentation['group_names']
+            response['attributesToFillIn'] = missing_attributes(result, self.context.get('counts') or {})
+            response['goodnessScore'] = getattr(instance, 'goodness_score', None)
+            response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
+            return response
 
         from trials.services.trial_details.trial_templates import TrialTemplates
         tt = TrialTemplates(instance, patient_info)

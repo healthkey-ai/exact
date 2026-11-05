@@ -6,27 +6,15 @@ Interactive docs are available at runtime:
 - Swagger UI: `/swagger/`
 - ReDoc: `/redoc/`
 
-All endpoints require an `Authorization` header unless noted otherwise:
-`Bearer <partner token>` in every deployed environment, or `Token <token>`
-where `ENABLE_DRF_TOKEN_AUTH` is on (local and DEBUG only, #153). The
-`/user-state/` routes take only the first of those, plus the service token on
-`/user-state/internal/forget/`. To create a token for a user:
+All endpoints require an `Authorization: Token <token>` header unless noted
+otherwise. To create a token for a user:
 
 ```bash
 python manage.py drf_create_token <username>
 ```
 
-Responses use **camelCase** keys.
-
-Request bodies are read as **snake_case**, with one exception that matters:
-the inline patient payload is accepted under either `patient_info` or
-`patientInfo`, because this document has always shown the second while the
-parser only ever read the first. Its INNER keys were always accepted in
-either spelling.
-
-`djangorestframework-camel-case` is in `requirements.txt` but is **not** wired
-into `REST_FRAMEWORK`, so no general camelCase parsing happens on request
-bodies. Send snake_case.
+JSON payloads and responses use **camelCase** keys (converted by
+`djangorestframework-camel-case`).
 
 ---
 
@@ -125,65 +113,6 @@ trial-search request.
 > **Terminology note**: the per-trial match result is called `matchingType` in
 > JSON responses and `match status` in prose. The `type` query param filters by
 > this value (`eligible`, `potential`, `not_eligible`).
->
-> `matchingType` is **`null` when the request carried no patient context**:
-> `eligible` states that a patient qualifies, and a request that named nobody
-> supports no such statement (#456). Narrow the value before comparing —
-> treating "not `eligible`" as potential reads a patient-less row as a weak
-> match rather than as no answer.
->
-> A list response answers `not_eligible` in exactly one circumstance: the
-> request carried a `trial_ids` list and no `?type=`, and one of those ids is
-> a trial the eligibility filter would otherwise have removed. Those rows are
-> kept rather than dropped, because the ids are bookmarks a reader made by
-> hand and a tab that counts a trial has to be able to show it (#568). The
-> Its `matchScore` is `0` — the score `match_score_and_status` returns with
-> that verdict, and what the detail endpoint sends for the same trial.
-> `tabCounts` still describe only the rows that qualify. Every other list
-> response answers `eligible`, `potential` or `null`, with the known
-> exception of `?type=all`, which skips the eligibility filter and so
-> labels everything it returns `eligible` (see the note on that path).
->
-> On the **list** endpoints (`/trials/`, `/trials/search/` and their POST
-> aliases) that is the behaviour today. The **detail** endpoint is written the
-> same way but does not reach it: a patient-less `GET /trials/{id}/` currently
-> raises before serializing (#455). Until that lands, do not read a detail
-> response as the authority on what a patient-less verdict looks like.
->
-> How an inline `patient_info` payload is read, in four states (#466, #594):
->
-> * **no key EXACT recognises** — `400`, naming the keys it could not read.
->   Sending the key means describing a patient, so understanding none of it is
->   an error rather than a search with the whole catalog as its answer.
-> * **keys it recognises, but every value `null`, `""` or whitespace** — no
->   patient. A client serialising a form the reader has not filled in yet is
->   well behaved, and `matchingType` is `null` for every row.
-> * **a value that cannot be its column's type** — `400`, keyed by the field
->   name *as you sent it* rather than by `patient_info`:
->
->   ```json
->   {"pd_l1_tumor_cells": ["Expected a number, got str. Send null or omit the field if it was not answered."]}
->   ```
->
->   A number column takes a number or a numeric string; a date column takes
->   an ISO date or datetime. A list, an object, a boolean or an unparseable
->   string is refused — it used to be silently dropped, which left the filter
->   for that field switched off and showed you trials a real value would have
->   excluded. `null`, `""` and whitespace are not errors: they mean the
->   question was not answered. Only the first bad field is named.
-> * **anything else** — a patient. Keys EXACT does not recognise, alongside
->   ones it does, are ignored rather than refused: a client may send a field
->   this version has not heard of.
->
-> Note the three error shapes this endpoint can return: `{"patient_info":
-> [...]}` for an unreadable payload, `{"<your field name>": [...]}` for a
-> value of the wrong type, and `{"detail": ...}` for auth and permission.
-> A `person_id` payload never produces the second: a value EXACT cannot use
-> in a row it fetched is not your error, so the field is dropped and logged.
->
-> An empty object — or no key at all — is the first-class way to search
-> without a patient. `POST /trials/export/` needs a patient to narrow it and
-> answers `400` for the middle state.
 
 | Param | Type | Description |
 |---|---|---|
@@ -192,16 +121,17 @@ trial-search request.
 | `sponsor` | string | Filter by sponsor name |
 | `register` | string | Filter by trial register (e.g. `clinicaltrials.gov`) |
 | `trialType` | string | Filter by trial-type code |
+| `trialPurpose` | string, repeatable | Filter by trial-purpose code (`treatment`, `screening`, …), case-insensitive. Several purposes are a union — a trial matching any of them comes back: repeat the param (`?trialPurpose=treatment&trialPurpose=supportive_care`) or pass one comma-separated value. Trials whose purpose was never extracted are not returned. |
+| `genomicRequirement` | `required` (alias `true`, case-insensitive) | Eligibility filter: only trials whose `mutation_genes_required`, `molecular_markers_required` or `cytogenic_markers_required` list is non-empty. This is **not** a trial type — a trial requiring BRCA1/2 or ESR1 need not be typed as genomic, and trials with no type are included unless an excluding `trialType` is also sent. Any other value is ignored, as is a blank or absent one. |
 | `validatedOnly` | boolean | Only return manually validated trials |
 | `distance` | number | Maximum distance from patient location |
 | `distanceUnits` | `km` \| `miles` | Units for `distance` (default `km`) |
 | `country` | string | Filter by country code |
 | `region` | string | Filter by region |
 | `postalCode` | string | Override postal code for distance calculation |
-| `studyId` | string | Filter by study ID (e.g. NCT number). Case-insensitive, surrounding whitespace ignored |
-| `phase` | string | Keep trials at this phase or later (`EARLY_PHASE1` … `PHASE4`); trials with no ingested phase are excluded |
-| `lastUpdate` | date or integer | Updated ON OR AFTER a date (`2026-01-01`, or the `T`/`Z` forms), or within the last N years (`2`). A trial with no update date passes either way. See the note below. |
-| `firstEnrolment` | date or integer | First enrolment on or after a date, or within the last N years. Same two spellings. |
+| `studyId` | string | Filter by study ID (e.g. NCT number) |
+| `lastUpdate` | date | Filter trials updated after this date |
+| `firstEnrolment` | date | Filter trials with first enrolment after this date |
 
 ---
 
@@ -209,33 +139,23 @@ trial-search request.
 
 ### `GET /trials/`
 
-List trials ordered by `-match_score, -posted_date, id`. For explicit
-sorting or the per-tab counts, use [`GET /trials/search/`](#get-trialssearch)
-instead — `sort` is read only there.
+List trials ordered by match score descending. For explicit sorting or the
+`favorites` filter, use [`GET /trials/search/`](#get-trialssearch) instead.
 
-**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
+**Patient context**: optional — include `"patientInfo": {...}` in the request body.
 
 **Query params:**
 
 | Param | Values | Description |
 |---|---|---|
-| `type` | `all` | Only `all` changes anything here: it switches to the admin corpus, which skips the eligibility filter. `eligible` / `potential` are **not** applied by this endpoint — use `GET /trials/search/`. `favorites`, `my_trials` and `not_eligible` return 400 |
+| `type` | `all`, `eligible`, `potential`, `not_eligible` | Filter by match status |
 | `search` | string | Full-text search on title fields |
 | `explain` | `true` | Include per-criterion match breakdown in each trial (see `matchReasons` below) |
 
-**Response** (paginated, 20 per page by default; `?limit=` up to 200).
-
-> **`count` is the number of PAGES, not the number of results.** DRF's own
-> convention is the opposite, so this is the field most likely to be read
-> wrongly: the number of matching trials is `itemsTotalCount`. The example
-> below has 442 trials across 23 pages at the default page size. Dividing `count` by the page size, or
-> showing it as "N trials found", gives a number that changes when the page
-> size does.
-
+**Response** (paginated, 200 per page by default):
 ```json
 {
-  "count": 23,
-  "itemsTotalCount": 442,
+  "count": 142,
   "next": "http://…/trials/?page=2",
   "previous": null,
   "results": [
@@ -269,10 +189,6 @@ instead — `sort` is read only there.
   ]
 }
 ```
-
-The example above is a request that carried a patient. Without one,
-`matchingType` and `matchScore` are both `null` — see the terminology note
-under [Study preferences](#study-preferences).
 
 #### `matchReasons` — per-criterion explanation (`?explain=true`)
 
@@ -309,66 +225,19 @@ is `null`.
 ### `GET /trials/search/`
 
 Extended search endpoint — use this instead of `GET /trials/` when you need
-explicit sorting or the per-tab counts. Accepts the same patient context and
-study-preference query params as `GET /trials/`, plus:
+explicit sorting or access to the `favorites` filter type. Accepts the same
+patient context and study-preference query params as `GET /trials/`, plus:
 
-**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
+**Patient context**: optional — include `"patientInfo": {...}` in the request body.
 
 **Query params:**
 
 | Param | Values | Default | Description |
 |---|---|---|---|
-| `type` | `all`, `eligible`, `potential` | *(none)* | Match-status filter. The default is **no value**, which is not the same as `all` — see the note below. `eligible_and_potential` is accepted for CB compatibility but is a no-op identical to omitting the parameter. `favorites`, `my_trials` and `not_eligible` return 400 |
+| `type` | `all`, `eligible`, `potential`, `not_eligible`, `favorites` | `all` | Match-status filter |
 | `sort` | `goodnessScore`, `matchScore`, `patientBurdenScore`, `distance`, `status`, `phase`, `updated`, `enrollment` | `goodnessScore` | Sort order |
 | `view` | template name | — | Override the attribute-detail template |
 | `search` | string | — | Full-text search |
-| `phase` | `EARLY_PHASE1`, `PHASE1`, `PHASE2`, `PHASE3`, `PHASE4` | — | Keep trials at that phase **or later**. Trials with no ingested phase are excluded by any value |
-
-**`type=all` takes a different branch.** Omitting `type` runs the eligibility
-filter and the full study-preference set. `all` routes through the admin
-branch instead, which skips eligibility *and* the `phase`, `recruitmentStatus`,
-`sponsor`, `searchTreatment`, `country`/`region`, `distance` and date filters.
-`distance` still *annotates* each row there, so trials carry a distance while
-the radius narrows nothing. Filters
-silently do nothing on that path rather than erroring (issue #424 — a fix is
-open, after which only `country`/`region` will differ, and #430 is why).
-
-`studyId` is applied on **both** branches. It used to be `all`-only, so an
-ordinary search naming one trial answered with every trial the patient matched
-(#458).
-
-**Response extra key — `tabCounts`:**
-
-```json
-{ "results": [...], "itemsTotalCount": 42, "tabCounts": { "eligible": 9, "potential": 33 } }
-```
-
-`eligible` and `potential` partition the whole matched corpus — deliberately
-not the rows this response lists, so that the Eligible badge does not read 0
-while the user is on the Potential tab. They are taken after every other
-filter, including `search`, which DRF applies outside the matcher.
-
-**The key is absent** when a count would assert something nobody computed:
-when the request carries no patient context (nothing has been judged), and
-under `?type=all` (the admin branch skips the eligibility filter, so the rows
-are real but no per-row verdict exists). Treat a missing `tabCounts` as "no
-counts available", not as zero.
-
----
-
-### `POST /trials/search/match/`
-
-`GET /trials/search/` with the patient payload in the body, for callers that
-cannot send a GET body (the Fetch spec forbids it and axios's XHR adapter
-drops it). Same query params, same response shape, including `tabCounts`.
-
-```
-POST /trials/search/match/?sort=distance
-{ "patient_info": { "disease": "multiple myeloma", ... } }
-```
-
-Its sibling `POST /trials/match/` routes to `GET /trials/` instead, and so
-does **not** read `sort`.
 
 ---
 
@@ -376,7 +245,7 @@ does **not** read `sort`.
 
 Returns the count of matched trials without fetching full records.
 
-**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
+**Patient context**: optional — include `"patientInfo": {...}` in the request body.
 
 **Response:**
 ```json
@@ -390,7 +259,7 @@ Returns the count of matched trials without fetching full records.
 Retrieve full trial details including all eligibility attributes grouped for
 display, with per-attribute patient match status.
 
-**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
+**Patient context**: optional — include `"patientInfo": {...}` in the request body.
 
 **Response:** Full trial object including `trialEligibilityAttributes` grouped
 by category, each with the trial's value, the patient's current value, and the
@@ -405,7 +274,7 @@ match status (`matched`, `unknown`, or `not_matched`).
 Returns a compact graph-structured response optimised for visual dependency
 views.
 
-**Patient context**: optional — include `"patient_info": {...}` (or `"patientInfo"`, accepted as an alias) in the request body. A payload whose keys EXACT recognises none of is answered **400** naming them, rather than searched as if no patient had been sent; an empty object, or no key at all, means "no patient" and is a supported search.
+**Patient context**: optional — include `"patientInfo": {...}` in the request body.
 
 **Query params:**
 
@@ -451,12 +320,6 @@ Returns all dropdown option lists used by patient-intake forms.
 |---|---|
 | `disease` | If provided, also returns `trialTypes` scoped to this disease |
 
-Two status lists live here and they are not interchangeable. `recruitmentStatuses`
-is the trial's recruitment state, and its values are what `?recruitmentStatus=`
-accepts on the trial endpoints. `statuses` is the patient-invitation enum
-("Looking for trial", "Waiting for patient acceptance") and has nothing to do
-with trial search.
-
 **Response** (partial example):
 ```json
 {
@@ -478,12 +341,7 @@ with trial search.
   "ethnicity": [ ... ],
   "therapyTypesAll": [ ... ],
   "therapyComponentsAll": [ ... ],
-  "trialTypes": [ ... ],
-  "recruitmentStatuses": { "options": [
-    { "value": "", "label": "ALL" },
-    { "value": "RECRUITING", "label": "Recruiting" },
-    { "value": "RECRUITING_AND_NOT_YET_RECRUITING", "label": "Recruiting & Not Yet Recruiting" }
-  ] }
+  "trialTypes": [ ... ]
 }
 ```
 
@@ -529,10 +387,12 @@ Requests with `limit` < 1, > 200, non-integer, or empty return
 
 | Status | When |
 |---|---|
-| `400 Bad Request` | Validation error in request body or query params |
+| `400 Bad Request` | Validation error in request body or query params — including a `person_id` that isn't a positive integer. **Supplying the key at all counts as naming a patient**: `?person_id=` and `{"person_id": null}` are rejected rather than treated as "no patient". Omit the key entirely to search without one |
 | `401 Unauthorized` | Missing or invalid auth token |
+| `403 Forbidden` | `person_id` lookup while `EXACT_ALLOW_PERSON_ID_LOOKUP` is off (the default outside local/DEBUG, #150/#108) — send an inline `patientInfo` payload instead |
 | `404 Not Found` | Record not found |
 | `500 Internal Server Error` | Unexpected server error |
+| `502 Bad Gateway` | A `person_id` was named but PROMOP could not supply the patient. No trial results are returned for an unresolved patient (#448) |
 
 Error body:
 ```json

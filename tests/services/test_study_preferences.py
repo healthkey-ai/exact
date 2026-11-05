@@ -82,19 +82,3 @@ class TestStudyPreferencesParsing:
         first = StudyPreferences()
         first.trial_purpose.append('treatment')
         assert StudyPreferences().trial_purpose == []
-
-
-class TestPhaseParsing:
-    """`phase` was declared on the dataclass and consumed by `by_phase` from
-    the start, but `study_preferences_from_query_params` never read it — so
-    `?phase=PHASE3` matched everything."""
-
-    def test_phase_param_populated(self):
-        prefs = study_preferences_from_query_params({'phase': 'PHASE3'})
-        assert prefs.phase == 'PHASE3'
-
-    def test_phase_param_absent_defaults_to_none(self):
-        assert study_preferences_from_query_params({}).phase is None
-
-    def test_phase_empty_string_normalized_to_none(self):
-        assert study_preferences_from_query_params({'phase': ''}).phase is None

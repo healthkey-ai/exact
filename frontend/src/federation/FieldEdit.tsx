@@ -63,7 +63,7 @@ export interface FieldEditProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-const PencilIcon = () => (
+export const PencilIcon = () => (
   <svg
     width="14"
     height="14"

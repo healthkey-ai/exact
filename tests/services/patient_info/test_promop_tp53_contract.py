@@ -3,7 +3,7 @@ import pytest
 
 from tests.factories import TrialFactory
 from trials.models import Trial
-from trials.services.patient_info.ctomop_adapter import build_patient_info_from_ctomop_row
+from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
 from trials.services.patient_info.normalize import normalize_patient_info
 from trials.api.patient_info_serializers import PatientInfoSerializer
 from trials.services.patient_info.patient_info_attributes import PatientInfoAttributes
@@ -24,7 +24,7 @@ def test_inline_aggregate_survives_repeated_normalization(key, value):
 
 @pytest.mark.parametrize('value', [None, True, False])
 def test_source_row_preserves_explicit_aggregate(value):
-    pi = build_patient_info_from_ctomop_row({'disease': 'chronic lymphocytic leukemia', 'tp53_disruption': value})
+    pi = build_patient_info_from_promop_row({'disease': 'chronic lymphocytic leukemia', 'tp53_disruption': value})
     assert pi.tp53_disruption is value
     assert PatientInfoAttributes(pi).tp53_disruption is value
 
@@ -34,7 +34,7 @@ def test_non_boolean_aggregate_from_upstream_falls_back_to_the_derivation(value)
     """A value we cannot read is not an aggregate, so no provenance is kept.
 
     It used to raise `ValidationError`, and that had three consequences worth
-    avoiding. `_build_in_memory` is shared: the CTOMOP adapter and four
+    avoiding. `_build_in_memory` is shared: the PROMOP adapter and four
     management commands reach it, so the raise turned a malformed UPSTREAM row
     into a client 400 — `trials_views._resolve_patient_info` re-raises
     `APIException` unchanged, while its own comment says a person_id-path
@@ -166,7 +166,7 @@ def test_non_boolean_aggregate_from_a_client_is_still_rejected(value):
 
     The inline payload is the one caller that IS a client, so it keeps the 400
     — a malformed aggregate there should not quietly become a marker-derived
-    answer. The CTOMOP adapter and the management commands do not, because
+    answer. The PROMOP adapter and the management commands do not, because
     there the value came from UPSTREAM and a raise blames the wrong party:
     `trials_views._resolve_patient_info` re-raises `APIException` unchanged
     while its own comment requires a person_id-path failure to surface as 500,
@@ -182,9 +182,9 @@ def test_non_boolean_aggregate_from_a_client_is_still_rejected(value):
     assert 'patient_info' in caught.value.detail
 
 
-def test_the_ctomop_adapter_does_not_raise_on_a_malformed_upstream_value():
+def test_the_promop_adapter_does_not_raise_on_a_malformed_upstream_value():
     """The path that made the raise wrong in the first place."""
-    pi = build_patient_info_from_ctomop_row({
+    pi = build_patient_info_from_promop_row({
         'disease': 'chronic lymphocytic leukemia',
         'tp53_disruption': 1,
         'molecular_markers': 'TP53 Mutation',

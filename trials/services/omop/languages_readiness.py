@@ -1,0 +1,170 @@
+"""Readiness gate for OMOP language-skill matching (CB #5350).
+
+``EXACT_OMOP_LANGUAGES`` alone is not enough. The OMOP path compares the trial
+column, written by the backfill, with patient pairs that EXACT builds at resolve time
+from the ``Language`` / ``LanguageSkillLevel`` vocab rows it reads (``patient_languages``;
+in split-DB mode those rows are in the CB trials DB). If the vocab is unloaded, or the
+column no longer agrees with the vocab rows, every language-restricted trial silently
+reports the wrong answer. With the vocab unloaded the patient has no pairs, so every
+restricted trial reads as matched. With the ids re-curated but not re-backfilled, a
+patient's pair never overlaps, so the trial is hard-excluded. So
+``omop_languages_enabled()`` is ``setting AND ready``, and a not-ready process falls
+back to the legacy path.
+
+Checks (``check_languages_readiness``):
+
+a) vocab: ``Language`` en/es and ``LanguageSkillLevel`` speak/write all carry an
+   ``omop_concept_id`` (``load_language_omop_concept_ids`` has run);
+b) backfill coverage, both directions: no trial whose legacy
+   ``languages_skills_required`` holds a code that has a pair under the current
+   vocab while ``omop_languages_skills_required`` lacks that pair, and no trial
+   whose OMOP column holds such a pair while the legacy list no longer holds its
+   code (a removed requirement the backfill has not caught up with);
+c) column vs vocab: every distinct pair in ``omop_languages_skills_required``
+   across the catalog is one the current vocab rows can produce. This catches a
+   re-curation of the vocab ids without a re-backfill. It does not compare two
+   CSVs: the patient and the trial pairs both come from the vocab rows EXACT reads;
+d) no trial whose legacy list is non-empty has an empty OMOP column. That happens
+   when every code in it lacks a pair (e.g. only ``speak__other``). Under the flag
+   an empty column means "no requirement", so the trial would stop restricting by
+   language. How to represent such requirements is still open
+   (cancerbot-org/cancerbot#5356).
+
+Warning, not a failure: trial languages other than en/es. They have no pair, so
+they drop out of the OMOP requirement, and PROMOP unrolls only English and Spanish,
+so no patient pair could name them anyway. A trial requiring only such a language
+fails check (d).
+
+The result is cached per process for ``READINESS_TTL_SECONDS``; a not-ready result
+is logged at ERROR once per window, when it is computed.
+"""
+import logging
+import time
+from dataclasses import dataclass, field
+
+from django.db import connections, router
+from django.db.models import Q
+
+logger = logging.getLogger(__name__)
+
+READINESS_TTL_SECONDS = 300
+
+REQUIRED_LANGUAGES = ('en', 'es')
+REQUIRED_SKILLS = ('speak', 'write')
+
+_cache = {'at': None, 'report': None}
+
+
+@dataclass
+class ReadinessReport:
+    ok: bool
+    reasons: list = field(default_factory=list)
+    warnings: list = field(default_factory=list)
+
+
+def _producible_pairs(concept_ids):
+    """``{'<skill>__<lang>': 'lang_cid:skill_cid'}`` for every code the vocab maps."""
+    language_ids, skill_ids = concept_ids
+    return {
+        f'{skill}__{language}': f'{language_cid}:{skill_cid}'
+        for language, language_cid in language_ids.items()
+        for skill, skill_cid in skill_ids.items()
+    }
+
+
+def _distinct_elements(column):
+    from trials.models import Trial
+
+    db = router.db_for_read(Trial) or 'default'
+    # JSON nulls inside a list come back as SQL NULL; they are not codes, skip them.
+    sql = (
+        f'SELECT DISTINCT e FROM "{Trial._meta.db_table}", jsonb_array_elements_text("{column}") AS e '
+        f'WHERE jsonb_typeof("{column}") = \'array\' AND e IS NOT NULL'
+    )
+    with connections[db].cursor() as cursor:
+        cursor.execute(sql)
+        return {row[0] for row in cursor.fetchall()}
+
+
+def check_languages_readiness():
+    """Compute a fresh ``ReadinessReport`` (no cache)."""
+    from trials.models import Trial
+    from trials.services.omop.languages import load_concept_ids
+
+    reasons, warnings = [], []
+    concept_ids = load_concept_ids()
+    language_ids, skill_ids = concept_ids
+
+    # a) vocab loaded
+    missing = [f'Language.{c}' for c in REQUIRED_LANGUAGES if c not in language_ids]
+    missing += [f'LanguageSkillLevel.{c}' for c in REQUIRED_SKILLS if c not in skill_ids]
+    if missing:
+        reasons.append(
+            f'vocab: no omop_concept_id on {", ".join(missing)}; run load_language_omop_concept_ids')
+
+    # b) backfill coverage, both directions, in one query over every (code, pair)
+    # the vocab can produce (the loader refuses duplicate ids, so pair -> code is 1:1)
+    producible = _producible_pairs(concept_ids)
+    if producible:
+        out_of_step = Q()
+        for code, pair in producible.items():
+            legacy, omop = Q(languages_skills_required__has_key=code), Q(omop_languages_skills_required__has_key=pair)
+            out_of_step |= (legacy & ~omop) | (omop & ~legacy)
+        stale = Trial.objects.filter(out_of_step).count()
+        if stale:
+            reasons.append(
+                f'backfill: {stale} trial(s) have language requirements and OMOP pairs out of step '
+                f'(a mapped code without its pair, or a pair without its code); '
+                f'run backfill_omop_languages_skills_column')
+
+    # c) column vs vocab: every trial pair must be one the current vocab produces
+    foreign = sorted(_distinct_elements('omop_languages_skills_required') - set(producible.values()))
+    if foreign:
+        reasons.append(
+            f'drift: omop_languages_skills_required holds pair(s) the current language vocab cannot '
+            f'produce: {", ".join(foreign)}; the vocab ids changed after the backfill')
+
+    # d) a legacy requirement that maps to nothing would read as "no requirement"
+    emptied = Trial.objects.exclude(languages_skills_required=[]).filter(omop_languages_skills_required=[]).count()
+    if emptied:
+        reasons.append(
+            f'unmapped: {emptied} trial(s) require languages none of which has a pair, so their OMOP '
+            f'column is [] and would read as no requirement; representation pending '
+            f'cancerbot-org/cancerbot#5356')
+
+    # warning: languages PROMOP never unrolls
+    other_languages = sorted({
+        code.partition('__')[2] for code in _distinct_elements('languages_skills_required')
+        if '__' in code and code.partition('__')[2] not in REQUIRED_LANGUAGES
+    })
+    if other_languages:
+        warnings.append(
+            f'trial languages beyond en/es drop out of the OMOP requirement (no pair; PROMOP '
+            f'unrolls only en/es): {", ".join(other_languages)}')
+
+    return ReadinessReport(ok=not reasons, reasons=reasons, warnings=warnings)
+
+
+def languages_ready():
+    """Cached readiness for the gate; logs an ERROR when a fresh check is not ready."""
+    now = time.monotonic()
+    if _cache['report'] is not None and now - _cache['at'] < READINESS_TTL_SECONDS:
+        return _cache['report'].ok
+    try:
+        report = check_languages_readiness()
+    except Exception:  # noqa: BLE001 - a broken check must fail to legacy, not fail the request
+        logger.exception('language OMOP readiness check raised; matching uses the legacy path')
+        report = ReadinessReport(ok=False, reasons=['readiness check raised; see the logged exception'])
+        _cache['at'], _cache['report'] = now, report
+        return False
+    _cache['at'], _cache['report'] = now, report
+    if not report.ok:
+        logger.error(
+            'EXACT_OMOP_LANGUAGES is on but language OMOP data is not ready; '
+            'matching uses the legacy path: %s', '; '.join(report.reasons))
+    return report.ok
+
+
+def reset_readiness_cache():
+    """Forget the cached result (tests; after loading or backfilling in-process)."""
+    _cache['at'] = _cache['report'] = None

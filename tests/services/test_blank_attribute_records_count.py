@@ -38,10 +38,11 @@ class TestBlankAttributeRecordsCount:
         exist` and the search endpoint 500s.
 
         `by_location` produces exactly this scope — it joins LocationTrial and
-        ends in `.distinct()` — so every search carrying a resolvable country
-        hit it. Measured over HTTP before the fix:
-        `POST /trials/search/match/?limit=10` → 200, and the same request with
-        `?country=US` → 500.
+        ends in `.distinct()` — so a search carrying a resolvable country hits
+        it. Measured over real HTTP on THIS branch before the fix:
+        `GET /trials/search/` with a JSON body → 200, and the same request with
+        `?country=<title>` → 500. (`POST /trials/search/match/` is a route on
+        `cb-like-trials`, not here — it 405s on this branch.)
 
         Qualifying the columns would not have helped: the outer query's FROM
         holds only the derived table.

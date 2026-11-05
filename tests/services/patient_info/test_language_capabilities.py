@@ -12,10 +12,9 @@ from rest_framework.exceptions import ValidationError
 
 from trials.models import Trial
 from trials.querysets.trial import _csv
-from trials.services.patient_info.ctomop_adapter import build_patient_info_from_ctomop_row
+from trials.services.patient_info.promop_adapter import build_patient_info_from_promop_row
 from trials.services.patient_info.resolve import (
     _build_in_memory,
-    _patient_from_inline,
     languages_skills_from_capabilities,
 )
 from tests.factories import TrialFactory
@@ -37,12 +36,13 @@ class TestTheBooleansReplaceTheString:
         out = languages_skills_from_capabilities(promop(
             english_speak=True, english_read=True, english_write=False, english_understand=False))
         assert out['languages_skills'] == 'speak__en'
-        assert not any(name in out for name in NOT_ASKED)
+        # 2omop keeps the booleans for the OMOP builder; the field filter drops them.
+        assert all(name in out for name in NOT_ASKED)
 
     def test_only_trial_vocabulary_becomes_codes(self):
         # read/understand match no trial and the "Yours" cell could not label
-        # them, so they are not coded. Interim: this reads as unknown until the
-        # OMOP pair path (cancerbot#5350) carries all four capabilities.
+        # them, so they are not coded. English still counts as asked, so this
+        # patient is not_matched on a speak__en trial (#605).
         out = languages_skills_from_capabilities(promop(
             english_read=True, english_understand=True, english_speak=False, english_write=False))
         assert out['languages_skills'] is None
@@ -53,6 +53,17 @@ class TestTheBooleansReplaceTheString:
     def test_only_a_real_true_counts(self):
         out = languages_skills_from_capabilities(promop(english_speak='false', spanish_write='TRUE'))
         assert out['languages_skills'] == 'write__es'
+
+    @pytest.mark.parametrize('value, held, asked', [
+        (True, 'speak__en', 'en'), (1, 'speak__en', 'en'), ('1', 'speak__en', 'en'),
+        ('t', 'speak__en', 'en'), (' Yes ', 'speak__en', 'en'),
+        (False, None, 'en'), (0, None, 'en'), ('f', None, 'en'), ('no', None, 'en'),
+        ('maybe', None, None), (2, None, None),
+    ])
+    def test_the_same_tolerant_parsing_as_the_omop_builder(self, value, held, asked):
+        out = languages_skills_from_capabilities(promop(english_speak=value))
+        assert out['languages_skills'] == held
+        assert out.get('languages_asked') == asked
 
     def test_a_caller_sending_codes_is_left_alone(self):
         data = {'languages_skills': 'speak__en,write__es'}
@@ -86,37 +97,15 @@ class TestBothPaths:
         pi = _build_in_memory({'languagesSkills': DISPLAY, 'englishSpeak': True})
         assert pi.languages_skills == 'speak__en'
 
-    def test_ctomop_row_with_nothing_asked_drops_the_string(self):
+    def test_promop_row_with_nothing_asked_drops_the_string(self):
         # The fetched-row path strips None values before `_build_in_memory`,
         # so only the adapter still sees that this is a PROMOP record.
-        pi = build_patient_info_from_ctomop_row(promop())
+        pi = build_patient_info_from_promop_row(promop())
         assert pi.languages_skills is None
 
-    def test_ctomop_row_with_a_capability(self):
-        pi = build_patient_info_from_ctomop_row(promop(english_write=True, english_speak=False))
+    def test_promop_row_with_a_capability(self):
+        pi = build_patient_info_from_promop_row(promop(english_write=True, english_speak=False))
         assert pi.languages_skills == 'write__en'
-
-
-def test_a_payload_of_only_booleans_describes_a_patient():
-    # Recognised by the gate like an alias source, not answered 400.
-    pi = _patient_from_inline({'englishSpeak': True}, 'patient_info')
-    assert pi is not None and pi.languages_skills == 'speak__en'
-
-
-def test_a_false_boolean_alone_is_a_patient_asked_and_not_able():
-    # "Asked, and not able" is an answer (P1-1), not silence.
-    pi = _patient_from_inline({'englishSpeak': False}, 'patient_info')
-    assert pi is not None
-    assert pi.languages_asked == 'en' and pi.languages_skills is None
-
-
-def test_a_read_only_boolean_is_recognised_as_asked():
-    pi = _patient_from_inline({'englishRead': True}, 'patient_info')
-    assert pi.languages_asked == 'en' and pi.languages_skills is None
-
-
-def test_a_blank_boolean_alone_is_still_silence():
-    assert _patient_from_inline({'englishSpeak': ''}, 'patient_info') is None
 
 
 @pytest.mark.django_db

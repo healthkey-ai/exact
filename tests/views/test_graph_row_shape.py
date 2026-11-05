@@ -21,6 +21,7 @@ class TestGraphRowShape:
             'value': True,
             'uvalue': None,
             'ureadonly': True,
+            'subform_details': [{'name': 'meetsCrabInputs'}],
         })
         assert row['patientField'] == 'meetsCRAB'
         assert row['patientFieldCanonical'] == 'meets_crab'
@@ -118,3 +119,30 @@ class TestGraphRowCarriesTheReason:
     def test_an_upstream_that_never_said_arrives_as_null(self):
         row = _normalize_item_for_ui({'name': 'x', 'ufield': 'f', 'label': 'X'})
         assert row['patientFieldRecomputedWhen'] is None
+
+    def test_read_only_without_a_subform_is_not_a_subform_row(self):
+        # `ureadonly` also comes from `is_computed_value`. FL `meets_gelf` and
+        # `meets_lugano` are read-only rows with no subform entries; calling
+        # that "has a subform" offers a dialog with nothing behind it.
+        row = _normalize_item_for_ui({
+            'name': 'meetsGELF', 'ufield': 'meetsGELF',
+            'upatientField': 'meets_gelf', 'label': 'Meets GELF',
+            'value': True, 'uvalue': None, 'ureadonly': True,
+            'subform_details': None,
+        })
+
+        assert row['patientFieldHasSubform'] is False
+
+    def test_patient_value_is_compared_in_the_canonical_scale(self):
+        # The stored value can be in a different unit from the trial's. The
+        # graph compares numbers, so it must use the matcher-scale value the
+        # detail row carries, not the raw one.
+        row = _normalize_item_for_ui({
+            'name': 'hemoglobinLevelMin', 'ufield': 'hemoglobinLevel',
+            'upatientField': 'hemoglobin_level', 'label': 'Hb',
+            'value': 9, 'uvalue': 120, 'uvalue_canonical': 12,
+            'ureadonly': False, 'units': 'g/deciliter', 'uunits': 'g/Liter',
+        })
+
+        assert row['trialValue'] == 9
+        assert row['patientValue'] == 12

@@ -593,7 +593,7 @@ class Command(BaseCommand):
                 })
                 continue
 
-            # Warn when JSON zip differs from CTOMOP postal_code so the override is visible.
+            # Warn when JSON zip differs from PROMOP postal_code so the override is visible.
             db_zip = row.get('postal_code')
             if use_zip and db_zip and str(use_zip).strip() != str(db_zip).strip():
                 self.stdout.write(
@@ -943,24 +943,12 @@ class Command(BaseCommand):
         pi = _build_patient_info(row)
 
         if zipcode:
-            # Through the shared helper rather than a second copy of the same
-            # three lines. The copy called `pgeocode.Nominatim` unguarded, and
-            # pgeocode raises for the 154 countries it has no postal data for
-            # — which is how #391 was found in the first place: this command,
-            # sweeping a multi-disease corpus, died on an Egyptian patient.
-            # The helper answers None for that, and for a postal code it
-            # cannot place, and handles the US 5-digit truncation this copy
-            # did not.
-            from trials.services.patient_info.patient_info_geo_point import PatientInfoGeoPoint
-
-            # Assigned only on success, as the copy did. `_build_patient_info`
-            # may already have resolved a point from the row's own country and
-            # postal code, and a zipcode this lookup cannot place is no reason
-            # to throw that away — `None` here means "no better answer", not
-            # "no answer".
-            point = PatientInfoGeoPoint.point_by_country_and_postal_code(country_code, zipcode)
-            if point:
-                pi.geo_point = point
+            import pgeocode
+            from django.contrib.gis.geos import Point
+            nomi = pgeocode.Nominatim(country_code)
+            loc = nomi.query_postal_code(zipcode)
+            if loc is not None and not (loc.latitude != loc.latitude):  # NaN check
+                pi.geo_point = Point(float(loc.longitude), float(loc.latitude), srid=4326)
 
         study_info = study_prefs or StudyPreferences(recruitment_status='RECRUITING')
         queryset, _ = Trial.objects.all().filtered_trials(

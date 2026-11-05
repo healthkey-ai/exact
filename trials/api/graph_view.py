@@ -53,19 +53,20 @@ def _normalize_item_for_ui(item: Dict[str, Any]) -> Dict[str, Any]:
         # say arrives as `null` rather than `false`. `bool(...)` would turn
         # "unsaid" into "no subform", which is the wrong direction to fail
         # in and the opposite of what the key beside it does.
-        # Suppressed when there is no patient field to write. `therapies()`
-        # hardcodes `ureadonly: True` on every therapy row and puts the TRIAL
-        # attribute in `ufield`, so those rows arrive as "behind a subform"
-        # with nothing behind it — and a client reading this to decide whether
-        # to offer a subform affordance would offer one for a row that has no
-        # patient field at all. That is the silent-no-op the canonical name
-        # exists to prevent, reached through the key beside it.
+        # The subform signal is the subform itself, not `ureadonly`: that flag
+        # also comes from `is_computed_value` (FL `meets_gelf` / `meets_lugano`
+        # are read-only rows with no subform entries), and a client reading it
+        # as "this opens a dialog" would offer a door with nothing behind it.
         "patientFieldHasSubform": (
-            item.get("ureadonly") if item.get("upatientField") else None
+            bool(item.get("subform_details")) if item.get("upatientField") else None
         ),
         "label": item.get("label"),
         "trialValue": item.get("value"),
-        "patientValue": item.get("uvalue"),
+        # The comparison beside `trialValue` is in the matcher's unit. The
+        # detail row's `uvalue` is now the patient's STORED value when units
+        # differ, so use the canonical one it carries for that comparison; a
+        # raw 120 g/L against a 9 g/dL minimum must not read as 120 vs 9.
+        "patientValue": item.get("uvalue_canonical", item.get("uvalue")),
         "dependencies": item.get("dependencies", []),
         "dependencies_labels": [AttributeNames.humanize(x) for x in item.get("dependencies", [])],
     }
@@ -79,16 +80,12 @@ def _bucket_by_matching_type(details: Dict[str, Any]) -> Dict[str, List[Dict[str
         mt_raw = raw.get("matchingType")
         mt = (str(mt_raw).strip().lower() if mt_raw is not None else "")
 
-        if mt == "matched":
+        if mt in {"unsupported", "unavailable"}:
+            buckets.setdefault('systemUnavailable', []).append(item)
+        elif mt == "matched":
             buckets["matched"].append(item)
         elif mt in {"not matched", "not_matched", "not-matched", "notmatched"}:
             buckets["notMatched"].append(item)
-        elif mt in {"not evaluated", "not_evaluated", "not-evaluated", "notevaluated"}:
-            # Dropped, not bucketed. The three buckets describe the PATIENT
-            # against a requirement, and `not_evaluated` says there was no
-            # requirement — putting it in "missing" would tell the reader
-            # their data is incomplete when nothing was ever asked of it.
-            continue
         else:
             buckets["missing"].append(item)
 
@@ -112,43 +109,7 @@ class TrialsGraphViewSet(TrialsViewSet):
     """
     Reuses TrialsViewSet queryset logic to build a graph-oriented response.
     """
-    # POST as well as GET, for the alias below. The GET form stays exactly as
-    # it was for the callers that already speak it.
-    http_method_names = ["get", "post"]
-
-    # A saved trial the patient no longer qualifies for stays out of the graph
-    # (#568). A node has nowhere to put the mark: `GraphTrialNodeSerializer`
-    # is a flat ModelSerializer with no `matchingType` field and no
-    # `to_representation`, so it never sees `unmatched_trial_ids` and its
-    # `matchScore` reads whatever the SQL annotation says — 100 on a trial the
-    # patient conflicts with.
-    #
-    # The per-attribute buckets would in fact be right: `_bucket_by_matching_type`
-    # runs the Python matcher through `TrialTemplates`, and a widened node
-    # measured as `notMatched: ['ageMin']`. So the damage is narrower than
-    # "wrong bucket" and worse than "unlabelled" — a node whose headline
-    # number says 100 while its own attribute list says the patient fails.
-    # Hiding it is wrong on the list, where the card can say so, and right
-    # here: the graph is a shape of the matched corpus, not a list of
-    # bookmarks.
-    widens_saved_trials = False
-
-    # The inherited POST aliases, removed. `TrialsViewSet` carries `match`,
-    # `search_match`, `match_detail` and `export`, and widening
-    # `http_method_names` published all four under `/trials-graph/` — an
-    # untested second copy of the trials API at a URL nothing asked for.
-    # Setting an inherited action to None is how DRF's router is told to skip
-    # it.
-    #
-    # `export` joined them with #568: the seam that keeps the graph from
-    # widening is a class attribute, so the inherited copy silenced the
-    # widening in its CSV too. Measured on the same body, `/trials/export/`
-    # listed the saved trial and `/trials-graph/export/` did not — two export
-    # endpoints, one request, different files.
-    match = None
-    search_match = None
-    match_detail = None
-    export = None
+    http_method_names = ["get"]
 
     @action(methods=["get"], detail=False, url_path="graph", url_name="graph")
     def graph(self, request, *args, **kwargs):
@@ -191,6 +152,16 @@ class TrialsGraphViewSet(TrialsViewSet):
         for trial in trials:
             node = GraphTrialNodeSerializer(trial, context=ctx).data
 
+            evaluation = ctx.get('typed_evaluation')
+            if evaluation is not None:
+                from trials.services.matching.typed_runtime import details, missing_attributes
+                result = evaluation.result_for(trial.pk)
+                node.update(result.summary())
+                node['attributesToFillIn'] = missing_attributes(result, counts)
+                node['match'] = _bucket_by_matching_type(details(evaluation, trial)['details'])
+                trial_nodes.append(node)
+                continue
+
             if search_type == "eligible" or getattr(trial, "match_score", None) == 100:
                 attrs_to_fill_in = []
             else:
@@ -206,22 +177,3 @@ class TrialsGraphViewSet(TrialsViewSet):
             "patient": GraphPatientInfoSerializer(patient_info).data,
             "trials": trial_nodes,
         })
-
-    @action(methods=["post"], detail=False, url_path="graph/match", url_name="graph-match")
-    def graph_match(self, request, *args, **kwargs):
-        """POST alias for `graph`, carrying `patient_info` in the body.
-
-        The graph refuses to draw without a patient, and the two ways to supply
-        one are an inline payload — which only travels in a body, since
-        GET-with-body is forbidden by the Fetch spec and dropped by axios's XHR
-        adapter — or `?person_id=`, which is gated off outside DEBUG because it
-        would let any authenticated caller enumerate another patient's record
-        (#150/#108). So the GET form is reachable in local development and
-        essentially nowhere else, and the federated remote could not call this
-        endpoint at all.
-
-        Mirrors `search_match`: bind the action so `get_queryset` runs the
-        `search` branch, then delegate.
-        """
-        self.action = "graph"
-        return self.graph(request, *args, **kwargs)

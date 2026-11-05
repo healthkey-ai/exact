@@ -9,7 +9,7 @@ from trials.api.trials_views import (
     CountriesViewSet,
     FormSettingsViewSet,
     LocationsViewSet,
-    NormalizeCtomopRowView,
+    NormalizePromopRowView,
     TrialsViewSet,
 )
 
@@ -39,13 +39,21 @@ router.register(r'form-settings', FormSettingsViewSet, basename='form-settings-v
 urlpatterns = [
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
-    # POST /normalize-ctomop-row/ — pipes a raw CTOMOP patient_info row
-    # through `normalize_ctomop_row`. Used by the federation dev harness
+    # POST /normalize-promop-row/ — pipes a raw PROMOP patient_info row
+    # through `normalize_promop_row`. Used by the federation dev harness
     # to ensure inline-fetched patients are normalized before the matcher
     # sees them (closes the "unknown" fallthrough documented in #117).
     path(
+        'normalize-promop-row/',
+        NormalizePromopRowView.as_view(),
+        name='normalize-promop-row',
+    ),
+    # Backward-compatible alias for the pre-rename path. Kept so existing
+    # federation callers hitting /normalize-ctomop-row/ don't break; remove
+    # once all clients are migrated to the promop path above.
+    path(
         'normalize-ctomop-row/',
-        NormalizeCtomopRowView.as_view(),
+        NormalizePromopRowView.as_view(),
         name='normalize-ctomop-row',
     ),
     path('', include(router.urls)),

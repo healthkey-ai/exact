@@ -21,6 +21,7 @@ A CTOMOP row holding a censored `'<0.5'` is not the reader's fault and not
 theirs to fix, and the batch commands have no guard at all.
 """
 import datetime as dt
+from unittest.mock import MagicMock
 
 import pytest
 from rest_framework.exceptions import ValidationError
@@ -31,8 +32,16 @@ from trials.services.patient_info.resolve import (
     _build_in_memory,
     _coerce_dates,
     _coerce_numerics,
-    _patient_from_inline,
+    resolve_patient_info,
 )
+
+def inline(payload):
+    """The inline payload path this line exposes (`strict=True` + 400)."""
+    request = MagicMock()
+    request.data = {'patient_info': payload}
+    request.query_params = {}
+    return resolve_patient_info(request)
+
 
 NUMBER = 'pd_l1_tumor_cels'   # IntegerField
 FLOAT = 'weight'              # FloatField
@@ -216,7 +225,7 @@ class TestThroughTheInlinePath:
 
     def test_a_wrong_value_is_a_validation_error(self):
         with pytest.raises(ValidationError):
-            _patient_from_inline({'disease': 'breast cancer', NUMBER: [1]}, 'patient_info')
+            inline({'disease': 'breast cancer', NUMBER: [1]})
 
     def test_it_names_the_key_the_caller_actually_wrote(self):
         # `_no_recognised_fields_message` exists for this reason and says so:
@@ -224,7 +233,7 @@ class TestThroughTheInlinePath:
         # naming `patient_age` at somebody who sent `patientAge` makes them
         # search their payload for a key that is not in it.
         with pytest.raises(ValidationError) as raised:
-            _patient_from_inline({'disease': 'breast cancer', 'patientAge': 'forty'}, 'patient_info')
+            inline({'disease': 'breast cancer', 'patientAge': 'forty'})
         assert 'patientAge' in raised.value.detail
 
     def test_it_names_the_documented_spelling_of_an_aliased_field(self):
@@ -232,9 +241,7 @@ class TestThroughTheInlinePath:
         # `pd_l1_tumor_cels`, missing an `l`. Telling them about EXACT's
         # misspelling sends them looking for a key they did not send.
         with pytest.raises(ValidationError) as raised:
-            _patient_from_inline(
-                {'disease': 'breast cancer', 'pd_l1_tumor_cells': [1]}, 'patient_info'
-            )
+            inline({'disease': 'breast cancer', 'pd_l1_tumor_cells': [1]})
         assert 'pd_l1_tumor_cells' in raised.value.detail
 
     def test_it_names_the_spelling_that_carried_the_BAD_value(self):
@@ -244,14 +251,11 @@ class TestThroughTheInlinePath:
         # `pd_l1_tumor_cells`, whose 12 is fine: the caller corrects a field
         # that was never the problem and gets the same 400 back.
         with pytest.raises(ValidationError) as raised:
-            _patient_from_inline(
-                {
-                    'disease': 'breast cancer',
-                    'pd_l1_tumor_cells': 12,
-                    'pd_l1_tumor_cels': 'abc',
-                },
-                'patient_info',
-            )
+            inline({
+                'disease': 'breast cancer',
+                'pd_l1_tumor_cells': 12,
+                'pd_l1_tumor_cels': 'abc',
+            })
         assert 'pd_l1_tumor_cels' in raised.value.detail
         assert 'pd_l1_tumor_cells' not in raised.value.detail
 
@@ -267,23 +271,18 @@ class TestThroughTheInlinePath:
         # means changing which spelling wins, which is not a decision to
         # take inside a bugfix. Pinned here so it is a known shape rather
         # than a surprise.
-        built = _patient_from_inline(
-            {
-                'disease': 'breast cancer',
-                'pd_l1_tumor_cells': 'abc',
-                'pd_l1_tumor_cels': 12,
-            },
-            'patient_info',
-        )
+        built = inline({
+            'disease': 'breast cancer',
+            'pd_l1_tumor_cells': 'abc',
+            'pd_l1_tumor_cels': 12,
+        })
         assert built.pd_l1_tumor_cels == 12
 
     def test_an_empty_box_builds_a_patient_with_no_answer(self):
-        built = _patient_from_inline({'disease': 'breast cancer', NUMBER: ''}, 'patient_info')
+        built = inline({'disease': 'breast cancer', NUMBER: ''})
         assert built.pd_l1_tumor_cels is None
 
     def test_one_bad_field_does_not_hide_behind_a_good_one(self):
         with pytest.raises(ValidationError) as raised:
-            _patient_from_inline(
-                {'disease': 'breast cancer', 'patient_age': 'forty'}, 'patient_info'
-            )
+            inline({'disease': 'breast cancer', 'patient_age': 'forty'})
         assert 'patient_age' in raised.value.detail

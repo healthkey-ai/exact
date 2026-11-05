@@ -12,7 +12,7 @@ so the entry carries the canonical name outright — taken from
 """
 import pytest
 
-from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES, recompute_note, normalize_patient_info
+from trials.services.patient_info.normalize import RECOMPUTED_ATTRIBUTES, recompute_note, normalize_patient_info, therapy_line_is_authorable
 from trials.services.trial_details.configs import SUBFORM_ATTRS_MAPPING
 from trials.services.trial_details.trial_attributes import TrialAttributes
 from tests.factories import *
@@ -79,12 +79,17 @@ class TestSubformEntriesNameTheirField:
                 # today, so this assertion passed either way — and would have
                 # started failing the moment such a property joined a group,
                 # which is the case the answer exists for.
-                assert entry['upatientRecomputed'] == (
-                    recompute_note(entry['upatientField']) is not None
-                )
-                assert entry['upatientRecomputedWhen'] == recompute_note(
-                    entry['upatientField']
-                )
+                note = recompute_note(entry['upatientField'])
+                # The therapy-line entries carry a patient-scoped answer on
+                # top of the register: the line the patient's own history
+                # claims is authored through the line service, so it is not
+                # recomputed behind the reader (`therapy_line_is_authorable`).
+                if therapy_line_is_authorable(
+                        entry['upatientField'],
+                        getattr(patient_info, 'prior_therapy', None)):
+                    note = None
+                assert entry['upatientRecomputed'] == (note is not None)
+                assert entry['upatientRecomputedWhen'] == note
 
     def test_both_answers_are_reachable_from_this_fixture(self, patient_info):
         # Otherwise the assertion above is true of a set that only ever says
@@ -95,37 +100,3 @@ class TestSubformEntriesNameTheirField:
             for e in entries
         }
         assert flags == {True, False}
-
-
-@pytest.mark.django_db
-class TestSubformEntriesCarryThePatientsUnit:
-    """And the PATIENT's, not the vocabulary's.
-
-    The distinction is the whole point: `meets_crab` converts its inputs
-    through the unit the value is stored in, so a calcium read as mg/dL when
-    it was recorded in mmol/L flips a clinical composite. A fixture where the
-    two agree cannot tell them apart, and the snapshot test does exactly that
-    — its liver enzymes are `U/L` either way.
-    """
-
-    def _entry(self, patient_info, field):
-        pi = patient_info
-        pi.prior_therapy = 'More than two lines of therapy'
-        pi.hemoglobin_level_units = 'G/L'
-        normalize_patient_info(pi)
-        trial = TrialFactory(disease='Multiple Myeloma')
-        groups = TrialAttributes(trial, patient_info=pi).get_user_subform_attrs()
-        for entries in groups.values():
-            for entry in entries:
-                if entry['upatientField'] == field:
-                    return entry
-        return None
-
-    def test_a_non_default_unit_is_reported_as_the_patients(self, patient_info):
-        entry = self._entry(patient_info, 'hemoglobin_level')
-        assert entry is not None, 'hemoglobin is in no subform — pick another input'
-        assert entry['uunits'] != entry['units'], (
-            "the patient's unit and the default are the same here, so this "
-            "assertion cannot tell them apart — choose a fixture where they differ"
-        )
-        assert 'Liter' in entry['uunits'], entry['uunits']

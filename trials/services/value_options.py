@@ -4,6 +4,7 @@ from django.db.models import F
 from django.core.cache import cache
 
 from trials.models import *
+from trials.services.patient_vocabulary import catalog_rows
 
 
 def ordered_dict(data):
@@ -13,26 +14,43 @@ def ordered_dict(data):
 
 class ValueOptions:
     def cache_key(self):
-        # v3: bumped for the `recruitmentStatuses` key below — a deploy
-        # hitting a warm cache would otherwise serve the pre-key shape for up
-        # to an hour, and the search filter's dropdown would come back empty.
         # v2: bumped on #63 — `all_options()` gained 40 new per-disease
         # keys (flipiScore{Mm|Fl|Bc|Cll|Mcl}, cytogenicMarkers{…}, …).
         # Without the bump, a deploy hitting a populated Redis cache
         # would serve the pre-#63 shape (missing those 40 keys), letting
         # the cached blob drift from fresh `all_options()` output until
         # the 1h TTL expires.
-        return 'ValueOptions.all_options.v3'
+        # v3: #5521 adds the MM MyelomaRelatedDisorder vocabulary keys.
+        # v4: CB-owned marker axes; myeloma labels no longer require a table.
+        return 'ValueOptions.all_options.v4'
 
     @staticmethod
     def to_value_and_label(data):
         return [{'value': k, 'label': v} for k, v in data.items()]
 
-    @staticmethod
-    def therapies_by_disease_code_and_line_code(disease_code, line_code):
-        from trials.models import Disease, Therapy, TherapyRound, DiseaseRoundTherapyConnection
+    @cached_property
+    def _disease_by_code_cache(self):
+        # Per-instance memo so one all_options() build (which fans out to ~40
+        # per-disease/line therapy lists) resolves each Disease once instead of
+        # re-running `Disease WHERE code IN (lower, upper)` for every list — an
+        # N+1 (ported from CB perf(value-options) memoize disease-by-code). A
+        # fresh ValueOptions is built per all_options() call, so there is no
+        # cross-request staleness.
+        return {}
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+    def _disease_by_code(self, disease_code):
+        from trials.models import Disease
+        key = disease_code.upper()
+        if key not in self._disease_by_code_cache:
+            self._disease_by_code_cache[key] = list(
+                Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()])
+            )
+        return self._disease_by_code_cache[key]
+
+    def therapies_by_disease_code_and_line_code(self, disease_code, line_code):
+        from trials.models import Therapy, TherapyRound, DiseaseRoundTherapyConnection
+
+        disease = self._disease_by_code(disease_code)
         therapy_line = TherapyRound.objects.filter(code=line_code).first()
         connections = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease, round=therapy_line).select_related('therapy')
         items = [x.therapy.id for x in connections]
@@ -64,21 +82,19 @@ class ValueOptions:
         items = TherapyComponentCategory.objects.all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapies_by_disease_code(disease_code):
-        from trials.models import Disease, Therapy, DiseaseRoundTherapyConnection
+    def therapies_by_disease_code(self, disease_code):
+        from trials.models import Therapy, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         connections = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).select_related('therapy')
         items = [x.therapy.id for x in connections]
         items = Therapy.objects.filter(id__in=items).all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapy_components_by_disease_code(disease_code):
-        from trials.models import Disease, TherapyComponent, DiseaseRoundTherapyConnection
+    def therapy_components_by_disease_code(self, disease_code):
+        from trials.models import TherapyComponent, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         items = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).prefetch_related('therapy__components')
         ids = []
         for item in items:
@@ -87,11 +103,10 @@ class ValueOptions:
         items = TherapyComponent.objects.filter(id__in=ids).all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapy_types_by_disease_code(disease_code):
-        from trials.models import Disease, TherapyComponentCategory, DiseaseRoundTherapyConnection
+    def therapy_types_by_disease_code(self, disease_code):
+        from trials.models import TherapyComponentCategory, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         items = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).prefetch_related('therapy__components__categories')
         ids = []
         for item in items:
@@ -107,33 +122,6 @@ class ValueOptions:
 
         items = ConcomitantMedication.objects.filter(concomitantmedicationdisease__disease__code=disease_code).all()
         return ordered_dict({x.code: x.title for x in items})
-
-    @cached_property
-    def recruitment_statuses(self):
-        """Trial recruitment states, for the search filter's dropdown.
-
-        Distinct from `statuses` below, which is the patient-invitation enum
-        ("Looking for trial", "Waiting for patient acceptance", …). A frontend
-        reaching for a recruitment filter finds only that one today and either
-        renders the wrong vocabulary or hard-codes this list itself — the
-        federated remote does the latter.
-
-        Values are what `by_recruitment_status` accepts: the two it special-
-        cases, plus the ClinicalTrials.gov states it falls through to as a
-        case-insensitive exact match on `Trial.recruitment_status`.
-        """
-        return {
-            '': 'ALL',
-            'RECRUITING': 'Recruiting',
-            'RECRUITING_AND_NOT_YET_RECRUITING': 'Recruiting & Not Yet Recruiting',
-            'NOT_YET_RECRUITING': 'Not yet recruiting',
-            'ENROLLING_BY_INVITATION': 'Enrolling by invitation',
-            'ACTIVE_NOT_RECRUITING': 'Active, not recruiting',
-            'COMPLETED': 'Completed',
-            'SUSPENDED': 'Suspended',
-            'TERMINATED': 'Terminated',
-            'WITHDRAWN': 'Withdrawn',
-        }
 
     @cached_property
     def statuses(self):
@@ -321,21 +309,19 @@ class ValueOptions:
 
     @property
     def cytogenic_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import CytogenicMarker
 
-        category = MarkerCategory.objects.get(code='cytogenic')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = catalog_rows(CytogenicMarker)
 
-        return {'none': 'None', **{x.code: x.title for x in markers}}
+        return {'none': 'None', **{x['code']: x['title'] for x in markers}}
 
     @property
     def molecular_markers(self):
-        from trials.models import MarkerCategory, Marker
+        from trials.models import MolecularMarker
 
-        category = MarkerCategory.objects.get(code='molecular')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        markers = catalog_rows(MolecularMarker)
 
-        return {'none': 'None', **{x.code: x.title for x in markers}}
+        return {'none': 'None', **{x['code']: x['title'] for x in markers}}
 
     @property
     def gelf_criteria_statuses(self):
@@ -917,6 +903,20 @@ class ValueOptions:
         return {x.code: x.title for x in items}
 
     @property
+    def myeloma_related_disorders(self):
+        # Display labels for the fixed six boolean-source contract in
+        # exact_matching.patient_info.patient_info_attributes. Identical to
+        # migration 0026, not a clinical vocabulary inferred from empty rows.
+        return {
+            'mgus': 'Monoclonal Gammopathy of Undetermined Significance (MGUS)',
+            'smoldering_multiple_myeloma': 'Smoldering Multiple Myeloma',
+            'waldenstrom_macroglobulinemia': 'Waldenström Macroglobulinemia',
+            'igm_multiple_myeloma': 'IgM Multiple Myeloma',
+            'al_amyloidosis': 'Light-Chain (AL) Amyloidosis',
+            'poems_syndrome': 'POEMS Syndrome',
+        }
+
+    @property
     def er_statuses(self):
         from trials.models import EstrogenReceptorStatus
         items = EstrogenReceptorStatus.objects.order_by('id')
@@ -942,16 +942,6 @@ class ValueOptions:
         return {
             'statuses': {
                 'options': self.to_value_and_label(self.statuses)
-            },
-            # Plural on purpose. `all_options()` is a shared namespace: the
-            # trial-detail templates in trial_details/trial_attributes.py look
-            # up a field's `options` by matching the field name against these
-            # keys, so a key named `recruitmentStatus` would silently retype
-            # the detail page's Recruitment Status field from string to select.
-            # `phases` / `studyType` / `register` are wired that way deliberately;
-            # this one is for the search filter only.
-            'recruitmentStatuses': {
-                'options': self.to_value_and_label(self.recruitment_statuses)
             },
             'register': {
                 'options': self.to_value_and_label(self.registers)
@@ -1430,5 +1420,11 @@ class ValueOptions:
             },
             'highRiskMclCriteria': {
                 'options': self.to_value_and_label(self.high_risk_mcl_criteria)
+            },
+            'myelomaRelatedDisorders': {
+                'options': self.to_value_and_label(self.myeloma_related_disorders)
+            },
+            'myelomaRelatedDisordersExcluded': {
+                'options': self.to_value_and_label(self.myeloma_related_disorders)
             },
         }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { controlFor, editabilityOf, optionsOf } from "./writable";
+import { controlFor, editabilityOf, invertBoolean, optionsOf } from "./writable";
 import type { WritableFieldEntry, WritableFields } from "./writable";
 
 const entry = (over: Partial<WritableFieldEntry> = {}): WritableFieldEntry => ({
@@ -117,6 +117,15 @@ describe("deciding whether a row may be edited", () => {
       canonical: "hemoglobin_g_dl",
       reason: "Mirrors hemoglobin_g_dl; edit that field instead.",
     }),
+    no_hiv_status: entry({
+      kind: "negated",
+      writable: false,
+      canonical: "hiv_status",
+      inverted: true,
+      value_kind: "boolean",
+      reason: "Inverted view of hiv_status.",
+    }),
+    hiv_status: entry({ value_kind: "boolean" }),
   };
 
   it("says yes for a writable field, and which control it wants", () => {
@@ -134,10 +143,62 @@ describe("deciding whether a row may be edited", () => {
     expect(answer.why).toBe("Derived from height and weight; edit those instead.");
   });
 
-  it("names the field to edit instead of an alias", () => {
+  it("edits the canonical field an alias mirrors", () => {
+    // The descriptor says "edit that field instead", and this row is the only
+    // place a reader meets it. Refusing here left the row with no control at
+    // all; the save goes to the field the alias names.
     const answer = editabilityOf("hemoglobin_level", fields);
+    if (answer.can !== "edit") throw new Error("expected edit");
+    expect(answer.field).toBe("hemoglobin_g_dl");
+    expect(answer.entry.unit).toBe("g/dL");
+  });
+
+  it("still refuses an alias whose canonical is not editable", () => {
+    const answer = editabilityOf("hemoglobin_level", {
+      ...fields,
+      hemoglobin_g_dl: entry({ kind: "computed", writable: false, reason: "No." }),
+    });
     if (answer.can !== "no") throw new Error("expected no");
-    expect(answer.why).toContain("hemoglobin_g_dl");
+    expect(answer.why).toContain("No.");
+  });
+
+  it("edits the positive field a negated view names, and remembers the polarity", () => {
+    // "No HIV required" asks the opposite of the stored `hiv_status`. The row
+    // must write the positive field, and the value must cross the boundary —
+    // writing the displayed answer straight through would store the opposite
+    // of what the reader chose.
+    const answer = editabilityOf("no_hiv_status", fields);
+    if (answer.can !== "edit") throw new Error("expected edit");
+    expect(answer.field).toBe("hiv_status");
+    expect(answer.control).toBe("boolean");
+    expect(answer.invert).toBe(true);
+  });
+
+  it("does not invert an ordinary boolean", () => {
+    const answer = editabilityOf("hiv_status", fields);
+    if (answer.can !== "edit") throw new Error("expected edit");
+    expect(answer.field).toBe("hiv_status");
+    expect(answer.invert).toBe(false);
+  });
+
+  it("inverts booleans in both directions and leaves an unknown unknown", () => {
+    expect(invertBoolean(true)).toBe(false);
+    expect(invertBoolean(false)).toBe(true);
+    // `!null` is true. A missing answer must not become a confident "yes".
+    expect(invertBoolean(null)).toBe(null);
+    expect(invertBoolean(undefined)).toBe(undefined);
+  });
+
+  it("refuses a negated view whose target is not a yes/no field", () => {
+    const answer = editabilityOf("no_hiv_status", {
+      ...fields,
+      hiv_status: entry({ value_kind: "number" }),
+    });
+    // Refused rather than offered: this branch can only be reached by a
+    // descriptor that broke its own contract, and a yes/no box over a number
+    // would write a value nobody can invert meaningfully.
+    if (answer.can !== "no") throw new Error("expected no");
+    expect(answer.field).toBe("hiv_status");
   });
 
   it("answers unknown while the descriptor has not arrived", () => {
