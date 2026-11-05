@@ -40,12 +40,64 @@ def _term_concept(term):
         return None
     kind = term.get('kind')
     if kind == 'finding':
-        feature = term.get('feature') or {}
+        feature = term.get('feature')
+        if not isinstance(feature, dict):
+            return None
         return _concept_id(feature.get('concept_id'))
     if kind == 'assertion':
-        concept = term.get('concept') or {}
+        concept = term.get('concept')
+        if not isinstance(concept, dict):
+            return None
         return _concept_id(concept.get('concept_id'))
     return None
+
+
+MARKER_SCHEMA = 'cb-trial-criteria-1'
+MARKER_OPERATORS = frozenset({'any_of', 'all_of'})
+MARKER_ROLES = frozenset({'required', 'excluded'})
+
+
+def _valid_term(term):
+    kind = term.get('kind')
+    if kind == 'finding':
+        feature = term.get('feature')
+        return isinstance(feature, dict) and _concept_id(feature.get('concept_id')) is not None
+    if kind == 'assertion':
+        concept = term.get('concept')
+        return isinstance(concept, dict) and _concept_id(concept.get('concept_id')) is not None
+    return False
+
+
+def _valid_typed(typed):
+    """Whether the whole typed envelope has the shape this evaluator understands.
+
+    A malformed envelope must not become "no requirement": the fallback is the
+    legacy list when one exists, and a fail-closed ``not_matched`` when the
+    typed envelope is the only evidence. The mutation evaluator makes the same
+    choice for a typed requirement it cannot read.
+    """
+    if not isinstance(typed, list):
+        return False
+    for requirement in typed:
+        if not isinstance(requirement, dict):
+            return False
+        if requirement.get('schema') != MARKER_SCHEMA:
+            return False
+        if requirement.get('role', 'required') not in MARKER_ROLES:
+            return False
+        if requirement.get('operator', 'any_of') not in MARKER_OPERATORS:
+            return False
+        terms = requirement.get('terms', [])
+        unresolved = requirement.get('unresolved_codes', [])
+        if not isinstance(terms, list) or not all(
+                isinstance(t, dict) and _valid_term(t) for t in terms):
+            return False
+        if not isinstance(unresolved, list) or not all(
+                isinstance(code, str) for code in unresolved):
+            return False
+        if not terms and not unresolved:
+            return False
+    return bool(typed)
 
 
 def _term_matches(term, codes, concepts):
@@ -168,6 +220,11 @@ def genomic_marker_state(trial, field, markers, is_blank):
         # excludes a marker into a match for it just because the two columns
         # disagree (24917 has the same code on both sides; 18489 is the
         # excluded-only variant).
+        return 'not_matched'
+
+    if typed and not _valid_typed(typed):
+        if legacy or excluded:
+            return _legacy_state(legacy, excluded, codes)
         return 'not_matched'
 
     specific_codes = codes - COMPOSITE_MARKER_CODES

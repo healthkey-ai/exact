@@ -238,6 +238,46 @@ class TestTheMarkerState:
         )
         assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
 
+    def test_a_malformed_envelope_falls_back_to_the_legacy_list(self):
+        trial = _trial(
+            legacy_molecular=['tp53Mutation'],
+            typed_molecular=[{}],
+        )
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
+        assert _state(trial, 'molecular_markers', ['krasMutation']) == 'not_matched'
+
+    def test_a_broken_feature_falls_back_without_raising(self):
+        broken = {
+            'schema': 'cb-trial-criteria-1', 'role': 'required',
+            'operator': 'any_of',
+            'terms': [{'kind': 'finding', 'feature': 'broken'}],
+        }
+        trial = _trial(
+            legacy_molecular=['tp53Mutation'],
+            typed_molecular=[broken],
+        )
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
+        assert _state(trial, 'molecular_markers', ['krasMutation']) == 'not_matched'
+
+    def test_a_malformed_typed_only_envelope_fails_closed(self):
+        trial = _trial(typed_molecular=[{}])
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
+
+    def test_a_requirement_with_no_terms_is_malformed(self):
+        empty_requirement = {
+            'schema': 'cb-trial-criteria-1', 'role': 'required',
+            'operator': 'any_of', 'terms': [],
+        }
+        trial = _trial(
+            legacy_molecular=['tp53Mutation'],
+            typed_molecular=[empty_requirement],
+        )
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
+        assert _state(
+            _trial(typed_molecular=[empty_requirement]),
+            'molecular_markers', ['tp53Mutation'],
+        ) == 'not_matched'
+
     def test_the_legacy_list_is_used_when_the_envelope_is_empty(self):
         trial = _trial(molecular=['tp53Mutation'])
         assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
@@ -286,6 +326,17 @@ class TestTheSearchPath:
             Trial.objects.all().eligible_for_molecular_marker(['tp53Mutation'])
             .values_list('molecular_markers_required', flat=True)
         ) == [['tp53Mutation']]
+
+    def test_a_malformed_envelope_does_not_crash_or_drop_legacy_matches(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            molecular_markers_required=['tp53Mutation'],
+            omop_molecular_markers_required=[{}],
+        )
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['tp53Mutation']).count() == 1
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['krasMutation']).count() == 0
 
     def test_an_empty_patient_set_does_not_narrow(self, settings):
         settings.EXACT_OMOP_GENOMICS = True

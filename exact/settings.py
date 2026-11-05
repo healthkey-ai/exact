@@ -555,13 +555,20 @@ EXACT_OMOP_LANGUAGES = os.environ.get('EXACT_OMOP_LANGUAGES', '').lower() in ('1
 # symbols. A missing/malformed envelope, or a legacy finding without an id,
 # falls back to the symbol columns rather than guessing; a mapped finding never
 # contributes its symbol, so a contradictory id cannot be rescued by text.
-# On by default: the typed gene/variant envelopes and the marker envelopes are
-# populated, `check_omop_genomics_readiness` is clean, and the shadow compares
-# show no unexplained mutation verdict changes (the marker slice has one
-# reviewed NOTCH1/NOTCH2 broadening). Set EXACT_OMOP_GENOMICS=0 to fall back to
-# the legacy symbol/code path during an incident.
-EXACT_OMOP_GENOMICS = os.environ.get(
-    'EXACT_OMOP_GENOMICS', 'true').lower() in ('1', 'true', 'yes', 'on')
+# On by default: the typed gene/variant envelopes are clean (the marker
+# envelopes are populated for most but not every legacy requirement, and fall
+# back per trial), `check_omop_genomics_readiness` is clean, and the shadow
+# compares show no unexplained mutation verdict changes. The marker slice has
+# one reviewed NOTCH1/NOTCH2 broadening. Set EXACT_OMOP_GENOMICS=0 to fall back
+# to the legacy symbol/code path during an incident.
+def _env_flag(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in ('1', 'true', 'yes', 'on')
+
+
+EXACT_OMOP_GENOMICS = _env_flag('EXACT_OMOP_GENOMICS', True)
 
 # Single public flag for the remaining non-therapy Trial criteria (the all-55
 # typed runtime, #661/#662). OFF by default. When ON, EXACT uses the typed
