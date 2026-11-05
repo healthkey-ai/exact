@@ -47,6 +47,11 @@ export function TrialCard({
       ? `${trial.distance} ${trial.distanceUnits ?? ""}`.trim()
       : "";
 
+  // The server sends these on every list row now; an absent key (an older
+  // backend or a cached page) is simply not shown, never rendered as "—".
+  const mutationGenes = asText(trial.mutationGenesRequired);
+  const mutationVariants = asText(trial.mutationVariantsRequired);
+
   // See the mark below, and the Matching Score beside it.
   const notEligible = trial.matchingType === "not_eligible";
 
@@ -110,6 +115,21 @@ export function TrialCard({
               <Field label="Phase" value={asText(trial.phase, " / ")} />
               <Field label="Status" value={asText(trial.recruitingStatus)} />
             </div>
+
+            {mutationGenes || mutationVariants ? (
+              <div className="exact-card__fields">
+                {mutationGenes ? (
+                  <Field label="Mutation Genes" value={mutationGenes} collapsible />
+                ) : null}
+                {mutationVariants ? (
+                  <Field
+                    label="Mutation Variants"
+                    value={mutationVariants}
+                    collapsible
+                  />
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="exact-card__scores">
