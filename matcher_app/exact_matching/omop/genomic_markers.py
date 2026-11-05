@@ -17,6 +17,7 @@ a finding carries its own interpretation and would need its own review before
 it could satisfy a marker code.
 """
 from exact_matching.omop.marker_concepts import (
+    COMPOSITE_MARKER_CODES,
     MARKER_FIELDS,
     marker_codes,
     marker_concept_ids,
@@ -69,8 +70,15 @@ def _term_matches(term, codes, concepts):
     return False
 
 
-def _requirement_matches(requirement, codes, concepts):
-    """Whether one requirement is satisfied by the patient's marker answer."""
+def _requirement_matches(requirement, codes, concepts, legacy,
+                        composite_match=False):
+    """Whether one requirement is satisfied by the patient's marker answer.
+
+    Composite patient codes (``notch1or2Mutations``) are not expanded into
+    member concepts: they may satisfy a trial that names the same composite
+    code, but never a trial that requires one specific member. A specific code
+    still satisfies a composite trial through its concept.
+    """
     terms = requirement.get('terms') or []
     unresolved = [
         str(code).strip() for code in (requirement.get('unresolved_codes') or [])
@@ -80,27 +88,30 @@ def _requirement_matches(requirement, codes, concepts):
         return True
     term_results = [_term_matches(term, codes, concepts) for term in terms]
     code_results = [code in codes for code in unresolved]
-    if not term_results:
-        # No resolved concept at all: the canonical code is the only evidence.
-        return any(code_results)
     operator = str(requirement.get('operator') or 'any_of').strip().lower()
     if operator == 'all_of':
-        return all(term_results) and all(code_results)
-    # The envelopes use any_of; a mix of resolved terms and unresolved codes
-    # still means "any of these markers".
-    return any(term_results) or any(code_results)
+        results = term_results + code_results
+        return all(results) if results else True
+    return any(term_results) or any(code_results) or composite_match
 
 
-def _typed_state(typed, codes, concepts):
+def _typed_state(typed, codes, concepts, legacy):
     requirements = [req for req in (typed or []) if isinstance(req, dict)]
     if not requirements:
         return None
+    composite_codes = set(codes) & COMPOSITE_MARKER_CODES
+    # The legacy list is the only evidence for a composite code; credit it
+    # only when the envelope has one requirement, so it cannot satisfy an
+    # unrelated second requirement in the same envelope.
+    composite_match = bool(composite_codes & set(legacy or [])) and len(requirements) == 1
     for requirement in requirements:
         terms = requirement.get('terms') or []
         unresolved = requirement.get('unresolved_codes') or []
         if not terms and not unresolved:
             continue
-        matched = _requirement_matches(requirement, codes, concepts)
+        matched = _requirement_matches(
+            requirement, codes, concepts, legacy, composite_match,
+        )
         if str(requirement.get('role') or 'required').strip().lower() == 'excluded':
             if matched:
                 return 'not_matched'
@@ -158,8 +169,9 @@ def genomic_marker_state(trial, field, markers, is_blank):
         # disagree (observed on 24917/18489).
         return 'not_matched'
 
-    concepts = marker_concept_ids(codes)
-    typed_result = _typed_state(typed, codes, concepts)
+    specific_codes = codes - COMPOSITE_MARKER_CODES
+    concepts = marker_concept_ids(specific_codes)
+    typed_result = _typed_state(typed, codes, concepts, legacy)
     if typed_result is not None:
         return typed_result
     return _legacy_state(legacy, excluded, codes)

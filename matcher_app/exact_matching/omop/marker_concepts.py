@@ -6,7 +6,8 @@ before this module existed. This table recovers the exact code -> concept pair
 from those envelopes instead of inventing a second vocabulary:
 
 * every entry below is observed on trials whose legacy list contains **only**
-  that code, so the pairing is unambiguous;
+  that code, with one exception: ``ccnd1Alteration`` is observed together with
+  ``t1114`` (14 trials) and its concept is CCND1 ``35963336``;
 * the concept id is the envelope's ``feature.concept_id`` for a ``finding``
   term or ``concept.concept_id`` for an ``assertion`` term;
 * names and vocabularies are recorded in the comments for review.
@@ -24,6 +25,12 @@ Gaps are deliberately not guessed:
 
 Do not add a code here just because a string looks similar. An entry is a
 claim that the patient marker and the trial envelope mean the same thing.
+
+The table is shared by the molecular and cytogenic fields because several
+identities have both CB spellings (``1q21``/``1q21Amplification``,
+``t414``/``t414Fgfr3``). The evaluator is always called with one field's
+patient summary, so an alias does not by itself import a marker from the other
+axis; a caller that mixes the two is outside the contract.
 """
 
 #: Canonical CB marker code -> the concept ids the typed trial envelope uses.
@@ -34,9 +41,7 @@ MARKER_CONCEPTS = {
     'krasMutation': ('35948791',),          # KRAS gene variant (HGNC 6407)
     'nrasMutation': ('35950119',),          # NRAS gene variant (HGNC 7989)
     'brafMutation': ('19643612',),          # BRAF exon 15 mutation
-    'atmOrAtrMutations': ('35960740', '35963934'),  # ATM (795), ATR (882)
     'notch1Mutation': ('35947617',),        # NOTCH1 gene variant (HGNC 7881)
-    'notch1or2Mutations': ('35947617', '35960756'),  # NOTCH1, NOTCH2 (7882)
     'ccnd1Alteration': ('35963336',),       # CCND1 gene variant (HGNC 1582)
     'cd38Expression': ('35976963',),        # CD38 protein expression
     'mycRearrangements': ('19643476',),     # MYC gene rearrangement
@@ -53,6 +58,18 @@ MARKER_CONCEPTS = {
     # An assertion, not a finding: SNOMED 55597007 Hyperploidy.
     'hyperdiploidy': ('4208087',),
 }
+
+#: Composite patient codes. They mean "one of these genes", so they must not
+#: be expanded into every member concept: a patient recorded as
+#: ``notch1or2Mutations`` may have NOTCH1, NOTCH2, or both, and therefore
+#: cannot prove a trial that requires only NOTCH1. The reverse direction is
+#: valid: a specific ``notch1Mutation`` does satisfy a NOTCH1/NOTCH2 trial.
+#: Composite codes match a trial only when that trial's own marker list names
+#: the same composite code.
+COMPOSITE_MARKER_CODES = frozenset({
+    'atmOrAtrMutations',
+    'notch1or2Mutations',
+})
 
 #: Codes the envelopes list as unresolved. They are matched by the canonical
 #: marker code itself, never by a guessed concept.

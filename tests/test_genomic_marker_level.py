@@ -5,6 +5,7 @@ import pytest
 
 from exact_matching.omop.genomic_markers import genomic_marker_state
 from exact_matching.omop.marker_concepts import (
+    COMPOSITE_MARKER_CODES,
     MARKER_CONCEPTS,
     UNRESOLVED_MARKER_CODES,
     marker_concept_ids,
@@ -96,10 +97,10 @@ class TestTheCodeToConceptTable:
     def test_the_observed_identities(self):
         assert MARKER_CONCEPTS['tp53Mutation'] == (TP53,)
         assert MARKER_CONCEPTS['mycRearrangements'] == (MYC,)
-        assert MARKER_CONCEPTS['atmOrAtrMutations'] == (ATM, ATR)
         assert MARKER_CONCEPTS['1q21'] == (GAIN1Q21,)
         assert MARKER_CONCEPTS['1q21Amplification'] == (GAIN1Q21,)
         assert MARKER_CONCEPTS['hyperdiploidy'] == (HYPERDIPLOIDY,)
+        assert COMPOSITE_MARKER_CODES == {'atmOrAtrMutations', 'notch1or2Mutations'}
         assert MARKER_CONCEPTS['complexKaryotype'] == (COMPLEX_KARYOTYPE,)
         assert marker_concept_ids(['1q21Amplification', 'tp53Mutation']) == {
             GAIN1Q21, TP53,
@@ -131,9 +132,44 @@ class TestTheMarkerState:
         assert _state(trial, 'molecular_markers', ['krasMutation']) == 'not_matched'
 
     def test_an_or_marker_matches_either_gene(self):
-        trial = _trial(typed_molecular=[_envelope(_term(ATM), _term(ATR))])
+        trial = _trial(
+            legacy_molecular=['atmOrAtrMutations'],
+            typed_molecular=[_envelope(_term(ATM), _term(ATR))],
+        )
         assert _state(trial, 'molecular_markers', ['atmOrAtrMutations']) == 'matched'
         assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
+
+    def test_a_composite_patient_code_does_not_prove_a_specific_gene(self):
+        trial = _trial(
+            legacy_molecular=['atmMutation'],
+            typed_molecular=[_envelope(_term(ATM))],
+        )
+        assert _state(trial, 'molecular_markers', ['atmOrAtrMutations']) == 'not_matched'
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
+
+    def test_a_specific_patient_code_satisfies_a_composite_trial(self):
+        trial = _trial(
+            legacy_molecular=['notch1or2Mutations'],
+            typed_molecular=[_envelope(_term('35947617'), _term('35960756'))],
+        )
+        assert _state(trial, 'molecular_markers', ['notch1Mutation']) == 'matched'
+        assert _state(trial, 'molecular_markers', ['notch1or2Mutations']) == 'matched'
+
+    def test_a_composite_patient_code_does_not_satisfy_a_specific_trial(self):
+        trial = _trial(
+            legacy_molecular=['notch1Mutation'],
+            typed_molecular=[_envelope(_term('35947617'))],
+        )
+        assert _state(trial, 'molecular_markers', ['notch1or2Mutations']) == 'not_matched'
+        assert _state(trial, 'molecular_markers', ['notch1Mutation']) == 'matched'
+
+    def test_all_of_applies_to_unresolved_codes_too(self):
+        trial = _trial(
+            typed_molecular=[_envelope(
+                operator='all_of', unresolved_codes=['a', 'b'])],
+        )
+        assert _state(trial, 'molecular_markers', ['a']) == 'not_matched'
+        assert _state(trial, 'molecular_markers', ['a', 'b']) == 'matched'
 
     def test_an_assertion_marker_matches_the_snomed_concept(self):
         trial = _trial(
@@ -164,11 +200,12 @@ class TestTheMarkerState:
         assert _state(trial, 'molecular_markers', ['krasMutation']) == 'matched'
 
     def test_a_legacy_exclusion_still_applies_when_the_envelope_exists(self):
-        """24917/18489 carry the same code as required and excluded.
+        """Trial 24917 carries tp53Mutation as both required and excluded.
 
         The typed envelope only compiles the required side; the legacy
         exclusion is the remaining restriction and must not be silently
-        dropped into a match.
+        dropped into a match. (18489 is the excluded-only variant, covered
+        separately below.)
         """
         trial = SimpleNamespace(
             molecular_markers_required=['tp53Mutation'],
@@ -247,6 +284,29 @@ class TestTheSearchPath:
             ['1q21Amplification']).count() == 1
         assert Trial.objects.all().eligible_for_cytogenic_markers(
             ['tp53Mutation']).count() == 0
+
+    def test_a_composite_patient_code_does_not_match_a_specific_trial(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            molecular_markers_required=['notch1Mutation'],
+            omop_molecular_markers_required=[_envelope(_term('35947617'))],
+        )
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['notch1or2Mutations']).count() == 0
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['notch1Mutation']).count() == 1
+
+    def test_a_specific_patient_code_matches_a_composite_trial(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            molecular_markers_required=['notch1or2Mutations'],
+            omop_molecular_markers_required=[
+                _envelope(_term('35947617'), _term('35960756'))],
+        )
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['notch1Mutation']).count() == 1
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['notch1or2Mutations']).count() == 1
 
     def test_the_flag_off_keeps_the_legacy_columns(self, settings):
         settings.EXACT_OMOP_GENOMICS = False

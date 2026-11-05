@@ -23,16 +23,17 @@ from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 
 FIELDS = (
     ('molecular_markers', 'molecular_markers_required',
-     'omop_molecular_markers_required'),
+     'omop_molecular_markers_required', 'molecular_markers_excluded'),
     ('cytogenic_markers', 'cytogenic_markers_required',
-     'omop_cytogenic_markers_required'),
+     'omop_cytogenic_markers_required', 'cytogenic_markers_excluded'),
 )
 
 
-def _empty_q(legacy, typed):
+def _empty_q(legacy, typed, excluded):
     return (
         (Q(**{f'{legacy}__exact': []}) | Q(**{f'{legacy}__isnull': True}))
         & (Q(**{f'{typed}__exact': []}) | Q(**{f'{typed}__isnull': True}))
+        & (Q(**{f'{excluded}__exact': []}) | Q(**{f'{excluded}__isnull': True}))
     )
 
 
@@ -58,10 +59,10 @@ class Command(BaseCommand):
         )
         counts = Counter()
         changed = []
-        for field, legacy, typed in FIELDS:
-            empty = _empty_q(legacy, typed)
+        for field, legacy, typed, excluded in FIELDS:
+            empty = _empty_q(legacy, typed, excluded)
             trials = Trial.objects.exclude(empty).only(
-                'id', legacy, typed,
+                'id', legacy, typed, excluded,
             ).order_by('id')
             for trial in trials.iterator():
                 with override_settings(EXACT_OMOP_GENOMICS=False):
