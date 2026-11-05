@@ -60,6 +60,14 @@ def _term(concept_id, kind='finding', status='present'):
     }
 
 
+def _hk_term(concept_id):
+    term = _term(concept_id)
+    term['feature'].update({
+        'vocabulary_id': 'HK-Genomics', 'concept_class_id': 'Lab Test',
+    })
+    return term
+
+
 def _envelope(*terms, operator='any_of', role='required',
               unknown_is_negative=False, unresolved_codes=None):
     requirement = {
@@ -321,7 +329,7 @@ class TestTheMarkerState:
     def test_a_recompiled_bcma_envelope_matches_the_local_concept(self):
         trial = _trial(
             legacy_molecular=['bcmaExpression'],
-            typed_molecular=[_envelope(_term('2100007900'))],
+            typed_molecular=[_envelope(_hk_term('2100007900'))],
         )
         assert _state(trial, 'molecular_markers', ['bcmaExpression']) == 'matched'
 
