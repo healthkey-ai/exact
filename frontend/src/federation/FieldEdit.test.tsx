@@ -1713,3 +1713,185 @@ describe("telling the host what the record now says", () => {
     await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
   });
 });
+
+describe("the dedicated negated dialog (#5667)", () => {
+  const negated = (over: Partial<TrialDetailField> = {}): TrialDetailField => ({
+    name: "noHivRequired",
+    label: "No Hiv",
+    type: "boolean",
+    value: true,
+    ufield: "noHivStatus",
+    upatientField: "no_hiv_status",
+    uvalue: true,
+    utype: "boolean",
+    matchingType: "matched",
+    negative_source: {
+      upatientField: "hiv_status",
+      type: "boolean",
+      available: true,
+      value: null,
+    },
+    ...over,
+  });
+
+  const NEGATED: WritableFields = {
+    no_hiv_status: {
+      kind: "negated",
+      writable: false,
+      canonical: "hiv_status",
+      inverted: true,
+      value_kind: "boolean",
+      inputs: ["hiv_status"],
+    },
+    hiv_status: {
+      kind: "direct",
+      writable: true,
+      target: "patient_record",
+      value_kind: "boolean",
+      answer_labels: { true: "HIV Positive", false: "No HIV" },
+    },
+  };
+
+  async function renderNegated(fields = [negated()]) {
+    const state = fakeState({ writable: NEGATED });
+    const api = fakeApi();
+    api.setDetail(detailWith(fields));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+    return state;
+  }
+
+  it("draws one trigger on the row and no generic pencil", async () => {
+    await renderNegated();
+
+    expect(
+      await screen.findByRole("button", { name: "Answer No Hiv" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit No Hiv" })).toBeNull();
+  });
+
+  it("opens the canonical dialog from that trigger", async () => {
+    await renderNegated();
+
+    await userEvent.click(screen.getByRole("button", { name: "Answer No Hiv" }));
+
+    expect(await screen.findByLabelText("HIV Positive")).toBeInTheDocument();
+    expect(screen.getByLabelText("No HIV")).toBeInTheDocument();
+    expect(screen.getByLabelText("Not answered")).toBeInTheDocument();
+  });
+
+  it("writes the canonical field with the polarity the reader chose", async () => {
+    const state = await renderNegated();
+
+    await userEvent.click(screen.getByRole("button", { name: "Answer No Hiv" }));
+    await userEvent.click(screen.getByLabelText("No HIV"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(state.adapter.setPatientFields).toHaveBeenCalledWith({
+        hiv_status: false,
+      }),
+    );
+  });
+
+  it("keeps the generic editor for a descriptor that predates the pair", async () => {
+    // No `inputs` on the negated entry: an older PROMOP. The row must keep
+    // the editor it had, not lose its control to the new guard.
+    const OLD: WritableFields = {
+      no_hiv_status: {
+        kind: "negated",
+        writable: false,
+        canonical: "hiv_status",
+        inverted: true,
+        value_kind: "boolean",
+      },
+      hiv_status: { kind: "direct", writable: true, value_kind: "boolean" },
+    };
+    const state = fakeState({ writable: OLD });
+    const api = fakeApi();
+    api.setDetail(detailWith([negated()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+
+    expect(
+      await screen.findByRole("button", { name: "Edit No Hiv" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Answer No Hiv" })).toBeNull();
+  });
+
+  it("offers no editor when the metadata is present but provenance is not", async () => {
+    // Fail closed: the descriptor promised the pair, so a missing source entry
+    // is a contradiction rather than "this row never had a control".
+    await renderNegated([negated({ negative_source: null })]);
+
+    expect(screen.queryByRole("button", { name: "Answer No Hiv" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit No Hiv" })).toBeNull();
+  });
+
+
+  it("fails closed when the descriptor's inputs are malformed", async () => {
+    // `inputs: null` is the new metadata contradicting itself, not an old
+    // descriptor: it must not fall back to the generic editor.
+    const BROKEN: WritableFields = {
+      ...NEGATED,
+      no_hiv_status: { ...NEGATED.no_hiv_status, inputs: null },
+    };
+    const state = fakeState({ writable: BROKEN });
+    const api = fakeApi();
+    api.setDetail(detailWith([negated()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+
+    expect(screen.queryByRole("button", { name: "Answer No Hiv" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit No Hiv" })).toBeNull();
+  });
+
+  it("says the trial's own requirement in the dialog", async () => {
+    await renderNegated();
+
+    await userEvent.click(screen.getByRole("button", { name: "Answer No Hiv" }));
+
+    expect(screen.getByText(/This trial requires/)).toBeInTheDocument();
+  });
+
+  it("shows the optimistic answer, inverted, while the write is out", async () => {
+    const state = fakeState({ writable: NEGATED });
+    state.adapter.setPatientFields = vi.fn(() => new Promise<Record<string, never>>(() => {}));
+    const api = fakeApi();
+    api.setDetail(detailWith([negated()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+
+    await userEvent.click(screen.getByRole("button", { name: "Answer No Hiv" }));
+    await userEvent.click(screen.getByLabelText("No HIV"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Saving…")).toBeInTheDocument();
+    // The row asks the negated question, so a saved `false` reads "Yes".
+    const yours = document.querySelector('[data-col="yours"]');
+    expect(yours?.textContent).toContain("Yes");
+  });
+
+  it("says one alert after a refusal and reopens on the refused answer", async () => {
+    const state = fakeState({ writable: NEGATED });
+    state.adapter.setPatientFields = vi.fn(async () => {
+      throw new Error("403");
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([negated()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+
+    await userEvent.click(screen.getByRole("button", { name: "Answer No Hiv" }));
+    await userEvent.click(screen.getByLabelText("No HIV"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent("Couldn't save that");
+
+    await userEvent.click(screen.getByRole("button", { name: "Answer No Hiv" }));
+    expect(screen.getByLabelText("No HIV")).toBeChecked();
+    expect(state.adapter.setPatientFields).toHaveBeenCalledTimes(1);
+  });
+});

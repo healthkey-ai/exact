@@ -35,9 +35,10 @@ import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
+import { NegatedBooleanDialog } from "./NegatedBooleanDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { splitJoined } from "./writable";
-import { editabilityOf, invertBoolean } from "./writable";
+import { editabilityOf, invertBoolean, negatedEditability } from "./writable";
 import type { WritableFields } from "./writable";
 
 /** Everything the two writing controls need, as plain values and callbacks.
@@ -298,6 +299,7 @@ function subformRowNames(fields: TrialDetailField[]): Set<string> {
 
 function EligibilityRow({
   field,
+  trialId,
   editing,
   editableHere,
   subformHere,
@@ -305,6 +307,7 @@ function EligibilityRow({
   onSubformOpen,
 }: {
   field: TrialDetailField;
+  trialId?: string | number;
   editing?: RowEditing;
   editableHere?: boolean;
   subformHere?: boolean;
@@ -326,12 +329,45 @@ function EligibilityRow({
   // reader sees is curated wording from two tables in `writable.ts`, and a
   // refusal with no entry in either stays silent.
   const [editorOpen, setEditorOpen] = useState(false);
+  // Kept apart from `editorOpen`: the inline editor stands in for the cell's
+  // value, while the negated dialog sits over a row that keeps reading as it
+  // did. One flag for both would blank the row behind a modal.
+  const [dialogOpen, setDialogOpen] = useState(false);
+  // A different trial is a different question. Without this a dialog left open
+  // across a trial switch keeps the previous requirement on screen and seeds
+  // from the previous patient's provenance.
+  useEffect(() => {
+    setEditorOpen(false);
+    setDialogOpen(false);
+  }, [trialId]);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
+  // Whether the descriptor carries the negated pair's new metadata (#5667).
+  // `inputs` is also set on computed entries, so the kind is part of the test:
+  // only a `negated` entry with inputs means "the dedicated dialog's contract
+  // is here". A descriptor without it predates the change, and those rows keep
+  // the generic inline editor rather than losing their control.
+  const negatedEntry =
+    editing?.fields && field.upatientField
+      ? editing.fields[field.upatientField]
+      : undefined;
+  // The PRESENCE of the key, not its shape: a malformed `inputs` is the new
+  // metadata contradicting itself, and that must fail closed in the guard
+  // rather than fall back to the generic editor (which would invert an
+  // unvalidated pair).
+  const hasNegatedMetadata = Boolean(
+    negatedEntry && negatedEntry.kind === "negated" && "inputs" in negatedEntry,
+  );
   const editable =
     editing && editableHere
-      ? editabilityOf(field.upatientField, editing.fields, {
+      ? hasNegatedMetadata
+        ? negatedEditability(
+            field.upatientField,
+            editing.fields,
+            field.negative_source,
+          )
+        : editabilityOf(field.upatientField, editing.fields, {
           // EXACT ships some value sets on the row itself; without this the
           // editor asks PROMOP, gets nothing, and draws a text box over a
           // column the matcher reads as a list of codes.
@@ -476,7 +512,7 @@ function EligibilityRow({
             onClose={() => onSubformOpen?.(null)}
           />
         ) : null}
-        {editable.can === "edit" && editing ? (
+        {editable.can === "edit" && editing && !editable.negative ? (
           <FieldEdit
             field={editable.field}
             label={field.label}
@@ -510,6 +546,30 @@ function EligibilityRow({
             }
             onOpenChange={setEditorOpen}
           />
+        ) : null}
+        {editable.can === "edit" && editing && editable.negative ? (
+          <>
+            <button
+              type="button"
+              className="exact-elig__edit"
+              aria-label={`Answer ${field.label}`}
+              title={`Answer ${field.label}`}
+              onClick={() => setDialogOpen(true)}
+            >
+              <PencilIcon />
+            </button>
+            {dialogOpen ? (
+              <NegatedBooleanDialog
+                field={field}
+                canonical={editable.field}
+                positive={editable.negative.positive}
+                negative={editable.negative.negative}
+                source={editable.negative.source}
+                editing={editing}
+                onClose={() => setDialogOpen(false)}
+              />
+            ) : null}
+          </>
         ) : null}
       </div>
     </div>
@@ -953,6 +1013,7 @@ export function TrialDetailPage({
                     <EligibilityRow
                       key={field.name}
                       field={field}
+                      trialId={trialId}
                       editing={editing}
                       editableHere={editableRows.has(field.name)}
                       subformHere={subformRows.has(field.name)}

@@ -24,6 +24,8 @@ export type WritableKind =
   | "authored"    // written by authoring a different resource entirely
   | "direct";     // write to PatientRecord; no OMOP fact required yet
 
+import type { NegativeSource } from "./types";
+
 export interface WritableFieldEntry {
   kind: WritableKind | (string & {});
   writable: boolean;
@@ -263,6 +265,14 @@ export type Editability =
        *  `kind: "negated"`, and this carries that fact to the one place that
        *  crosses the boundary. */
       invert: boolean;
+      /** Present on the dedicated negated editor (#5667): the provenance the
+       *  server captured, and the two canonical answer labels the dialog
+       *  shows. Absent means the row keeps the generic editor. */
+      negative?: {
+        source: NegativeSource;
+        positive: string;
+        negative: string;
+      };
     }
   | {
       can: "no";
@@ -451,6 +461,114 @@ const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
     releasedByAControl: true,
   },
 };
+
+/** The two labels a negated row's dialog shows, from the CANONICAL entry.
+ *
+ *  Those labels are the patient's answers (`HIV Positive` / `No HIV`), not the
+ *  trial's question (`No HIV required`), so they come from the descriptor's
+ *  `answer_labels` on the positive field. Missing or malformed labels mean no
+ *  dedicated dialog: guessing "Yes"/"No" would put a generic control over a
+ *  polarity boundary, which is the one place a guess is clinically wrong.
+ */
+function answerLabels(
+  entry: WritableFieldEntry,
+): { positive: string; negative: string } | null {
+  const raw = entry.answer_labels;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const positive = (raw as { true?: unknown }).true;
+  const negative = (raw as { false?: unknown }).false;
+  if (typeof positive !== "string" || positive === "") return null;
+  if (typeof negative !== "string" || negative === "") return null;
+  return { positive, negative };
+}
+
+/** Decide whether an inverted row gets the dedicated yes/no dialog (#5667).
+ *
+ *  Narrower than `editabilityOf` on purpose, and fail-closed: the generic path
+ *  would happily invert any boolean, but this dialog writes the positive field
+ *  with the label the reader chose, so every one of these must hold before it
+ *  is drawn.
+ *
+ *  A `can: "no"` here is silent (`announce: false`): these rows never had this
+ *  dialog before, so nothing went missing on screen.
+ */
+export function negatedEditability(
+  patientField: string | null | undefined,
+  fields: WritableFields | undefined,
+  source: NegativeSource | null | undefined,
+): Editability {
+  if (!patientField || !fields) return { can: "unknown" };
+  const negated = fields[patientField];
+  if (!negated) return { can: "unknown" };
+  const canonical =
+    typeof negated.canonical === "string" ? negated.canonical : null;
+  const refuse = (why: string): Editability => ({
+    can: "no",
+    field: canonical ?? patientField,
+    entry: negated,
+    why,
+    announce: false,
+  });
+
+  if (negated.kind !== "negated") return { can: "unknown" };
+  if (!canonical) return refuse("This row does not name the field it writes.");
+  // The pair the descriptor declared, exactly: one canonical input, an
+  // explicit inversion, and a boolean on both sides. A chain (alias ->
+  // negated, negated -> negated) would cross the boundary more than once and
+  // is refused rather than followed.
+  if (negated.inverted !== true || negated.value_kind !== "boolean") {
+    return refuse("This row is not a yes/no view of another field.");
+  }
+  const inputs = negated.inputs;
+  if (!Array.isArray(inputs) || inputs.length !== 1 || inputs[0] !== canonical) {
+    return refuse("This row's inputs do not name the field it writes.");
+  }
+  // Provenance is the evidence the raw context carried the positive field.
+  // Without it the dialog has no seed and no proof the row is answerable
+  // here, so it is not offered.
+  if (!source || source.upatientField !== canonical
+      || typeof source.available !== "boolean") {
+    return refuse("This row carries no provenance for the field it writes.");
+  }
+  if (!source.available) {
+    return refuse("The positive answer is not part of this patient's context.");
+  }
+  // The entry says it is a boolean answer; a different `type` is the server
+  // contradicting itself, and a dialog over it would ask a yes/no question of
+  // something else.
+  if (source.type != null && source.type !== "boolean") {
+    return refuse("This row's provenance names a type it cannot carry.");
+  }
+  if (!("value" in source)
+      || (source.value !== null && typeof source.value !== "boolean")) {
+    return refuse("This row's provenance names an answer it cannot carry.");
+  }
+  const target = fields[canonical];
+  if (!target) return refuse("The field behind this row is not described.");
+  if (target.kind !== "direct" || target.writable !== true
+      || target.target !== "patient_record" || target.value_kind !== "boolean") {
+    return refuse("The field behind this row is not a writable yes/no value.");
+  }
+  // A genuinely boolean control, not "anything with options": an
+  // options-driven select would be a list of codes behind a yes/no question.
+  if (controlFor(target) !== "boolean") {
+    return refuse("The field behind this row does not take a yes/no answer.");
+  }
+  const labels = answerLabels(target);
+  if (!labels) {
+    return refuse("This row's answers are not named, so the dialog cannot ask them.");
+  }
+  return {
+    can: "edit",
+    field: canonical,
+    entry: target,
+    control: "boolean",
+    options: [],
+    joined: false,
+    invert: true,
+    negative: { source, positive: labels.positive, negative: labels.negative },
+  };
+}
 
 /** Decide whether the row named by `patientField` may be edited.
  *
