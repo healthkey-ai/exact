@@ -217,10 +217,11 @@ JSON_FIELDS = frozenset({
 #: reading them found its own class default (`True`) — a confirmed "does not
 #: have HIV" for every patient, including one with a positive status (#5663).
 #:
-#: The negation is derived here, at the vocabulary boundary, and the same pair
-#: is what the descriptor tells an editor to write: the positive field with the
-#: answer inverted. Keep the pairs identical on both sides; the polarity tests
-#: in `tests/services/patient_info/test_negated_viral_status.py` pin them.
+#: The negation is derived here, at the vocabulary boundary. The same pair is
+#: what the descriptor names for an editor (`kind: negated`), and the client
+#: crosses the polarity on display and on save; this module only owns the read
+#: side. Keep the pairs identical on both sides — the read-side table in
+#: `tests/services/patient_info/test_negated_viral_status.py` pins it.
 PROMOP_NEGATED_FIELDS = {
     'no_hiv_status': 'hiv_status',
     'no_hepatitis_b_status': 'hepatitis_b_status',
