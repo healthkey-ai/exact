@@ -369,6 +369,29 @@ class TestTheMarkerState:
             trial, 'molecular_markers', ['krasMutation', 'tp53Mutation'],
         ) == 'not_matched'
 
+    def test_a_typed_exclusion_wins_over_a_legacy_contradiction(self):
+        trial = _trial(
+            legacy_molecular=['tp53Mutation'],
+            typed_molecular=[_envelope(_term(TP53))],
+        )
+        trial.molecular_markers_excluded = ['tp53Mutation', 'krasMutation']
+        # A typed excluded term is a definite refusal even though the legacy
+        # TP53 pair is contradictory.
+        trial.omop_molecular_markers_required = [
+            _envelope(_term(TP53), role='excluded'),
+        ]
+        assert _state(
+            trial, 'molecular_markers', ['tp53Mutation', 'krasMutation'],
+        ) == 'not_matched'
+
+    def test_a_typed_required_failure_wins_over_a_legacy_contradiction(self):
+        trial = _trial(
+            legacy_molecular=['tp53Mutation'],
+            typed_molecular=[_envelope(_term(KRAS))],
+        )
+        trial.molecular_markers_excluded = ['tp53Mutation']
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
+
     def test_the_legacy_list_is_used_when_the_envelope_is_empty(self):
         trial = _trial(molecular=['tp53Mutation'])
         assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
@@ -449,6 +472,24 @@ class TestTheSearchPath:
         )
         assert Trial.objects.all().eligible_for_molecular_marker(
             ['krasMutation']).count() == 0
+
+    def test_a_contradictory_trial_is_potential_not_eligible(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            disease='multiple myeloma',
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=['tp53Mutation'],
+            omop_molecular_markers_required=[_envelope(_term(TP53))],
+        )
+        patient = PatientInfo(
+            disease='multiple myeloma', molecular_markers='tp53Mutation',
+        )
+        row = Trial.objects.all().with_potential_attrs_count(patient).first()
+        assert row is not None and row.potential_attrs_count >= 1
+        assert Trial.objects.all().with_potential_attrs_count(
+            patient, 'eligible').count() == 0
+        assert Trial.objects.all().with_potential_attrs_count(
+            patient, 'potential').count() == 1
 
     def test_an_empty_patient_set_does_not_narrow(self, settings):
         settings.EXACT_OMOP_GENOMICS = True

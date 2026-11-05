@@ -468,6 +468,34 @@ class UserToTrialAttrsMapper:
                 else:
                     then_value = '0 ELSE 1'
 
+            # A contradictory marker code is potential, not answered: the
+            # trial cannot decide whether it requires or excludes the marker
+            # (cancerbot#5689). The verdict is `unknown`, so the trial belongs
+            # in Potential and must not contribute to the match-score numerator.
+            if user_attr in ('molecular_markers', 'cytogenic_markers') and is_filled_by_user:
+                required_attr, excluded_attr = trial_attr_meta['attr']
+                raw = next(iter(trial_attr_meta['uvalue_function'].values()))(patient_info)
+                if isinstance(raw, (list, tuple, set, frozenset)):
+                    codes = {str(code).strip() for code in raw if str(code).strip()}
+                else:
+                    codes = {
+                        code.strip() for code in str(raw or '').split(',')
+                        if code.strip()
+                    }
+                required_hit = self._jsonb_intersect_count(required_attr, codes)
+                excluded_hit = self._jsonb_intersect_count(excluded_attr, codes)
+                contradiction = f'({required_hit} > 0 AND {excluded_hit} > 0)'
+                required_len = f"jsonb_array_length(COALESCE({required_attr}, '[]'::jsonb))"
+                excluded_len = f"jsonb_array_length(COALESCE({excluded_attr}, '[]'::jsonb))"
+                gating = f'({required_len} > 0 OR {excluded_len} > 0)'
+                attrs2check[user_attr] = (
+                    f'(CASE WHEN {contradiction} THEN 1 ELSE NULL END)')
+                eligible_attrs2check[user_attr] = (
+                    f'(CASE WHEN {gating} AND NOT {contradiction} THEN 1 ELSE NULL END)')
+                continue
+
+            # compare with Trial
+            trial_attr_name = _trial_column(user_attr, trial_attr_meta["attr"])
             # compare with Trial
             trial_attr_name = _trial_column(user_attr, trial_attr_meta["attr"])
 
