@@ -166,7 +166,8 @@ def genomic_marker_state(trial, field, markers, is_blank):
         # The typed envelope carries required terms only. A contradicting
         # legacy exclusion is still a restriction; do not turn a trial that
         # excludes a marker into a match for it just because the two columns
-        # disagree (observed on 24917/18489).
+        # disagree (24917 has the same code on both sides; 18489 is the
+        # excluded-only variant).
         return 'not_matched'
 
     specific_codes = codes - COMPOSITE_MARKER_CODES

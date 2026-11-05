@@ -163,6 +163,27 @@ class TestTheMarkerState:
         assert _state(trial, 'molecular_markers', ['notch1or2Mutations']) == 'not_matched'
         assert _state(trial, 'molecular_markers', ['notch1Mutation']) == 'matched'
 
+    def test_excluded_all_of_requires_every_unresolved_code(self):
+        trial = _trial(typed_molecular=[_envelope(
+            operator='all_of', role='excluded', unresolved_codes=['a', 'b'])])
+        assert _state(trial, 'molecular_markers', ['a']) == 'matched'
+        assert _state(trial, 'molecular_markers', ['a', 'b']) == 'not_matched'
+
+    def test_a_composite_is_not_credited_across_two_requirements(self):
+        trial = _trial(
+            legacy_molecular=['notch1or2Mutations'],
+            typed_molecular=[
+                _envelope(_term('35947617')),
+                _envelope(_term('35960756')),
+            ],
+        )
+        assert _state(
+            trial, 'molecular_markers', ['notch1or2Mutations'],
+        ) == 'not_matched'
+        # Conservative: a two-requirement envelope is AND, and the current
+        # slice cannot split a composite into its members.
+        assert _state(trial, 'molecular_markers', ['notch1Mutation']) == 'not_matched'
+
     def test_all_of_applies_to_unresolved_codes_too(self):
         trial = _trial(
             typed_molecular=[_envelope(
