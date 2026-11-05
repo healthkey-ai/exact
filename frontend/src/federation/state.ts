@@ -229,6 +229,49 @@ export interface TrialStateAdapter extends TrialPreferenceStore {
    *  states rather than resolved-or-rejected. A field the response does not
    *  mention is `unconfirmed`; it does not make the others unconfirmed. */
   setPatientFields?(fields: Record<string, unknown>): Promise<Record<string, WriteOutcome>>;
+  /** The structured genomic findings, when the host serves the dedicated
+   *  genomics endpoint. `genetic_mutations` is not a scalar field, so this is
+   *  separate from `setPatientFields`; a host that cannot serve it gets no
+   *  findings editor rather than a half-working PATCH. */
+  genomics?: GenomicsAdapter;
+}
+
+/** One finding in `genetic_mutations`. The endpoint uses the same keys. */
+export interface GenomicFinding {
+  id?: number;
+  gene?: string;
+  genomic_feature?: string;
+  feature_type?: string;
+  variant?: string;
+  variant_name?: string;
+  genomic_dna_change?: string;
+  amino_acid_change?: string;
+  origin?: string;
+  interpretation?: string;
+  status?: string;
+  marker_key?: string;
+  [key: string]: unknown;
+}
+
+/** One priority marker from `genomics-catalog`, used for the gene choices. */
+export interface GenomicCatalogMarker {
+  key: string;
+  field_name: string;
+  gene: string;
+  label: string;
+  kind: string;
+  genomic_feature?: string;
+  feature_type?: string;
+  finding_category?: string;
+  writable: boolean;
+}
+
+export interface GenomicsAdapter {
+  list(): Promise<GenomicFinding[]>;
+  catalog(): Promise<{ markers: GenomicCatalogMarker[]; attributes?: string[] }>;
+  create(finding: GenomicFinding): Promise<GenomicFinding>;
+  update(id: number, finding: GenomicFinding): Promise<GenomicFinding>;
+  remove(id: number): Promise<void>;
 }
 
 /** What the record showed after a write.
@@ -536,6 +579,42 @@ export function createPromopState({
             { params: { person_id: person } },
           )
           .then(() => undefined),
+    },
+
+    // The dedicated findings endpoint, not a PatientRecord PATCH. The catalog
+    // supplies the gene choices; a host that does not serve it still gets the
+    // free-text gene input and the core origin/interpretation answers.
+    genomics: {
+      list: async () => {
+        const response = await client.get<GenomicFinding[]>(
+          `${records}/${person}/genomics/`,
+        );
+        return response.data ?? [];
+      },
+      catalog: async () => {
+        const response = await client.get<{
+          markers: GenomicCatalogMarker[];
+          attributes?: string[];
+        }>(`${records}/${person}/genomics-catalog/`);
+        return response.data ?? { markers: [] };
+      },
+      create: async (finding) => {
+        const response = await client.post<GenomicFinding>(
+          `${records}/${person}/genomics/`,
+          finding,
+        );
+        return response.data;
+      },
+      update: async (id, finding) => {
+        const response = await client.patch<GenomicFinding>(
+          `${records}/${person}/genomics/${id}/`,
+          finding,
+        );
+        return response.data;
+      },
+      remove: async (id) => {
+        await client.delete(`${records}/${person}/genomics/${id}/`);
+      },
     },
 
     // `person_id` is not optional here even though the endpoint accepts its
