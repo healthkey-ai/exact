@@ -2,7 +2,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Optional
 
-from django.db.models import F, Prefetch, QuerySet
+from django.db.models import Case, F, IntegerField, Prefetch, QuerySet, Value, When
 from django.utils.functional import SimpleLazyObject, cached_property
 from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
@@ -301,6 +301,20 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 search_type=search_type,
             )
 
+        # A saved trial the patient no longer qualifies for is still their
+        # saved trial. Dropping it made the Favorites tab read "1" over the
+        # words "No trials found" (#568). It comes back here, and the
+        # serializer marks it `not_eligible`; `sunk_first` keeps it below the
+        # rows that still match.
+        self._unmatched_saved_ids = frozenset()
+        if self.action in ('list', 'search') and self._keeps_unmatched_saved(
+            trial_ids, search_type,
+        ):
+            queryset = self._widened_saved(
+                queryset, trial_ids, study_prefs, patient_info,
+            )
+        sunk_first = ('saved_not_matching',) if self._unmatched_saved_ids else ()
+
         if self.action in ['list', 'search', 'retrieve']:
             params = self.request.query_params
             try:
@@ -333,7 +347,9 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.with_potential_attrs_count(patient_info)
 
         if self.action == 'list':
-            queryset = queryset.order_by('-match_score', '-posted_date', 'id')
+            queryset = queryset.order_by(
+                *sunk_first, '-match_score', '-posted_date', 'id'
+            )
 
         if self.action == 'search':
             counts = self._trials_counts(queryset, patient_info)
@@ -369,7 +385,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             else:  # goodnessScore
                 order.append(F('goodness_score').desc(nulls_last=True))
             order.append(F('id').asc())
-            queryset = queryset.order_by(*order)
+            queryset = queryset.order_by(*sunk_first, *order)
 
         if self.action in ['list', 'search']:
             queryset = queryset.prefetch_related(
@@ -481,6 +497,73 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return self._trials_counts(scope, patient_info)
 
+    #: The requested ids the eligibility filter dropped, which the serializer
+    #: turns into `matchingType: not_eligible`. A frozenset so the default is
+    #: a real answer ("none of them") rather than a missing attribute.
+    _unmatched_saved_ids: frozenset = frozenset()
+
+    #: Whether this view's rows can carry the `not_eligible` mark. False on the
+    #: graph, which buckets its nodes on `match_score` alone and would file a
+    #: widened trial under "fully matched".
+    widens_saved_trials = True
+
+    def _keeps_unmatched_saved(self, trial_ids, search_type) -> bool:
+        """Whether this request lists saved trials the patient fails.
+
+        - **This view can mark them.** See `widens_saved_trials`.
+        - **Ids were asked for.** Without them this is the corpus search, and
+          widening it would answer "which trials match me" with trials that
+          do not.
+        - **No explicit `?type=`.** `eligible` and `potential` name a verdict;
+          handing back rows that hold neither answers a different question.
+          `all` never reaches here — it skips the eligibility filter upstream.
+        """
+        return (
+            self.widens_saved_trials
+            and trial_ids is not None
+            and search_type is None
+        )
+
+    def _widened_saved(self, matched, trial_ids, study_prefs, patient_info):
+        """`matched`, plus the requested ids the eligibility filter dropped.
+
+        Both sets are read off querysets rather than recomputed, so "not
+        eligible" means exactly one thing: the filter that hides a trial is
+        the same one that marks it. The difference is taken against the
+        WIDENED set, not against the ids the caller sent — the two differ by
+        the ids the reader's own filters dropped, and marking one of those
+        `not_eligible` would blame the matcher for the reader's own choice.
+        """
+        matched_ids = set(matched.values_list('id', flat=True))
+        if len(matched_ids) == len(set(trial_ids)):
+            return matched
+
+        widened, _ = Trial.objects.filter(id__in=trial_ids).filtered_trials(
+            search_options=self.request.query_params,
+            study_info=study_prefs,
+            patient_info=patient_info,
+            add_traces=False,
+            search_type=None,
+            narrow_by_patient=False,
+        )
+        self._unmatched_saved_ids = (
+            frozenset(widened.values_list('id', flat=True)) - matched_ids
+        )
+        if not self._unmatched_saved_ids:
+            return matched
+
+        # Sunk to the bottom of whatever order the reader chose: every sort
+        # ranks by a column the widened rows still hold, and the default one
+        # is the `match_score` annotation, which reads 100 on a trial the
+        # patient conflicts with — so the failing bookmark sorted first.
+        return widened.annotate(
+            saved_not_matching=Case(
+                When(id__in=self._unmatched_saved_ids, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
@@ -505,6 +588,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             'template': template,
             'search_type': search_type,
             'explain': self.request.query_params.get('explain', '').lower() == 'true',
+            # Empty unless `get_queryset` widened a saved-ids search (#568).
+            # `get_queryset` runs first on every action that builds a list, so
+            # by the time a serializer asks, the answer is settled.
+            'unmatched_trial_ids': self._unmatched_saved_ids,
         })
         from trials.services.matching.typed_runtime import resolve_evaluation
         holder = getattr(getattr(self.request, '_request', self.request), '_exact_typed_evaluation', None)

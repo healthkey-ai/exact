@@ -62,7 +62,17 @@ def test_canonical_fallbacks_preserve_zero_and_pair_units(target, source, unit, 
     assert normalize_promop_row(dict(row)) == row
 
 
-@pytest.mark.parametrize('target,source,unit,scale', FALLBACKS)
+#: Pairs whose EXACT-named column is authoritative. LDH is excluded: PROMOP
+#: declares `lactate_dehydrogenase_level` a read-only mirror of `ldh_u_l`
+#: (#557), so a zero standing in the mirror is exactly the stale value the
+#: canonical column exists to replace.
+DIRECT_IS_AUTHORITATIVE = tuple(
+    fallback for fallback in FALLBACKS
+    if fallback[0] != 'lactate_dehydrogenase_level'
+)
+
+
+@pytest.mark.parametrize('target,source,unit,scale', DIRECT_IS_AUTHORITATIVE)
 def test_reliable_direct_zero_wins_over_fallback(target, source, unit, scale):
     row = {target: 0, source: 12}
     if unit is not None:
@@ -99,7 +109,9 @@ def test_blank_and_zero_direct_values_through_dto(disease, builder, direct):
         'lactate_dehydrogenase_level': direct, 'ldh_u_l': 300,
     })
     assert patient.hemoglobin_level == (0 if direct == 0 else 12)
-    assert patient.lactate_dehydrogenase_level == (0 if direct == 0 else 300)
+    # #557: LDH is a declared mirror, so the canonical column wins even over a
+    # direct zero — that zero is the mirror's stale copy, not a reading.
+    assert patient.lactate_dehydrogenase_level == 300
 
 
 @pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', '1e309', '1e308', '1e1000000', True, []])
