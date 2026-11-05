@@ -102,13 +102,14 @@ class TestTheCodeToConceptTable:
         assert MARKER_CONCEPTS['hyperdiploidy'] == (HYPERDIPLOIDY,)
         assert COMPOSITE_MARKER_CODES == {'atmOrAtrMutations', 'notch1or2Mutations'}
         assert MARKER_CONCEPTS['complexKaryotype'] == (COMPLEX_KARYOTYPE,)
+        assert MARKER_CONCEPTS['bcmaExpression'] == ('2100007900',)
         assert marker_concept_ids(['1q21Amplification', 'tp53Mutation']) == {
             GAIN1Q21, TP53,
         }
 
-    def test_bcma_is_deliberately_unresolved(self):
+    def test_bcma_has_a_local_concept_but_the_envelope_is_unresolved(self):
         assert BCMA in UNRESOLVED_MARKER_CODES
-        assert BCMA not in MARKER_CONCEPTS
+        assert MARKER_CONCEPTS[BCMA] == ('2100007900',)
 
 
 class TestTheMarkerState:
@@ -316,6 +317,13 @@ class TestTheMarkerState:
             _trial(typed_molecular=[empty_requirement]),
             'molecular_markers', ['tp53Mutation'],
         ) == 'not_matched'
+
+    def test_a_recompiled_bcma_envelope_matches_the_local_concept(self):
+        trial = _trial(
+            legacy_molecular=['bcmaExpression'],
+            typed_molecular=[_envelope(_term('2100007900'))],
+        )
+        assert _state(trial, 'molecular_markers', ['bcmaExpression']) == 'matched'
 
     def test_the_legacy_list_is_used_when_the_envelope_is_empty(self):
         trial = _trial(molecular=['tp53Mutation'])
