@@ -329,6 +329,8 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 
 
     # Convert camelCase keys to snake_case if needed
     snake_data = _to_snake_case(data)
+    # Names the producer spells differently from EXACT's own column (#593).
+    snake_data = _apply_inbound_aliases(snake_data)
     # PROMOP's language booleans -> legacy codes/asked languages and, on the OMOP
     # path, concept pairs, before the field filter below drops them (#605, CB #5350).
     snake_data = translate_language_capabilities(snake_data)
@@ -665,3 +667,47 @@ def _to_snake_case(data: dict) -> dict:
         return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
     return {camel_to_snake(k): v for k, v in data.items()}
+
+
+#: Names the producer sends for a field EXACT stores under a different one.
+#:
+#: `pd_l1_tumor_cels` is EXACT's own spelling and it is missing an `l` (the
+#: model field and the two trial bounds). PROMOP spells it correctly, and so
+#: does the payload `docs/api.md` publishes, so the documented key was dropped
+#: at the model-field filter and the request answered 200 with the PD-L1
+#: result missing (#593). A dropped PD-L1 is not a missing trial: `min`/`max`
+#: bounds return the whole scope on `None`, so a patient below a trial's
+#: minimum is shown that trial — false positives.
+#:
+#: Aliased inbound rather than renamed: the misspelling is also the stem of
+#: two trial columns, and correcting all of them is a migration plus a data
+#: move for no difference a caller can observe.
+_INBOUND_ALIASES = {
+    'pd_l1_tumor_cells': 'pd_l1_tumor_cels',
+}
+
+
+def _says_something(value) -> bool:
+    """Whether a value tells us anything about a patient.
+
+    `False` and `0` DO — they are answers. `None`, `''` and whitespace do not.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ''
+    return True
+
+
+def _apply_inbound_aliases(data: dict) -> dict:
+    """Copy a producer's spelling onto EXACT's field, without overwriting it.
+
+    The alias only fills a gap: between two usable spellings the existing
+    contract decides. The SOURCE guard keeps an empty string off a typed
+    column, where it would reach Django as `ValueError: expected a number but
+    got ''` instead of reading as blank (#594).
+    """
+    for sent, stored in _INBOUND_ALIASES.items():
+        if _says_something(data.get(sent)) and not _says_something(data.get(stored)):
+            data[stored] = data[sent]
+    return data

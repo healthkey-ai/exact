@@ -303,6 +303,10 @@ _CANONICAL_WINS = (
     ('white_blood_cell_count', 'wbc_count_thousand_per_ul', 'CELLS/UL', 1000),
     ('absolute_neutrophile_count', 'anc_thousand_per_ul', 'CELLS/UL', 1000),
     ('absolute_lymphocyte_count', 'alc_thousand_per_ul', None, 1000),
+    # LDH is the second pair PROMOP declares as an alias of a canonical column
+    # (`ldh_u_l`), so the mirror must not win when both are present. Ported
+    # from cb-like-trials #557; see the comment on `_normalize_canonical_labs`.
+    ('lactate_dehydrogenase_level', 'ldh_u_l', None, 1),
 )
 
 
