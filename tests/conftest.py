@@ -36,17 +36,17 @@ def django_db_setup(django_db_setup, django_db_blocker):
 
 @pytest.fixture(autouse=True)
 def clear_component_lookup_cache():
-    """Clear the component_category_lookup lru_cache between tests.
+    """Reset the component-lookup request memo between tests.
 
-    The cache is module-level. pytest-django rolls back DB transactions after
-    each test but does NOT clear Python module caches, so a test that seeds
-    TherapyComponent rows and calls _lookup() would leave stale cache entries
-    visible to subsequent tests that assume a clean DB for the same concept_ids.
+    The lookup is no longer a process-global cache (#266) — it's a request-scoped
+    memo (default unset), so there is nothing to clear across tests that don't
+    enter ``component_lookup_request_cache``. This fixture stays as a guard: it
+    resets any memo a test left set, so a stray entry can never leak across tests.
     """
-    from trials.services.omop.component_category_lookup import _lookup
-    _lookup.cache_clear()
+    from trials.services.omop.component_category_lookup import _request_memo
+    _request_memo.set(None)
     yield
-    _lookup.cache_clear()
+    _request_memo.set(None)
 
 
 @pytest.fixture
@@ -68,3 +68,15 @@ def patient_info_payload(**overrides):
     }
     base.update(overrides)
     return base
+
+
+@pytest.fixture(autouse=True)
+def _reset_omop_languages_readiness_cache():
+    """The EXACT_OMOP_LANGUAGES readiness gate caches per process; never across tests."""
+    from exact_matching.omop.languages_match_profile import reset_languages_decision
+    from trials.services.omop.languages_readiness import reset_readiness_cache
+    reset_readiness_cache()
+    reset_languages_decision()
+    yield
+    reset_readiness_cache()
+    reset_languages_decision()

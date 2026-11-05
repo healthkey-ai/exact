@@ -1,6 +1,6 @@
 // SPA harness entry — `npm run dev` boots this. Renders the federated
 // `TrialMatches` component with a minimal local axios instance so you
-// can iterate on the remote without standing up CTOMOP.
+// can iterate on the remote without standing up PROMOP.
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

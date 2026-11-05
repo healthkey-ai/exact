@@ -19,8 +19,9 @@ class PatientInfoSerializer:
         if getattr(instance, 'no_pre_existing_conditions', False):
             d['preExistingConditionCategories'] = ['none']
         else:
-            cats = getattr(instance, '_pre_existing_condition_categories', [])
-            d['preExistingConditionCategories'] = [c.code for c in cats]
+            from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
+
+            d['preExistingConditionCategories'] = PatientInfoAttributes(instance).get_value('pre_existing_condition_categories')
         return d
 
 

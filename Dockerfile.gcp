@@ -1,6 +1,6 @@
 # EXACT Cloud Run image — adds a Node build stage to the backend image so
 # the Module Federation remote (remoteEntry.js + chunks) is built and served
-# by WhiteNoise alongside the API. Mirrors ctomop/soc Dockerfile.gcp.
+# by WhiteNoise alongside the API. Mirrors promop/soc Dockerfile.gcp.
 #
 # The plain Dockerfile is backend-only (no frontend) for local dev/compose.
 #

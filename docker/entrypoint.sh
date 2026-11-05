@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
+python manage.py check_trials_schema --configuration-only
+
 case "${RUN_MIGRATIONS:-true}" in
     0|false|no|off|FALSE|False)
         echo "Skipping migrations (RUN_MIGRATIONS=${RUN_MIGRATIONS}); expecting a separate migrate job."
@@ -13,6 +15,8 @@ esac
 
 bash /app/docker/init_trials_db.sh
 bash /app/docker/init_patients_db.sh
+
+python manage.py check_trials_schema
 
 cat <<'EOF'
 

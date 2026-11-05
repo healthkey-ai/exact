@@ -101,6 +101,11 @@ export interface TrialDetailField {
   units?: string;
   /** Unit for the patient's `uvalue` — may differ from `units`. */
   uunits?: string;
+  /** OMOP-mirror-resolved titles for the trial's `value` concept_ids on the
+   *  OMOP-mapped therapy levels (regimen/component). The server resolves these
+   *  from the pinned vocab release so the UI shows drug names, not raw ids.
+   *  Source: `matcher.therapy_related_things_match_status` / `_resolve_omop_concepts`. */
+  omopConcepts?: { code: number | string; title: string; vocab?: string }[];
   [key: string]: unknown;
 }
 
@@ -170,7 +175,7 @@ export interface FilterState {
 
 /** Public props for the federated `./TrialMatches` export. Host-agnostic:
  *  the host wires its own axios instance (with `Authorization: Token …`)
- *  and either a person_id (CTOMOP federation path) or an inline payload
+ *  and either a person_id (PROMOP federation path) or an inline payload
  *  (legacy CB path). */
 export interface TrialMatchesProps {
   /** Axios instance pre-configured with `baseURL` (e.g. `/api`) and
@@ -179,7 +184,7 @@ export interface TrialMatchesProps {
   /** Optional shared TanStack QueryClient — when omitted, the component
    *  spins up its own. Set when the host wants to share the cache. */
   queryClient?: QueryClient;
-  /** CTOMOP person_id. Mutually exclusive with `patientInfo` — when
+  /** PROMOP person_id. Mutually exclusive with `patientInfo` — when
    *  both are provided, `patientInfo` wins (matches the server-side
    *  precedence in `resolve_patient_info`). */
   personId?: string | number;

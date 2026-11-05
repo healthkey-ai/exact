@@ -10,7 +10,7 @@
 // instead POST to `/trials/match/` — a thin alias for the list endpoint
 // added on the EXACT side (PR #121 / `TrialsViewSet.match`). When the
 // caller has only a `personId`, we keep the GET path so the server-side
-// CTOMOP resolver (#102) handles patient fetching.
+// PROMOP resolver (#102) handles patient fetching.
 
 import type { AxiosInstance } from "axios";
 
@@ -26,7 +26,7 @@ interface FetchTrialsArgs {
   /** Inline payload — wins over `personId` server-side, matches
    *  `resolve_patient_info` precedence. */
   patientInfo?: PatientInfo | null;
-  /** CTOMOP person_id — server-side path via `?person_id=`. */
+  /** PROMOP person_id — server-side path via `?person_id=`. */
   personId?: string | number;
   /** Filter prefs, sent as query params. */
   filters?: FilterState;
@@ -45,7 +45,7 @@ interface FetchTrialsArgs {
  *    PR #121) so the response shape is unchanged.
  *  - **Server-side resolver path** (`personId` only): GETs
  *    `/trials/?person_id=…`. EXACT's `resolve_patient_info` will
- *    fetch the patient from CTOMOP server-side. No body, no
+ *    fetch the patient from PROMOP server-side. No body, no
  *    Fetch-spec issue.
  */
 export async function fetchTrials({
@@ -134,22 +134,22 @@ export async function fetchFormSettings(
   return response.data;
 }
 
-/** POST `/normalize-ctomop-row/` — pipes a raw CTOMOP `patient_info`
- *  row through EXACT's `normalize_ctomop_row` (receptor statuses → codes,
+/** POST `/normalize-promop-row/` — pipes a raw PROMOP `patient_info`
+ *  row through EXACT's `normalize_promop_row` (receptor statuses → codes,
  *  TNM stripping, therapy-outcome label → ID, refractory status,
  *  lab-value fallbacks, etc.) and returns the normalized row.
  *
- *  Used by the dev harness so that browser-side CTOMOP fetches (which
+ *  Used by the dev harness so that browser-side PROMOP fetches (which
  *  skip the server-side resolver's normalization step) hand the
- *  matcher EXACT-shaped values instead of raw CTOMOP labels.
+ *  matcher EXACT-shaped values instead of raw PROMOP labels.
  *  Without this chain step, receptor / therapy / refractory fields
  *  silently read as "unknown". */
-export async function normalizeCtomopRow(
+export async function normalizePromopRow(
   apiClient: AxiosInstance,
   row: PatientInfo,
 ): Promise<PatientInfo> {
   const response = await apiClient.post<PatientInfo>(
-    "/normalize-ctomop-row/",
+    "/normalize-promop-row/",
     row,
   );
   return response.data;
