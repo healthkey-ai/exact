@@ -24,9 +24,9 @@ failure.
 
 ``unmapped_concept`` checks that the envelope's concept is in the reviewed
 table, not that it matches the legacy code's own identity. A TP53 legacy row
-whose envelope names ATR is still ``ok`` for mapping coverage; the code-level
-agreement is a separate review (the six contradictions above are the known
-example).
+whose envelope names ATR is still ``ok`` for mapping coverage; code-level
+identity is a separate review. The ``contradiction`` status is the
+required/excluded overlap, a different data issue.
 """
 import json
 from collections import Counter
