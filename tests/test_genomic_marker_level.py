@@ -232,10 +232,9 @@ class TestTheMarkerState:
     def test_a_legacy_exclusion_still_applies_when_the_envelope_exists(self):
         """Trial 24917 carries tp53Mutation as both required and excluded.
 
-        The typed envelope only compiles the required side; the legacy
-        exclusion is the remaining restriction and must not be silently
-        dropped into a match. (18489 is the excluded-only variant, covered
-        separately below.)
+        The data is contradictory (cancerbot#5689), so the criterion stays
+        unknown rather than turning into either a match or a rejection. A code
+        that is only excluded is still a definite rejection.
         """
         trial = SimpleNamespace(
             molecular_markers_required=['tp53Mutation'],
@@ -245,7 +244,7 @@ class TestTheMarkerState:
             cytogenic_markers_excluded=[],
             omop_cytogenic_markers_required=[],
         )
-        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'unknown'
 
     def test_a_malformed_role_or_operator_falls_back(self):
         for bad in (
@@ -333,6 +332,43 @@ class TestTheMarkerState:
         )
         assert _state(trial, 'molecular_markers', ['bcmaExpression']) == 'matched'
 
+    def test_a_required_plus_excluded_code_is_unknown(self):
+        trial = SimpleNamespace(
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=['tp53Mutation'],
+            omop_molecular_markers_required=[_envelope(_term(TP53))],
+            cytogenic_markers_required=[],
+            cytogenic_markers_excluded=[],
+            omop_cytogenic_markers_required=[],
+        )
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'unknown'
+
+    def test_a_definite_exclusion_is_still_not_matched(self):
+        trial = SimpleNamespace(
+            molecular_markers_required=[],
+            molecular_markers_excluded=['krasMutation'],
+            omop_molecular_markers_required=[],
+            cytogenic_markers_required=[],
+            cytogenic_markers_excluded=[],
+            omop_cytogenic_markers_required=[],
+        )
+        assert _state(trial, 'molecular_markers', ['krasMutation']) == 'not_matched'
+
+    def test_a_contradiction_does_not_mask_a_definite_exclusion(self):
+        trial = SimpleNamespace(
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=['krasMutation', 'tp53Mutation'],
+            omop_molecular_markers_required=[_envelope(_term(TP53))],
+            cytogenic_markers_required=[],
+            cytogenic_markers_excluded=[],
+            omop_cytogenic_markers_required=[],
+        )
+        assert _state(trial, 'molecular_markers', ['krasMutation']) == 'not_matched'
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'unknown'
+        assert _state(
+            trial, 'molecular_markers', ['krasMutation', 'tp53Mutation'],
+        ) == 'not_matched'
+
     def test_the_legacy_list_is_used_when_the_envelope_is_empty(self):
         trial = _trial(molecular=['tp53Mutation'])
         assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
@@ -390,6 +426,27 @@ class TestTheSearchPath:
         )
         assert Trial.objects.all().eligible_for_molecular_marker(
             ['tp53Mutation']).count() == 1
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['krasMutation']).count() == 0
+
+    def test_a_contradictory_trial_remains_potential_not_hidden(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=['tp53Mutation'],
+            omop_molecular_markers_required=[_envelope(_term(TP53))],
+        )
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['tp53Mutation']).count() == 1
+        assert Trial.objects.all().eligible_for_molecular_marker(
+            ['krasMutation']).count() == 0
+
+    def test_a_definite_exclusion_is_not_kept_as_potential(self, settings):
+        settings.EXACT_OMOP_GENOMICS = True
+        self._trial(
+            molecular_markers_required=[],
+            molecular_markers_excluded=['krasMutation'],
+        )
         assert Trial.objects.all().eligible_for_molecular_marker(
             ['krasMutation']).count() == 0
 

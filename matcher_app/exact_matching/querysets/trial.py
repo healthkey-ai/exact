@@ -1667,7 +1667,10 @@ class TrialQuerySet(models.QuerySet):
             trial = SimpleNamespace(**{
                 legacy: row[1], typed: row[2], excluded: row[3],
             })
-            if genomic_marker_state(trial, field, values, False) == 'matched':
+            # `unknown` is a potential match (a contradictory or incomplete
+            # criterion), not a rejection. The per-trial matcher carries the
+            # same verdict; dropping it here would hide the trial.
+            if genomic_marker_state(trial, field, values, False) in ('matched', 'unknown'):
                 matches.append(row[0])
         return self.filter(empty | Q(pk__in=matches))
 
