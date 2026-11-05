@@ -40,3 +40,23 @@ class TestGraphViewValidation:
             resp = authed_client.get('/trials-graph/graph/?n=not-a-number')
         assert resp.status_code == 400
         assert "'n'" in str(resp.data)
+
+    def test_post_alias_carries_patient_context_in_the_body(self, authed_client):
+        """POST is the only form the federated remote can use (#692).
+
+        Without the alias this route is a 405, which is what the host saw on
+        the stand. The missing-patient 400 proves the action exists and ran
+        `graph`; the body shape is the same one `search/match` accepts.
+        """
+        resp = authed_client.post('/trials-graph/graph/match/', {}, format='json')
+        assert resp.status_code == 400
+        assert 'patient' in str(resp.data).lower()
+
+    def test_inherited_trials_post_actions_are_not_published(self, authed_client):
+        """Widening `http_method_names` must not expose `/trials/`'s aliases."""
+        for path in (
+            '/trials-graph/match/',
+            '/trials-graph/search/match/',
+            '/trials-graph/1/match/',
+        ):
+            assert authed_client.post(path, {}, format='json').status_code in (404, 405)
