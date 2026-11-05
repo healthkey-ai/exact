@@ -157,6 +157,48 @@ class TestNormalizePromopRowHttp:
         assert isinstance(wire['hemoglobin_level'], (int, float))
         assert isinstance(wire['white_blood_cell_count'], (int, float))
 
+    @pytest.mark.parametrize('answer', [None, False, True])
+    def test_a_negated_answer_survives_the_federation_roundtrip(self, authed_client, answer):
+        """The host posts this response back as its inline `patient_info`, so
+        the provenance recorded before the positive key was popped has to ride
+        in it (#5667). Without this, every normalized row read as "never in
+        the context" and the editor stayed closed."""
+        from trials.services.patient_info.resolve import _build_in_memory
+
+        response = authed_client.post('/normalize-promop-row/', {
+            'disease': 'multiple myeloma', 'hiv_status': answer,
+        }, format='json')
+        assert response.status_code == 200
+
+        patient = _build_in_memory(response.json(), strict=True)
+        entry = patient._negated_sources['hiv_status']
+        assert entry['available'] is True
+        assert entry['value'] is answer
+
+    def test_an_absent_positive_key_survives_as_unavailable(self, authed_client):
+        from trials.services.patient_info.resolve import _build_in_memory
+
+        response = authed_client.post('/normalize-promop-row/', {
+            'disease': 'multiple myeloma',
+        }, format='json')
+        assert response.status_code == 200
+
+        patient = _build_in_memory(response.json(), strict=True)
+        entry = patient._negated_sources['hiv_status']
+        assert entry['available'] is False
+        assert 'value' not in entry
+
+    def test_a_negated_key_alone_does_not_become_available(self, authed_client):
+        from trials.services.patient_info.resolve import _build_in_memory
+
+        response = authed_client.post('/normalize-promop-row/', {
+            'disease': 'multiple myeloma', 'no_hiv_status': True,
+        }, format='json')
+        assert response.status_code == 200
+
+        patient = _build_in_memory(response.json(), strict=True)
+        assert patient._negated_sources['hiv_status']['available'] is False
+
     @pytest.mark.parametrize('disease', [
         'multiple myeloma', 'follicular lymphoma', 'breast cancer',
         'chronic lymphocytic leukemia', 'mantle cell lymphoma',

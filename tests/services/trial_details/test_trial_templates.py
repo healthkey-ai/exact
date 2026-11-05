@@ -16,7 +16,7 @@ def _without_edit_metadata(monkeypatch):
     into a list of new keys and hide the fields the snapshot exists to guard."""
     monkeypatch.setattr(
         TrialAttributes, 'with_patient_field_names',
-        staticmethod(lambda fields: fields), raising=True)
+        staticmethod(lambda fields, negated_sources=None: fields), raising=True)
     original = TrialAttributes.get_user_subform_attrs
 
     def stripped(self, *args, **kwargs):
