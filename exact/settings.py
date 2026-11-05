@@ -78,6 +78,10 @@ INSTALLED_APPS = [
     'accounts',
     'trials',
     'vocab_mirror',
+    # The trials page's own per-identity store. On the `default` alias by
+    # construction: `db_router` only diverts the `trials` app, and the
+    # `trials` database is dropped and restored from CB dumps.
+    'user_state',
 ]
 
 # House OIDC shared-Identity model (issuer, sub). Must be set before the first

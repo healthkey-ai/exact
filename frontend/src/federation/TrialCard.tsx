@@ -6,20 +6,49 @@
 // its own `/t/:id`; the remote owns the detail view itself).
 import type { KeyboardEvent } from "react";
 
-import { EyeIcon, Field, ScorePill, SUITABILITY_HREF, asText } from "./bits";
+import {
+  ActionTooltip,
+  EyeIcon,
+  FavoriteToggle,
+  Field,
+  ScorePill,
+  SUITABILITY_HREF,
+  asText,
+} from "./bits";
+import { ACTION_TOOLTIPS } from "./tooltips";
 import type { TrialMatch } from "./types";
 
 interface Props {
   trial: TrialMatch;
   onSelect?: (trial: TrialMatch) => void;
   isSelected?: boolean;
+  /** Whether this trial is bookmarked. `undefined` means not known yet —
+   *  the ids are still loading — and renders nothing rather than an
+   *  un-bookmarked star that would flip under the reader's eye. */
+  isFavorite?: boolean;
+  /** Omitted when the host supplied no state adapter, in which case no
+   *  control is drawn: a bookmark button with nowhere to write is a button
+   *  that forgets. */
+  onToggleFavorite?: (next: boolean) => void;
+  /** A bookmark write for this trial is on the wire. */
+  busy?: boolean;
 }
 
-export function TrialCard({ trial, onSelect, isSelected }: Props) {
+export function TrialCard({
+  trial,
+  onSelect,
+  isSelected,
+  isFavorite,
+  onToggleFavorite,
+  busy,
+}: Props) {
   const distance =
     trial.distance != null
       ? `${trial.distance} ${trial.distanceUnits ?? ""}`.trim()
       : "";
+
+  // See the mark below, and the Matching Score beside it.
+  const notEligible = trial.matchingType === "not_eligible";
 
   const handleSelect = () => onSelect?.(trial);
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -54,6 +83,18 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
             {trial.studyId ? (
               <span className="exact-card__studyid">{trial.studyId}</span>
             ) : null}
+            {/* Only the state tabs can ever paint this. The corpus search
+                drops a trial the patient no longer qualifies for, so
+                `not_eligible` never reaches a card there; the saved-ids
+                path keeps it, because a trial the reader bookmarked
+                themselves should not vanish from the tab whose badge
+                counts it (#568). The hedge is the detail page's — the
+                matcher answers over mapped attributes, not a clinician. */}
+            {notEligible ? (
+              <p className="exact-card__mismatch">
+                You may not meet this trial's eligibility criteria
+              </p>
+            ) : null}
 
             <div className="exact-card__fields">
               <Field label="Location" value={asText(trial.location)} collapsible />
@@ -72,28 +113,52 @@ export function TrialCard({ trial, onSelect, isSelected }: Props) {
           </div>
 
           <div className="exact-card__scores">
-            <ScorePill score={trial.matchScore} label="Matching Score" />
+            {/* No special case for a marked row. The server sends
+                `matchScore: 0` with `not_eligible` — the pair the matcher
+                returns for that verdict, and the one the detail page this
+                card opens shows for the same trial. Without that the score
+                was the raw SQL annotation, which counts criteria it could
+                EVALUATE and never compares values, so it read 100 beside the
+                mismatch line. Guarding it a second time here would put the
+                same judgement in two places and let them drift. */}
+            <ScorePill
+              score={trial.matchScore}
+              label="Matching Score"
+              tooltip={ACTION_TOOLTIPS.matchingScore}
+            />
             <ScorePill
               score={trial.goodnessScore}
               label="Suitability Score"
               href={SUITABILITY_HREF}
+              tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
         </div>
 
         <div className="exact-card__action">
+          <FavoriteToggle
+            title={trial.briefTitle}
+            isFavorite={isFavorite}
+            onToggle={onToggleFavorite}
+            busy={busy}
+          />
           {onSelect ? (
-            <button
-              type="button"
-              className="exact-btn-view"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleSelect();
-              }}
-            >
-              <EyeIcon />
-              <span>View Trial</span>
-            </button>
+            <ActionTooltip text={ACTION_TOOLTIPS.viewTrial} className="exact-card__view-tip">
+              {(tipId) => (
+                <button
+                  type="button"
+                  className="exact-btn-view"
+                  aria-describedby={tipId}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelect();
+                  }}
+                >
+                  <EyeIcon />
+                  <span>View Trial</span>
+                </button>
+              )}
+            </ActionTooltip>
           ) : null}
         </div>
       </div>

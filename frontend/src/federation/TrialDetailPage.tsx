@@ -4,17 +4,78 @@
 // in-place by `TrialMatches` when a trial is selected — the remote owns the
 // detail view rather than re-using the host's router. Data: `GET /trials/{id}/`
 // (or `POST /trials/{id}/match/` for the inline-payload path) via
-// `useTrialDetail`. v1 is read-only: editing a patient value (CB's pencil
-// controls) and the host action buttons (I'm Interested / bookmark / share /
-// SoC) are deliberately out of scope.
-import { useEffect } from "react";
+// `useTrialDetail`.
+//
+// The two controls that write live here too — the bookmark and CB's
+// "I'm Interested" — but only their rendering: everything they write goes
+// through the `state` adapter `TrialMatches` holds, which is why they arrive
+// as a `trialState` bundle of values and callbacks rather than as an adapter
+// this page talks to itself. Without one, neither is drawn.
+//
+// Still out of scope: editing a patient value (CB's pencil controls, phase 4)
+// and CB's share / Standard-of-Care buttons.
+import { useEffect, useId, useMemo, useState } from "react";
 
 import { safeHref } from "../lib/safeUrl";
-import { Field, FieldTooltip, ScorePill, SUITABILITY_HREF, asText, renderMd } from "./bits";
-import { useTrialDetail } from "./hooks";
+import {
+  ActionTooltip,
+  CheckIcon,
+  FavoriteToggle,
+  Field,
+  FieldTooltip,
+  ScorePill,
+  SUITABILITY_HREF,
+  asText,
+  renderMd,
+} from "./bits";
+import { HighRiskMclPanel } from "./HighRiskMclPanel";
+import { useFormSettings, useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
-import { FIELD_TOOLTIPS } from "./tooltips";
+import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
+import type { AdvancedStatus } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
+import { FieldEdit, PencilIcon } from "./FieldEdit";
+import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
+import { splitJoined } from "./writable";
+import { editabilityOf, invertBoolean } from "./writable";
+import type { WritableFields } from "./writable";
+
+/** Everything the two writing controls need, as plain values and callbacks.
+ *
+ *  The page never sees the `state` adapter itself: `TrialMatches` owns the
+ *  queries and the mutations, so it is the only place that can keep the
+ *  card's star and this one showing the same thing. Each field here is a
+ *  distinct state the reader can be in, and every one of them has to be
+ *  distinguishable on screen — "not loaded", "failed to load" and "false"
+ *  all render as an empty star otherwise. */
+export interface TrialStateControls {
+  /** `undefined` = not known (still loading, or the read failed), which
+   *  draws no control at all rather than a star that flips later. */
+  isFavorite?: boolean;
+  onToggleFavorite?: (next: boolean) => void;
+  /** A bookmark write for this trial is on the wire. */
+  favoriteBusy?: boolean;
+  /** A bookmark write was rejected. The star is painted from the server's
+   *  list, so a failed write leaves it exactly where it was — which is what
+   *  a click that never registered looks like. */
+  favoriteFailed?: boolean;
+  /** The bookmark list could not be read, so there is no star to draw and
+   *  the reader is owed a reason. */
+  favoritesUnavailable?: boolean;
+  isRegistered?: boolean;
+  onToggleRegistered?: (next: boolean) => void;
+  /** A registration write is on the wire. The button says so and ignores
+   *  further clicks: the second one would race the first. */
+  registerPending?: boolean;
+  registerFailed?: boolean;
+  registeredUnavailable?: boolean;
+  /** Set when a study team has already moved this trial's enrollment past
+   *  "registered". The control then becomes a statement rather than a
+   *  button: `listRegisteredIds` asks for `status=registered` exactly, so
+   *  such a patient reads back as not registered, and "I'm Interested"
+   *  would write `registered` over `entered` (#434). */
+  advancedStatus?: AdvancedStatus;
+}
 
 interface Props {
   apiClient: import("axios").AxiosInstance;
@@ -24,6 +85,13 @@ interface Props {
   /** Same study preferences the list used, so detail scores/units agree. */
   filters?: FilterState;
   onBack: () => void;
+  /** Absent when the host supplied no state adapter — then neither the
+   *  bookmark nor the interest control is rendered. */
+  trialState?: TrialStateControls;
+  /** Absent when the host supplied no writer, or while the descriptor is on
+   *  its way — then no row draws an edit control and the table reads exactly
+   *  as it does today. */
+  editing?: RowEditing;
 }
 
 const BackArrow = () => (
@@ -43,22 +111,6 @@ const BackArrow = () => (
   </svg>
 );
 
-const CheckIcon = () => (
-  <svg
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M21.801 10A10 10 0 1 1 17 3.335" />
-    <path d="m9 11 3 3L22 4" />
-  </svg>
-);
 
 /** Resolve a field value to its display label, honouring select options.
  *  Option values may be numbers while the field value arrives as a string
@@ -69,46 +121,259 @@ function labelOf(value: unknown, options?: TrialDetailField["options"]): string 
   return match ? match.label : String(value);
 }
 
-function formatValue(value: unknown, options?: TrialDetailField["options"]): string {
+export function formatValue(value: unknown, options?: TrialDetailField["options"]): string {
   if (value == null || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) {
     const parts = value.filter((v) => v != null && v !== "").map((v) => labelOf(v, options));
     return parts.length ? parts.join(", ") : "—";
   }
+  // A COMMA-JOINED value is a list the column happens to store as text, and
+  // it used to read as raw codes here: `labelOf` matches the WHOLE string,
+  // so "age,stage" matched nothing and fell through to itself — while the
+  // editor opened on the same row showed "Age: Greater than 60 years". The
+  // cell is where a reader checks their record, and codes there make a
+  // correctly stored value look wrong (#586).
+  //
+  // Only when EVERY part is a known value. Not every string with a comma is
+  // a list — a free-text field can hold "Smith, John" — and labelling one
+  // part of somebody's prose because it happened to collide with an option
+  // would be worse than the codes. All-or-nothing keeps the fallback exactly
+  // where it was: a value the vocabulary does not recognise still reads
+  // verbatim, which is what a legacy spelling needs.
+  //
+  // `splitJoined`, so the split here and the split the editor seeds from are
+  // the same one. Two different splits of the same string is how
+  // `inv(3)(q21,q26)` becomes two markers nobody has heard of.
+  //
+  // THERE IS A THIRD RULE, and it is the one that decides eligibility:
+  // EXACT's matcher uses a bare `value.split(",")` with no trimming and no
+  // bracket awareness (`trials/querysets/trial.py`). PROMOP reads
+  // `cytogenetic_markers` back `", "`-joined, so the matcher already drops
+  // every marker after the first — before this change and independently of
+  // it. What this DOES do is remove the last on-screen hint: the cell used
+  // to show raw text and now shows recognised labels for values the match
+  // is not using. Filed as #588, which is where the three rules are made
+  // one; this is not the place to paper over it.
+  if (typeof value === "string" && options?.length) {
+    const parts = splitJoined(value);
+    const known = parts.length > 1
+      && parts.every((part) => options.some((o) => String(o.value) === part));
+    if (known) return parts.map((part) => labelOf(part, options)).join(", ");
+  }
   return labelOf(value, options);
 }
 
-/** Shown in place of a therapy concept the vocab mirror could not resolve to a
- *  name (e.g. a concept EXACT's projection references but promop's snapshot does
- *  not ship yet — see promop#390). A raw concept_id is meaningless to a user, so
- *  we render a hint instead. The criterion is still shown (never dropped). */
-export const UNRESOLVED_CONCEPT_LABEL = "Unknown";
-
-/** Resolve OMOP-mapped therapy `value` concept_ids to their mirror titles (drug
- *  names). For any concept the server did not resolve, render a placeholder hint
- *  rather than the raw id — so the criterion is still visible but not shown as a
- *  meaningless number. Used for the OMOP therapy regimen/component levels, whose
- *  `value` is concept_ids with no `options` map. */
-export function formatOmopConcepts(
-  value: unknown,
-  concepts: NonNullable<TrialDetailField["omopConcepts"]>,
-): string {
-  const byCode = new Map(concepts.map((c) => [String(c.code), c.title]));
-  const ids = Array.isArray(value) ? value : value == null || value === "" ? [] : [value];
-  const parts = ids
-    .filter((v) => v != null && v !== "")
-    .map((v) => byCode.get(String(v)) ?? UNRESOLVED_CONCEPT_LABEL);
-  return parts.length ? parts.join(", ") : "—";
+/** What the page knows about editing, handed down to every row.
+ *
+ *  `fields` undefined means the answer has not arrived (or the host supplied
+ *  no writer): no row draws a control, and the table reads exactly as it does
+ *  today. */
+export interface RowEditing {
+  fields?: WritableFields;
+  /** Queue it. Returns at once and never rejects — what happened arrives
+   *  through `outstanding` and `failed`. */
+  save: (field: string, value: unknown) => void;
+  /** What the reader chose, for fields whose write has not come back. The row
+   *  shows this instead of the record's value, because the record does not
+   *  hold it yet and showing the old one reads as an edit that did nothing. */
+  outstanding: Record<string, unknown>;
+  /** The value that was refused, by field — so the editor can open on what
+   *  the reader typed rather than making them find it again. */
+  failed: Record<string, unknown>;
 }
 
-function EligibilityRow({ field }: { field: TrialDetailField }) {
+/** The fields whose last write was refused, named the way the reader saw them.
+ *
+ *  Only the ones no row will speak for. A row that carries the control paints
+ *  its own refusal in place, and saying it twice is worse than saying it once.
+ *  But a subform input is by construction a DIFFERENT attribute from the row
+ *  that opened the dialog, so a refusal there had nowhere to appear at all
+ *  once the dialog was closed — and a write that vanishes with nothing said is
+ *  the failure this whole phase was built to prevent, reached through the one
+ *  surface the reader can shut.
+ *
+ *  Labels come from the payload rather than the canonical names, because
+ *  `serum_calcium_level` is not what the reader was looking at when they
+ *  typed. A field with no label to find is still named: leaving it out would
+ *  under-report the failure to keep the sentence tidy.
+ */
+function failedFieldLabels(
+  fields: TrialDetailField[],
+  failed: Record<string, unknown>,
+  editableRows: Set<string>,
+  openHere: Set<string>,
+  descriptor?: WritableFields,
+): string[] {
+  const names = Object.keys(failed);
+  if (names.length === 0) return [];
+  const labels = new Map<string, string>();
+  const spokenFor = new Set<string>();
+  for (const field of fields) {
+    if (field.upatientField) {
+      labels.set(field.upatientField, field.label);
+      // The write lands in another field for two shapes: an alias names its
+      // canonical, and a negated view names the positive status. The queue
+      // reports a refusal under THAT name, so the row's label has to answer
+      // for both or the sentence loses the only name the reader recognises.
+      const entry = descriptor?.[field.upatientField];
+      const target =
+        (entry?.kind === "alias" || entry?.kind === "negated")
+        && typeof entry.canonical === "string"
+          ? entry.canonical
+          : null;
+      if (target) labels.set(target, field.label);
+      // A row that carries the control says so itself, in place. Repeating it
+      // up here would put two alerts on screen about one refusal.
+      if (editableRows.has(field.name)) {
+        spokenFor.add(field.upatientField);
+        if (target) spokenFor.add(target);
+      }
+    }
+    for (const entry of field.subform_details ?? []) {
+      if (entry.upatientField) labels.set(entry.upatientField, entry.label);
+    }
+  }
+  return names
+    .filter((name) => !spokenFor.has(name) && !openHere.has(name))
+    // A name with no label is not on this page. `failed` belongs to the
+    // PATIENT's queue, which outlives any one trial, so a refusal from the
+    // trial the reader was looking at a minute ago would otherwise be
+    // announced on this one — under a canonical name nothing here shows.
+    .filter((name) => labels.has(name))
+    .map((name) => labels.get(name)!);
+}
+
+/** Which rows may carry an edit control.
+ *
+ *  Two rows in three can name the same patient attribute, because `ufield` is
+ *  copied verbatim onto every row a config entry produces — a min and a max,
+ *  and a "× upper limit of normal" pair beside them. Left alone that draws
+ *  several pencils for one value, and the ×ULN one is actively wrong: the
+ *  number on screen is a RATIO, so editing "2.5" would write 2.5 into the
+ *  absolute lab column.
+ *
+ *  `ureadonly` marks exactly the rows that must not take a plain box — the
+ *  ×ULN pair sets it outright, and it is otherwise true for a computed row or
+ *  one whose value is composed in a subform (those need the dialog, which is
+ *  the next slice). Of what is left, the first row to name an attribute keeps
+ *  the control and the rest go back to reading as they do today; a min and a
+ *  max show the same value, so which one wins does not matter, only that one
+ *  does.
+ */
+function editableRowNames(fields: TrialDetailField[]): Set<string> {
+  const taken = new Set<string>();
+  const rows = new Set<string>();
+  for (const field of fields) {
+    const attribute = field.upatientField;
+    // `upatientRecomputed` is the one refusal PROMOP cannot give: it will
+    // take the write, and EXACT will replace the value from its inputs before
+    // the next match is scored. Accepted, undone, no error — which reads to
+    // the patient as an edit that did nothing.
+    if (!attribute || field.ureadonly || field.upatientRecomputed) continue;
+    if (taken.has(attribute)) continue;
+    taken.add(attribute);
+    rows.add(field.name);
+  }
+  return rows;
+}
+
+/** Which rows may offer the subform door.
+ *
+ *  One per attribute, for the reason the pencils are: a ULN group is three
+ *  rows — the pair and the range — carrying the SAME `subform_details`, so
+ *  left alone the reader is offered the same dialog three times in a column
+ *  and has to wonder which one is theirs.
+ */
+function subformRowNames(fields: TrialDetailField[]): Set<string> {
+  // Every row that carries entries gets its own trigger. Two rows can carry the
+  // same dialog (a threshold and the therapy group both list the therapy
+  // history), and hiding one of them leaves the reader looking at the row they
+  // clicked with no way in. The trigger is per ROW, not per group: it opens what
+  // that row is worked out from.
+  return new Set(
+    fields.filter((field) => field.subform_details?.length).map((field) => field.name),
+  );
+}
+
+function EligibilityRow({
+  field,
+  editing,
+  editableHere,
+  subformHere,
+  openSubform,
+  onSubformOpen,
+}: {
+  field: TrialDetailField;
+  editing?: RowEditing;
+  editableHere?: boolean;
+  subformHere?: boolean;
+  openSubform?: string | null;
+  onSubformOpen?: (name: string | null) => void;
+}) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
-  const required = field.omopConcepts?.length
-    ? formatOmopConcepts(field.value, field.omopConcepts)
-    : formatValue(field.value, field.options);
-  const yours = formatValue(field.uvalue, field.uoptions ?? field.options);
+  // The trial placed no constraint on this attribute, so it was never
+  // checked. Said out loud rather than left blank: a row with no tick and no
+  // mismatch mark reads the same as one the reader simply has no data for,
+  // and those are different — one is a gap they could close, the other is
+  // not a requirement at all.
+  const notEvaluated = field.matchingType === "not_evaluated";
+  const required = formatValue(field.value, field.options);
+  // `edit` puts a control on screen; `no` may put a sentence there. PROMOP's
+  // own `reason` strings never reach it — they are written for whoever is
+  // integrating, and one points at `docs/omop_to_patientrecord.md`. What the
+  // reader sees is curated wording from two tables in `writable.ts`, and a
+  // refusal with no entry in either stays silent.
+  const [editorOpen, setEditorOpen] = useState(false);
+  const subformOpen = openSubform === field.name;
+  const canOpenSubform =
+    Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
+  const editable =
+    editing && editableHere
+      ? editabilityOf(field.upatientField, editing.fields, {
+          // EXACT ships some value sets on the row itself; without this the
+          // editor asks PROMOP, gets nothing, and draws a text box over a
+          // column the matcher reads as a list of codes.
+          //
+          // `uoptions` alone, though the cell above displays through
+          // `uoptions ?? options`. The bare `options` is the TRIAL's
+          // vocabulary for its own requirement, and offering it as answers
+          // the PATIENT can give is how a trial's value ends up in a
+          // patient's record.
+          type: field.utype,
+          options: field.uoptions,
+        })
+      : ({ can: "unknown" } as const);
+  // The queue is keyed by the field the write LANDS IN, not by the row's own
+  // attribute: an alias writes its canonical field and a negated view writes
+  // the positive one, so a pending or refused value under the row's name
+  // would never be found. `editable.field` is that name, and for a negated
+  // view the value crosses a polarity boundary in both directions.
+  const attribute =
+    editableHere && editable.can === "edit" ? editable.field : null;
+  const inverted = editableHere && editable.can === "edit" && editable.invert;
+  const pendingValue =
+    attribute && editing && attribute in editing.outstanding
+      ? inverted
+        ? invertBoolean(editing.outstanding[attribute])
+        : editing.outstanding[attribute]
+      : undefined;
+  const writePending = attribute != null && editing != null
+    && attribute in editing.outstanding;
+  const writeFailed = Boolean(attribute && editing && attribute in editing.failed);
+  // The reader's own value wins over the record's while a write is out. Not
+  // cosmetic: the record genuinely does not hold it yet, and showing the old
+  // one for as long as that takes reads as a save that did not take.
+  // Only the row that carries the control carries its optimistic value. The
+  // others name the same attribute — a min, a max, and a "× upper limit of
+  // normal" pair — and the ×ULN row shows a RATIO, so painting the written
+  // number there would put a clinically false figure on screen, briefly, in a
+  // table a patient reads.
+  const yours = formatValue(
+    writePending ? pendingValue : field.uvalue,
+    field.uoptions ?? field.options,
+  );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
 
   return (
@@ -129,18 +394,271 @@ function EligibilityRow({ field }: { field: TrialDetailField }) {
             <CheckIcon />
           </span>
         ) : null}
+        {notEvaluated ? (
+          <span className="exact-elig__note">not a requirement of this trial</span>
+        ) : null}
       </div>
       <div
         className={`exact-elig__cell${notMatched ? " is-mismatch" : ""}`}
         data-col="yours"
       >
         <span className="exact-elig__colhdr">Your Value</span>
-        <span className="exact-elig__val">{renderMd(yours)}</span>
-        {field.uunits ?? field.units ? (
-          <span className="exact-elig__units">{field.uunits ?? field.units}</span>
+        {/* The editor stands in for the value while it is open, rather than
+            beside it: this column can be a few characters wide, and showing
+            the old value next to the box that is replacing it is a question
+            nobody should have to answer. */}
+        {editorOpen ? null : (
+          <>
+            <span className="exact-elig__val">{renderMd(yours)}</span>
+            {field.uunits ?? field.units ? (
+              <span className="exact-elig__units">{field.uunits ?? field.units}</span>
+            ) : null}
+          </>
+        )}
+        {/* A mismatch was marked in red and nowhere else, while the register
+            card below tells the reader the mismatches are marked above. For
+            anyone not seeing the colour that was a promise the page did not
+            keep.
+
+            After the units, where the matched cell puts its tick: before
+            them it split the value from its unit — "12 ✕ years", read out
+            as "12, does not match, years". */}
+        {notMatched && !editorOpen ? (
+          <span className="exact-elig__mismatch" aria-label="does not match">
+            ✕
+          </span>
+        ) : null}
+        {/* Said out loud, not left to silence, in the two cases `announce`
+            names: a control EXACT took away, and a write PROMOP routes to
+            another resource. Both sentences are EXACT's own. The rows the
+            descriptor merely refuses stay quiet — they never offered a
+            control, so nothing went missing, and a sentence on each of the
+            114 is noise.
+
+            No `!editorOpen` guard. `FieldEdit` only renders under
+            `can === "edit"`, so the editor cannot be open on a row that shows
+            this — except after a verdict flips edit→no while it is open, and
+            `FieldEdit` never clears the flag on unmount. In exactly that case
+            the value and units above are suppressed too, so guarding here
+            would leave the cell showing its column header and nothing else. */}
+        {editable.can === "no" && editable.announce ? (
+          <span className="exact-elig__note">{editable.why}</span>
+        ) : null}
+        {writePending ? (
+          <span className="exact-elig__saving">Saving…</span>
+        ) : null}
+        {writeFailed ? (
+          <span className="exact-elig__error" role="alert">
+            Couldn't save that. Your value is not in the record.
+          </span>
+        ) : null}
+        {/* A computed row cannot be written, but what it is computed FROM
+            can — and the payload names those values. Offered only where at
+            least one of them is actually writable: a dialog listing four
+            values none of which can be changed is a door onto a wall, which
+            is what the therapy groups would be. */}
+        {canOpenSubform ? (
+          <button
+            type="button"
+            className="exact-elig__edit"
+            aria-label={`Change what ${field.label} is worked out from`}
+            title={`Change what ${field.label} is worked out from`}
+            onClick={() => onSubformOpen?.(field.name)}
+          >
+            <PencilIcon />
+          </button>
+        ) : null}
+        {subformOpen && editing && field.subform_details ? (
+          <SubformDialog
+            field={field}
+            entries={field.subform_details}
+            editing={editing}
+            onClose={() => onSubformOpen?.(null)}
+          />
+        ) : null}
+        {editable.can === "edit" && editing ? (
+          <FieldEdit
+            field={editable.field}
+            label={field.label}
+            entry={editable.entry}
+            options={editable.options}
+            joined={editable.joined}
+            control={editable.control}
+            // A refused value wins over the record's: the reader is about to
+            // try again, and the thing they want in the box is what they
+            // typed.
+            value={
+              writeFailed && attribute
+                ? inverted
+                  ? invertBoolean(editing.failed[attribute])
+                  : editing.failed[attribute]
+                : writePending
+                  ? pendingValue
+                  : field.uvalue
+            }
+            // The record's own value, with neither of those in front of it.
+            recordValue={field.uvalue}
+            units={field.uunits ?? field.units}
+            // A negated view crosses the polarity boundary here: the box holds
+            // the row's answer ("No HIV: Yes"), and the record stores the
+            // positive status with the opposite value.
+            onSave={(value) =>
+              editing.save(
+                editable.field,
+                editable.invert ? invertBoolean(value) : value,
+              )
+            }
+            onOpenChange={setEditorOpen}
+          />
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** The interest button, drawn twice as CB draws it: in the header beside the
+ *  bookmark (CB's `TrialActions`) and in the card at the foot of the page.
+ *  One component, so the two cannot disagree about what a click does. */
+function RegisterButton({
+  isRegistered,
+  pending,
+  onToggle,
+  describedBy,
+}: {
+  isRegistered: boolean;
+  pending: boolean;
+  onToggle: (next: boolean) => void;
+  /** The header copy points at the card's explanation, so a screen reader's
+   *  list of buttons does not show two bare "I'm Interested" entries. */
+  describedBy?: string;
+}) {
+  return (
+    // CB's button carries a "?" and a hover tooltip; the tooltip is read out
+    // through `aria-describedby`, and the glyph is decoration.
+    <ActionTooltip text={isRegistered ? ACTION_TOOLTIPS.registered : ACTION_TOOLTIPS.registerInterest}>
+      {(tipId) => (
+        <button
+          type="button"
+          className={`exact-register__btn${isRegistered ? " is-on" : ""}`}
+          // `aria-disabled`, not `disabled`: a control that disables itself
+          // under the pointer is blurred by the browser, dropping a keyboard
+          // user to the document body in the middle of the action they just
+          // took. Announced here, enforced in one place — `TrialMatches`'s
+          // `write` drops a click for a trial whose write is still on the
+          // wire, and two PATCHes in flight are applied in whatever order
+          // they arrive.
+          aria-disabled={pending || undefined}
+          aria-busy={pending || undefined}
+          aria-describedby={[tipId, describedBy].filter(Boolean).join(" ")}
+          onClick={() => onToggle(!isRegistered)}
+        >
+          {pending ? "Saving…" : isRegistered ? "Withdraw" : "I'm Interested"}
+          <span className="exact-register__help" aria-hidden="true">
+            ?
+          </span>
+        </button>
+      )}
+    </ActionTooltip>
+  );
+}
+
+/** CB's RegisterInterestCard, with CB's promise removed.
+ *
+ *  CB tells the reader "a study coordinator will reach out to discuss next
+ *  steps". Here that would be false: registering writes a status onto the
+ *  patient's enrollment row in PROMOP and nothing else happens — no mail,
+ *  no queue, nobody notified. So the copy says what the click actually does
+ *  and says explicitly what it does not do. Whether it should eventually do
+ *  more is a product decision that has not been taken.
+ *
+ *  What IS kept from CB is #4669: when the matcher says not_eligible, the
+ *  card must not open by telling someone they may be eligible — and it goes
+ *  on saying so after they register, which is when it matters most.
+ */
+function RegisterInterest({
+  advancedStatus,
+  notEligible,
+  mismatchesShown,
+  isRegistered,
+  pending,
+  failed,
+  onToggle,
+  textId,
+}: {
+  advancedStatus?: AdvancedStatus;
+  notEligible: boolean;
+  /** Whether the table above actually lists a mismatched row.
+   *
+   *  It often does not: `matchingType` is decided over every mapped
+   *  attribute, while the table is the filtered "potential attributes"
+   *  view, which drops admin and general groups, blank values and select
+   *  values absent from their own options. Pointing at rows that are not
+   *  there — or at an empty table, which the endpoint does return — was a
+   *  claim the page could not keep. */
+  mismatchesShown: boolean;
+  isRegistered: boolean;
+  pending: boolean;
+  failed: boolean;
+  onToggle: (next: boolean) => void;
+  /** Id for the explanation, which the header's copy of the button cites. */
+  textId?: string;
+}) {
+  if (advancedStatus) {
+    return (
+      <section className="exact-panel exact-register is-registered">
+        <h2 className="exact-panel__title">
+          {advancedStatus === "completed"
+            ? "Your participation in this trial is recorded as completed"
+            : "You are recorded as taking part in this trial"}
+        </h2>
+        <p className="exact-register__text">
+          Your study team keeps this up to date, so it is not something to
+          change here. Speak to them if it looks wrong.
+        </p>
+      </section>
+    );
+  }
+
+  const heading = isRegistered
+    ? "You registered interest in this trial"
+    : notEligible
+      ? "You may not meet this trial's eligibility criteria"
+      : "Interested in this trial?";
+
+  // Deliberately NOT "listed on the Registered tab": that tab asks for
+  // `status=registered` exactly, so a patient a coordinator has advanced to
+  // `entered` is no longer on it (#434). Note that the same narrow query
+  // decides `isRegistered`, so such a patient does not reach this branch at
+  // all — they are invited to register for a trial they are already in.
+  // That is #434 itself and is not fixed here; what is fixed is this
+  // sentence not adding a second false claim on top of it.
+  const state = isRegistered
+    ? "It is marked in your record, and you can withdraw at any time."
+    : "Registering marks this trial in your record, where you can find it again.";
+  const mismatch = !notEligible
+    ? ""
+    : mismatchesShown
+      ? " One or more of this trial's requirements does not match your profile — the ones in the eligibility table are marked."
+      : " One or more of this trial's requirements does not match your profile.";
+
+  return (
+    <section
+      className={`exact-panel exact-register${notEligible ? " is-warning" : ""}${
+        isRegistered ? " is-registered" : ""
+      }`}
+    >
+      <h2 className="exact-panel__title">{heading}</h2>
+      <p className="exact-register__text" id={textId}>
+        {state}
+        {mismatch} Nothing is sent to the trial's coordinators from here.
+      </p>
+      <RegisterButton isRegistered={isRegistered} pending={pending} onToggle={onToggle} />
+      {/* Not an alert: the header says it too, where the reader most likely
+          clicked, and one failure should be announced once. */}
+      {failed ? (
+        <p className="exact-register__error">Couldn't save that. Please try again.</p>
+      ) : null}
+    </section>
   );
 }
 
@@ -185,6 +703,8 @@ export function TrialDetailPage({
   personId,
   filters,
   onBack,
+  trialState,
+  editing,
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
@@ -195,10 +715,81 @@ export function TrialDetailPage({
   const query = useTrialDetail({ apiClient, trialId, patientInfo, personId, filters });
   const data = query.data;
 
+  // Only MCL trials that gate on the criteria carry one; for everything else
+  // the server sends null and none of the below runs.
+  const mcl = data?.highRiskMclCriteriaBreakdown ?? null;
+  const formSettings = useFormSettings(
+    apiClient,
+    typeof patientInfo?.disease === "string" ? patientInfo.disease : undefined,
+    mcl != null,
+  );
+  const mclTitle = useMemo(() => {
+    const byCode = new Map<string, string>();
+    for (const o of formSettings.data?.highRiskMclCriteria?.options ?? []) {
+      byCode.set(String(o.value), o.label);
+    }
+    // Falls back to the CODE, not to a prettified version of it. `tp53_mutation`
+    // is at least honest about being an identifier; "Tp53 Mutation" reads as a
+    // clinical label the catalog never wrote, and the catalog is the one place
+    // allowed to name these.
+    return (code: string) => byCode.get(code) ?? code;
+  }, [formSettings.data]);
+  // Held until the catalog answers — success or failure. The fetch is gated on
+  // the breakdown having already arrived, so without this the code fallback is
+  // the NORMAL first paint rather than the edge case it was written for: every
+  // reader would see `tp53_mutation` for one round-trip before it became
+  // "TP53 mutation". A failed fetch still settles, so the fallback keeps its
+  // intended meaning — the catalog does not name this code.
+  const mclNamesSettled = formSettings.isFetched;
+
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
+  const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
+  const subformRows = useMemo(() => subformRowNames(eligibility), [eligibility]);
+  // Which row's dialog is open, if any. Held here rather than in the row so
+  // the notice below can stay quiet about what an open dialog is already
+  // saying to the reader's face.
+  const [openSubform, setOpenSubform] = useState<string | null>(null);
+  const openSubformFields = useMemo(() => {
+    const row = eligibility.find((field) => field.name === openSubform);
+    return new Set(
+      (row?.subform_details ?? [])
+        .map((entry) => entry.upatientField)
+        .filter((name): name is string => Boolean(name)),
+    );
+  }, [eligibility, openSubform]);
+  const failedLabels = useMemo(
+    () =>
+      failedFieldLabels(
+        eligibility,
+        editing?.failed ?? {},
+        editableRows,
+        openSubformFields,
+        editing?.fields,
+      ),
+    [eligibility, editing?.failed, editing?.fields, editableRows, openSubformFields],
+  );
   const summary = data
     ? data.laySummary || data.briefSummary || data.participationCriteria || ""
     : "";
+
+  // CB's own rule (#4669), and the same field: the detail endpoint scores
+  // the trial with the conflict-aware matcher and can answer not_eligible.
+  const notEligible = data?.matchingType === "not_eligible";
+  const canRegister =
+    trialState?.onToggleRegistered != null && trialState.isRegistered !== undefined;
+  // Worked out once for both copies of the interest button, so the header and
+  // the card cannot be handed different answers.
+  const registerButton = canRegister
+    ? {
+        isRegistered: trialState!.isRegistered!,
+        pending: trialState?.registerPending ?? false,
+        onToggle: trialState!.onToggleRegistered!,
+      }
+    : null;
+  const showHeaderRegister = registerButton != null && !trialState!.advancedStatus;
+  // Whether the table actually lists a mismatch; see `RegisterInterest`.
+  const mismatchesShown = eligibility.some((f) => f.matchingType === "not_matched");
+  const registerTextId = useId();
 
   return (
     <div className="exact-root exact-detail">
@@ -212,21 +803,86 @@ export function TrialDetailPage({
       ) : null}
 
       {query.isError ? (
-        <p style={{ color: "var(--exact-color-not-eligible)" }}>
-          Failed to load trial: {(query.error as Error)?.message ?? "unknown error"}
+        /* A 404 is not a failure to report as one. With the host keeping the
+         * trial in its URL (#552), this page is reachable by typing — and
+         * `/trials/nonsense` answering "Failed to load trial: Request failed
+         * with status code 404" reads as something broken here rather than
+         * an address that names no trial. Anything else keeps the message
+         * it came with, because that one IS about us. */
+        <p role="alert" style={{ color: "var(--exact-color-error-700)" }}>
+          {(query.error as { response?: { status?: number } })?.response?.status === 404
+            ? "We could not find that trial. It may have been withdrawn, or the address may be wrong."
+            : `Failed to load trial: ${(query.error as Error)?.message ?? "unknown error"}`}
         </p>
       ) : null}
 
       {data ? (
         <>
-          <h1 className="exact-detail__title">{data.briefTitle}</h1>
+          <div className="exact-detail__head">
+            <h1 className="exact-detail__title">{data.briefTitle}</h1>
+            {/* CB's `TrialActions`: bookmark, then the interest button. A
+                trial the study team has advanced gets no button here; the
+                card below says why. */}
+            <div className="exact-detail__actions">
+              <FavoriteToggle
+                title={data.briefTitle}
+                isFavorite={trialState?.isFavorite}
+                onToggle={trialState?.onToggleFavorite}
+                busy={trialState?.favoriteBusy}
+                boxed
+              />
+              {showHeaderRegister ? (
+                <RegisterButton {...registerButton!} describedBy={registerTextId} />
+              ) : null}
+            </div>
+          </div>
+          {/* CB's rule (#4669) followed up here as well: the header's green
+              button must not read as "you may be eligible" when the matcher
+              says otherwise, and the card saying so is at the foot of the
+              page. A statement, not an alert — it is there on load. */}
+          {showHeaderRegister && notEligible ? (
+            <p className="exact-detail__eligibility-warning">
+              You may not meet this trial's eligibility criteria
+              {mismatchesShown
+                ? " — the requirements that do not match are marked in the table below."
+                : "."}
+            </p>
+          ) : null}
+          {/* Not gated on the button: an advanced status that arrives after a
+              refused write swaps the card for a statement that shows no
+              failure, and this line is then the only place it is said. */}
+          {registerButton && trialState?.registerFailed ? (
+            <p className="exact-register__error exact-detail__register-error" role="alert">
+              Couldn't save that. Please try again.
+            </p>
+          ) : null}
+
+          {/* Same three failures the list reports, and for the same reason:
+              painted from a server list, a rejected write and a rejected read
+              both look exactly like a control that does nothing. */}
+          {trialState?.favoritesUnavailable ? (
+            <p style={{ color: "var(--exact-color-not-eligible)" }}>
+              Couldn't load your favorites, so bookmarking is unavailable right
+              now.
+            </p>
+          ) : null}
+          {trialState?.favoriteFailed ? (
+            <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+              Couldn't update your favorites. Please try again.
+            </p>
+          ) : null}
 
           <div className="exact-detail__scores">
-            <ScorePill score={data.matchScore} label="Matching Score" />
+            <ScorePill
+              score={data.matchScore}
+              label="Matching Score"
+              tooltip={ACTION_TOOLTIPS.matchingScore}
+            />
             <ScorePill
               score={data.goodnessScore}
               label="Suitability Score"
               href={SUITABILITY_HREF}
+              tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
 
@@ -252,16 +908,40 @@ export function TrialDetailPage({
             </div>
           </div>
 
+          {/* OUTSIDE the grid, which is a flex ROW from 768px up. As a child
+              it became a third column, taking most of the page width from the
+              eligibility table beside it and pushing the document into
+              horizontal overflow at every breakpoint. Deliberately no pixel
+              figures here: three separate measurements of the before-state
+              disagreed, because each harness carried different page chrome,
+              and a number in a comment outlives the harness that produced it.
+              The mechanism is what reproduces. jsdom does no layout, so no
+              test in either suite can see any of this. */}
+          {failedLabels.length ? (
+            <p className="exact-detail__write-error" role="alert">
+              {failedLabels.length === 1
+                ? `Your ${failedLabels[0]} could not be saved.`
+                : `These could not be saved: ${failedLabels.join(", ")}.`}{" "}
+              The record still holds what it had. Open the field and try again.
+            </p>
+          ) : null}
+
           <div className="exact-detail__grid">
             {summary ? (
               <section className="exact-panel exact-detail__summary">
-                <h2 className="exact-panel__title">Summary</h2>
+                <div className="exact-panel__head">
+                  <h2 className="exact-panel__title">Summary</h2>
+                  <FieldTooltip text={ACTION_TOOLTIPS.summary} />
+                </div>
                 <p className="exact-detail__summary-text">{summary}</p>
               </section>
             ) : null}
 
             <section className="exact-panel exact-detail__elig">
-              <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
+              <div className="exact-panel__head">
+                <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
+                <FieldTooltip text={ACTION_TOOLTIPS.eligibilityAttributes} />
+              </div>
               {eligibility.length ? (
                 <div className="exact-elig">
                   <div className="exact-elig__thead" aria-hidden="true">
@@ -270,7 +950,15 @@ export function TrialDetailPage({
                     <div className="exact-elig__thead-col">Your Value</div>
                   </div>
                   {eligibility.map((field) => (
-                    <EligibilityRow key={field.name} field={field} />
+                    <EligibilityRow
+                      key={field.name}
+                      field={field}
+                      editing={editing}
+                      editableHere={editableRows.has(field.name)}
+                      subformHere={subformRows.has(field.name)}
+                      openSubform={openSubform}
+                      onSubformOpen={setOpenSubform}
+                    />
                   ))}
                 </div>
               ) : (
@@ -280,6 +968,28 @@ export function TrialDetailPage({
               )}
             </section>
           </div>
+
+          {mcl && mclNamesSettled ? (
+            <HighRiskMclPanel breakdown={mcl} titleOf={mclTitle} />
+          ) : null}
+
+          {registerButton ? (
+            <RegisterInterest
+              {...registerButton}
+              advancedStatus={trialState!.advancedStatus}
+              notEligible={notEligible}
+              mismatchesShown={mismatchesShown}
+              failed={trialState?.registerFailed ?? false}
+              textId={registerTextId}
+            />
+          ) : null}
+
+          {trialState?.registeredUnavailable ? (
+            <p style={{ color: "var(--exact-color-not-eligible)" }}>
+              Couldn't load whether you have registered interest in this trial,
+              so that control is unavailable right now.
+            </p>
+          ) : null}
         </>
       ) : null}
     </div>

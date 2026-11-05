@@ -319,9 +319,13 @@ class TestLabValueFallbacks:
         result = _normalize_promop_row(_row(ldh_u_l=300))
         assert result['lactate_dehydrogenase_level'] == 300
 
-    def test_ldh_existing_not_overridden(self):
+    def test_ldh_existing_is_replaced_by_the_canonical_mirror(self):
+        """#557: PROMOP declares `lactate_dehydrogenase_level` an alias of
+        `ldh_u_l`, `writable: false`, so the direct column is a read-only
+        mirror. Taking it whenever it was non-empty meant matching on whatever
+        stood there before the write; the canonical reading wins."""
         result = _normalize_promop_row(_row(lactate_dehydrogenase_level=250, ldh_u_l=300))
-        assert result['lactate_dehydrogenase_level'] == 250
+        assert result['lactate_dehydrogenase_level'] == 300
 
 
 # ---------------------------------------------------------------------------
@@ -520,3 +524,4 @@ class TestReceptorStatusAliases:
     def test_ethnicity_white_maps_to_caucasian(self, _mock):
         result = _normalize_promop_row(_row(ethnicity='White'))
         assert result['ethnicity'] == 'caucasian_or_european'
+

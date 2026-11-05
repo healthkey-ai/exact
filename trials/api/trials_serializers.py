@@ -116,7 +116,26 @@ class TrialSerializer(serializers.ModelSerializer):
                 response['distance'] = None
                 response['distanceUnits'] = None
 
-        response['matchingType'] = 'eligible' if not attrs_to_fill_in else 'potential'
+        # `not_eligible` reaches this branch from one place only: a saved-ids
+        # search that kept a trial the eligibility filter would have dropped
+        # (#568). The id set comes from that filter itself, so the mark and
+        # the omission are the same judgement.
+        unmatched = self.context.get('unmatched_trial_ids') or frozenset()
+        not_eligible = patient_info is not None and instance.id in unmatched
+        response['matchingType'] = (
+            'not_eligible'
+            if not_eligible
+            else ('eligible' if not attrs_to_fill_in else 'potential')
+        )
+
+        # And the score that goes with that verdict. `match_score` here is the
+        # SQL annotation counting which criteria could be EVALUATED; it never
+        # compares values, so a trial the patient conflicts with still scores
+        # 100. `0`, not `null`: `match_score_and_status` returns the pair
+        # `(0, 'not_eligible')` unconditionally, and it is what the detail
+        # endpoint sends for the same trial.
+        if not_eligible:
+            response['matchScore'] = 0
 
         if self.context.get('explain') and patient_info:
             from trials.services.trial_match_explainer import TrialMatchExplainer

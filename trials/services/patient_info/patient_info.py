@@ -200,9 +200,14 @@ _FIELDS = [
     _f(CharField, 'substance_use_details', max_length=255),
     _f(BooleanField, 'no_geographic_exposure_risk', default=True),
     _f(CharField, 'geographic_exposure_risk_details', max_length=255),
-    _f(BooleanField, 'no_hiv_status', default=True),
-    _f(BooleanField, 'no_hepatitis_b_status', default=True),
-    _f(BooleanField, 'no_hepatitis_c_status', default=True),
+    # Negated views of the positive viral statuses. No default: PROMOP removed
+    # the stored negatives (#2119), and the old `default=True` claimed "No HIV"
+    # for every patient who had never answered (#5663). `promop_adapter` fills
+    # them from the positive field; absent stays None, which the matcher reads
+    # as unknown rather than as an answer.
+    _f(BooleanField, 'no_hiv_status'),
+    _f(BooleanField, 'no_hepatitis_b_status'),
+    _f(BooleanField, 'no_hepatitis_c_status'),
     _f(BooleanField, 'no_active_infection_status', default=True),
     _f(TextField, 'concomitant_medications'),
     _f(DateField, 'concomitant_medication_date'),

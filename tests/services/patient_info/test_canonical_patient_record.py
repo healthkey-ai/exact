@@ -16,6 +16,7 @@ from trials.services.patient_info.promop_adapter import (
     build_patient_info_from_promop_row,
     normalize_promop_row,
 )
+from trials.services.patient_info.resolve import MalformedPatientValue
 from trials.services.trial_details.trial_attributes import TrialAttributes
 from trials.services.patient_info.resolve import _build_in_memory
 from trials.api.patient_info_serializers import GraphPatientInfoSerializer, PatientInfoSerializer
@@ -62,7 +63,17 @@ def test_canonical_fallbacks_preserve_zero_and_pair_units(target, source, unit, 
     assert normalize_promop_row(dict(row)) == row
 
 
-@pytest.mark.parametrize('target,source,unit,scale', FALLBACKS)
+#: Pairs whose EXACT-named column is authoritative. LDH is excluded: PROMOP
+#: declares `lactate_dehydrogenase_level` a read-only mirror of `ldh_u_l`
+#: (#557), so a zero standing in the mirror is exactly the stale value the
+#: canonical column exists to replace.
+DIRECT_IS_AUTHORITATIVE = tuple(
+    fallback for fallback in FALLBACKS
+    if fallback[0] != 'lactate_dehydrogenase_level'
+)
+
+
+@pytest.mark.parametrize('target,source,unit,scale', DIRECT_IS_AUTHORITATIVE)
 def test_reliable_direct_zero_wins_over_fallback(target, source, unit, scale):
     row = {target: 0, source: 12}
     if unit is not None:
@@ -99,7 +110,9 @@ def test_blank_and_zero_direct_values_through_dto(disease, builder, direct):
         'lactate_dehydrogenase_level': direct, 'ldh_u_l': 300,
     })
     assert patient.hemoglobin_level == (0 if direct == 0 else 12)
-    assert patient.lactate_dehydrogenase_level == (0 if direct == 0 else 300)
+    # #557: LDH is a declared mirror, so the canonical column wins even over a
+    # direct zero — that zero is the mirror's stale copy, not a reading.
+    assert patient.lactate_dehydrogenase_level == 300
 
 
 @pytest.mark.parametrize('bad', [None, '', 'not a number', 'NaN', 'Infinity', '1e309', '1e308', '1e1000000', True, []])
@@ -213,14 +226,28 @@ def test_source_egfr_survives_creatinine_derivation(disease, egfr, source, build
 
 
 @pytest.mark.parametrize('bad', ['not a number', [], {}, True, 'NaN', 'Infinity'])
-@pytest.mark.parametrize('builder', BUILDERS)
-def test_invalid_source_egfr_does_not_block_valid_derivation(bad, builder):
-    patient = builder({
+def test_invalid_source_egfr_does_not_block_valid_derivation(bad):
+    """An UPSTREAM row: the unusable value is dropped and the derivation runs.
+
+    The reader cannot fix PROMOP, so this stays lenient (#594).
+    """
+    patient = build_patient_info_from_promop_row({
         'gender': 'M', 'patient_age': 20,
         'estimated_glomerular_filtration_rate': bad,
         'serum_creatinine_mg_dl': 0.8,
     })
     assert patient.estimated_glomerular_filtration_rate > 60
+
+
+@pytest.mark.parametrize('bad', ['not a number', [], {}, True, 'NaN', 'Infinity'])
+def test_a_malformed_inline_egfr_is_refused(bad):
+    """The inline caller typed it, so the value is named rather than dropped."""
+    with pytest.raises(MalformedPatientValue):
+        _federated_builder({
+            'gender': 'M', 'patient_age': 20,
+            'estimated_glomerular_filtration_rate': bad,
+            'serum_creatinine_mg_dl': 0.8,
+        })
 
 
 @pytest.mark.parametrize('codes', [[], ['diabetes'], ['diabetes', 'cardiac_disease']])

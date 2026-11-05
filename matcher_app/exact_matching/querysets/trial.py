@@ -1,5 +1,6 @@
 import itertools
 import re
+from collections.abc import Mapping, Set as AbstractSet
 from typing import TYPE_CHECKING
 
 from django.contrib.gis.db.models.functions import Distance
@@ -101,12 +102,52 @@ def get_recruitment_status_filter_values(recruitment_status):
 # ---------------------------------------------------------------------------
 
 
+# One value, split the same way everywhere it is read.
+#
+# There used to be two rules behind the dispatch table below: `_csv`, a bare
+# `value.split(",")`, for 16 fields, and `_csv_stripped` for 11 more. Two
+# rules over one table, and whichever you read first looks deliberate (#588).
+#
+# What the single rule fixes, measured against the producer: PROMOP
+# `", ".join(...)`s exactly two of those 16 — `staging_modalities` and
+# `protein_expressions`. A bare split keeps the space, so `"ct, mri"` arrived
+# as `["ct", " mri"]` and every value after the first matched nothing.
+#
+# Brackets are the other half: `inv(3)(q21,q26)` is ONE marker and a plain
+# split tears it into two tokens no vocabulary has heard of. The lookahead
+# holds a comma only INSIDE the parens; a comma in prose (a seeded stage
+# choice) is still torn exactly as before — the rule does not claim to fix
+# that shape.
+#
+# The shape contract is at both levels on purpose. A list stays a list (its
+# count is not changed); a non-string scalar is `str()`ed (a JSON `5` must not
+# become a TypeError); a container at either level is refused rather than
+# rendered into garbage tokens. Empty parts are kept: `eligible_for_required_lists`
+# reads `[]` as "apply no filter", so dropping them would widen a clinical
+# filter from "nothing required" to "every trial".
+#
+# Ported from cb-like-trials `a17617a` (#588). `_csv_stripped` remains as an
+# alias because the dispatch table and the federation contract still name it.
+_VALUE_SEPARATOR = re.compile(r",\s*(?![^()]*\))")
+
+
+def _one_value(part):
+    """One value, as a string. A container is not one value."""
+    if isinstance(part, (Mapping, AbstractSet, list, tuple)):
+        raise TypeError(f'a {type(part).__name__} is not a patient value')
+    return str(part).strip()
+
+
 def _csv(value):
-    return value.split(",") if value else []
+    """The values in a multi-valued column, as everything else reads them."""
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [_one_value(part) for part in value]
+    return [part.strip() for part in _VALUE_SEPARATOR.split(_one_value(value))]
 
 
-def _csv_stripped(value):
-    return [x.strip() for x in _csv(value)]
+_csv_stripped = _csv
 
 
 def _filter_languages_skills(scope, value, ctx):
@@ -352,7 +393,8 @@ class TrialQuerySet(models.QuerySet):
             query = query.filter(potential_attrs_count__gt=0)
         return query
 
-    def filtered_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None):
+    def filtered_trials(self, search_options, study_info, patient_info, add_traces=False, search_type=None,
+                        narrow_by_patient=True):
 
         # - USER attribute NOT NULL, TRIAL attribute NOT NULL - Trial is either
         #   ELIGIBLE or NOT ELIGIBLE based on values of this attribute
@@ -373,6 +415,19 @@ class TrialQuerySet(models.QuerySet):
         )
         if search_type in ['all', 'favorites', 'my_trials']:
             return query, study_traces
+        # `narrow_by_patient=False` keeps the reader's own filters and drops
+        # only the eligibility judgement — the one narrowing that answers
+        # "does this patient qualify". It exists for the saved-ids path, where
+        # a trial the patient bookmarked has to stay on the tab whose badge
+        # counts it even after they stop qualifying (#568); the caller labels
+        # those rows rather than hiding them.
+        #
+        # NOT `search_type='all'`, which reaches `filter_for_admin` — a
+        # deliberately different filter list that skips `by_location`, so a
+        # saved-ids search would silently stop honouring the country the
+        # reader is searching in.
+        if not narrow_by_patient:
+            return query, list(study_traces)
         query, patient_traces = query.filter_by_patient_info(patient_info, add_traces)
         return query, list(study_traces) + list(patient_traces)
 

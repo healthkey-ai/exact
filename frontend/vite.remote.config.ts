@@ -28,18 +28,18 @@ function devHarnessRedirect(): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiProxyTarget = env.VITE_EXACT_API_PROXY_TARGET || "http://localhost:8000";
-  // Two named PROMOP backends, each behind its own proxy path so the dev
+  // Two named CTOMOP backends, each behind its own proxy path so the dev
   // harness can flip between them via a tab without losing the staging
   // session when local is running. Mirror SoC's naming so the harness
   // ports cleanly.
-  const promopLocalTarget =
-    env.VITE_PROMOP_LOCAL_TARGET || "http://localhost:8001";
-  const promopStagingTarget =
-    env.VITE_PROMOP_STAGING_TARGET || "https://ctomop.onrender.com";
+  const ctomopLocalTarget =
+    env.VITE_CTOMOP_LOCAL_TARGET || "http://localhost:8001";
+  const ctomopStagingTarget =
+    env.VITE_CTOMOP_STAGING_TARGET || "https://ctomop.onrender.com";
 
   // Shared http-proxy cookie-rewrite. Strips Secure/SameSite=None and
   // rescopes Path=/ to the proxy mount point so plain-http localhost dev
-  // keeps a working session cookie AND PROMOP cookies don't leak to every
+  // keeps a working session cookie AND CTOMOP cookies don't leak to every
   // other localhost service.
   const makeCookieRewriter = (mountPath: string): ProxyOptions["configure"] => {
     const rewriteCookie = (raw: string): string =>
@@ -73,6 +73,12 @@ export default defineConfig(({ mode }) => {
           // Framework-agnostic mount for non-React hosts (HealthTree ONE).
           "./TrialMatchesBridge": "./src/federation/TrialMatchesBridge.tsx",
           "./types": "./src/federation/types.ts",
+          // The default per-user state adapter. Documented as "the
+          // implementation a host with a PROMOP client can just use" — and
+          // unusable as such while the build did not hand it over, which
+          // left a host to reimplement six methods against an API it would
+          // have to read this repository to learn.
+          "./state": "./src/federation/state.ts",
         },
         // Same singletons as SoC / hk-labs so a host that loads multiple
         // remotes shares one React tree and one query cache. No
@@ -128,24 +134,24 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: (p) => p.replace(/^\/api/, ""),
         },
-        // PROMOP proxies for the dev harness:
-        //   /promop-local/api/...   → http://localhost:8001
-        //   /promop-staging/api/... → https://ctomop.onrender.com
-        // Going same-origin via the proxy is the only path where PROMOP's
+        // CTOMOP proxies for the dev harness:
+        //   /ctomop-local/api/...   → http://localhost:8001
+        //   /ctomop-staging/api/... → https://ctomop.onrender.com
+        // Going same-origin via the proxy is the only path where CTOMOP's
         // SESSION_COOKIE_SECURE = True cookie survives a plain-http dev
         // loop. Set-Cookie is rewritten so the cookie scopes to the
         // proxy mount (sessions don't collide between local + staging).
-        "/promop-local": {
-          target: promopLocalTarget,
+        "/ctomop-local": {
+          target: ctomopLocalTarget,
           changeOrigin: true,
-          rewrite: (p) => p.replace(/^\/promop-local/, ""),
-          configure: makeCookieRewriter("/promop-local"),
+          rewrite: (p) => p.replace(/^\/ctomop-local/, ""),
+          configure: makeCookieRewriter("/ctomop-local"),
         },
-        "/promop-staging": {
-          target: promopStagingTarget,
+        "/ctomop-staging": {
+          target: ctomopStagingTarget,
           changeOrigin: true,
-          rewrite: (p) => p.replace(/^\/promop-staging/, ""),
-          configure: makeCookieRewriter("/promop-staging"),
+          rewrite: (p) => p.replace(/^\/ctomop-staging/, ""),
+          configure: makeCookieRewriter("/ctomop-staging"),
         },
       },
     },

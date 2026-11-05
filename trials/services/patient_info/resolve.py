@@ -98,8 +98,16 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
     """
     patient_info_data = _get_body_field(request, 'patient_info')
     if patient_info_data:
-        # The one caller that is a client, so the one that gets 400s.
-        return _build_in_memory(patient_info_data, strict=True)
+        # The one caller that is a client, so the one that gets 400s — and
+        # the only one that is told WHICH field it mistyped (#594).
+        try:
+            return _build_in_memory(patient_info_data, strict=True)
+        except MalformedPatientValue as wrong:
+            raise ValidationError({
+                _as_the_caller_wrote_it(
+                    patient_info_data, wrong.field_name,
+                ): wrong.as_message(),
+            })
 
     person_id = _extract_person_id(request)
     if person_id is not _MISSING:
@@ -329,6 +337,8 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 
 
     # Convert camelCase keys to snake_case if needed
     snake_data = _to_snake_case(data)
+    # Names the producer spells differently from EXACT's own column (#593).
+    snake_data = _apply_inbound_aliases(snake_data)
     # PROMOP's language booleans -> legacy codes/asked languages and, on the OMOP
     # path, concept pairs, before the field filter below drops them (#605, CB #5350).
     snake_data = translate_language_capabilities(snake_data)
@@ -346,9 +356,9 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 
             filtered.setdefault(name, None)
 
     # Coerce date strings from JSON into proper date objects
-    _coerce_dates(filtered, PatientInfo)
+    _coerce_dates(filtered, PatientInfo, strict)
     # Coerce numeric strings into proper numeric types (CB API can send "10.20" etc.)
-    _coerce_numerics(filtered, PatientInfo)
+    _coerce_numerics(filtered, PatientInfo, strict)
     # Normalise JSON 0/1 to bool so the matcher and the SQL pool agree on a
     # boolean restriction (see _coerce_booleans).
     _coerce_booleans(filtered, PatientInfo)
@@ -476,27 +486,143 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=()) -> 
     return pi
 
 
-def _coerce_dates(data: dict, model_cls):
-    """Parse ISO date strings into datetime.date for all DateField entries."""
+class MalformedPatientValue(ValueError):
+    """A value that cannot be its column's type.
+
+    Three answers for the same mistake used to follow from where it was read:
+    an inline client sending `'abc'` for an integer got a silent `None` (and
+    `eligible_for_min_max_value` returns the WHOLE scope on `None` — false
+    positives), `true` became `1`, and `''` reached the ORM as a 500.
+
+    A plain exception, not a DRF one: `_build_in_memory` has three callers and
+    only the inline payload can be blamed for the value — `resolve_patient_info`
+    translates it into a 400 naming the key the caller sent. An upstream row
+    and the batch commands keep the old drop-and-log behaviour.
+    """
+
+    def __init__(self, field_name: str, expected: str, value):
+        self.field_name = field_name
+        self.expected = expected
+        self.got = type(value).__name__
+        super().__init__(f'{field_name}: expected {expected}, got {self.got}.')
+
+    def as_message(self) -> str:
+        return (
+            f'Expected {self.expected}, got {self.got}. '
+            f'Send null or omit the field if it was not answered.'
+        )
+
+
+def _as_date(key: str, val):
+    """A date, a datetime narrowed to its date, or `MalformedPatientValue`.
+
+    Every `DateField` here is a date, but a producer may send a datetime:
+    `ctomop_adapter` calls `.isoformat()` on anything that is a `date`, and a
+    `datetime` IS one. Parsed as a datetime first and narrowed, so a producer
+    that sends the time of day is understood rather than refused.
+    """
+    if isinstance(val, dt.datetime):
+        return val.date()
+    if isinstance(val, dt.date):
+        return val
+    if isinstance(val, str):
+        text = val.strip()
+        for parse in (dt.date.fromisoformat, lambda t: dt.datetime.fromisoformat(t).date()):
+            try:
+                return parse(text)
+            except ValueError:
+                continue
+    raise MalformedPatientValue(key, 'an ISO date such as 2026-01-31', val)
+
+
+def _reject_malformed_number(field, val):
+    """Raise for a value that is not a number for this column (#594).
+
+    A BOOLEAN IS WRONG ON A NUMBER, though Python says `True` is an `int` and
+    the ORM would take it as 1. Nobody means one by `true`, and 1 is a
+    plausible enough PD-L1 percentage that nothing downstream looks odd.
+    """
+    if not _says_something(val):
+        return
+    # "a number", not "a whole number": the integer columns accept a decimal
+    # too (the lenient path has kept `10.2` for a long time).
+    expected = 'a number'
+    if isinstance(val, bool):
+        raise MalformedPatientValue(field.name, expected, val)
+    if isinstance(val, str):
+        try:
+            parsed = (
+                float(val) if isinstance(field, (IntegerField, FloatField))
+                else Decimal(val)
+            )
+        except (ValueError, TypeError, InvalidOperation):
+            raise MalformedPatientValue(field.name, expected, val)
+        if isinstance(parsed, float) and not isfinite(parsed):
+            raise MalformedPatientValue(field.name, expected, val)
+        if isinstance(parsed, Decimal) and not parsed.is_finite():
+            raise MalformedPatientValue(field.name, expected, val)
+        return
+    if isinstance(val, Decimal):
+        if not val.is_finite():
+            raise MalformedPatientValue(field.name, expected, val)
+        return
+    if isinstance(val, float):
+        if not isfinite(val):
+            raise MalformedPatientValue(field.name, expected, val)
+        return
+    if not isinstance(val, int):
+        raise MalformedPatientValue(field.name, expected, val)
+
+
+def _coerce_dates(data: dict, model_cls, strict: bool = False):
+    """Parse ISO date strings into datetime.date for all DateField entries.
+
+    Absent, a date, or wrong — see `MalformedPatientValue`. `strict` is only
+    set by the inline payload, the one caller who typed the value.
+    """
     date_fields = {
         f.name for f in model_cls._meta.get_fields()
-        if hasattr(f, 'column') and isinstance(f, (DateField, DateTimeField))
+        # `DateTimeField` subclasses `DateField`, so one name covers both.
+        if hasattr(f, 'column') and isinstance(f, DateField)
     }
     for key in date_fields & data.keys():
-        val = data[key]
-        if isinstance(val, str) and val:
-            try:
-                data[key] = dt.date.fromisoformat(val)
-            except ValueError:
-                data[key] = None
+        if not _says_something(data[key]):
+            data[key] = None
+            continue
+        try:
+            data[key] = _as_date(key, data[key])
+        except MalformedPatientValue:
+            if strict:
+                raise
+            logger.warning(
+                'Dropping an unusable value for %s from an upstream row: %r',
+                key, data[key],
+            )
+            data[key] = None
 
 
-def _coerce_numerics(data: dict, model_cls):
-    """Coerce string values to numeric types for IntegerField/FloatField/DecimalField columns."""
+def _coerce_numerics(data: dict, model_cls, strict: bool = False):
+    """Coerce string values to numeric types for IntegerField/FloatField/DecimalField columns.
+
+    `strict` refuses a value that cannot be the column's type instead of
+    dropping it — the inline payload is the one caller who typed it (#594).
+    """
     for f in model_cls._meta.get_fields():
         if not hasattr(f, 'column') or f.name not in data:
             continue
         val = data[f.name]
+        if isinstance(f, (IntegerField, FloatField, DecimalField)) and (
+            isinstance(val, bool) or isinstance(val, (list, dict, tuple, set))
+        ):
+            # A boolean is an `int` to Python and a container is neither: both
+            # used to reach the ORM (1, or a TypeError). Strict names them;
+            # the upstream path drops them, as it dropped everything else.
+            if strict:
+                _reject_malformed_number(f, val)
+            data[f.name] = None
+            continue
+        if strict and isinstance(f, (IntegerField, FloatField, DecimalField)):
+            _reject_malformed_number(f, val)
         # JSON parsers accept the `NaN`/`Infinity` literals, so a non-finite
         # value can arrive as a float or Decimal rather than the string forms
         # handled below. It is never a measurement; make it absent.
@@ -657,11 +783,78 @@ def _coerce_json_fields(data: dict, model_cls):
                 data[key] = None
 
 
+def camel_to_snake(name: str) -> str:
+    """The key EXACT stores for a caller's spelling (`patientAge` -> `patient_age`)."""
+    import re
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+
+
 def _to_snake_case(data: dict) -> dict:
     """Convert camelCase dict keys to snake_case."""
-    import re
-    def camel_to_snake(name):
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
-
     return {camel_to_snake(k): v for k, v in data.items()}
+
+
+def _as_the_caller_wrote_it(payload: dict, field_name: str) -> str:
+    """The key the caller actually sent for this column.
+
+    An error naming `patient_age` at somebody who sent `patientAge` makes them
+    search their payload for a key that is not in it. The alias table is
+    honoured too, so a caller who sent the documented `pd_l1_tumor_cells` is
+    told about that spelling rather than EXACT's misspelled column.
+    """
+    # Exact spelling first: two spellings reach one column, and the value
+    # that failed is the one under EXACT's own key (an alias never
+    # overwrites). Naming whichever came first would blame a field that is
+    # fine and hand back the same 400 after the caller fixes it.
+    for sent in payload:
+        if isinstance(sent, str) and camel_to_snake(sent) == field_name:
+            return sent
+    for sent in payload:
+        if isinstance(sent, str) and _INBOUND_ALIASES.get(camel_to_snake(sent)) == field_name:
+            return sent
+    return field_name
+
+
+#: Names the producer sends for a field EXACT stores under a different one.
+#:
+#: `pd_l1_tumor_cels` is EXACT's own spelling and it is missing an `l` (the
+#: model field and the two trial bounds). PROMOP spells it correctly, and so
+#: does the payload `docs/api.md` publishes, so the documented key was dropped
+#: at the model-field filter and the request answered 200 with the PD-L1
+#: result missing (#593). A dropped PD-L1 is not a missing trial: `min`/`max`
+#: bounds return the whole scope on `None`, so a patient below a trial's
+#: minimum is shown that trial — false positives.
+#:
+#: Aliased inbound rather than renamed: the misspelling is also the stem of
+#: two trial columns, and correcting all of them is a migration plus a data
+#: move for no difference a caller can observe.
+_INBOUND_ALIASES = {
+    'pd_l1_tumor_cells': 'pd_l1_tumor_cels',
+}
+
+
+def _says_something(value) -> bool:
+    """Whether a value tells us anything about a patient.
+
+    `False` and `0` DO — they are answers. `None`, `''` and whitespace do not.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ''
+    return True
+
+
+def _apply_inbound_aliases(data: dict) -> dict:
+    """Copy a producer's spelling onto EXACT's field, without overwriting it.
+
+    The alias only fills a gap: between two usable spellings the existing
+    contract decides. The SOURCE guard keeps an empty string off a typed
+    column, where it would reach Django as `ValueError: expected a number but
+    got ''` instead of reading as blank (#594).
+    """
+    for sent, stored in _INBOUND_ALIASES.items():
+        if _says_something(data.get(sent)) and not _says_something(data.get(stored)):
+            data[stored] = data[sent]
+    return data
