@@ -40,12 +40,79 @@ def _term_concept(term):
         return None
     kind = term.get('kind')
     if kind == 'finding':
-        feature = term.get('feature') or {}
+        feature = term.get('feature')
+        if not isinstance(feature, dict):
+            return None
         return _concept_id(feature.get('concept_id'))
     if kind == 'assertion':
-        concept = term.get('concept') or {}
+        concept = term.get('concept')
+        if not isinstance(concept, dict):
+            return None
         return _concept_id(concept.get('concept_id'))
     return None
+
+
+MARKER_SCHEMA = 'cb-trial-criteria-1'
+MARKER_OPERATORS = frozenset({'any_of', 'all_of'})
+MARKER_ROLES = frozenset({'required', 'excluded'})
+
+
+def _valid_term(term):
+    kind = term.get('kind')
+    if kind == 'finding':
+        feature = term.get('feature')
+        if not isinstance(feature, dict) or _concept_id(feature.get('concept_id')) is None:
+            return False
+        status = term.get('status')
+        if status is not None:
+            if not isinstance(status, dict):
+                return False
+            value = status.get('value')
+            if value is not None:
+                if not isinstance(value, dict):
+                    return False
+                raw = value.get('value')
+                if raw is not None and not isinstance(raw, str):
+                    return False
+        return True
+    if kind == 'assertion':
+        concept = term.get('concept')
+        return isinstance(concept, dict) and _concept_id(concept.get('concept_id')) is not None
+    return False
+
+
+def _valid_typed(typed):
+    """Whether the whole typed envelope has the shape this evaluator understands.
+
+    A malformed envelope must not become "no requirement": the fallback is the
+    legacy list when one exists, and a fail-closed ``not_matched`` when the
+    typed envelope is the only evidence. The mutation evaluator makes the same
+    choice for a typed requirement it cannot read.
+    """
+    if not isinstance(typed, list):
+        return False
+    for requirement in typed:
+        if not isinstance(requirement, dict):
+            return False
+        if requirement.get('schema') != MARKER_SCHEMA:
+            return False
+        role = requirement.get('role', 'required')
+        if not isinstance(role, str) or role not in MARKER_ROLES:
+            return False
+        operator = requirement.get('operator', 'any_of')
+        if not isinstance(operator, str) or operator not in MARKER_OPERATORS:
+            return False
+        terms = requirement.get('terms', [])
+        unresolved = requirement.get('unresolved_codes', [])
+        if not isinstance(terms, list) or not all(
+                isinstance(t, dict) and _valid_term(t) for t in terms):
+            return False
+        if not isinstance(unresolved, list) or not all(
+                isinstance(code, str) for code in unresolved):
+            return False
+        if not terms and not unresolved:
+            return False
+    return bool(typed)
 
 
 def _term_matches(term, codes, concepts):
@@ -61,8 +128,13 @@ def _term_matches(term, codes, concepts):
     concept = _term_concept(term)
     if concept is None:
         return False
-    status = term.get('status') or {}
-    value = (status.get('value') or {}).get('value')
+    status = term.get('status')
+    if status is not None and not isinstance(status, dict):
+        return False
+    value = (status or {}).get('value')
+    if value is not None and not isinstance(value, dict):
+        return False
+    value = (value or {}).get('value')
     if value is not None and str(value).strip().lower() != 'present':
         return False
     if concept in concepts:
@@ -146,15 +218,25 @@ def genomic_marker_state(trial, field, markers, is_blank):
     """
     legacy_attr, typed_attr, excluded_attr = MARKER_FIELDS[field]
     legacy = getattr(trial, legacy_attr, None) or []
-    typed = getattr(trial, typed_attr, None) or []
+    raw_typed = getattr(trial, typed_attr, None)
+    if raw_typed is None:
+        typed, typed_malformed = [], False
+    elif isinstance(raw_typed, list):
+        typed, typed_malformed = raw_typed, False
+    else:
+        typed, typed_malformed = [], True
     excluded = {
         str(code).strip() for code in (getattr(trial, excluded_attr, None) or [])
         if str(code).strip()
     }
     if not legacy and not typed and not excluded:
-        return 'matched'
+        return 'not_matched' if typed_malformed else 'matched'
 
     codes = set(marker_codes(markers))
+    if typed_malformed or (typed and not _valid_typed(typed)):
+        if legacy or excluded:
+            return _legacy_state(legacy, excluded, codes)
+        return 'not_matched'
     if is_blank or not codes:
         # A blank patient summary is incomplete data, not "no markers", unless
         # every requirement explicitly says unknown is negative.

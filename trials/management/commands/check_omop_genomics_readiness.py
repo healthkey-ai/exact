@@ -1,4 +1,4 @@
-"""Audit the trial gene envelope before flipping EXACT_OMOP_GENOMICS (#5673).
+"""Audit the trial gene envelope before changing EXACT_OMOP_GENOMICS (#5673).
 
 The typed ``omop_mutation_genes_required`` column is written by CB. EXACT reads
 it; it must not guess. This command checks every trial that carries a legacy
