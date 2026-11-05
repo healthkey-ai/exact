@@ -108,7 +108,7 @@ def _valid_typed(typed):
                 isinstance(t, dict) and _valid_term(t) for t in terms):
             return False
         if not isinstance(unresolved, list) or not all(
-                isinstance(code, str) for code in unresolved):
+                isinstance(code, str) and code.strip() for code in unresolved):
             return False
         if not terms and not unresolved:
             return False
