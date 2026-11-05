@@ -614,6 +614,10 @@ export interface TrialMatchesProps {
    *  authenticated PROMOP client; a host that reaches the same data another
    *  way implements the interface instead. */
   state?: TrialStateAdapter;
+  /** The editing half of the adapter, for a host that has a patient record
+   *  but no per-user state (the self-contained widget): pencils work without
+   *  lighting up the Favorites/Registered tabs. */
+  patientRecord?: import("./state").PatientRecordAdapter;
   /** Where the patient's saved search settings live, for a host that can
    *  answer that and nothing else.
    *

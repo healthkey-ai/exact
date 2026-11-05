@@ -18,6 +18,7 @@ import axios from "axios";
 
 import { injectStyles } from "./injectStyles";
 import { TrialMatches } from "./TrialMatches";
+import { createPromopState } from "./state";
 import type { TrialPreferenceStore } from "./state";
 import type { PatientInfo } from "./types";
 
@@ -41,6 +42,12 @@ export interface MountOptions {
   patientInfo?: PatientInfo;
   /** Which list actions this host can serve; omitted means both. */
   capabilities?: { export?: boolean; graph?: boolean };
+  /** The patient-record API root, if this host wants the detail page to be
+   *  editable. Omitted keeps the widget read-only. CB passes its federation
+   *  root (`/api/v1/federation`) and the `/v1` mount below it. */
+  ctomopBaseUrl?: string;
+  /** API prefix under `ctomopBaseUrl`; defaults to `/v1`. */
+  ctomopApiBasePath?: string;
   /** Where the patient's saved search settings are kept.
    *
    *  Plain async functions, which is all that crosses this boundary — no
@@ -86,6 +93,27 @@ export function mount(el: HTMLElement, opts: MountOptions = {}): () => void {
   // call — and bounding that belongs with whoever owns the retry policy, the
   // same call `TrialMatchesBridge` makes and documents.
   const queryClient = new QueryClient();
+  const patientRecord = opts.ctomopBaseUrl && opts.personId != null
+    ? (() => {
+        const prefix = opts.ctomopBaseUrl.replace(/\/+$/, "");
+        const suffix = (opts.ctomopApiBasePath ?? "/v1").replace(/\/+$/, "");
+        const base = `${prefix}${suffix.startsWith("/") ? "" : "/"}${suffix}`;
+        const promopClient = axios.create({
+          baseURL: base,
+          headers: opts.token ? { Authorization: `Token ${opts.token}` } : undefined,
+        });
+        const state = createPromopState({
+          client: promopClient,
+          personId: opts.personId!,
+          basePath: "",
+        });
+        return {
+          getWritableFields: state.getWritableFields,
+          setPatientFields: state.setPatientFields,
+          genomics: state.genomics,
+        };
+      })()
+    : undefined;
 
   const root = createRoot(el);
   roots.set(el, root);
@@ -97,6 +125,7 @@ export function mount(el: HTMLElement, opts: MountOptions = {}): () => void {
           queryClient={queryClient}
           personId={opts.personId}
           patientInfo={opts.patientInfo}
+          patientRecord={patientRecord}
           preferences={opts.preferences}
           capabilities={opts.capabilities}
         />
