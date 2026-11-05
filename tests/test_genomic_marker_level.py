@@ -238,6 +238,45 @@ class TestTheMarkerState:
         )
         assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'not_matched'
 
+    def test_a_malformed_role_or_operator_falls_back(self):
+        for bad in (
+            {'schema': 'cb-trial-criteria-1', 'role': [],
+             'operator': 'any_of', 'terms': [_term(TP53)]},
+            {'schema': 'cb-trial-criteria-1', 'role': 'required',
+             'operator': {}, 'terms': [_term(TP53)]},
+        ):
+            trial = _trial(legacy_molecular=['tp53Mutation'], typed_molecular=[bad])
+            assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
+
+    def test_a_malformed_status_does_not_raise(self):
+        bad = _term(TP53)
+        bad['status'] = 'broken'
+        trial = _trial(
+            legacy_molecular=['tp53Mutation'], typed_molecular=[_envelope(bad)],
+        )
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
+
+    def test_a_non_list_typed_value_is_malformed(self):
+        trial = SimpleNamespace(
+            molecular_markers_required=['tp53Mutation'],
+            molecular_markers_excluded=[],
+            omop_molecular_markers_required={},
+            cytogenic_markers_required=[],
+            cytogenic_markers_excluded=[],
+            omop_cytogenic_markers_required=[],
+        )
+        assert _state(trial, 'molecular_markers', ['tp53Mutation']) == 'matched'
+        assert _state(trial, 'molecular_markers', []) == 'unknown'
+        bare = SimpleNamespace(
+            molecular_markers_required=[],
+            molecular_markers_excluded=[],
+            omop_molecular_markers_required={},
+            cytogenic_markers_required=[],
+            cytogenic_markers_excluded=[],
+            omop_cytogenic_markers_required=[],
+        )
+        assert _state(bare, 'molecular_markers', []) == 'not_matched'
+
     def test_a_malformed_envelope_falls_back_to_the_legacy_list(self):
         trial = _trial(
             legacy_molecular=['tp53Mutation'],

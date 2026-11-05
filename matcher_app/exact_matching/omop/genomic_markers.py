@@ -61,7 +61,20 @@ def _valid_term(term):
     kind = term.get('kind')
     if kind == 'finding':
         feature = term.get('feature')
-        return isinstance(feature, dict) and _concept_id(feature.get('concept_id')) is not None
+        if not isinstance(feature, dict) or _concept_id(feature.get('concept_id')) is None:
+            return False
+        status = term.get('status')
+        if status is not None:
+            if not isinstance(status, dict):
+                return False
+            value = status.get('value')
+            if value is not None:
+                if not isinstance(value, dict):
+                    return False
+                raw = value.get('value')
+                if raw is not None and not isinstance(raw, str):
+                    return False
+        return True
     if kind == 'assertion':
         concept = term.get('concept')
         return isinstance(concept, dict) and _concept_id(concept.get('concept_id')) is not None
@@ -83,9 +96,11 @@ def _valid_typed(typed):
             return False
         if requirement.get('schema') != MARKER_SCHEMA:
             return False
-        if requirement.get('role', 'required') not in MARKER_ROLES:
+        role = requirement.get('role', 'required')
+        if not isinstance(role, str) or role not in MARKER_ROLES:
             return False
-        if requirement.get('operator', 'any_of') not in MARKER_OPERATORS:
+        operator = requirement.get('operator', 'any_of')
+        if not isinstance(operator, str) or operator not in MARKER_OPERATORS:
             return False
         terms = requirement.get('terms', [])
         unresolved = requirement.get('unresolved_codes', [])
@@ -113,8 +128,13 @@ def _term_matches(term, codes, concepts):
     concept = _term_concept(term)
     if concept is None:
         return False
-    status = term.get('status') or {}
-    value = (status.get('value') or {}).get('value')
+    status = term.get('status')
+    if status is not None and not isinstance(status, dict):
+        return False
+    value = (status or {}).get('value')
+    if value is not None and not isinstance(value, dict):
+        return False
+    value = (value or {}).get('value')
     if value is not None and str(value).strip().lower() != 'present':
         return False
     if concept in concepts:
@@ -198,15 +218,25 @@ def genomic_marker_state(trial, field, markers, is_blank):
     """
     legacy_attr, typed_attr, excluded_attr = MARKER_FIELDS[field]
     legacy = getattr(trial, legacy_attr, None) or []
-    typed = getattr(trial, typed_attr, None) or []
+    raw_typed = getattr(trial, typed_attr, None)
+    if raw_typed is None:
+        typed, typed_malformed = [], False
+    elif isinstance(raw_typed, list):
+        typed, typed_malformed = raw_typed, False
+    else:
+        typed, typed_malformed = [], True
     excluded = {
         str(code).strip() for code in (getattr(trial, excluded_attr, None) or [])
         if str(code).strip()
     }
     if not legacy and not typed and not excluded:
-        return 'matched'
+        return 'not_matched' if typed_malformed else 'matched'
 
     codes = set(marker_codes(markers))
+    if typed_malformed or (typed and not _valid_typed(typed)):
+        if legacy or excluded:
+            return _legacy_state(legacy, excluded, codes)
+        return 'not_matched'
     if is_blank or not codes:
         # A blank patient summary is incomplete data, not "no markers", unless
         # every requirement explicitly says unknown is negative.
@@ -220,11 +250,6 @@ def genomic_marker_state(trial, field, markers, is_blank):
         # excludes a marker into a match for it just because the two columns
         # disagree (24917 has the same code on both sides; 18489 is the
         # excluded-only variant).
-        return 'not_matched'
-
-    if typed and not _valid_typed(typed):
-        if legacy or excluded:
-            return _legacy_state(legacy, excluded, codes)
         return 'not_matched'
 
     specific_codes = codes - COMPOSITE_MARKER_CODES
