@@ -39,6 +39,7 @@ from exact_matching.patient_info.configs import (
     sct_value_is_none,
 )
 from exact_matching.omop.genomic_findings import genomic_mutation_state
+from exact_matching.omop.genomic_markers import genomic_marker_state
 from exact_matching.omop.genomics import omop_genomics_enabled
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
@@ -85,6 +86,8 @@ _CUSTOM_SEARCH_NAMED_HANDLERS = {
     'flipi_score_options': '_match_flipi_score_options',
     'prior_therapy': '_match_prior_therapy',
     'genetic_mutations': '_match_genetic_mutations',
+    'molecular_markers': '_match_molecular_markers',
+    'cytogenic_markers': '_match_cytogenic_markers',
     'supportive_therapies': '_match_supportive_therapies',
     'languages_skills': '_match_languages_skills',
 }
@@ -916,6 +919,18 @@ class UserToTrialAttrMatcher:
         return 'matched'
 
     # ── custom_search fallbacks ─────────────────────────────────────
+
+    def _match_molecular_markers(self, ctx):
+        if omop_genomics_enabled():
+            return genomic_marker_state(
+                self.trial, 'molecular_markers', ctx.value, ctx.is_blank)
+        return self._match_computed_attr(ctx)
+
+    def _match_cytogenic_markers(self, ctx):
+        if omop_genomics_enabled():
+            return genomic_marker_state(
+                self.trial, 'cytogenic_markers', ctx.value, ctx.is_blank)
+        return self._match_computed_attr(ctx)
 
     def _match_supportive_therapies(self, ctx):
         """Enforce the trial's supportive_therapies_required/excluded pair (#4449).

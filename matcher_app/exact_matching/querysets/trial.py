@@ -33,7 +33,9 @@ from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
 from exact_matching.omop.genomic_findings import MUTATION_COLUMNS, genomic_mutation_state
+from exact_matching.omop.genomic_markers import genomic_marker_state
 from exact_matching.omop.genomics import omop_genomics_enabled
+from exact_matching.omop.marker_concepts import MARKER_FIELDS
 from exact_matching.patient_info.language_capability import LanguagesKept, asked_languages
 from exact_matching.omop.languages_verdict import language_verdict_sql
 from exact_matching.patient_info.genetic_mutations import GeneticMutations
@@ -1639,7 +1641,42 @@ class TrialQuerySet(models.QuerySet):
             excluded_attr_name=THERAPY_MATCH_PROFILE.supportive_therapies_excluded
         )
 
+    @classmethod
+    def _marker_empty_q(cls, field):
+        legacy, typed, excluded = MARKER_FIELDS[field]
+        return (
+            (Q(**{f'{legacy}__exact': []}) | Q(**{f'{legacy}__isnull': True}))
+            & (Q(**{f'{typed}__exact': []}) | Q(**{f'{typed}__isnull': True}))
+            & (Q(**{f'{excluded}__exact': []}) | Q(**{f'{excluded}__isnull': True}))
+        )
+
+    def _eligible_for_markers_omop(self, field, values):
+        """Keep trials the marker-level evaluator says the patient satisfies.
+
+        Uses the already-populated typed envelopes when they carry a
+        requirement; a trial with only the legacy list is evaluated exactly as
+        before, so a partially backfilled catalog does not lose trials (#5674).
+        """
+        from types import SimpleNamespace
+
+        legacy, typed, excluded = MARKER_FIELDS[field]
+        empty = self._marker_empty_q(field)
+        rows = self.exclude(empty).values_list('id', legacy, typed, excluded)
+        matches = []
+        for row in rows.iterator():
+            trial = SimpleNamespace(**{
+                legacy: row[1], typed: row[2], excluded: row[3],
+            })
+            if genomic_marker_state(trial, field, values, False) == 'matched':
+                matches.append(row[0])
+        return self.filter(empty | Q(pk__in=matches))
+
     def eligible_for_cytogenic_markers(self, cytogenic_markers: list[str]) -> models.QuerySet:
+        if not cytogenic_markers:
+            return self
+        if omop_genomics_enabled():
+            return self._eligible_for_markers_omop(
+                'cytogenic_markers', cytogenic_markers)
         return self.eligible_for_required_and_excluded_lists(
             values=cytogenic_markers,
             required_attr_name='cytogenic_markers_required',
@@ -1647,6 +1684,11 @@ class TrialQuerySet(models.QuerySet):
         )
 
     def eligible_for_molecular_marker(self, molecular_markers: list[str]) -> models.QuerySet:
+        if not molecular_markers:
+            return self
+        if omop_genomics_enabled():
+            return self._eligible_for_markers_omop(
+                'molecular_markers', molecular_markers)
         return self.eligible_for_required_and_excluded_lists(
             values=molecular_markers,
             required_attr_name='molecular_markers_required',
