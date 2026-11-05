@@ -345,7 +345,7 @@ function TrialMatchesInner({
         "open trial closes, and an edit made during the refresh is written " +
         "but not reported. Include the id in the payload.",
     );
-  }, [onPatientRecordChanged, state, patientInfo, namesPatient]);
+  }, [onPatientRecordChanged, record, patientInfo, namesPatient]);
 
   // The bar depends on whether a host gave us somewhere to keep bookmarks.
   const tabs = useMemo(() => tabsFor(state != null, activeTab), [state, activeTab]);

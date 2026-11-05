@@ -95,7 +95,9 @@ export function mount(el: HTMLElement, opts: MountOptions = {}): () => void {
   const queryClient = new QueryClient();
   const patientRecord = opts.ctomopBaseUrl && opts.personId != null
     ? (() => {
-        const base = `${opts.ctomopBaseUrl.replace(/\/+$/, "")}${(opts.ctomopApiBasePath ?? "/v1").replace(/\/+$/, "")}`;
+        const prefix = opts.ctomopBaseUrl.replace(/\/+$/, "");
+        const suffix = (opts.ctomopApiBasePath ?? "/v1").replace(/\/+$/, "");
+        const base = `${prefix}${suffix.startsWith("/") ? "" : "/"}${suffix}`;
         const promopClient = axios.create({
           baseURL: base,
           headers: opts.token ? { Authorization: `Token ${opts.token}` } : undefined,
