@@ -168,10 +168,14 @@ function TrialMatchesInner({
   onPatientRecordChanged,
   renderMap,
   state,
+  patientRecord,
   preferences,
   capabilities,
 }: Omit<TrialMatchesProps, "queryClient">) {
   const queryClient = useQueryClient();
+  // Editing can come from the full state adapter or from the narrower record
+  // adapter the self-contained widget has. Favourites still require `state`.
+  const record = patientRecord ?? state;
   useEffect(() => {
     injectStyles();
   }, []);
@@ -328,7 +332,7 @@ function TrialMatchesInner({
     // The editing PAIR, not merely an adapter: a bookmarks-only one can
     // never fire this prop either, and warning such a host sends it looking
     // for a bug it does not have.
-    if (!onPatientRecordChanged || !canEditFields(state) || !hasInlinePatient(patientInfo))
+    if (!onPatientRecordChanged || !canEditFields(record) || !hasInlinePatient(patientInfo))
       return;
     if (namesPatient) return;
     if (warnedNoId.current) return;
@@ -372,7 +376,7 @@ function TrialMatchesInner({
   // it to, #555) empties the descriptor, withdraws every edit control, and
   // closes any editor the reader has open. Measured together with the
   // detail's own `placeholderData`: either one alone still loses the editor.
-  const writableFields = useWritableFields(state, readerHandle);
+  const writableFields = useWritableFields(record, readerHandle);
   // The host owns the patient payload — ht-phr reads it, normalises it
   // through this service, and passes it in — and that payload wins
   // server-side over `personId`. So a field edited here is written, the
@@ -388,7 +392,7 @@ function TrialMatchesInner({
   // failure `FieldEdit`'s "does not wipe what the reader is typing" exists
   // to catch, and it caught it.
   const patientFields = useQueuedPatientFields(
-    state,
+    record,
     readerHandle,
     onPatientRecordChanged,
     credentialIdentity,
@@ -1849,7 +1853,7 @@ function TrialMatchesInner({
         // the queue — the callback is held across renders and fired from a
         // timer, long after the render that produced it.
         editing={
-          canEditFields(state)
+          canEditFields(record)
             ? {
                 fields: writableFields.data,
                 save: patientFields.save,
@@ -1858,7 +1862,7 @@ function TrialMatchesInner({
                 // A finding is written through its own endpoint, not the
                 // PatientRecord PATCH; a host that does not serve it gets no
                 // genetic-findings pencil rather than a dead one.
-                genomics: state?.genomics,
+                genomics: record?.genomics,
                 onGenomicsChanged: (findings) => {
                   // A new finding changes both the row and the verdict, and
                   // the inline-profile host may hold its own copy.

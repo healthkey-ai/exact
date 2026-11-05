@@ -32,6 +32,7 @@ import { canEditFields } from "./state";
 import { PatientFieldWriter } from "./patientWriter";
 import type {
   AdvancedStatus,
+  PatientRecordAdapter,
   TrialId,
   TrialPreferenceStore,
   TrialStateAdapter,
@@ -136,7 +137,7 @@ export function useSetTrialState(
  *  difference kept now.
  */
 export function useWritableFields(
-  state: TrialStateAdapter | undefined,
+  state: PatientRecordAdapter | undefined,
   key: string,
 ): UseQueryResult<WritableFields> {
   const can = canEditFields(state);
@@ -162,7 +163,7 @@ export function useWritableFields(
  *  `failed`, so the row can say so.
  */
 export function useQueuedPatientFields(
-  state: TrialStateAdapter | undefined,
+  state: PatientRecordAdapter | undefined,
   key: string,
   /** The values the RECORD came back with, once a batch has settled and the
    *  re-read has landed.

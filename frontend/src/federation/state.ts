@@ -275,6 +275,17 @@ export interface GenomicsAdapter {
   remove(id: number): Promise<void>;
 }
 
+/** The editing half of a state adapter, without bookmarks or saved filters.
+ *
+ *  The self-contained widget has no place to keep favourites or preferences
+ *  (CB's federation surface does not serve them), but it can still edit the
+ *  patient record. A host hands this narrower object to `TrialMatches` and
+ *  gets the pencils without lighting up tabs that have nowhere to write. */
+export type PatientRecordAdapter = Pick<
+  TrialStateAdapter,
+  "getWritableFields" | "setPatientFields" | "genomics"
+>;
+
 /** What the record showed after a write.
  *
  *  Three states, because PROMOP's `PATCH /patient-records/{id}/` answers 200
@@ -307,9 +318,9 @@ export type WriteOutcome =
 
 /** Both halves, or neither. Mirrors `canPersistFilters`. */
 export function canEditFields(
-  adapter: TrialStateAdapter | undefined,
-): adapter is TrialStateAdapter &
-  Required<Pick<TrialStateAdapter, "getWritableFields" | "setPatientFields">> {
+  adapter: PatientRecordAdapter | undefined,
+): adapter is PatientRecordAdapter &
+  Required<Pick<PatientRecordAdapter, "getWritableFields" | "setPatientFields">> {
   return Boolean(adapter?.getWritableFields && adapter?.setPatientFields);
 }
 
