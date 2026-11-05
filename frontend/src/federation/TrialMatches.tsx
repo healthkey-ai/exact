@@ -169,6 +169,7 @@ function TrialMatchesInner({
   renderMap,
   state,
   preferences,
+  capabilities,
 }: Omit<TrialMatchesProps, "queryClient">) {
   useEffect(() => {
     injectStyles();
@@ -1147,12 +1148,15 @@ function TrialMatchesInner({
   // guaranteed 400 surfaced as "please try again", which is advice that cannot
   // work.
   const exportUnavailable =
+    capabilities?.export === false ||
     (stateTab != null && trialIds === undefined) ||
     (!hasInlinePatient(patientInfo) && personId == null);
   const exportUnavailableReason =
-    stateTab != null && trialIds === undefined
-      ? "Your saved trials aren't available right now, so this tab can't be exported."
-      : "An export needs a patient, and this view has none.";
+    capabilities?.export === false
+      ? "This view doesn't offer exports."
+      : stateTab != null && trialIds === undefined
+        ? "Your saved trials aren't available right now, so this tab can't be exported."
+        : "An export needs a patient, and this view has none.";
   const handleExport = async () => {
     if (exportUnavailable) return;
     setExportState("working");
@@ -1660,7 +1664,11 @@ function TrialMatchesInner({
   // the cached whole-corpus map under a tab that says "Favorites", or, with
   // nothing cached, sit on "Building the map…" for ever. The control is what
   // has to refuse.
-  const graphUnavailable = stateTab != null && trialIds === undefined;
+  const graphUnavailable =
+    capabilities?.graph === false || (stateTab != null && trialIds === undefined);
+  // Collapsing an open panel when the capability turns false must also take
+  // the toggle's state with it, or the button says expanded over nothing.
+  const graphShown = graphOpen && !graphUnavailable;
   const graph = useTrialsGraph({
     apiClient,
     patientInfo,
@@ -1672,7 +1680,7 @@ function TrialMatchesInner({
     // cache key was identical to the default tab's, which meant it was served
     // from that tab's cache without a request.
     trialIds,
-    enabled: graphOpen && !graphUnavailable,
+    enabled: graphShown,
   });
   // Selecting a trial from the graph opens the same detail page the cards do.
   // The detail page needs only the id, which is always available; the host's
@@ -1988,16 +1996,18 @@ function TrialMatchesInner({
             there is one box, not a styled one and a native one. */}
         <ActionTooltip
           text={
-            graphUnavailable
-              ? "Your saved trials aren't available right now, so this tab can't be mapped."
-              : ACTION_TOOLTIPS.exploreTrials
+            capabilities?.graph === false
+              ? "This view doesn't offer the trial map."
+              : graphUnavailable
+                ? "Your saved trials aren't available right now, so this tab can't be mapped."
+                : ACTION_TOOLTIPS.exploreTrials
           }
         >
           {(tipId) => (
             <button
               type="button"
-              className={`exact-filters__trigger${graphOpen ? " is-on" : ""}`}
-              aria-expanded={graphOpen}
+              className={`exact-filters__trigger${graphShown ? " is-on" : ""}`}
+              aria-expanded={graphShown}
               aria-describedby={tipId}
               disabled={graphUnavailable}
               onClick={() => setGraphOpen((open) => !open)}
@@ -2051,7 +2061,7 @@ function TrialMatchesInner({
         )}
       </div>
 
-      {graphOpen && !graphUnavailable ? (
+      {graphShown ? (
         graph.isPending ? (
           <p className="exact-graph__status">Building the map…</p>
         ) : graph.isError ? (

@@ -3856,6 +3856,52 @@ describe("action tooltips", () => {
     expect(star).toHaveAccessibleDescription(/Save this trial to your Favorites/);
   });
 
+  it("disables the actions a host says it cannot serve", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { capabilities: { export: false, graph: false } });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const exportButton = screen.getByRole("button", { name: "Export CSV" });
+    const graphButton = screen.getByRole("button", { name: "Explore Trials" });
+    expect(exportButton).toBeDisabled();
+    expect(graphButton).toBeDisabled();
+    expect(exportButton).toHaveAccessibleDescription(/doesn't offer exports/);
+    expect(graphButton).toHaveAccessibleDescription(/doesn't offer the trial map/);
+  });
+
+  it("collapses an open graph when the host withdraws the capability", async () => {
+    const api = fakeApi();
+    const view = renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const graphButton = screen.getByRole("button", { name: "Explore Trials" });
+    await userEvent.click(graphButton);
+    await waitFor(() => expect(graphButton).toHaveAttribute("aria-expanded", "true"));
+    const graphRequests = () =>
+      api.requests.filter((r) => r.url.includes("/trials-graph/graph/")).length;
+    await waitFor(() => expect(graphRequests()).toBe(1));
+
+    act(() => view.setProps({ capabilities: { graph: false } }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Explore Trials" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Close the map" })).toBeNull();
+    expect(graphRequests()).toBe(1);
+  });
+
+  it("keeps both actions when the host says nothing about them", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    expect(screen.getByRole("button", { name: "Export CSV" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Explore Trials" })).toBeEnabled();
+  });
+
   it("says what every order does, not only the one already applied", async () => {
     // The `<select>` this replaced could carry a single tooltip, and it
     // described the order already chosen — the reader could not find out

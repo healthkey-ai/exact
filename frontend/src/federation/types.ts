@@ -612,6 +612,17 @@ export interface TrialMatchesProps {
    *  stops surviving a reload, because a store present at all replaces the
    *  browser-local one rather than joining it. */
   preferences?: TrialPreferenceStore;
+  /** What the HOST can serve, for the actions that need more than the list.
+   *
+   *  The standalone app answers both; a host exposing a narrower API may not.
+   *  Omitting a key means "supported", so the standalone build is unchanged.
+   *  When `export` is false the toolbar's export control is disabled with the
+   *  reason, and when `graph` is false the trial map is too — both are
+   *  affordances the host would answer with a 404/405 otherwise. */
+  capabilities?: {
+    export?: boolean;
+    graph?: boolean;
+  };
 }
 
 /** Public props for the federated `./TrialMatchesBridge` export — the
