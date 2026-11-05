@@ -74,6 +74,11 @@ export interface TrialMatch {
   matchingType: MatchingType | null;
   /** Stringified human-friendly stages — `"Stage I, Stage II"`. */
   stage: string;
+  /** Gene requirements as CB's lower-case codes (`brca1`, `tp53`). The card
+   *  shows them so a genomic search is legible without opening every row. */
+  mutationGenesRequired?: string[];
+  /** Variant requirements as CB's HGVS-like codes. */
+  mutationVariantsRequired?: string[];
   attributesToFillIn: AttributeToFillIn[];
   closestLocationGeoPoint: ClosestLocationGeoPoint | null;
   distance: number | null;

@@ -21,6 +21,11 @@ class TrialSerializer(serializers.ModelSerializer):
     sponsor = serializers.CharField(source='sponsor_name')
     goodnessScore = serializers.IntegerField(source='goodness_score')
     trialType = serializers.StringRelatedField(source='trial_type')
+    # The list already knows which trials require a gene or a variant; until now
+    # only the detail page showed it (#377 follow-up: the card needs the same
+    # facts to make a genomic search legible without opening every row).
+    mutationGenesRequired = serializers.JSONField(source='mutation_genes_required')
+    mutationVariantsRequired = serializers.JSONField(source='mutation_variants_required')
 
     class Meta:
         model = Trial
@@ -43,6 +48,8 @@ class TrialSerializer(serializers.ModelSerializer):
             'link',
             'goodnessScore',
             'trialType',
+            'mutationGenesRequired',
+            'mutationVariantsRequired',
         ]
 
     def to_representation(self, instance):
