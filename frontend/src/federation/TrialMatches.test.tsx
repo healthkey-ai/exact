@@ -3869,6 +3869,30 @@ describe("action tooltips", () => {
     expect(graphButton).toHaveAccessibleDescription(/doesn't offer the trial map/);
   });
 
+  it("collapses an open graph when the host withdraws the capability", async () => {
+    const api = fakeApi();
+    const view = renderTrialMatches(api);
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const graphButton = screen.getByRole("button", { name: "Explore Trials" });
+    await userEvent.click(graphButton);
+    await waitFor(() => expect(graphButton).toHaveAttribute("aria-expanded", "true"));
+    const graphRequests = () =>
+      api.requests.filter((r) => r.url.includes("/trials-graph/graph/")).length;
+    await waitFor(() => expect(graphRequests()).toBe(1));
+
+    act(() => view.setProps({ capabilities: { graph: false } }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Explore Trials" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: "Close the map" })).toBeNull();
+    expect(graphRequests()).toBe(1);
+  });
+
   it("keeps both actions when the host says nothing about them", async () => {
     const api = fakeApi();
     renderTrialMatches(api);

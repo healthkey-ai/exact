@@ -1666,6 +1666,9 @@ function TrialMatchesInner({
   // has to refuse.
   const graphUnavailable =
     capabilities?.graph === false || (stateTab != null && trialIds === undefined);
+  // Collapsing an open panel when the capability turns false must also take
+  // the toggle's state with it, or the button says expanded over nothing.
+  const graphShown = graphOpen && !graphUnavailable;
   const graph = useTrialsGraph({
     apiClient,
     patientInfo,
@@ -1677,7 +1680,7 @@ function TrialMatchesInner({
     // cache key was identical to the default tab's, which meant it was served
     // from that tab's cache without a request.
     trialIds,
-    enabled: graphOpen && !graphUnavailable,
+    enabled: graphShown,
   });
   // Selecting a trial from the graph opens the same detail page the cards do.
   // The detail page needs only the id, which is always available; the host's
@@ -2003,8 +2006,8 @@ function TrialMatchesInner({
           {(tipId) => (
             <button
               type="button"
-              className={`exact-filters__trigger${graphOpen ? " is-on" : ""}`}
-              aria-expanded={graphOpen}
+              className={`exact-filters__trigger${graphShown ? " is-on" : ""}`}
+              aria-expanded={graphShown}
               aria-describedby={tipId}
               disabled={graphUnavailable}
               onClick={() => setGraphOpen((open) => !open)}
@@ -2058,7 +2061,7 @@ function TrialMatchesInner({
         )}
       </div>
 
-      {graphOpen && !graphUnavailable ? (
+      {graphShown ? (
         graph.isPending ? (
           <p className="exact-graph__status">Building the map…</p>
         ) : graph.isError ? (

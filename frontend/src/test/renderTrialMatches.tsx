@@ -552,8 +552,8 @@ export interface TrialMatchesProps {
   /** The settings half on its own, for the host kind that can answer for
    *  that and nothing else — see `TrialPreferenceStore`. */
   preferences?: TrialPreferenceStore;
-  /** Actions this host can serve; see `TrialMatchesProps.capabilities`. */
-  capabilities?: { export?: boolean; graph?: boolean };
+  /** Actions this host can serve; see the production type. */
+  capabilities?: import("../federation/types").TrialMatchesProps["capabilities"];
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
   onTrialSelect?: (trial: TrialMatch) => void;
   trialId?: number | string | null;
