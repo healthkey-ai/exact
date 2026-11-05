@@ -3,7 +3,7 @@
 Runs the per-trial marker verdict twice on the same patient marker summary —
 once on the legacy string path (``EXACT_OMOP_GENOMICS=False``) and once on the
 typed-envelope path (``True``) — and reports every trial whose verdict changed.
-Use it before flipping the flag; it reads no patient tables and writes nothing.
+Use it to review a flag change or rollback; it reads no patient tables and writes nothing.
 
     python manage.py shadow_compare_genomic_markers \
         --molecular-markers tp53Mutation,krasMutation \
