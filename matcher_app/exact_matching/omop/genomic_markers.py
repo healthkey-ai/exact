@@ -244,17 +244,27 @@ def genomic_marker_state(trial, field, markers, is_blank):
             return 'not_matched'
         return 'unknown'
 
-    if codes & excluded:
-        # The typed envelope carries required terms only. A contradicting
-        # legacy exclusion is still a restriction; do not turn a trial that
-        # excludes a marker into a match for it just because the two columns
-        # disagree (24917 has the same code on both sides; 18489 is the
-        # excluded-only variant).
-        return 'not_matched'
+    required = {str(code).strip() for code in legacy if str(code).strip()}
+    contradictory = required & excluded
 
     specific_codes = codes - COMPOSITE_MARKER_CODES
     concepts = marker_concept_ids(specific_codes)
     typed_result = _typed_state(typed, codes, concepts, legacy)
-    if typed_result is not None:
-        return typed_result
+    # A definite typed refusal wins over the legacy contradiction: an explicit
+    # excluded term (or an unmet required term) is evidence the uncertain
+    # legacy pair does not erase.
+    if typed_result == 'not_matched':
+        return 'not_matched'
+    # A code on both sides is inconsistent trial data (cancerbot#5689): we do
+    # not know whether the source meant to require or exclude it. Rejecting on
+    # the exclusion is the unsafe direction when the inclusion is the truthful
+    # side (trial 14812 would reject every high-risk patient), so the criterion
+    # is unknown until the catalog is repaired. A code that is only excluded is
+    # still a definite rejection.
+    if codes & (excluded - contradictory):
+        return 'not_matched'
+    if codes & contradictory:
+        return 'unknown'
+    if typed_result == 'matched':
+        return 'matched'
     return _legacy_state(legacy, excluded, codes)
