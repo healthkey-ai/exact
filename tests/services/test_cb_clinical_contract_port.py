@@ -249,24 +249,43 @@ def test_inline_zero_boolean_is_normalised_so_matcher_and_sql_agree():
     ('prothrombin_time_uln', 'prothrombin_time_uln_max'),
     ('activated_partial_thromboplastin_time_uln', 'activated_partial_thromboplastin_time_uln_max'),
 ])
-def test_inline_non_finite_float_is_absent_not_a_measurement(attribute, other):
-    from trials.services.patient_info.resolve import _build_in_memory
+def test_inline_non_finite_float_is_refused_and_upstream_stays_unknown(attribute, other):
+    """A NaN or an infinity is not a measurement, and who sent it decides
+    what that costs (#594).
+
+    The inline caller typed it and can fix it, so the value is named. An
+    upstream row cannot be fixed by the reader, so it keeps reading as
+    absent — which is what the Python matcher and the SQL pool both need.
+    """
+    from decimal import Decimal
+
+    from trials.services.patient_info.resolve import (
+        MalformedPatientValue,
+        _build_in_memory,
+    )
 
     trial = Trial.objects.create(disease='multiple myeloma', **{other: 1.5})
-    from decimal import Decimal
     for value in ('NaN', 'inf', '-inf', float('nan'), float('inf'), Decimal('NaN')):
-        patient = _build_in_memory({attribute: value}, strict=True)
-        assert getattr(patient, attribute) is None
-        assert UserToTrialAttrMatcher(trial, patient).attr_match_status(attribute) == 'unknown'
-        pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
-        assert pool.exists() is True
+        with pytest.raises(MalformedPatientValue):
+            _build_in_memory({attribute: value}, strict=True)
+
+    patient = _build_in_memory({attribute: 'NaN'})
+    assert getattr(patient, attribute) is None
+    assert UserToTrialAttrMatcher(trial, patient).attr_match_status(attribute) == 'unknown'
+    pool, _ = TrialQuerySet(model=Trial).filter(pk=trial.pk).filter_by_patient_info(patient)
+    assert pool.exists() is True
 
 
-def test_inline_non_finite_decimal_is_absent_not_a_measurement():
-    from trials.services.patient_info.resolve import _build_in_memory
+def test_inline_non_finite_decimal_is_refused_and_upstream_stays_absent():
+    from trials.services.patient_info.resolve import (
+        MalformedPatientValue,
+        _build_in_memory,
+    )
 
-    patient = _build_in_memory({'white_blood_cell_count': 'NaN'}, strict=True)
-    assert patient.white_blood_cell_count is None
+    with pytest.raises(MalformedPatientValue):
+        _build_in_memory({'white_blood_cell_count': 'NaN'}, strict=True)
+
+    assert _build_in_memory({'white_blood_cell_count': 'NaN'}).white_blood_cell_count is None
 
 
 def test_inline_non_boolean_is_refused_with_a_400():

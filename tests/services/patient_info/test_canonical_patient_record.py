@@ -16,6 +16,7 @@ from trials.services.patient_info.promop_adapter import (
     build_patient_info_from_promop_row,
     normalize_promop_row,
 )
+from trials.services.patient_info.resolve import MalformedPatientValue
 from trials.services.trial_details.trial_attributes import TrialAttributes
 from trials.services.patient_info.resolve import _build_in_memory
 from trials.api.patient_info_serializers import GraphPatientInfoSerializer, PatientInfoSerializer
@@ -225,14 +226,28 @@ def test_source_egfr_survives_creatinine_derivation(disease, egfr, source, build
 
 
 @pytest.mark.parametrize('bad', ['not a number', [], {}, True, 'NaN', 'Infinity'])
-@pytest.mark.parametrize('builder', BUILDERS)
-def test_invalid_source_egfr_does_not_block_valid_derivation(bad, builder):
-    patient = builder({
+def test_invalid_source_egfr_does_not_block_valid_derivation(bad):
+    """An UPSTREAM row: the unusable value is dropped and the derivation runs.
+
+    The reader cannot fix PROMOP, so this stays lenient (#594).
+    """
+    patient = build_patient_info_from_promop_row({
         'gender': 'M', 'patient_age': 20,
         'estimated_glomerular_filtration_rate': bad,
         'serum_creatinine_mg_dl': 0.8,
     })
     assert patient.estimated_glomerular_filtration_rate > 60
+
+
+@pytest.mark.parametrize('bad', ['not a number', [], {}, True, 'NaN', 'Infinity'])
+def test_a_malformed_inline_egfr_is_refused(bad):
+    """The inline caller typed it, so the value is named rather than dropped."""
+    with pytest.raises(MalformedPatientValue):
+        _federated_builder({
+            'gender': 'M', 'patient_age': 20,
+            'estimated_glomerular_filtration_rate': bad,
+            'serum_creatinine_mg_dl': 0.8,
+        })
 
 
 @pytest.mark.parametrize('codes', [[], ['diabetes'], ['diabetes', 'cardiac_disease']])
