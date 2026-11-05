@@ -33,7 +33,7 @@ function useDebounced<T>(value: T, delay: number, immediate = false): T {
   }, [value, delay, immediate]);
   return immediate ? value : debounced;
 }
-import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 
 import { ActionTooltip } from "./bits";
 import { persistedKeyOf, stateKeyOf } from "./bridgeState";
@@ -171,6 +171,7 @@ function TrialMatchesInner({
   preferences,
   capabilities,
 }: Omit<TrialMatchesProps, "queryClient">) {
+  const queryClient = useQueryClient();
   useEffect(() => {
     injectStyles();
   }, []);
@@ -1854,6 +1855,17 @@ function TrialMatchesInner({
                 save: patientFields.save,
                 outstanding: patientFields.outstanding,
                 failed: patientFields.failed,
+                // A finding is written through its own endpoint, not the
+                // PatientRecord PATCH; a host that does not serve it gets no
+                // genetic-findings pencil rather than a dead one.
+                genomics: state?.genomics,
+                onGenomicsChanged: (findings) => {
+                  // A new finding changes both the row and the verdict, and
+                  // the inline-profile host may hold its own copy.
+                  queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
+                  queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+                  onPatientRecordChanged?.({ genetic_mutations: findings });
+                },
               }
             : undefined
         }

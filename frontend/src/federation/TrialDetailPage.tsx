@@ -32,11 +32,12 @@ import { HighRiskMclPanel } from "./HighRiskMclPanel";
 import { useFormSettings, useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
-import type { AdvancedStatus } from "./state";
+import type { AdvancedStatus, GenomicFinding, GenomicsAdapter } from "./state";
 import type { FilterState, PatientInfo, TrialDetailField } from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
 import { NegatedBooleanDialog } from "./NegatedBooleanDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
+import { GenomicsFindingsDialog } from "./GenomicsFindingsDialog";
 import { splitJoined } from "./writable";
 import { editabilityOf, invertBoolean, negatedEditability } from "./writable";
 import type { WritableFields } from "./writable";
@@ -182,6 +183,12 @@ export interface RowEditing {
   /** The value that was refused, by field — so the editor can open on what
    *  the reader typed rather than making them find it again. */
   failed: Record<string, unknown>;
+  /** The structured genomics editor. Separate from `save` because a finding
+   *  is not a scalar PatientRecord field. */
+  genomics?: GenomicsAdapter;
+  /** Re-read the trial (and the list) after a finding is written, with the
+   *  new findings so an inline-profile host can update its own copy. */
+  onGenomicsChanged?: (findings: GenomicFinding[]) => void;
 }
 
 /** The fields whose last write was refused, named the way the reader saw them.
@@ -333,16 +340,29 @@ function EligibilityRow({
   // value, while the negated dialog sits over a row that keeps reading as it
   // did. One flag for both would blank the row behind a modal.
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [genomicsOpen, setGenomicsOpen] = useState(false);
   // A different trial is a different question. Without this a dialog left open
   // across a trial switch keeps the previous requirement on screen and seeds
   // from the previous patient's provenance.
   useEffect(() => {
     setEditorOpen(false);
     setDialogOpen(false);
+    setGenomicsOpen(false);
   }, [trialId]);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
     Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
+  // `genetic_mutations` is structured, so the generic dialog refuses it. This
+  // is the same source, opened through the endpoint that owns it — and only
+  // when the descriptor says this caller may write it. The adapter exists for
+  // read-only hosts too; the pencil must not promise a save they will refuse.
+  const genomicsHere = Boolean(
+    editing?.genomics &&
+      editing.fields?.genetic_mutations?.writable === true &&
+      field.subform_details?.some(
+        (entry) => entry.upatientField === "genetic_mutations",
+      ),
+  );
   // Whether the descriptor carries the negated pair's new metadata (#5667).
   // `inputs` is also set on computed entries, so the kind is part of the test:
   // only a `negated` entry with inputs means "the dedicated dialog's contract
@@ -510,6 +530,24 @@ function EligibilityRow({
             entries={field.subform_details}
             editing={editing}
             onClose={() => onSubformOpen?.(null)}
+          />
+        ) : null}
+        {genomicsHere ? (
+          <button
+            type="button"
+            className="exact-elig__edit"
+            aria-label={`Edit ${field.label} genetic findings`}
+            title={`Edit ${field.label} genetic findings`}
+            onClick={() => setGenomicsOpen(true)}
+          >
+            <PencilIcon />
+          </button>
+        ) : null}
+        {genomicsOpen && editing?.genomics ? (
+          <GenomicsFindingsDialog
+            label={field.label}
+            editing={editing}
+            onClose={() => setGenomicsOpen(false)}
           />
         ) : null}
         {editable.can === "edit" && editing && !editable.negative ? (
