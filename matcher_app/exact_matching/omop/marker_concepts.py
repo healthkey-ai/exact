@@ -15,8 +15,9 @@ from those envelopes instead of inventing a second vocabulary:
 Gaps are deliberately not guessed:
 
 * ``bcmaExpression`` appears in ``unresolved_codes`` on two trials. It has no
-  exact standard concept in the loaded vocabulary; matching falls back to the
-  canonical marker code string until a reviewed concept exists.
+  exact standard concept, so it is minted under ``HK-Genomics``
+  (``2100007900``, ``HK-MARKER:BCMA-EXPRESSION``); the trial envelope stays on
+  the canonical code until it is recompiled to emit that feature.
 * ``del13q`` is a patient-side cytogenetic value with no observed trial
   envelope; it stays on the legacy string path.
 * ``1q21`` / ``1q21Amplification`` already use the local ``HK-Labs`` concept
@@ -44,6 +45,10 @@ MARKER_CONCEPTS = {
     'notch1Mutation': ('35947617',),        # NOTCH1 gene variant (HGNC 7881)
     'ccnd1Alteration': ('35963336',),       # CCND1 gene variant (HGNC 1582)
     'cd38Expression': ('35976963',),        # CD38 protein expression
+    # Locally minted under HK-Genomics (#5674): the loaded vocabulary has no
+    # exact BCMA expression concept. The trial envelope still carries the
+    # canonical code as unresolved until it is recompiled to emit this feature.
+    'bcmaExpression': ('2100007900',),      # HK-MARKER:BCMA-EXPRESSION
     'mycRearrangements': ('19643476',),     # MYC gene rearrangement
     'ighRearrangements': ('35976995',),     # IGH gene rearrangement
     'del17p13': ('19641187',),              # del(17p) structural variant
@@ -84,7 +89,9 @@ COMPOSITE_MARKER_CONCEPTS = {
 TRIAL_MARKER_CONCEPTS = {**MARKER_CONCEPTS, **COMPOSITE_MARKER_CONCEPTS}
 
 #: Codes the envelopes list as unresolved. They are matched by the canonical
-#: marker code itself, never by a guessed concept.
+#: marker code itself, never by a guessed concept. ``bcmaExpression`` also has
+#: a local HK-Genomics identity now; it stays here until the trial envelope is
+#: recompiled to emit that feature.
 UNRESOLVED_MARKER_CODES = frozenset({'bcmaExpression'})
 
 #: Marker criteria and the legacy/typed columns that carry them.
