@@ -66,6 +66,7 @@ jobs:
           if [ "$cap" -gt 300 ]; then cap=300; fi
           if [ "$rc" -eq 0 ] && [ "$cap" -ge 60 ]; then
             timeout --kill-after=20 "$cap" "${apt[@]}" -yq install \
+              --no-install-recommends \
               gcc \
               libpq-dev \
               gdal-bin \
