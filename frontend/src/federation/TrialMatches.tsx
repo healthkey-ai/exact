@@ -169,6 +169,7 @@ function TrialMatchesInner({
   renderMap,
   state,
   preferences,
+  capabilities,
 }: Omit<TrialMatchesProps, "queryClient">) {
   useEffect(() => {
     injectStyles();
@@ -1147,12 +1148,15 @@ function TrialMatchesInner({
   // guaranteed 400 surfaced as "please try again", which is advice that cannot
   // work.
   const exportUnavailable =
+    capabilities?.export === false ||
     (stateTab != null && trialIds === undefined) ||
     (!hasInlinePatient(patientInfo) && personId == null);
   const exportUnavailableReason =
-    stateTab != null && trialIds === undefined
-      ? "Your saved trials aren't available right now, so this tab can't be exported."
-      : "An export needs a patient, and this view has none.";
+    capabilities?.export === false
+      ? "This view doesn't offer exports."
+      : stateTab != null && trialIds === undefined
+        ? "Your saved trials aren't available right now, so this tab can't be exported."
+        : "An export needs a patient, and this view has none.";
   const handleExport = async () => {
     if (exportUnavailable) return;
     setExportState("working");
@@ -1660,7 +1664,8 @@ function TrialMatchesInner({
   // the cached whole-corpus map under a tab that says "Favorites", or, with
   // nothing cached, sit on "Building the map…" for ever. The control is what
   // has to refuse.
-  const graphUnavailable = stateTab != null && trialIds === undefined;
+  const graphUnavailable =
+    capabilities?.graph === false || (stateTab != null && trialIds === undefined);
   const graph = useTrialsGraph({
     apiClient,
     patientInfo,
@@ -1988,9 +1993,11 @@ function TrialMatchesInner({
             there is one box, not a styled one and a native one. */}
         <ActionTooltip
           text={
-            graphUnavailable
-              ? "Your saved trials aren't available right now, so this tab can't be mapped."
-              : ACTION_TOOLTIPS.exploreTrials
+            capabilities?.graph === false
+              ? "This view doesn't offer the trial map."
+              : graphUnavailable
+                ? "Your saved trials aren't available right now, so this tab can't be mapped."
+                : ACTION_TOOLTIPS.exploreTrials
           }
         >
           {(tipId) => (

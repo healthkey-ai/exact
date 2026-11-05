@@ -39,6 +39,8 @@ export interface MountOptions {
   personId?: string | number;
   /** Inline patient payload — the alternative to `personId` (existing CB contract). */
   patientInfo?: PatientInfo;
+  /** Which list actions this host can serve; omitted means both. */
+  capabilities?: { export?: boolean; graph?: boolean };
   /** Where the patient's saved search settings are kept.
    *
    *  Plain async functions, which is all that crosses this boundary — no
@@ -96,6 +98,7 @@ export function mount(el: HTMLElement, opts: MountOptions = {}): () => void {
           personId={opts.personId}
           patientInfo={opts.patientInfo}
           preferences={opts.preferences}
+          capabilities={opts.capabilities}
         />
       </QueryClientProvider>
     </StrictMode>,

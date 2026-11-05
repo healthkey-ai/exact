@@ -552,6 +552,8 @@ export interface TrialMatchesProps {
   /** The settings half on its own, for the host kind that can answer for
    *  that and nothing else — see `TrialPreferenceStore`. */
   preferences?: TrialPreferenceStore;
+  /** Actions this host can serve; see `TrialMatchesProps.capabilities`. */
+  capabilities?: { export?: boolean; graph?: boolean };
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
   onTrialSelect?: (trial: TrialMatch) => void;
   trialId?: number | string | null;
@@ -606,6 +608,7 @@ export function renderTrialMatches(
         renderMap={next.renderMap}
         state={next.state}
         preferences={next.preferences}
+        capabilities={next.capabilities}
         onPatientRecordChanged={next.onPatientRecordChanged}
         onTrialSelect={next.onTrialSelect}
         trialId={next.trialId}
