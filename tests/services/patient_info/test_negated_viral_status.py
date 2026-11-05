@@ -39,8 +39,11 @@ def test_the_negation_is_derived_from_the_positive_status(negated, positive, sto
 
 @pytest.mark.parametrize('negated,positive', sorted(PROMOP_NEGATED_FIELDS.items()))
 @pytest.mark.parametrize('stored,shown', [
-    ('no', True), ('No', True), ('0', True), (False, True), (0, True),
-    ('yes', False), ('Yes', False), ('1', False), (True, False), (1, False),
+    ('no', True), ('No', True), ('NO', True), ('  no  ', True),
+    ('false', True), ('False', True), ('negative', True), ('0', True),
+    (False, True), (0, True),
+    ('yes', False), ('Yes', False), ('true', False), ('TRUE', False),
+    ('positive', False), ('  yes  ', False), ('1', False), (True, False), (1, False),
 ])
 def test_the_common_answer_spellings_keep_their_polarity(negated, positive, stored, shown):
     """A serializer that sends "No" instead of false must not flip the answer.
@@ -56,6 +59,9 @@ def test_an_unreadable_answer_is_unknown_not_a_negative():
 
     assert row['no_hiv_status'] is None
     assert _boolean_answer('not sure') is None
+    assert _boolean_answer(2) is None
+    assert _boolean_answer(1.5) is None
+    assert _boolean_answer('') is None
 
 
 def test_normalizing_twice_does_not_flip_the_answer_back():
