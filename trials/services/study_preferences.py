@@ -26,9 +26,8 @@ class StudyPreferences:
 
     # Trial classification filters
     trial_type: Optional[str] = None
-    # A list since CB #4663 made the control a multiselect; a single code
-    # still arrives as a one-element list, so callers holding the old
-    # contract keep working.
+    # Several purposes at once (CB #4663), like therapy_id above: accepts
+    # ?trialPurpose= one or more times. Empty means no filter.
     trial_purpose: list[str] = field(default_factory=list)
     study_type: Optional[str] = None
 
@@ -139,11 +138,6 @@ def study_preferences_from_query_params(params) -> StudyPreferences:
         distance=_float('distance'),
         distance_units=params.get('distanceUnits', 'km') or 'km',
         validated_only=_bool('validatedOnly'),
-        # `phase` was declared on the dataclass and consumed by the queryset
-        # (`by_phase`) from the start, but never read off the query string —
-        # so `?phase=` silently matched everything. CB persists the same
-        # filter in StudyInfo and spells it `phase`.
-        phase=_str('phase'),
         last_update=_str('lastUpdate'),
         first_enrolment=_str('firstEnrolment'),
     )

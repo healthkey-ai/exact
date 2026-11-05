@@ -61,6 +61,7 @@ RECOMPUTED_ATTRIBUTES = frozenset({
     'second_line_outcome',
     'second_line_therapy',
     'stem_cell_transplant_history',
+    'stem_cell_transplant_date',
     'supportive_therapies',
     'supportive_therapy_date',
     'tnbc_status',
@@ -97,7 +98,7 @@ RECOMPUTED_WHEN = {
     # zero-coordinate defect behind "non-zero" is #470.
     'geo_point': (
         'when a country or postal code is supplied, or a latitude and '
-        'longitude that are not both zero'
+        'longitude that are both non-zero'
     ),
     'high_risk_mcl_criteria': 'for a mantle cell lymphoma patient',
     'later_date': "cleared when prior therapy is 'Two lines', 'One line', 'None' or blank",
@@ -121,6 +122,7 @@ RECOMPUTED_WHEN = {
     'stem_cell_transplant_history': (
         "when the therapy lines imply a transplant, or when prior therapy is 'None'"
     ),
+    'stem_cell_transplant_date': "cleared when prior therapy is 'None'",
     'supportive_therapies': "cleared when prior therapy is 'None' or blank",
     'supportive_therapy_date': "cleared when prior therapy is 'None' or blank",
 }
@@ -150,6 +152,12 @@ def is_computed_on_read(field):
     """
     if not field:
         return False
+    # Computed by `PatientInfoAttributes.get_value`, not by a `PatientInfo`
+    # property: no column and no setter, so the property check below cannot see
+    # it. An edit is dropped before it reaches the instance, exactly like the
+    # two properties this exists for.
+    if field == 'day_since_stem_cell_transplant':
+        return True
     from trials.services.patient_info.patient_info import PatientInfo
 
     attribute = getattr(PatientInfo, field, None)
@@ -221,6 +229,36 @@ def normalize_patient_info(pi) -> None:
 # Individual normalizers
 # ---------------------------------------------------------------------------
 
+#: Which `prior_therapy` answers keep each line's fields. It mirrors
+#: `_normalize_therapy_lines` below: a patient who says "One line" cannot be in
+#: their second, so the field reads as cleared rather than as a value.
+LINE_FIELDS_BY_PRIOR_THERAPY = {
+    'first_line_': {'One line', 'Two lines', 'More than two lines of therapy'},
+    'second_line_': {'Two lines', 'More than two lines of therapy'},
+    'later_': {'More than two lines of therapy'},
+}
+
+#: The parts of a line the trial-detail subform authors. The rest of a line's
+#: columns (concept ids, per-line lists, end dates) stay derivation's.
+AUTHORABLE_LINE_PARTS = frozenset({'therapy', 'date', 'outcome'})
+
+
+def therapy_line_is_authorable(pi_field_name, prior_therapy) -> bool:
+    """Whether normalization keeps this line field for this patient.
+
+    The subform offers a line's therapy, date and outcome as inputs. They stay
+    "recomputed on read" for everybody else: a patient whose own history does
+    not claim that line yet would be typing a second-line therapy under "no
+    prior therapy", and the payload clears it either way, so offering the
+    control would promise an edit the record then hides.
+    """
+    for prefix, answers in LINE_FIELDS_BY_PRIOR_THERAPY.items():
+        if pi_field_name.startswith(prefix):
+            part = pi_field_name[len(prefix):]
+            return part in AUTHORABLE_LINE_PARTS and prior_therapy in answers
+    return False
+
+
 def _normalize_therapy_lines(pi) -> None:
     """Clear downstream therapy fields when prior_therapy is reduced."""
     if pi.prior_therapy == 'More than two lines of therapy':
@@ -258,6 +296,7 @@ def _normalize_therapy_lines(pi) -> None:
         pi.supportive_therapy_date = None
         if pi.prior_therapy == 'None':
             pi.stem_cell_transplant_history = 'None'
+            pi.stem_cell_transplant_date = None
 
 
 def _normalize_treatment_refractory_status(pi) -> None:
@@ -412,7 +451,7 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         # real clinical signal — well below the 0.26 abnormal threshold —
         # not missing data (#81).
         if ratio is None:
-            return False
+            return None
         if not (ratio < 0.26 or ratio > 1.65):
             return False
         return pi.kappa_flc >= 100 or pi.lambda_flc >= 100
@@ -422,12 +461,8 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         if component is True:
             pi.measurable_disease_imwg = True
             return
-    # All components None → no relevant lab data, result is unknown.
-    # Avoids the "shows No by default" UX bug (#4143 / #4156).
-    if all(c is None for c in components):
-        pi.measurable_disease_imwg = None
-        return
-    pi.measurable_disease_imwg = False
+    # CB's three-valued OR: a negative result needs every component evaluated.
+    pi.measurable_disease_imwg = False if all(c is False for c in components) else None
 
 
 def _normalize_last_treatment(pi) -> None:

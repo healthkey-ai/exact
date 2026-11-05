@@ -21,8 +21,39 @@ from trials.querysets.trial import (
     TrialQuerySet,
     _CUSTOM_SEARCH_DISPATCH,
     _csv,
+    _csv_stripped,
     _filter_therapy_lines_once,
+    _omop_therapy_ids,
 )
+
+
+def test_omop_therapy_ids_legacy_returns_none_without_importing_release_gate(monkeypatch):
+    """QR4d host-agnostic gate: in legacy mode (omop master flag off) the therapy
+    dispatch must NOT import trials.services.omop.patient_release_gate — a host that
+    doesn't ship it (CB, at the orchestrator drain) would ImportError otherwise.
+    Simulate its absence and assert the legacy path still yields (None, None)."""
+    import sys
+    monkeypatch.setitem(sys.modules, 'trials.services.omop.patient_release_gate', None)
+    assert _omop_therapy_ids({'omop_therapy': False}) == (None, None)
+    assert _omop_therapy_ids({}) == (None, None)  # missing key == off
+
+
+def test_mcl_attr_block_key_order_matches_cb():
+    """QR4d.3 drain follow-up: the MCL attr block key order must match CB's
+    USER_TO_TRIAL_ATTRS_MAPPING (the source of truth). filter_by_patient_info
+    iterates mapping.keys(), so a divergent order makes the add_traces trace order
+    (and per-step records/dropped) differ across the CB-orchestrator / package-
+    orchestrator boundary for an MCL patient. Re-drift here silently re-introduces
+    that divergence — the drain review caught it because the package block had been
+    reordered vs CB."""
+    from exact_matching.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
+    keys = list(USER_TO_TRIAL_ATTRS_MAPPING)
+    i = keys.index('bone_marrow_involvement')
+    assert keys[i + 1:i + 10] == [
+        'bulky_disease_criteria', 'largest_lesion_size', 'p53_ihc',
+        'morphologic_variant', 'disease_behavior', 'disease_subtype',
+        'mipi_risk', 'mipi_c_risk', 'extranodal_sites',
+    ]
 
 
 # Stateful handlers that take ctx — they call multiple queryset methods or
@@ -48,7 +79,8 @@ class TestDispatchTableExhaustive:
             pytest.skip(f'{user_attr} is a stateful handler — covered by integration tests')
 
         scope = MagicMock(spec=TrialQuerySet)
-        ctx = {'patient_info': None, 'has_no_prior_therapy': False,
+        ctx = {'patient_info': None, 'patient_info_attr': MagicMock(),
+               'has_no_prior_therapy': False,
                'user_therapies': {}, 'is_therapies_filter_applied': False}
         # Call the handler with a typical comma-string value so CSV
         # handlers exercise their split path too.
@@ -71,7 +103,9 @@ class TestDispatchTableExhaustive:
         from trials.services.patient_info.configs import (
             THERAPY_LINES_ATTRS_UNDERSCORED,
         )
-        therapy_keys = set(THERAPY_LINES_ATTRS_UNDERSCORED) | {'supportive_therapies'}
+        # supportive_therapies now has a dedicated dispatch entry (#4449) — it is
+        # NOT a therapy-line fallback attr, so it is deliberately excluded here.
+        therapy_keys = set(THERAPY_LINES_ATTRS_UNDERSCORED)
         assert therapy_keys.isdisjoint(_CUSTOM_SEARCH_DISPATCH.keys())
 
     def test_every_custom_search_config_is_routable(self):
@@ -92,9 +126,8 @@ class TestDispatchTableExhaustive:
             if meta.get('custom_search') is True
         }
         routable = (
-            set(_CUSTOM_SEARCH_DISPATCH.keys())
+            set(_CUSTOM_SEARCH_DISPATCH.keys())  # includes supportive_therapies (#4449)
             | set(THERAPY_LINES_ATTRS_UNDERSCORED)
-            | {'supportive_therapies'}
         )
         unroutable = custom_search_keys - routable
         assert not unroutable, (
@@ -105,6 +138,42 @@ class TestDispatchTableExhaustive:
         )
 
 
+class TestExtranodalSitesSplit:
+    """QR4a/L2 regression: `extranodal_sites` must reach `eligible_for_extranodal_sites`
+    as a clean LIST, accepting either input shape. EXACT's PatientInfo has it as a
+    JSONField (list); CB's as a comma-separated TextField (string). A raw STRING would
+    char-iterate downstream ('spleen,liver' -> ['s','p','l',...]); a `_csv`-style split
+    would crash on EXACT's list (`list.split` AttributeError). `_as_list_stripped` handles
+    both — this pins both directions so neither the string nor the list path regresses.
+    """
+
+    def test_list_input_flows_through_stripped(self):
+        # EXACT contract: extranodal_sites arrives as a list. Must NOT crash (the
+        # _csv_stripped mistake did) and must stay a stripped list.
+        handler = _CUSTOM_SEARCH_DISPATCH['extranodal_sites']
+        scope = MagicMock(spec=TrialQuerySet)
+        handler(scope, ['bone_marrow', '  gi_tract  '], {})
+        (arg,), _kwargs = scope.eligible_for_extranodal_sites.call_args
+        assert arg == ['bone_marrow', 'gi_tract']
+
+    def test_string_input_is_split_not_char_iterated(self):
+        # CB contract at drain: a CSV string must be split, never passed raw.
+        handler = _CUSTOM_SEARCH_DISPATCH['extranodal_sites']
+        scope = MagicMock(spec=TrialQuerySet)
+        handler(scope, 'spleen, liver', {})
+        (arg,), _kwargs = scope.eligible_for_extranodal_sites.call_args
+        assert arg == ['spleen', 'liver']
+        assert not isinstance(arg, str)
+
+    def test_empty_value_is_empty_list(self):
+        handler = _CUSTOM_SEARCH_DISPATCH['extranodal_sites']
+        for blank in ('', None, []):
+            scope = MagicMock(spec=TrialQuerySet)
+            handler(scope, blank, {})
+            (arg,), _kwargs = scope.eligible_for_extranodal_sites.call_args
+            assert arg == []
+
+
 class TestCsvHelpers:
     def test_csv_splits_comma(self):
         assert _csv('a,b,c') == ['a', 'b', 'c']
@@ -113,12 +182,11 @@ class TestCsvHelpers:
         assert _csv('') == []
         assert _csv(None) == []
 
-    def test_csv_strips_whitespace(self):
-        # There used to be a second helper for this, used by 11 of the 27
-        # fields while the other 16 kept the spaces — and PROMOP joins with
-        # ", ", so those 16 lost every value after the first (#588). One
-        # rule now; see `tests/querysets/test_value_splitting.py`.
-        assert _csv(' a , b , c ') == ['a', 'b', 'c']
+    def test_csv_stripped_strips_whitespace(self):
+        assert _csv_stripped(' a , b , c ') == ['a', 'b', 'c']
+
+    def test_csv_stripped_empty_returns_empty_list(self):
+        assert _csv_stripped('') == []
 
 
 class TestTherapyLinesOnceFlag:
@@ -129,7 +197,7 @@ class TestTherapyLinesOnceFlag:
 
     def test_first_call_applies_filter_and_flips_flag(self):
         scope = MagicMock(spec=TrialQuerySet)
-        ctx = {'is_therapies_filter_applied': False,
+        ctx = {'is_therapies_filter_applied': False, 'patient_info_attr': MagicMock(),
                'user_therapies': {}, 'has_no_prior_therapy': False}
         _filter_therapy_lines_once(scope, None, ctx)
         assert ctx['is_therapies_filter_applied'] is True
@@ -137,10 +205,41 @@ class TestTherapyLinesOnceFlag:
 
     def test_second_call_is_no_op(self):
         scope = MagicMock(spec=TrialQuerySet)
-        ctx = {'is_therapies_filter_applied': True,
+        ctx = {'is_therapies_filter_applied': True, 'patient_info_attr': MagicMock(),
                'user_therapies': {}, 'has_no_prior_therapy': False}
         result = _filter_therapy_lines_once(scope, None, ctx)
         assert ctx['is_therapies_filter_applied'] is True
         assert not scope.eligible_for_therapy_related_things_from_lines.called
         # Returns the unchanged scope.
         assert result is scope
+
+
+class TestFilterByPatientInfoLegacyNoReleaseGate:
+    """QR4d orchestrator drain: the `filter_by_patient_info` wrapper binds the #286
+    Gate-1 release scope, which imports `trials.services.omop.patient_release_gate`.
+    In legacy mode (OMOP master flag off) the wrapper must NOT import that module —
+    a host that doesn't ship it (CB, when it delegates to super() at the orchestrator
+    drain) would ImportError. Master-gating the scope (mirrors `_omop_therapy_ids`,
+    #342) is behaviour-preserving because the scope only feeds the OMOP-type prefilter,
+    which is inert when OMOP is off.
+    """
+
+    @pytest.mark.django_db
+    def test_legacy_wrapper_does_not_import_release_gate(self, monkeypatch, settings):
+        import sys
+        from trials.models import Trial
+        from trials.services.patient_info.patient_info import PatientInfo
+        from tests.factories import TrialFactory
+
+        settings.EXACT_OMOP_THERAPY = False  # master off → legacy path
+        # None in sys.modules makes `import ...patient_release_gate` raise ImportError,
+        # simulating a host (CB) that doesn't ship the OMOP release-gate infra.
+        monkeypatch.setitem(sys.modules, 'trials.services.omop.patient_release_gate', None)
+
+        TrialFactory(disease='mantle cell lymphoma')
+        # prior_therapy='None' drives the therapy dispatch too (has_no_prior_therapy),
+        # exercising the _omop_therapy_ids gate on the same call.
+        pi = PatientInfo(disease='mantle cell lymphoma', prior_therapy='None')
+
+        result, _ = Trial.objects.filter_by_patient_info(pi)  # must not ImportError
+        assert result.count() >= 1

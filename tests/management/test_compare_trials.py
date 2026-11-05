@@ -196,7 +196,7 @@ class TestZipPriority:
 
 class TestZipOverrideWarningCondition:
     """
-    The command warns when json_zip differs from the CTOMOP DB postal_code.
+    The command warns when json_zip differs from the PROMOP DB postal_code.
     This tests the condition logic only, not the Django output.
     """
 

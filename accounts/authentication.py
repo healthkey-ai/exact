@@ -12,7 +12,7 @@ never looked at again — so an **expired** token kept working until the entry
 aged out (#404). It bought only the provider round trip, not the database
 lookup, which ran on the cached path too.
 
-Unlike ctomop, EXACT does **not** own OMOP Person/PatientInfo, so the
+Unlike promop, EXACT does **not** own OMOP Person/PatientInfo, so the
 identity is resolved (get-or-create) but no patient row is provisioned.
 
 Both backends reject a deactivated ``Identity`` (``is_active=False``) — see

@@ -7,10 +7,18 @@ from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 
 
 class TrialTemplates:
-    def __init__(self, trial, patient_info):
+    def __init__(self, trial, patient_info, *, presentation=None):
         self._trial = trial
         self._patient_info = patient_info
-        self._trial_attributes = TrialAttributes(trial, patient_info=patient_info)
+        self._presentation = presentation
+        if presentation is not None:
+            from trials.services.trial_details.supplied_presentation import SuppliedTrialPresentation
+            if type(presentation) is not SuppliedTrialPresentation:
+                raise ValueError('presentation_type')
+            presentation.require_binding(trial.pk, patient_info)
+            self._trial_attributes = None
+        else:
+            self._trial_attributes = TrialAttributes(trial, patient_info=patient_info)
 
     def details_and_group_names(self, template, attrs_to_fill_in):
         if template == 'all_attributes_in_groups':
@@ -25,6 +33,8 @@ class TrialTemplates:
             }
 
     def get_field_name(self, field):
+        if self._presentation is not None:
+            raise ValueError('supplied_presentation_metadata')
         self._trial_attributes.get_field_name(field)
 
     def get_field_groups(self, field_name):
@@ -35,34 +45,32 @@ class TrialTemplates:
             return value
 
     def potential_attributes_first_view(self, attrs_to_fill_in):
+        # Supplied views are FINAL presentation, not override hints.
+        # `attrs_to_fill_in` does not reclassify or filter them; callers must
+        # select a consumer that supports the supplied statuses.
+        if self._presentation is not None:
+            return self._presentation.view('potential')
         out = {
             'general': [],
             'trialEligibilityAttributes': [],
         }
 
+        # Keys are the statuses `attr_match_status()` returns. The mismatch key
+        # carried a SPACE while the matcher has always returned an underscore,
+        # so the lookup never hit: every mismatch fell through to the default
+        # weight of 5 in `order_weight` and sorted BELOW the criteria the
+        # patient already satisfies — the inversion of what a view called
+        # `potential_attributes_first_view` exists to do. CB fixed the same typo
+        # in #4669 and the fix was never ported down.
         mapping_for_order = {
-            # NOTE: the key is 'not matched' with a SPACE, while the status is
-            # `not_matched` — so a mismatch never matches it and falls through
-            # to the default weight of 5. Pre-existing; left alone here rather
-            # than reordered as a side effect of adding a status, because
-            # fixing it moves rows this change has nothing to do with.
-            'not matched': 1,
+            'not_matched': 1,
             'unknown': 2,
-            'matched': 3,
-            # 6, not 4: it has to land after the default-weight bucket that
-            # `not_matched` actually falls into. "The trial never asked" is the
-            # least informative row there is and must not sit above a real
-            # mismatch.
-            'not_evaluated': 6,
+            'matched': 3
         }
 
         details = self._trial_attributes.details()
         patient_info = self._patient_info
-        # No patient, no matcher — and no claim about one. The rows still carry
-        # what the trial requires; what they do not carry is a verdict, which
-        # is the honest shape for "here is a trial" as opposed to "here is how
-        # you compare to it".
-        service = UserToTrialAttrMatcher(self._trial, patient_info) if patient_info else None
+        service = UserToTrialAttrMatcher(self._trial, patient_info)
         label = ''
 
         def order_weight(value):
@@ -70,11 +78,14 @@ class TrialTemplates:
                 return 10, ''
             if value['name'] == 'matchScore':
                 return 0, ''
-            # `.get`: without a patient no row has a `matchingType` at all,
-            # and they all land on the default weight and sort by label.
-            return mapping_for_order.get(value.get('matchingType'), 5), value['label']
+            return mapping_for_order.get(value['matchingType'], 5), value['label']
 
-        therapy_match_statuses = service.therapy_related_things_match_status() if service else {}
+        # No patient context (#318): the detail view still renders the trial's
+        # criteria, but per-criterion match status is meaningless — leave it
+        # 'unknown' rather than run the matcher against a None patient (500) or a
+        # fabricated one (misleading favourable match). Mirrors the serializer,
+        # which already reports matchScore/matchingType as None without a patient.
+        therapy_match_statuses = service.therapy_related_things_match_status() if patient_info is not None else {}
 
         for field in details.values():
             if not isinstance(field, dict):
@@ -98,12 +109,15 @@ class TrialTemplates:
                         # absent for legacy/type criteria. See therapy_related_things_match_status.
                         if 'omopConcepts' in therapy_match_statuses[field_name]:
                             field['omopConcepts'] = therapy_match_statuses[field_name]['omopConcepts']
+                    else:
+                        field['matchingType'] = 'unknown'  # no patient (#318)
                     out['trialEligibilityAttributes'].append(field)
                 elif not self._trial_attributes.is_blank(field_name, field['value'], field.get('search_type')):
-                    if service is None:
-                        pass  # no patient, so no verdict — see above
-                    elif field['ufield']:
-                        field['matchingType'] = service.attr_match_status(AttributeNames.get_by_camel_case(field['ufield']))
+                    if field['ufield']:
+                        # No patient (#318): can't evaluate a patient-relative field.
+                        field['matchingType'] = (
+                            service.attr_match_status(AttributeNames.get_by_camel_case(field['ufield']))
+                            if patient_info is not None else 'unknown')
                     else:
                         field['matchingType'] = 'matched'
                     field_label = field['label']
@@ -135,6 +149,8 @@ class TrialTemplates:
         return out
 
     def all_attributes_in_groups_view(self):
+        if self._presentation is not None:
+            return self._presentation.view('grouped')
         out = {}
         details = self._trial_attributes.details()
         for field in details.values():
@@ -154,5 +170,7 @@ class TrialTemplates:
         return out
 
     def group_names(self):
+        if self._presentation is not None:
+            return self._presentation.view('group_names')
         items = {k: v for k, v in GROUP_NAMES.items() if k != 'admin'}
         return [{'value': k, 'label': v} for k, v in items.items()]
