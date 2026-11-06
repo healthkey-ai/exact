@@ -447,14 +447,6 @@ _MOCK_LOOKUP = {
         'invasive ductal carcinoma': 'idc',
         'invasive lobular carcinoma': 'ilc',
     },
-    'Ethnicity': {
-        'caucasian/white':           'caucasian_or_european',
-        'white':                     'caucasian_or_european',
-        'black/african-american':    'african_or_black',
-        'black or african american': 'african_or_black',
-        'hispanic or latino':        'other',
-        'hispanic/latino':           'other',
-    },
     # Other models — empty for these unit tests
     'CytogenicMarker': {},
     'MolecularMarker': {},
@@ -517,11 +509,78 @@ class TestReceptorStatusAliases:
         result = _normalize_promop_row(_row(histologic_type='Invasive Ductal Carcinoma'))
         assert result['histologic_type'] == 'idc'
 
-    def test_ethnicity_hispanic_maps_to_other(self, _mock):
-        result = _normalize_promop_row(_row(ethnicity='Hispanic or Latino'))
-        assert result['ethnicity'] == 'other'
 
-    def test_ethnicity_white_maps_to_caucasian(self, _mock):
-        result = _normalize_promop_row(_row(ethnicity='White'))
+class TestRaceEthnicityContract:
+    """EXACT's race-like field comes from PROMOP `race`, never OMOP ethnicity.
+
+    PROMOP stores OMOP race in `race` and OMOP ethnicity in `ethnicity`;
+    EXACT's `ethnicity` field holds race categories (#4447). The adapter must
+    not translate an ethnicity answer into a race (#5556).
+    """
+
+    def test_race_is_the_source_when_both_are_present(self):
+        result = _normalize_promop_row(
+            _row(race='Asian', ethnicity='Not Hispanic or Latino'))
+        assert result['ethnicity'] == 'asian'
+
+    def test_contradictory_ethnicity_does_not_override_race(self):
+        result = _normalize_promop_row(
+            _row(race='White', ethnicity='Hispanic or Latino'))
         assert result['ethnicity'] == 'caucasian_or_european'
+
+    def test_legacy_race_label_falls_back_when_race_is_blank(self):
+        result = _normalize_promop_row(_row(race='', ethnicity='White'))
+        assert result['ethnicity'] == 'caucasian_or_european'
+
+    def test_omop_ethnicity_alone_is_unknown(self):
+        result = _normalize_promop_row(_row(ethnicity='Hispanic or Latino'))
+        assert result['ethnicity'] is None
+
+    def test_omop_ethnicity_alone_is_unknown_when_race_column_is_absent(self):
+        result = _normalize_promop_row(_row(ethnicity='Not Hispanic or Latino'))
+        assert result['ethnicity'] is None
+
+    def test_both_sources_absent_stays_unknown(self):
+        assert _normalize_promop_row(_row(race=None, ethnicity=None))['ethnicity'] is None
+
+    def test_a_row_without_either_source_keeps_its_keys(self):
+        row = {'white_blood_cell_count': 7_500_000_000,
+               'white_blood_cell_count_units': 'CELLS/L'}
+        assert _normalize_promop_row(dict(row)) == row
+
+    def test_an_unmapped_race_does_not_fall_back(self):
+        result = _normalize_promop_row(
+            _row(race='Native Hawaiian or Other Pacific Islander',
+                 ethnicity='White'))
+        assert result['ethnicity'] is None
+
+    def test_reviewed_race_labels(self):
+        cases = {
+            'White': 'caucasian_or_european',
+            'Black or African American': 'african_or_black',
+            'Asian': 'asian',
+            'American Indian or Alaska Native': 'native_american',
+            'Other': 'other',
+        }
+        for label, code in cases.items():
+            assert _normalize_promop_row(_row(race=label))['ethnicity'] == code
+
+    def test_legacy_aliases(self):
+        cases = {
+            'Caucasian/White': 'caucasian_or_european',
+            'Black/African-American': 'african_or_black',
+        }
+        for label, code in cases.items():
+            assert _normalize_promop_row(_row(race=label))['ethnicity'] == code
+
+    @pytest.mark.parametrize('row,code', [
+        ({'race': 'caucasian_or_european'}, 'caucasian_or_european'),
+        ({'ethnicity': 'White'}, 'caucasian_or_european'),
+        ({'race': 'Native Hawaiian or Other Pacific Islander'}, None),
+    ])
+    def test_normalisation_is_idempotent(self, row, code):
+        once = _normalize_promop_row(dict(row))
+        twice = _normalize_promop_row(dict(once))
+        assert once['ethnicity'] == code
+        assert twice['ethnicity'] == code
 
