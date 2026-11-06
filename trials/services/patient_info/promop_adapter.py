@@ -96,14 +96,6 @@ def _build_code_lookup(model_name):
             model_map[key] = row['code']
     aliases = {
         'HrdStatus': {'positive': 'hrd_positive', 'negative': 'hrd_negative'},
-        'Ethnicity': {
-            'caucasian/white': 'caucasian_or_european',
-            'white': 'caucasian_or_european',
-            'black/african-american': 'african_or_black',
-            'black or african american': 'african_or_black',
-            'hispanic or latino': 'other',
-            'hispanic/latino': 'other',
-        },
     }
     model_map.update(aliases.get(model_name, {}))
     return {model_name: model_map}
@@ -153,6 +145,76 @@ def resolve_therapy_code(display: str) -> str | None:
             break
         s = s2
     return None
+
+
+#: EXACT's `ethnicity` field holds RACE categories (#4447), while PROMOP stores
+#: the OMOP race label in `race` and OMOP ethnicity in `ethnicity`. Only these
+#: reviewed race labels map to an EXACT code. OMOP ethnicity labels (Hispanic
+#: or Latino / Not Hispanic or Latino), Unknown, and the categories EXACT has no
+#: code for (Native Hawaiian / Other Pacific Islander) stay unknown rather than
+#: being coerced into "Other" (#5556). Values may be labels, CB legacy titles or
+#: already-normalised codes; all three spellings normalise to the same key.
+_RACE_LABEL_TO_CODE = {
+    'caucasian european': 'caucasian_or_european',
+    'caucasian or european': 'caucasian_or_european',
+    'caucasian': 'caucasian_or_european',
+    'european': 'caucasian_or_european',
+    'white': 'caucasian_or_european',
+    'white caucasian': 'caucasian_or_european',
+    # Legacy PROMOP alias "Caucasian/White".
+    'caucasian white': 'caucasian_or_european',
+
+    'african black': 'african_or_black',
+    'african or black': 'african_or_black',
+    'african': 'african_or_black',
+    'black': 'african_or_black',
+    'black or african american': 'african_or_black',
+    'african american': 'african_or_black',
+    # Legacy PROMOP alias "Black/African-American".
+    'black african american': 'african_or_black',
+
+    'asian': 'asian',
+    'asian american': 'asian',
+
+    'native american': 'native_american',
+    'american indian or alaska native': 'native_american',
+    'american indian': 'native_american',
+    'alaska native': 'native_american',
+
+    'other': 'other',
+    'other race': 'other',
+    "other won't say": 'other',
+    'other wont say': 'other',
+}
+
+
+def _normalise_race_label(value) -> str:
+    return ' '.join(
+        str(value or '').strip().casefold()
+        .replace('_', ' ').replace('/', ' ').replace('-', ' ').split()
+    )
+
+
+def _race_code(value) -> str | None:
+    """Map a reviewed race label to an EXACT Ethnicity code, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _RACE_LABEL_TO_CODE.get(_normalise_race_label(value))
+
+
+def _race_code_from_row(row: dict) -> str | None:
+    """The race-like value EXACT should use for this PROMOP row.
+
+    `race` is the source. A legacy payload may still carry a race label in
+    `ethnicity` while `race` is empty, so map that only in that case. An
+    explicit-but-unmapped race stays unknown and does not fall back: falling
+    back would answer a different question, and an OMOP ethnicity value is
+    never a race.
+    """
+    race = row.get('race')
+    if isinstance(race, str) and race.strip():
+        return _race_code(race)
+    return _race_code(row.get('ethnicity'))
 
 
 def resolve_code_csv(display: str, model_name: str) -> str | None:
@@ -526,10 +588,15 @@ def normalize_promop_row(row: dict) -> dict:
     if isinstance(val, str):
         row['histologic_type'] = resolve_code(val, 'HistologicType')
 
-    # ── Ethnicity — PROMOP labels → EXACT codes ────────────────────────
-    val = row.get('ethnicity')
-    if isinstance(val, str):
-        row['ethnicity'] = resolve_code(val, 'Ethnicity')
+    # ── Race — PROMOP keeps race and ethnicity apart ───────────────────
+    # EXACT's `ethnicity` field holds race categories (#4447), while PROMOP
+    # stores the OMOP race label in `race` and OMOP ethnicity in `ethnicity`.
+    # Read the race source here; an OMOP ethnicity answer is never translated
+    # into a race (#5556). See `_race_code_from_row` for the fallback rule.
+    # Only write the field when the payload named one of the sources: a row
+    # without either stays byte-for-byte unchanged for older callers.
+    if 'race' in row or 'ethnicity' in row:
+        row['ethnicity'] = _race_code_from_row(row)
 
     # ── Cytogenetic markers — PROMOP's renamed column and vocabulary ────
     # PROMOP's column is `cytogenetic_markers` (migration 0222); EXACT's field
