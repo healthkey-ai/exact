@@ -441,6 +441,78 @@ def _cytogenetic_markers_with_legacy_titles(value):
     return _cytogenetic_markers(value)
 
 
+#: One item of PROMOP's `molecular_markers` summary: `"{feature or GENE}: {variant}"`,
+#: joined with `"; "` (promop `patient_record_service.py`, present findings only).
+#: The name has no colon or comma; the variant may be empty or carry brackets.
+_PROMOP_FINDING_ITEM = re.compile(r'^[^:,]+:')
+_TP53_EVIDENCE = re.compile(r'tp53|17p|del\(17|chromosome 17', re.IGNORECASE)
+
+
+def _promop_summary_items(value):
+    """`value` split on `;` outside brackets: `t(11;14)` stays one item."""
+    items, start, depth = [], 0, 0
+    for index, char in enumerate(value):
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            depth = max(depth - 1, 0)
+        elif char == ';' and depth == 0:
+            items.append(value[start:index].strip())
+            start = index + 1
+    items.append(value[start:].strip())
+    return items
+
+
+def _is_promop_findings_summary(value):
+    """Whether `value` is PROMOP's display summary of genomic findings (#723).
+
+    Every `;`-separated item (outside brackets) must read `name: variant`, with
+    a non-empty name free of commas. No marker code or title contains a colon,
+    so a real code list never matches; titles such as `t(11;14) Translocation`
+    hold a semicolon but no colon, and do not either.
+
+    A shape test is a stopgap by nature (#723 reads the structured findings).
+    It errs safe both ways: an unrecognised summary still gets the strict 422,
+    and a recognised one only becomes unknown.
+    """
+    if not isinstance(value, str) or ':' not in value:
+        return False
+    items = _promop_summary_items(value)
+    return all(items) and all(
+        _PROMOP_FINDING_ITEM.match(item) and item.split(':', 1)[0].strip()
+        for item in items
+    )
+
+
+def _summary_names_tp53(value):
+    """Whether the summary may carry TP53-disruption evidence.
+
+    The whole text, not just the item names: an unclosed bracket can swallow
+    a later item, and chromosome-17 losses are spelled several ways. Matching
+    too much only turns PROMOP's False into unknown, which is safe.
+    """
+    return bool(_TP53_EVIDENCE.search(value))
+
+
+def _row_has_tp53_surrogate(row):
+    """Whether the row carries the derivation's other TP53-positive inputs.
+
+    Mirrors `PatientInfoAttributes.tp53_disruption`: del17p13 in the (already
+    translated) cytogenetic markers, or p53 IHC of 50% or more.
+    """
+    cytogenic = row.get('cytogenic_markers')
+    if isinstance(cytogenic, str):
+        cytogenic = cytogenic.split(',')
+    if isinstance(cytogenic, (list, tuple)) and 'del17p13' in [
+        str(code).strip() for code in cytogenic
+    ]:
+        return True
+    try:
+        return float(row.get('p53_ihc')) >= 50
+    except (TypeError, ValueError):
+        return False
+
+
 def _marker_assessment(value, model_name, aliases=None):
     """Resolve every token, never publish a successfully mapped subset.
 
@@ -620,7 +692,38 @@ def normalize_promop_row(row: dict) -> dict:
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     if 'molecular_markers' in row:
-        row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
+        if _is_promop_findings_summary(row['molecular_markers']):
+            # Stopgap for #723. PROMOP's own summary of present findings is
+            # never a list of marker codes, so the strict check below refused
+            # the whole patient (422) for anyone with a finding. Read it as
+            # unknown instead: `''` is blank to `is_attr_blank`, so marker
+            # criteria and the high-risk MCL codes sourced from it stay
+            # unknown (potential), never a confirmed "no". TP53 keeps PROMOP's
+            # own `tp53_disruption`. Anything else still goes through the
+            # strict check and is refused if unsupported. The real fix reads
+            # the structured findings (#723).
+            summary = row['molecular_markers']
+            row['molecular_markers'] = ''
+            # The TP53 derivation reads `tp53Mutation` from these markers and,
+            # with no aggregate supplied, answers a confirmed False. The summary
+            # just dropped may well name TP53, so without PROMOP's own aggregate
+            # the honest answer is unknown: an explicit null, which the adapter
+            # keeps and the derivation honours.
+            row.setdefault('tp53_disruption', None)
+            # PROMOP's False needs a strictly `pathogenic` TP53 finding to turn
+            # True, so del(17p) left uninterpreted or a "likely pathogenic" TP53
+            # reads False while the summary lists that very finding. The markers
+            # used to expose the contradiction (`_tp53_contradiction`); with them
+            # dropped, say unknown instead of a confirmed "no". A True stays.
+            # Only where nothing else on the row says TP53: with a surrogate
+            # (p53 IHC >= 50, del17p13) the derivation would turn a null into a
+            # confirmed True, while a kept False lets `_tp53_contradiction`
+            # answer unknown, as it did when the markers were still readable.
+            if (row['tp53_disruption'] is False and _summary_names_tp53(summary)
+                    and not _row_has_tp53_surrogate(row)):
+                row['tp53_disruption'] = None
+        else:
+            row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
     for _field, _model in [
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
