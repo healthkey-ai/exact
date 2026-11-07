@@ -649,6 +649,27 @@ export interface TrialMatchesProps {
     export?: boolean;
     graph?: boolean;
   };
+  /** Which cascade mode the injected stylesheet uses.
+   *
+   *  `"layered"` (the default) wraps the sheet in `@layer mf-remote`. That is
+   *  right for a host that declares the layer order and ships layered
+   *  utilities — Tailwind v4, for example — because it lets the host's
+   *  utilities outrank this remote without letting this remote outrank the
+   *  host's own chrome.
+   *
+   *  `"unlayered"` injects the same sheet with no wrapper, for a host whose
+   *  CSS is unlayered — Tailwind v3's preflight, which CB's `ui.v2` ships.
+   *  Unlayered author rules outrank every layered rule regardless of
+   *  specificity, so in that host a layered sheet loses its typography and
+   *  control styling to the host's preflight. The sheet is scoped under
+   *  `.exact-root` and ships no Tailwind utilities, so unlayered it still
+   *  cannot reach the host's chrome.
+   *
+   *  The mode is fixed for the life of this remote instance: the first mount
+   *  decides and later mounts inherit it, because two stylesheets in
+   *  different modes would fight over the cascade. A host that changes the
+   *  prop after mount keeps the mount-time mode; treat it as static. */
+  styles?: "layered" | "unlayered";
 }
 
 /** Public props for the federated `./TrialMatchesBridge` export — the

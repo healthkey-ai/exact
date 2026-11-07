@@ -806,6 +806,9 @@ export function TrialDetailPage({
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
+  // No options on purpose: this inherits the mode `TrialMatches` chose from
+  // its `styles` prop, rather than imposing the default on a host that asked
+  // for the unlayered sheet.
   useEffect(() => {
     injectStyles();
   }, []);

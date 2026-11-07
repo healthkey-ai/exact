@@ -554,6 +554,8 @@ export interface TrialMatchesProps {
   preferences?: TrialPreferenceStore;
   /** Actions this host can serve; see the production type. */
   capabilities?: import("../federation/types").TrialMatchesProps["capabilities"];
+  /** Which cascade mode the injected sheet uses; see the production type. */
+  styles?: import("../federation/types").TrialMatchesProps["styles"];
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
   onTrialSelect?: (trial: TrialMatch) => void;
   trialId?: number | string | null;
@@ -609,6 +611,7 @@ export function renderTrialMatches(
         state={next.state}
         preferences={next.preferences}
         capabilities={next.capabilities}
+        styles={next.styles}
         onPatientRecordChanged={next.onPatientRecordChanged}
         onTrialSelect={next.onTrialSelect}
         trialId={next.trialId}
