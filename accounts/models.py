@@ -8,6 +8,31 @@ from django.utils import timezone
 class IdentityManager(BaseUserManager):
     use_in_migrations = True
 
+    def get_by_natural_key(self, *key):
+        """Resolve a natural key: `(issuer, sub)`, or a bare `sub` at login.
+
+        Django calls this with two shapes. Serialization (`loaddata` of a
+        `--natural-foreign` dump) passes whatever `Identity.natural_key()`
+        produced — `(issuer, sub)`, the real key. ModelBackend passes the one
+        login string. `sub` is unique only within an issuer (#700), so a bare
+        `get(sub=...)` could match rows from several issuers; only `urn:local`
+        identities ever password-authenticate (external rows get
+        `set_unusable_password()`), so the login form is scoped to them.
+        """
+        return self.get(**self._natural_key_lookup(key))
+
+    async def aget_by_natural_key(self, *key):
+        """Async mirror of `get_by_natural_key`, resolved the same way."""
+        return await self.aget(**self._natural_key_lookup(key))
+
+    @staticmethod
+    def _natural_key_lookup(key):
+        if len(key) == 2:
+            issuer, sub = key
+            return {"issuer": issuer, "sub": sub}
+        (username,) = key
+        return {"issuer": "urn:local", "sub": username}
+
     def get_or_create_from_claims(self, claims):
         """Get or create an Identity from TokenClaims."""
         return self.get_or_create(
@@ -53,7 +78,12 @@ class Identity(AbstractBaseUser, PermissionsMixin):
     Local identities (iss="urn:local"): email + password for admin/standalone.
     """
     issuer = models.CharField(max_length=255)
-    sub = models.CharField(max_length=255, unique=True)
+    # NOT globally unique: a `sub` is unique only within its issuer, and the
+    # real key is the composite (issuer, sub) constraint below. A standalone
+    # `unique=True` 500s `get_or_create_from_claims` as soon as a second issuer
+    # mints a subject an earlier one already used — which is what switching
+    # PHR_ISSUER from phr to PROMOP does, since both number users from 1 (#700).
+    sub = models.CharField(max_length=255)
 
     email = models.EmailField(blank=True, default="")
     name = models.CharField(max_length=255, blank=True, default="")
@@ -81,6 +111,12 @@ class Identity(AbstractBaseUser, PermissionsMixin):
                 name="uq_identity_local_email",
             ),
         ]
+
+    def natural_key(self):
+        # (issuer, sub), not AbstractBaseUser's (sub,): `sub` alone no longer
+        # names one row, so a dump keyed on it would reattach an external
+        # identity's rows to whichever identity shares its subject on load.
+        return (self.issuer, self.sub)
 
     @property
     def is_local(self) -> bool:
