@@ -33,8 +33,9 @@ def client(db):
 
 @pytest.mark.django_db
 class TestDistanceFilterSignal:
-    def test_no_radius_asked_for_means_no_key(self, client):
-        response = client.get('/trials/')
+    @pytest.mark.parametrize('query', ['', '?distance=', '?distance=%20'])
+    def test_no_radius_asked_for_means_no_key(self, client, query):
+        response = client.get(f'/trials/{query}')
         assert response.status_code == 200
         assert 'distanceFilter' not in response.json()
 
@@ -60,7 +61,7 @@ class TestDistanceFilterSignal:
         assert response.status_code == 200
         assert response.json()['distanceFilter'] == {'applied': True}
 
-    @pytest.mark.parametrize('value', ['-5', '-0.1'])
+    @pytest.mark.parametrize('value', ['0', '-5', '-0.1', 'abc', 'nan', 'inf'])
     def test_a_radius_that_is_not_positive_was_not_applied(self, client, value):
         # It takes the radius branch, so country/region is skipped too, yet
         # `by_distance` returns early on `distance <= 0`: no filter at all.

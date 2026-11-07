@@ -1,4 +1,5 @@
 import csv
+import math
 import io as _io
 import logging
 import re
@@ -457,10 +458,14 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         radius `<= 0` takes the radius branch yet `by_distance` skips it.
         `test_distance_filter_signal` pins this against real rows.
         """
-        distance = self._resolve_study_preferences().distance
-        if not distance:
+        raw = self.request.query_params.get('distance')
+        if raw is None or not str(raw).strip():
             return None
-        if distance <= 0:
+        # Parsed by the same `study_preferences_from_query_params` the queryset
+        # uses: an unparseable value becomes None there and is ignored, and a
+        # non-finite or non-positive one reaches `by_distance`, which skips it.
+        distance = self._resolve_study_preferences().distance
+        if distance is None or not math.isfinite(distance) or distance <= 0:
             return {'applied': False, 'reason': 'invalid_distance'}
         if self.request.query_params.get('type') == 'all':
             return {'applied': False, 'reason': 'search_type'}
