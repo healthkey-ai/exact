@@ -387,7 +387,7 @@ environment variables — never commit secret values to git.
 | `EXACT_ALLOW_PERSON_ID_LOOKUP` | `true` in DEBUG/`local`, else `false` | Enables the server-side `?person_id=` lookup — a PHI IDOR outside local use (#150/#108) |
 
 | `PARTNER_AUTH_PROVIDERS` | Firebase + PHR | Comma-separated dotted paths of the token providers this deployment has. Set to the portal provider alone where there is no Firebase. |
-| `PHR_ISSUER` | `healthkey-phr` | The `iss` claim that routes a token to the portal provider. Not safely changeable after a deploy: `Identity.sub` is globally unique, so existing users would collide under a new issuer. |
+| `PHR_ISSUER` | `healthkey-phr` | The `iss` claim that routes a token to the portal provider. Change it after a deploy only deliberately. It no longer collides, because `Identity.sub` is unique per issuer since #700, but every existing portal user then signs in as a new `Identity`, and nothing EXACT stored against the old one carries over. |
 | `PHR_BASE_URL` | _(empty)_ | Portal base URL; derives `PHR_JWKS_URL`. Unset means portal **RS256** tokens never verify (fails closed). It no longer governs the introspection path — that has its own URL below, so an HS-family token can still verify with this unset. |
 | `PHR_JWKS_URL` | _(derived)_ | Overrides the JWKS endpoint derived from `PHR_BASE_URL` |
 | `PHR_INTROSPECT_URL` | _(empty)_ | Introspection endpoint. Deliberately **not** derived from `PHR_BASE_URL`: an RS256 deployment sets the base URL for JWKS and must not get an introspection surface with it. Empty means the fallback is unusable even where `PHR_ALLOW_INTROSPECTION` is on, and says so at debug level only — so if HS256 sign-in 401s locally, check this first. |
