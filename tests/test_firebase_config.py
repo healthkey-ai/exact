@@ -4,9 +4,9 @@
 `DEBUG`, so turning DEBUG on to read a traceback also turned revocation
 checking off and pointed verification at a hard-coded `exact-test` project.
 """
+import ast
 import logging
 import os
-import re
 from pathlib import Path
 from unittest import mock
 
@@ -48,11 +48,26 @@ class TestFirebaseAuthSettings:
 
 class TestSettingsWiring:
     def test_settings_resolve_through_the_helper(self):
-        source = SETTINGS_PATH.read_text()
-        assert 'firebase_auth_settings(os.environ)' in source
-        assert not re.search(r"FIREBASE_\w+\s*=.*\bDEBUG\b", source), (
-            'FIREBASE_* settings must not be derived from DEBUG (#411).'
-        )
+        # Parsed, not pattern-matched: the old SKIP assignment spanned lines,
+        # which a line regex misses.
+        tree = ast.parse(SETTINGS_PATH.read_text())
+        firebase_values = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                names = {
+                    n.id for t in node.targets
+                    for n in ast.walk(t) if isinstance(n, ast.Name)
+                }
+                if names & {'FIREBASE_PROJECT_ID', 'FIREBASE_SKIP_REVOCATION_CHECK'}:
+                    firebase_values.append(node.value)
+        assert firebase_values, 'settings.py no longer assigns the Firebase settings'
+        for value in firebase_values:
+            assert isinstance(value, ast.Call) and getattr(value.func, 'id', None) == (
+                'firebase_auth_settings'
+            ), 'FIREBASE_* settings must come from firebase_auth_settings() (#411)'
+            assert not any(
+                isinstance(n, ast.Name) and n.id == 'DEBUG' for n in ast.walk(value)
+            ), 'FIREBASE_* settings must not be derived from DEBUG (#411)'
 
     def test_loaded_settings_match_the_helper(self, settings):
         assert (settings.FIREBASE_PROJECT_ID, settings.FIREBASE_SKIP_REVOCATION_CHECK) == (
@@ -73,6 +88,27 @@ class TestProviderUsesTheSetting:
             claims = FirebaseTokenProvider().verify(self.TOKEN)
         verify.assert_called_once_with(self.TOKEN, check_revoked=check_revoked)
         assert claims.sub == 'u1'
+
+    def test_a_disabled_user_is_refused_outright(self, settings):
+        from firebase_admin import auth as firebase_auth
+        from rest_framework.exceptions import AuthenticationFailed
+
+        settings.FIREBASE_SKIP_REVOCATION_CHECK = False
+        disabled = firebase_auth.UserDisabledError('The user record is disabled.')
+        with mock.patch('firebase_admin.auth.verify_id_token', side_effect=disabled):
+            with pytest.raises(AuthenticationFailed, match='disabled'):
+                FirebaseTokenProvider().verify(self.TOKEN)
+
+    def test_a_check_that_cannot_run_is_logged_as_a_warning(self, settings, caplog):
+        settings.FIREBASE_SKIP_REVOCATION_CHECK = False
+        with mock.patch(
+            'firebase_admin.auth.verify_id_token', side_effect=PermissionError('no lookup')
+        ), caplog.at_level(logging.WARNING, logger='accounts.providers.firebase'):
+            assert FirebaseTokenProvider().verify(self.TOKEN) is None
+        assert any(
+            r.levelno == logging.WARNING and 'PermissionError' in r.getMessage()
+            for r in caplog.records
+        )
 
 
 class TestStartupWarning:
