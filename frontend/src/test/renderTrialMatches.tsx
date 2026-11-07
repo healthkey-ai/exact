@@ -560,6 +560,8 @@ export interface TrialMatchesProps {
   onTrialSelect?: (trial: TrialMatch) => void;
   trialId?: number | string | null;
   onTrialIdChange?: (trialId: number | null) => void;
+  page?: number;
+  onPageChange?: (page: number) => void;
 }
 
 export function renderTrialMatches(
@@ -616,6 +618,8 @@ export function renderTrialMatches(
         onTrialSelect={next.onTrialSelect}
         trialId={next.trialId}
         onTrialIdChange={next.onTrialIdChange}
+        page={next.page}
+        onPageChange={next.onPageChange}
       />
     </QueryClientProvider>
   );

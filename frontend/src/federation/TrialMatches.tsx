@@ -154,6 +154,12 @@ function withWeights(
  *  modal nobody can dismiss. */
 export const WIZARD_WRITE_GRACE_MS = 8000;
 
+/** A host page arrives from a URL: normalise it to a positive integer. */
+function normalisePage(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.max(1, Math.floor(value));
+}
+
 function TrialMatchesInner({
   apiClient,
   patientInfo,
@@ -172,6 +178,8 @@ function TrialMatchesInner({
   preferences,
   capabilities,
   styles,
+  page: hostPage,
+  onPageChange,
 }: Omit<TrialMatchesProps, "queryClient">) {
   const queryClient = useQueryClient();
   // Editing can come from the full state adapter or from the narrower record
@@ -277,7 +285,80 @@ function TrialMatchesInner({
   /** Whether the sort is being walked with the arrow keys; see
    *  `handleSortChange`. */
   const [sortTyping, setSortTyping] = useState(false);
-  const [page, setPage] = useState(1);
+  // Controlled pagination (#699): the host owns `?page=`. Both props or
+  // neither — `page` alone would leave the pager unable to report a click,
+  // and `onPageChange` alone has no page to render.
+  const controlledPage = hostPage !== undefined && onPageChange !== undefined;
+  // The notification effects below run once per reset EVENT, not once per
+  // host render. Read through a ref so a host that passes an inline callback
+  // does not look like a new event: a repeated navigation to page 1 is a
+  // history entry, not a no-op.
+  const onPageChangeRef = useRef(onPageChange);
+  useEffect(() => {
+    onPageChangeRef.current = onPageChange;
+  });
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if ((hostPage === undefined) !== (onPageChange === undefined)) {
+      console.warn(
+        "[exact-remote] pass page and onPageChange together; " +
+          "keeping the pager uncontrolled.",
+      );
+    }
+  }, [hostPage, onPageChange]);
+
+  const [ownPage, setOwnPage] = useState(1);
+  // A tab/sort/filter change resets the list to page 1. Uncontrolled, that is
+  // the next render. Controlled, the HOST owns the number, so the effective
+  // page is forced to 1 until its next render says 1 — otherwise the request
+  // for the new query would go out as page N before the host heard about it,
+  // and DRF answers a page past the new end with a 404.
+  const [pageResetPending, setPageResetPending] = useState(false);
+  // Increments once per reset EVENT (not per render). The reporting effect
+  // compares it with what it already told the host, which is what makes the
+  // notification exactly-once without depending on the callback's identity.
+  const [resetRequest, setResetRequest] = useState(0);
+  const lastReportedReset = useRef(0);
+  // The view whose reset the render-phase path already handled, so a patient
+  // switch in the same commit does not report the same reset a second time.
+  const resetHandledForView = useRef<string | null>(null);
+  const currentViewKey = useRef<string>("");
+  const requestedPage = controlledPage ? normalisePage(hostPage) : ownPage;
+  const page = controlledPage && pageResetPending ? 1 : requestedPage;
+  const requestPage = useCallback(
+    (next: number) => {
+      if (!controlledPage) {
+        setOwnPage(next);
+        return;
+      }
+      if (next !== requestedPage) onPageChangeRef.current?.(next);
+    },
+    [controlledPage, requestedPage],
+  );
+  /** A patient switch, a 404 recovery or a query change: back to the first
+   *  page, whether the number is ours or the host's. */
+  const resetToListStart = useCallback(() => {
+    if (!controlledPage) {
+      setOwnPage(1);
+      return;
+    }
+    setPageResetPending(true);
+    setResetRequest((n) => n + 1);
+  }, [controlledPage]);
+  // Ask the host for the reset the render above already applied. If it
+  // ignores the callback, the effective page stays 1 and this does not ask
+  // again: the request token is recorded before the call.
+  useEffect(() => {
+    if (!controlledPage || !pageResetPending) return;
+    if (requestedPage === 1) {
+      setPageResetPending(false);
+      return;
+    }
+    if (lastReportedReset.current === resetRequest) return;
+    lastReportedReset.current = resetRequest;
+    onPageChangeRef.current?.(1);
+  }, [controlledPage, pageResetPending, requestedPage, resetRequest]);
+
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Reset detail view when patient context changes so we don't keep a
@@ -451,6 +532,17 @@ function TrialMatchesInner({
     fields: new Set(),
     all: false,
   });
+  // Every delivered saved set gets a new token. The query key changes when it
+  // lands, and that must not be read as the reader changing a filter: doing
+  // so would drag a controlled host from `?page=3` back to 1 on load, before
+  // they touched anything.
+  //
+  // A token rather than a boolean, because the exception has to expire even
+  // when the delivery changes NOTHING: a late answer repeating values the
+  // panel already had leaves the key untouched, and a flag left standing
+  // would swallow the reader's next filter change.
+  const [savedApplyToken, setSavedApplyToken] = useState(0);
+  const [seenSavedApplyToken, setSeenSavedApplyToken] = useState(0);
   // The key for disk is built from the parts, not carved out of `stateKey`:
   // see `persistedKeyOf`. It is the key this page used before an identity
   // was part of any of them.
@@ -459,6 +551,7 @@ function TrialMatchesInner({
     preferenceStore,
     stateKey,
     (saved, applied) => {
+      setSavedApplyToken((n) => n + 1);
       // Not cleared here: a writer has exactly one read, so the only veto
       // that can outlive this callback belongs to the NEXT writer's read,
       // and the effect keyed on `epoch` clears it for that one. Clearing it
@@ -543,7 +636,6 @@ function TrialMatchesInner({
     credentialIdentity,
     credentialIdentityNow,
   );
-
   // Whether the panel has been touched since the last time a saved set
   // could have arrived — keyed on the same attempt the gate is, and
   // adjusted during render like `ownedFields` below.
@@ -598,7 +690,11 @@ function TrialMatchesInner({
     lastPerson.current = personName;
     lastHostTrial.current = hostTrialId;
     if (!patientMoved) return;
-    setPage(1);
+    // The render-phase query-key reset already covers a patient change that
+    // moved the view key. When it did, do not ask the host for page 1 twice.
+    if (resetHandledForView.current !== currentViewKey.current) {
+      resetToListStart();
+    }
     if (!hostOwnsUrl) {
       setOwnTrial(null);
       return;
@@ -619,7 +715,7 @@ function TrialMatchesInner({
     // patient's trial URL straight to another's. That id is not the stale
     // one; clearing it would undo the navigation that brought us here.
     if (namedMoved && !hostMoved) closeRef.current();
-  }, [patientHandle, inlineName, personName, hostTrialId, hostOwnsUrl]);
+  }, [patientHandle, inlineName, personName, hostTrialId, hostOwnsUrl, resetToListStart]);
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
@@ -1304,10 +1400,28 @@ function TrialMatchesInner({
   // server actually applied, and the server is the one that decides.
   const pageCount =
     staleResponse || !countIsForThisView ? 0 : query.data?.count ?? 0;
+  // Consumed by the first render after a saved set is delivered. If that
+  // render did not change the key, the token is spent and the next key change
+  // is a reader action again — see the declaration for why this is a token
+  // and not a boolean.
+  const savedApplicationIsNew = savedApplyToken !== seenSavedApplyToken;
+  if (savedApplicationIsNew) setSeenSavedApplyToken(savedApplyToken);
+
   const [lastQueryKey, setLastQueryKey] = useState(queryKey);
+  currentViewKey.current = queryKey;
   if (lastQueryKey !== queryKey) {
     setLastQueryKey(queryKey);
-    setPage(1);
+    if (savedApplicationIsNew) {
+      // The saved set landing is not the reader changing a filter. Resetting
+      // here would take a controlled host from `?page=3` to 1 on load, before
+      // they touched anything.
+    } else {
+      // Force this render's request to page 1 and tell the host afterwards
+      // (the effect below). Calling the host's setter from render would be
+      // the React error this pattern exists to avoid.
+      resetHandledForView.current = queryKey;
+      resetToListStart();
+    }
   }
 
   // A page past the end is a 404 (`NotFound` from PageNumberPagination), and
@@ -1320,8 +1434,8 @@ function TrialMatchesInner({
     query.isError &&
     (query.error as { response?: { status?: number } })?.response?.status === 404;
   useEffect(() => {
-    if (isPageNotFound && page !== 1) setPage(1);
-  }, [isPageNotFound, page]);
+    if (isPageNotFound && page !== 1) resetToListStart();
+  }, [isPageNotFound, page, resetToListStart]);
 
   const handleTabChange = (next: TabValue) => setActiveTab(next);
   // Arrows choose as they move, so walking from "Suitability" to "Distance"
@@ -2276,7 +2390,7 @@ function TrialMatchesInner({
       <Pagination
         page={page}
         pageCount={pageCount}
-        onChange={setPage}
+        onChange={requestPage}
       />
     </div>
   );

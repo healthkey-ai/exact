@@ -81,6 +81,15 @@ reload. A store supplied here REPLACES that fallback rather than joining it,
 so one that persists part of the set (CB round-trips the four suitability
 weights and nothing else) means the rest stops being remembered.
 
+- `page` and `onPageChange` — controlled pagination, for a host that keeps
+  the page in its address bar (`?page=`). Pass both or neither: one without
+  the other is read as none and the pager stays internal, with a development
+  console warning. While controlled, a click reports the page and this
+  component waits for the host to render it. A tab, sort or filter change
+  still goes back to page 1; the host is told through `onPageChange(1)` and
+  the in-flight request is already on page 1. A saved preference set landing
+  after mount is hydration, not a filter change, and does not reset the page.
+
 ### `./TrialMatchesBridge` — hosts that are not React
 
 HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.
