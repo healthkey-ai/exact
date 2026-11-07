@@ -441,6 +441,24 @@ def _cytogenetic_markers_with_legacy_titles(value):
     return _cytogenetic_markers(value)
 
 
+#: One item of PROMOP's `molecular_markers` summary: `"{feature or GENE}: {variant}"`,
+#: joined with `"; "` (promop `patient_record_service.py`, present findings only).
+_PROMOP_FINDING_ITEM = re.compile(r'^[^:;]+:\s*\S')
+
+
+def _is_promop_findings_summary(value):
+    """Whether `value` is PROMOP's display summary of genomic findings (#723).
+
+    Every `;`-separated item must read `name: variant`. No marker code or title
+    contains a colon, so a real code list never matches; titles such as
+    `t(11;14) Translocation` hold a semicolon but no colon, and do not either.
+    """
+    if not isinstance(value, str) or ':' not in value:
+        return False
+    items = [item.strip() for item in value.split(';')]
+    return all(items) and all(_PROMOP_FINDING_ITEM.match(item) for item in items)
+
+
 def _marker_assessment(value, model_name, aliases=None):
     """Resolve every token, never publish a successfully mapped subset.
 
@@ -620,7 +638,19 @@ def normalize_promop_row(row: dict) -> dict:
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     if 'molecular_markers' in row:
-        row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
+        if _is_promop_findings_summary(row['molecular_markers']):
+            # Stopgap for #723. PROMOP's own summary of present findings is
+            # never a list of marker codes, so the strict check below refused
+            # the whole patient (422) for anyone with a finding. Read it as
+            # unknown instead: `''` is blank to `is_attr_blank`, so marker
+            # criteria and the high-risk MCL codes sourced from it stay
+            # unknown (potential), never a confirmed "no". TP53 keeps PROMOP's
+            # own `tp53_disruption`. Anything else still goes through the
+            # strict check and is refused if unsupported. The real fix reads
+            # the structured findings (#723).
+            row['molecular_markers'] = ''
+        else:
+            row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
     for _field, _model in [
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
