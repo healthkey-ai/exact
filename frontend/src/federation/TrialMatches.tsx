@@ -2043,8 +2043,18 @@ function TrialMatchesInner({
               className={`exact-filters__trigger${graphShown ? " is-on" : ""}`}
               aria-expanded={graphShown}
               aria-describedby={tipId}
-              disabled={graphUnavailable}
-              onClick={() => setGraphOpen((open) => !open)}
+              // A host capability is a permanent answer, and the reason lives
+              // in the tooltip: `disabled` would drop the control out of the
+              // tab order and leave a keyboard reader unable to reach it
+              // (#690). `aria-disabled` keeps it focusable, and the click is
+              // refused below for the same reason. A transient unavailability
+              // (saved ids still loading) stays truly disabled.
+              disabled={graphUnavailable && capabilities?.graph !== false}
+              aria-disabled={graphUnavailable || undefined}
+              onClick={() => {
+                if (graphUnavailable) return;
+                setGraphOpen((open) => !open);
+              }}
             >
               Explore Trials
             </button>
@@ -2059,10 +2069,20 @@ function TrialMatchesInner({
               type="button"
               className={`exact-list__export${exportState === "working" ? " is-working" : ""}`}
               aria-describedby={tipId}
-              onClick={() => void handleExport()}
+              onClick={() => {
+                if (exportState === "working" || exportUnavailable) return;
+                void handleExport();
+              }}
               // Said out loud rather than left as a dead control: everything else
-              // in this file names why it cannot answer.
-              disabled={exportState === "working" || exportUnavailable}
+              // in this file names why it cannot answer. A host capability is a
+              // permanent answer whose reason lives in the tooltip, so it uses
+              // `aria-disabled` and stays in the tab order (#690); a busy or
+              // transient refusal stays truly disabled.
+              disabled={
+                exportState === "working" ||
+                (exportUnavailable && capabilities?.export !== false)
+              }
+              aria-disabled={exportState === "working" || exportUnavailable || undefined}
             >
               {exportState === "working" ? "Preparing…" : "Export CSV"}
             </button>

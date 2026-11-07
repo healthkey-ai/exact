@@ -14,7 +14,7 @@
 // out, and when, is the thing that was wrong.
 import { QueryClientProvider, QueryClient } from "@tanstack/react-query";
 import { StrictMode } from "react";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -3863,10 +3863,35 @@ describe("action tooltips", () => {
 
     const exportButton = screen.getByRole("button", { name: "Export CSV" });
     const graphButton = screen.getByRole("button", { name: "Explore Trials" });
-    expect(exportButton).toBeDisabled();
-    expect(graphButton).toBeDisabled();
+    // `aria-disabled`, not `disabled`: a host capability is a permanent answer
+    // and its reason lives in the tooltip, so the control has to stay in the
+    // tab order for a keyboard reader to reach it (#690).
+    expect(exportButton).not.toBeDisabled();
+    expect(graphButton).not.toBeDisabled();
+    expect(exportButton).toHaveAttribute("aria-disabled", "true");
+    expect(graphButton).toHaveAttribute("aria-disabled", "true");
     expect(exportButton).toHaveAccessibleDescription(/doesn't offer exports/);
     expect(graphButton).toHaveAccessibleDescription(/doesn't offer the trial map/);
+  });
+
+  it("reaches the reason for a host-disabled action from the keyboard (#690)", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api, { capabilities: { export: false, graph: false } });
+    await waitFor(() => expect(listed(api).length).toBe(1));
+
+    const graphButton = screen.getByRole("button", { name: "Explore Trials" });
+    // The tooltip opens on keyboard focus only; earlier tests in this file have
+    // clicked, and the module remembers the last input kind.
+    fireEvent.keyDown(document, { key: "Tab" });
+    graphButton.focus();
+    expect(graphButton).toHaveFocus();
+    const tip = document.getElementById(graphButton.getAttribute("aria-describedby")!)!;
+    await waitFor(() => expect(tip).toHaveStyle({ display: "block" }));
+    expect(tip).toHaveTextContent(/doesn't offer the trial map/);
+
+    await userEvent.click(graphButton);
+    expect(graphButton).toHaveAttribute("aria-expanded", "false");
+    expect(api.requests.filter((r) => r.url.includes("/trials-graph/graph/"))).toHaveLength(0);
   });
 
   it("collapses an open graph when the host withdraws the capability", async () => {
