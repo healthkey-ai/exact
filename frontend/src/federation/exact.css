@@ -1485,7 +1485,8 @@
   white-space: nowrap;
 }
 
-.exact-root .exact-list__export:disabled {
+.exact-root .exact-list__export:disabled,
+.exact-root .exact-list__export[aria-disabled="true"] {
   /* `not-allowed`, not `progress`: the button is also disabled when the export
      CANNOT run, and a spinner cursor over a dead control asserts work that is
      not happening. */
