@@ -1290,6 +1290,22 @@ function TrialMatchesInner({
       : stateTab != null && trialIds === undefined
         ? "Your saved trials aren't available right now, so this tab can't be exported."
         : "An export needs a patient, and this view has none.";
+  // Whether the list is still mounted. Work started here that settles on its
+  // own time (an export, the wizard's read and write deadline) must not reach
+  // React after unmount: after a test's environment is torn down, a setState
+  // makes React DOM read `window.event` and throw (#728).
+  const mountedRef = useRef(true);
+  const wizardDeadlines = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    mountedRef.current = true;
+    const deadlines = wizardDeadlines.current;
+    return () => {
+      mountedRef.current = false;
+      for (const deadline of deadlines) clearTimeout(deadline);
+      deadlines.clear();
+    };
+  }, []);
+
   const handleExport = async () => {
     if (exportUnavailable) return;
     setExportState("working");
@@ -1310,12 +1326,14 @@ function TrialMatchesInner({
       // The view moved while this was in flight. Dropping it costs the reader
       // a click; handing it over downloads one tab's rows while the screen
       // shows another's, under a filename that says neither.
-      if (viewKeyRef.current !== issuedFor) return;
+      // And not at all once the page is gone: that would start a download for
+      // a reader who has left, and reach React after a test's teardown (#728).
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
       const complete = await exportIsComplete(blob);
       // Checked again on the far side of that await: scanning a large export
       // takes long enough for the reader to change tabs while it runs, and the
       // file would then be handed over under a view it does not describe.
-      if (viewKeyRef.current !== issuedFor) return;
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
       if (!complete) {
         // The server said so on the last line, because its 200 was spent
         // before the first row. Saving it anyway hands over a file that looks
@@ -1340,7 +1358,7 @@ function TrialMatchesInner({
       setTimeout(() => URL.revokeObjectURL(url), EXPORT_URL_LIFETIME_MS);
       setExportState("idle");
     } catch {
-      if (viewKeyRef.current !== issuedFor) return;
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
       setExportState("failed");
     }
   };
@@ -1582,17 +1600,6 @@ function TrialMatchesInner({
   // three review rounds had each closed a different spelling of the same one.
   // What is left here is the wiring: when to fire an event, and what to draw.
   const [wizardState, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
-  const wizardMountedRef = useRef(true);
-  const wizardDeadlines = useRef(new Set<ReturnType<typeof setTimeout>>());
-  useEffect(() => {
-    wizardMountedRef.current = true;
-    const deadlines = wizardDeadlines.current;
-    return () => {
-      wizardMountedRef.current = false;
-      for (const deadline of deadlines) clearTimeout(deadline);
-      deadlines.clear();
-    };
-  }, []);
 
   /** The machine as of NOW, not as of this render.
    *
@@ -1624,7 +1631,7 @@ function TrialMatchesInner({
     // own time (`wasOffered`, the 8-second write deadline), and a dispatch
     // after the tree is gone makes React DOM read `window.event`: after a
     // test's environment is torn down that is an uncaught error (#728).
-    if (!wizardMountedRef.current) return false;
+    if (!mountedRef.current) return false;
     const before = wizardRef.current;
     const after = nextWizard(before, event);
     wizardRef.current = after;

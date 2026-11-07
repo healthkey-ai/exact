@@ -6,7 +6,7 @@
 // refuses it on purpose (see `writable.ts`), so this is the only in-page way
 // to answer "Mutation Genes" / "Mutation Interpretations" without sending the
 // reader to another screen.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Dialog } from "./Dialog";
 import type { RowEditing } from "./TrialDetailPage";
@@ -80,6 +80,16 @@ export function GenomicsFindingsDialog({
   const [original, setOriginal] = useState<GenomicFinding | null>(null);
   const [deleting, setDeleting] = useState<GenomicFinding | null>(null);
   const [busy, setBusy] = useState(false);
+  // Saves and deletes settle on the adapter's time. Their answer must not
+  // reach React once the dialog is gone: after a test's environment is torn
+  // down, a setState makes React DOM read `window.event` and throw (#728).
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -154,9 +164,11 @@ export function GenomicsFindingsDialog({
       }
       if (draft.id != null) {
         await adapter.update(draft.id, payload);
+        if (!mounted.current) return;
         setStatus("Finding saved.");
       } else {
         await adapter.create(payload);
+        if (!mounted.current) return;
         setStatus("Finding added.");
       }
       setDraft(null);
@@ -164,12 +176,14 @@ export function GenomicsFindingsDialog({
       try {
         await refresh();
       } catch {
+        if (!mounted.current) return;
         setStatus("Finding saved; reload the page to see the refreshed rows.");
       }
     } catch {
+      if (!mounted.current) return;
       setError("Could not save the finding. Please try again.");
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -180,13 +194,15 @@ export function GenomicsFindingsDialog({
     setStatus("");
     try {
       await adapter.remove(deleting.id);
+      if (!mounted.current) return;
       setDeleting(null);
       setStatus("Finding deleted.");
       await refresh();
     } catch {
+      if (!mounted.current) return;
       setError("Could not delete the finding. Please try again.");
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
