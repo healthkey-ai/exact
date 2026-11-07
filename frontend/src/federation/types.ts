@@ -539,6 +539,26 @@ export interface TrialMatchesProps {
    *  fires for an opening, and carries the whole row; this one carries what
    *  goes in an address bar. */
   onTrialIdChange?: (trialId: number | null) => void;
+  /** 1-indexed page the HOST has in its address bar.
+   *
+   *  Pass it together with `onPageChange`. The pager is then CONTROLLED: a
+   *  click reports the page through the callback, and this component does not
+   *  move by itself until the host re-renders with the new number. That is
+   *  what preserves `?page=` across reload, direct load and back/forward.
+   *
+   *  One prop without the other is read as neither: `page` alone would leave
+   *  the pager unable to report a click, and `onPageChange` alone has no page
+   *  to render. The pager stays internal and says so at the console in
+   *  development.
+   *
+   *  A tab, sort or filter change still resets the list to page 1. A
+   *  controlled mount reports that through `onPageChange(1)` and keeps its
+   *  own request on page 1 in the meantime, so it never asks the server for a
+   *  page that the new query may not have. */
+  page?: number;
+  /** The reader turned to another page, or the effective query changed and
+   *  the list went back to the first one. Only meaningful with `page`. */
+  onPageChange?: (page: number) => void;
   /** The record took an inline edit, and here is what it says those fields
    *  are now.
    *
