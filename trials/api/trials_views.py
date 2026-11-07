@@ -450,9 +450,20 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         sent. The caller who asked for trials within 50 miles then gets the
         whole corpus with a 200 and nothing to tell them so. This says it.
         `None` when no radius was asked for, so the key is absent then.
+
+        Mirrors when `candidate_trials` actually filters by radius, which is
+        why it lists more than the missing location: the `all` search goes
+        through `filter_for_admin`, which only annotates distances, and a
+        radius `<= 0` takes the radius branch yet `by_distance` skips it.
+        `test_distance_filter_signal` pins this against real rows.
         """
-        if not self._resolve_study_preferences().distance:
+        distance = self._resolve_study_preferences().distance
+        if not distance:
             return None
+        if distance <= 0:
+            return {'applied': False, 'reason': 'invalid_distance'}
+        if self.request.query_params.get('type') == 'all':
+            return {'applied': False, 'reason': 'search_type'}
         if patient_info is None:
             return {'applied': False, 'reason': 'no_patient'}
         if not getattr(patient_info, 'geo_point', None):
