@@ -95,6 +95,13 @@ weights and nothing else) means the rest stops being remembered.
   never inferred from data, and the server still gates `?type=all`
   independently.
 
+- `renderGenomicsEditor` — draw the genomic-findings editor for a row. It
+  replaces EXACT's `GenomicsFindingsDialog`, and the pencil appears on a
+  genomics row even without a `patientRecord` genomics adapter, because the
+  host owns the writer. The host saves, refreshes its own views and calls
+  `onClose`. CB uses this to mount PROMOP's `mountGenomics`, whose catalog,
+  validation and legacy cytogenetics EXACT does not reproduce.
+
 ### `./TrialMatchesBridge` — hosts that are not React
 
 HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.

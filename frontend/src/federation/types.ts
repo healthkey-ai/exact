@@ -9,6 +9,7 @@
 
 import type { AxiosInstance } from "axios";
 import type { QueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 
 import type { MapRenderer } from "./TrialsMap";
 
@@ -679,6 +680,25 @@ export interface TrialMatchesProps {
   features?: {
     admin?: boolean;
   };
+  /** Draw the genomic-findings editor for a row.
+   *
+   *  Supplied, it replaces EXACT's `GenomicsFindingsDialog`: the pencil
+   *  appears on any row computed from `genetic_mutations`, even when this
+   *  host supplies no `patientRecord` adapter, because the host owns the
+   *  writer. The host saves, refreshes its own views and calls `onClose`.
+   *
+   *  A host that keeps genomic findings in PROMOP (CB) needs this: its
+   *  catalog, validation rules and legacy cytogenetics are not reproducible
+   *  here, and a second write path would disagree with the one the patient
+   *  record already uses. */
+  renderGenomicsEditor?: (props: {
+    /** The row's own label, e.g. "Mutation Genes". */
+    label: string;
+    /** The trial whose row opened the editor. */
+    trialId?: string | number;
+    /** Unmount the editor. */
+    onClose: () => void;
+  }) => ReactNode;
   /** Which cascade mode the injected stylesheet uses.
    *
    *  `"layered"` (the default) wraps the sheet in `@layer mf-remote`. That is

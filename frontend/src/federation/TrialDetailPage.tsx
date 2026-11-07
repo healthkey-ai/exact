@@ -33,7 +33,12 @@ import { useFormSettings, useTrialDetail } from "./hooks";
 import { injectStyles } from "./injectStyles";
 import { ACTION_TOOLTIPS, FIELD_TOOLTIPS } from "./tooltips";
 import type { AdvancedStatus, GenomicFinding, GenomicsAdapter } from "./state";
-import type { FilterState, PatientInfo, TrialDetailField } from "./types";
+import type {
+  FilterState,
+  PatientInfo,
+  TrialDetailField,
+  TrialMatchesProps,
+} from "./types";
 import { FieldEdit, PencilIcon } from "./FieldEdit";
 import { NegatedBooleanDialog } from "./NegatedBooleanDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
@@ -94,6 +99,8 @@ interface Props {
    *  its way — then no row draws an edit control and the table reads exactly
    *  as it does today. */
   editing?: RowEditing;
+  /** Host-owned genomic-findings editor; replaces EXACT's dialog when given. */
+  renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
 }
 
 const BackArrow = () => (
@@ -312,6 +319,7 @@ function EligibilityRow({
   subformHere,
   openSubform,
   onSubformOpen,
+  renderGenomicsEditor,
 }: {
   field: TrialDetailField;
   trialId?: string | number;
@@ -320,6 +328,7 @@ function EligibilityRow({
   subformHere?: boolean;
   openSubform?: string | null;
   onSubformOpen?: (name: string | null) => void;
+  renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
 }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
@@ -356,12 +365,19 @@ function EligibilityRow({
   // is the same source, opened through the endpoint that owns it — and only
   // when the descriptor says this caller may write it. The adapter exists for
   // read-only hosts too; the pencil must not promise a save they will refuse.
+  const rowHasGenomics = Boolean(
+    field.subform_details?.some(
+      (entry) => entry.upatientField === "genetic_mutations",
+    ),
+  );
+  // A host slot owns the writer, so it does not need EXACT's `genomics`
+  // adapter; without one, keep the descriptor gate so a read-only host never
+  // draws a pencil whose save nothing would accept.
   const genomicsHere = Boolean(
-    editing?.genomics &&
-      editing.fields?.genetic_mutations?.writable === true &&
-      field.subform_details?.some(
-        (entry) => entry.upatientField === "genetic_mutations",
-      ),
+    rowHasGenomics &&
+      (renderGenomicsEditor ||
+        (editing?.genomics &&
+          editing.fields?.genetic_mutations?.writable === true)),
   );
   // Whether the descriptor carries the negated pair's new metadata (#5667).
   // `inputs` is also set on computed entries, so the kind is part of the test:
@@ -543,7 +559,13 @@ function EligibilityRow({
             <PencilIcon />
           </button>
         ) : null}
-        {genomicsOpen && editing?.genomics ? (
+        {genomicsOpen && renderGenomicsEditor ? (
+          renderGenomicsEditor({
+            label: field.label,
+            trialId,
+            onClose: () => setGenomicsOpen(false),
+          })
+        ) : genomicsOpen && editing?.genomics ? (
           <GenomicsFindingsDialog
             label={field.label}
             editing={editing}
@@ -803,6 +825,7 @@ export function TrialDetailPage({
   onBack,
   trialState,
   editing,
+  renderGenomicsEditor,
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
@@ -1060,6 +1083,7 @@ export function TrialDetailPage({
                       subformHere={subformRows.has(field.name)}
                       openSubform={openSubform}
                       onSubformOpen={setOpenSubform}
+                      renderGenomicsEditor={renderGenomicsEditor}
                     />
                   ))}
                 </div>

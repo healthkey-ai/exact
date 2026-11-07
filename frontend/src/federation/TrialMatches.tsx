@@ -178,6 +178,7 @@ function TrialMatchesInner({
   preferences,
   capabilities,
   features,
+  renderGenomicsEditor,
   styles,
   page: hostPage,
   onPageChange,
@@ -1979,6 +1980,7 @@ function TrialMatchesInner({
         trialId={selectedTrial}
         patientInfo={patientInfo}
         personId={personId}
+        renderGenomicsEditor={renderGenomicsEditor}
         // What actually withholds the controls is the descriptor itself:
         // `fields` undefined answers "unknown" for every row, which is the
         // page exactly as it reads today. That covers loading, a failed read
