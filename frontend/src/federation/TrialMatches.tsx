@@ -1582,6 +1582,17 @@ function TrialMatchesInner({
   // three review rounds had each closed a different spelling of the same one.
   // What is left here is the wiring: when to fire an event, and what to draw.
   const [wizardState, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
+  const wizardMountedRef = useRef(true);
+  const wizardDeadlines = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    wizardMountedRef.current = true;
+    const deadlines = wizardDeadlines.current;
+    return () => {
+      wizardMountedRef.current = false;
+      for (const deadline of deadlines) clearTimeout(deadline);
+      deadlines.clear();
+    };
+  }, []);
 
   /** The machine as of NOW, not as of this render.
    *
@@ -1609,6 +1620,11 @@ function TrialMatchesInner({
    *  The return value is the only permission anything needs. Every dispatch
    *  goes through here so the mirror is never behind. */
   const send = (event: WizardEvent): boolean => {
+    // Nothing after unmount. Reads and writes started here settle on their
+    // own time (`wasOffered`, the 8-second write deadline), and a dispatch
+    // after the tree is gone makes React DOM read `window.event`: after a
+    // test's environment is torn down that is an uncaught error (#728).
+    if (!wizardMountedRef.current) return false;
     const before = wizardRef.current;
     const after = nextWizard(before, event);
     wizardRef.current = after;
@@ -1696,13 +1712,16 @@ function TrialMatchesInner({
   const closeWhenSettled = (patient: string, visit: number, work: Promise<unknown>) => {
     let shut = false;
     const deadline = setTimeout(() => close(), WIZARD_WRITE_GRACE_MS);
+    wizardDeadlines.current.add(deadline);
     const close = () => {
       if (shut) return;
       shut = true;
       // Cleared rather than left to fire into a no-op: one dangling eight-
       // second timer per answer is not a leak anybody would notice in a
-      // browser, and is one per test in a suite that runs thousands.
+      // browser, and is one per test in a suite that runs thousands. An
+      // unmount clears whatever is still pending (#728).
       clearTimeout(deadline);
+      wizardDeadlines.current.delete(deadline);
       send({ kind: "written", patient, visit });
     };
     void work.then(close, close);

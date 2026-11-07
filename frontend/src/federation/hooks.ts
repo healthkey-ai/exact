@@ -1159,11 +1159,13 @@ export function useSavedFilters(
     // The message described the PREVIOUS patient's row. Left standing it reads
     // as a failure to save this patient's filters, which nobody has tried yet.
     setFailed(false);
-    // No cleanup: a cap belonging to a replaced writer can only fire into
-    // `release`, which ignores it. Clearing it as well would be a second
-    // mechanism for the same thing, and untestable because the first already
-    // covers it.
-    setTimeout(() => release(writer), SAVED_FILTERS_GRACE_MS);
+    // Cleared on cleanup. Not for a replaced writer: its cap would only fire
+    // into `release`, which ignores it. For an UNMOUNT: `release` is a
+    // setState, and React DOM stamps every update from `window.event` before
+    // the updater can decline it, so a cap firing after a test's environment
+    // is torn down threw an uncaught "window is not defined" (#728).
+    const cap = setTimeout(() => release(writer), SAVED_FILTERS_GRACE_MS);
+    return () => clearTimeout(cap);
   }, [writer]);
 
   useEffect(() => {

@@ -14,6 +14,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { fakeApi, fakeState, renderTrialMatches, trialDetail } from "../test/renderTrialMatches";
+import { errorsAfterTeardown } from "../test/afterTeardown";
 import type { WriteOutcome } from "./state";
 import type { WritableFields } from "./writable";
 import type { TrialDetailField } from "./types";
@@ -249,23 +250,21 @@ describe("saving", () => {
       await waitFor(() => expect(release).not.toBeNull());
 
       cleanup();
-      const g = globalThis as { window?: unknown };
-      const saved = Object.getOwnPropertyDescriptor(g, "window");
-      const unhandled: unknown[] = [];
-      const onUnhandled = (reason: unknown) => unhandled.push(reason);
-      process.on("unhandledRejection", onUnhandled);
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      delete g.window;
+      let escaped: string[];
+      let leaked: unknown[][];
       try {
-        release!();
-        for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+        // The answer lands with the environment gone. Real time: the answer
+        // chain re-reads through React Query before it would report.
+        escaped = await errorsAfterTeardown(() => release!(), 50);
+        // Read before `mockRestore`, which clears the recorded calls.
+        leaked = warn.mock.calls.filter((c) =>
+          c.some((arg) => String(arg).includes("window is not defined")),
+        );
       } finally {
-        if (saved) Object.defineProperty(g, "window", saved);
-        process.off("unhandledRejection", onUnhandled);
+        warn.mockRestore();
       }
-      const leaked = warn.mock.calls.filter((c) => String(c[1] ?? c[0]).includes("window is not defined"));
-      warn.mockRestore();
-      expect(unhandled.map(String)).toEqual([]);
+      expect(escaped).toEqual([]);
       expect(leaked).toEqual([]);
       expect(state.adapter.setPatientFields).toHaveBeenCalledTimes(1);
     },
