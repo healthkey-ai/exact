@@ -9,6 +9,7 @@ from exact_matching.therapy_match_profile import THERAPY_MATCH_PROFILE
 from exact_matching.omop.languages_match_profile import (
     LANGUAGES_MATCH_PROFILE, LEGACY_LANGUAGES_MATCH_PROFILE, omop_languages_enabled,
 )
+from exact_matching.patient_info.therapy_rows import therapy_codes
 from exact_matching.patient_info.language_capability import (
     asked_languages as legacy_asked_languages,
     held_codes as legacy_held_codes,
@@ -332,7 +333,14 @@ class UserToTrialAttrMatcher:
             return 'unknown'
 
         if self.patient_info.prior_therapy == 'More than two lines of therapy':
-            if self.patient_info.later_therapies == [] or not self.patient_info.later_therapy or not self.patient_info.second_line_therapy or not self.patient_info.first_line_therapy:
+            # #4994: check for an actually-named therapy, not just a non-empty column. A row can
+            # survive normalisation on its date alone (the v1 UI's "pick the date, then the therapy"
+            # is two PATCHes, so after the first the column holds [{'therapy': None, 'date': ...}]),
+            # so `later_therapies == []` read a date-only line as a documented later line and returned
+            # `not_matched` where the line is still incomplete — `unknown`. `therapy_codes` (added in
+            # #4951) drops rows that name no therapy. (The Two/One-line branches read the TextFields
+            # `second_/first_line_therapy`, which have no date-only shape, so only this branch changes.)
+            if therapy_codes(self.patient_info.later_therapies) == [] or not self.patient_info.later_therapy or not self.patient_info.second_line_therapy or not self.patient_info.first_line_therapy:
                 return 'unknown'
             else:
                 return 'not_matched'
