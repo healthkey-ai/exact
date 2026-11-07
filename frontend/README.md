@@ -241,6 +241,32 @@ product's event names, its identity model and its consent state.
 | Eligible / Potential / All / Registered / Favorites tab | Not reported. EXACT owns this state, and CB's native list does not track it today either. |
 | List filter / sort | Not reported, for the same reason. If a host needs per-change analytics, that is a separate additive `onEvent` contract — firing one implicitly here would either double-count the host's events or emit per keystroke. |
 
+### Country and reset (accepted deviations)
+
+The host keeps the patient's saved search settings. Two behaviours differ from
+CB's native list by design, recorded here rather than implemented in the
+remote:
+
+- **Country.** EXACT has no country control — its dropdown was removed
+  because it could not match anything (#430). `TrialMatches` derives the
+  effective country from `patientInfo.country` or `initialFilters.country`,
+  so a host can pass the patient's saved baseline. A reader cannot change it
+  from the federated panel; CB's `study_info.country` remains the source.
+  Adding a control back is a separate product change.
+- **Reset.** "Reset filters" returns the panel to the host-provided baseline —
+  `initialFilters` plus the effective patient country — not to CB's model
+  defaults (`distance = 1000` miles, `recruitment_status = 'Recruiting'`,
+  `country = null`). The baseline is re-derived when `patientInfo` or
+  `initialFilters` change; it is not frozen at mount. The four suitability
+  weights are preserved on both sides: they are not panel filters and Reset
+  does not clear them.
+
+A host that needs the model-default reset must supply a new baseline and
+remount, and must also clear the country in `patientInfo` when that payload
+wins: a non-empty patient country takes precedence over
+`initialFilters.country`. There is no `onReset`/`resetBaseline` contract
+today.
+
 ## The widget build — hosts that cannot share our React tree
 
 `dist/widget/exact-trials.js` is the same `TrialMatches`, built to stand alone:
