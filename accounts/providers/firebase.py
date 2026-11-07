@@ -41,10 +41,17 @@ class FirebaseTokenProvider(TokenProvider):
             raise AuthenticationFailed("Firebase token expired")
         except firebase_auth.RevokedIdTokenError:
             raise AuthenticationFailed("Firebase token revoked")
+        except firebase_auth.UserDisabledError:
+            # Raised only by the revocation check (#411): an answer about the
+            # user, not a failure to verify, so it ends authentication here.
+            raise AuthenticationFailed("Firebase user disabled")
         except firebase_auth.InvalidIdTokenError:
             return None
         except Exception as exc:
-            logger.debug("Firebase verify failed (%s), skipping", type(exc).__name__)
+            # Not a bad token: the check itself could not run (no permission to
+            # look users up, Firebase unreachable, no project). Every Firebase
+            # sign-in then fails, so say so where an operator will see it.
+            logger.warning("Firebase verify failed (%s), skipping", type(exc).__name__)
             return None
 
         return TokenClaims(
