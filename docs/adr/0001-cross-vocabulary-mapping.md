@@ -20,7 +20,9 @@ single vocabulary source of truth**. Consumers read it through a **release-pinne
 local mirror** of promop's published vocabulary releases ([ADR
 0002](0002-vocab-mirror-consumer-consistency.md); promop#337), not through an
 independently compiled artifact. EXACT's `vocab_mirror` app syncs a promop release,
-verifies it, and pins one release generation per request. Graph traversal runs
+verifies its completeness (sentinel and row counts; byte checksums are a pending
+follow-up), and, with OMOP therapy matching on, pins one release generation per
+request for the readers that use it. Graph traversal runs
 locally against that mirror. (EXACT still persists
 `OmopConcept` titles, the `omop_concept_id` columns on its vocab models, the trial
 `omop_*` projections, and the two curated mapping tables — the last of these is

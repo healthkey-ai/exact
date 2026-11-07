@@ -45,9 +45,9 @@ The exception is the **`cb_code ↔ concept_id` bridge**, which exists in two fo
 - **Version (policy intent, not yet enforced):** the concept_ids are curated against
   a specific promop/OMOP vocabulary release and are only valid against it, so a
   release bump **should** trigger re-curation. Note this is currently a **policy
-  intent**: neither the CSV nor `TherapyOmopMapping` records a release id, and the
-  concept-graph cache's release is caller-supplied and not verified against promop's
-  response — so re-curation on bump is **not machine-enforced** today.
+  intent**: neither the CSV nor `TherapyOmopMapping` records a release id, so
+  nothing ties a curated row to the vocabulary mirror release it was curated
+  against — re-curation on bump is **not machine-enforced** today.
 
 ## Why it can't be retired by HemOnc coverage alone
 
