@@ -201,7 +201,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
   const isListUrl = (url: string) =>
     url === "/trials/search/" || url === "/trials/search/match/";
 
-  const respond = (url: string, body?: unknown) => {
+  const respond = (url: string, body?: unknown, config?: unknown) => {
     if (url.includes("form-settings")) {
       return holdSettings
         ? new Promise(() => {
@@ -293,10 +293,26 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
       if (ids === undefined) return { data: response };
       const wanted = new Set(ids.map(String));
       const results = response.results.filter((t) => wanted.has(String(t.trialId)));
+      // `count` is the server's PAGE total, `ceil(itemsTotalCount / page size)`
+      // (`TrialsPagination`). Left at the corpus value it read as one trial
+      // spread over three pages, and two pager tests were pinned to a pager
+      // no server could produce (#542). The page size is the request's
+      // `?limit`, as the server takes it; only a request without one falls
+      // back to the size the corpus response implies.
+      const limit = Number(
+        (config as { params?: Record<string, unknown> } | undefined)?.params?.limit,
+      );
+      const perPage =
+        Number.isFinite(limit) && limit > 0
+          ? limit
+          : response.count > 0
+            ? Math.ceil(response.itemsTotalCount / response.count)
+            : Math.max(results.length, 1);
       return {
         data: {
           ...response,
           results,
+          count: Math.ceil(results.length / perPage),
           itemsTotalCount: results.length,
           // Counted over the narrowed queryset, the way the server counts
           // its own — which is the whole premise of #536. Passing the
@@ -347,7 +363,7 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
       params: config?.params ?? {},
       body: method === "post" ? a : undefined,
     });
-    return respond(url, method === "post" ? a : undefined);
+    return respond(url, method === "post" ? a : undefined, method === "post" ? b : a);
   };
 
   const client = {

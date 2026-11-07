@@ -3593,16 +3593,18 @@ describe("the pager during a placeholder window", () => {
   it("keeps the page count of the view it belongs to", async () => {
     // A page turn: same view, different page. The count cannot have
     // changed, so hiding the pager only unmounts the button being clicked.
+    // On the corpus view, which can really have three pages: a narrowed
+    // view of two bookmarks cannot (#542).
     const api = fakeApi({ count: 3, itemsTotalCount: 25 });
     const gate = held(api);
-    renderTrialMatches(api, { state: fakeState({ favorites: ["1", "2"] }).adapter });
+    renderTrialMatches(api);
     await waitFor(() => expect(listed(api).length).toBe(1));
-    await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
     await screen.findByText("Trial 1");
 
     gate.arm();
     await userEvent.click(await screen.findByRole("button", { name: "2" }));
-    expect(screen.queryByText("Trial 1")).toBeNull();
+    // In the window: page 1's rows are held as placeholder data and marked.
+    await screen.findByText("Updating…");
     expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
     gate.release();
   });
@@ -3616,13 +3618,20 @@ describe("the pager during a placeholder window", () => {
     const gate = held(api);
     renderTrialMatches(api, { state: fakeState({ favorites: ["1"] }).adapter });
     await screen.findByText("Trial 1");
+    expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument();
 
+    // Into a one-bookmark view, which has one page: the corpus's three are
+    // not this view's, during the placeholder or after the answer (#542).
     gate.arm();
     await userEvent.click(await screen.findByRole("button", { name: /^Favorites/ }));
     expect(screen.queryByText("Trial 1")).toBeNull();
     expect(screen.queryByRole("button", { name: "3" })).toBeNull();
     gate.release();
-    // And it comes back once the answer is this view's.
+    await screen.findByText("Trial 1");
+    expect(screen.queryByRole("button", { name: "3" })).toBeNull();
+
+    // And the corpus's pager comes back once the answer is the corpus's.
+    await userEvent.click(await screen.findByRole("button", { name: /^Eligible/ }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "3" })).toBeInTheDocument(),
     );
