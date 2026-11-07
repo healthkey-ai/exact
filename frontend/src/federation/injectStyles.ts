@@ -24,6 +24,25 @@ const markerFor = (layered: boolean) =>
  *  second copy of the sheet in the other mode. */
 let chosenMode: boolean | null = null;
 
+/** Inject the sheet in the mode a HOST asked for, or inherit the mode this
+ *  bundle instance already chose.
+ *
+ *  `injectStyles` treats an explicit option as authoritative, which is right
+ *  for the two builds sharing a document: the widget's own bundle and the
+ *  remote's each decide for themselves. Within ONE build that rule is how a
+ *  second mount with a different `styles` prop would append a second sheet
+ *  instead of agreeing with the first, so the component path latches here:
+ *  the first call decides and every later call inherits, whatever it asks
+ *  for. Omitted means inherit too — the widget build has already injected
+ *  its unlayered sheet before it mounts the component. */
+export function injectStylesForHost(mode?: "layered" | "unlayered"): void {
+  if (chosenMode !== null || mode === undefined) {
+    injectStyles();
+    return;
+  }
+  injectStyles({ layered: mode !== "unlayered" });
+}
+
 export function injectStyles(options: { layered?: boolean } = {}): void {
   const layered = options.layered ?? chosenMode ?? true;
   chosenMode = layered;

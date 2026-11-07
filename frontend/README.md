@@ -167,6 +167,17 @@ still gets the layer — but note that unlayered host declarations then outrank
 every rule of ours regardless of specificity, which is the trade this contract
 makes on purpose. See `src/federation/cssLayer.ts`.
 
+A host whose own CSS is unlayered — Tailwind v3's preflight, as CB's `ui.v2`
+ships — cannot win that trade: its unlayered rules outrank every layered rule
+of ours regardless of specificity, so the sheet loses its typography and
+control styling. Pass `styles="unlayered"` to `TrialMatches` for those hosts.
+It injects the same sheet without the `mf-remote` wrapper; the sheet is scoped
+under `.exact-root` and ships no Tailwind utilities, so it still cannot reach
+the host's chrome. The mode is fixed for the life of the remote instance (the
+first mount decides; the widget build is the other user of the unlayered mode),
+because two sheets in different modes would fight over the cascade. See
+`src/federation/injectStyles.ts`.
+
 ## The widget build — hosts that cannot share our React tree
 
 `dist/widget/exact-trials.js` is the same `TrialMatches`, built to stand alone:
@@ -193,7 +204,7 @@ base URL, a token, a person id, or an inline `patientInfo`.
 
 Two things to know before re-vendoring it into a host:
 
-- **Its stylesheet is injected UNLAYERED**, unlike the remote's. The layer
+- **Its stylesheet is injected UNLAYERED**, unlike the remote's default. The layer
   exists so a remote sharing a host's page cannot outrank the host's chrome,
   but an unlayered host rule beats every layered one regardless of
   specificity — and a host that needs this build is not going to be declaring

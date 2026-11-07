@@ -4206,3 +4206,21 @@ describe("action tooltips", () => {
     expect(screen.queryByText("Back to all trials")).toBeNull();
   });
 });
+
+describe("stylesheet mode", () => {
+  it("injects the layered sheet by default", async () => {
+    const api = fakeApi();
+    renderTrialMatches(api);
+
+    const style = await waitFor(() => {
+      const el = document.querySelector<HTMLStyleElement>('style[data-mf="exact-remote"]');
+      if (!el) throw new Error("the layered sheet was not injected");
+      return el;
+    });
+
+    expect(style.dataset.mf).toBe("exact-remote");
+    // The host that never asks for unlayered must not get an unlayered sheet
+    // as well; the two would fight over the cascade.
+    expect(document.querySelector('style[data-mf="exact-remote-unlayered"]')).toBeNull();
+  });
+});

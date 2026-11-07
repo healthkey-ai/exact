@@ -3,7 +3,7 @@
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
 // CB contract) or `personId` (CTOMOP federation path added in #102).
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
 /** Debounced, unless `immediate` — then the value passes straight through
  *  AND the held value is kept in step behind it.
@@ -94,7 +94,7 @@ import {
   useTrials,
   useTrialsGraph,
 } from "./hooks";
-import { injectStyles, warnMissingExactTokens } from "./injectStyles";
+import { injectStylesForHost, warnMissingExactTokens } from "./injectStyles";
 import { ACTION_TOOLTIPS } from "./tooltips";
 import type {
   FilterState,
@@ -171,13 +171,31 @@ function TrialMatchesInner({
   patientRecord,
   preferences,
   capabilities,
+  styles,
 }: Omit<TrialMatchesProps, "queryClient">) {
   const queryClient = useQueryClient();
   // Editing can come from the full state adapter or from the narrower record
   // adapter the self-contained widget has. Favourites still require `state`.
   const record = patientRecord ?? state;
-  useEffect(() => {
-    injectStyles();
+  // Read once: the mode is a property of this bundle instance, not of a
+  // render. `injectStylesForHost` latches the first mode, and a second sheet
+  // in the other mode would fight the first in the cascade. The detail
+  // page's later `injectStyles()` (no options) inherits this choice.
+  //
+  // Omitted means "inherit": the self-contained widget has already injected
+  // its unlayered sheet by the time it mounts this component, and passing an
+  // explicit `layered: true` here would add a second sheet instead of
+  // agreeing with it.
+  //
+  // INSERTION effect, not `useEffect`: a deep link renders `TrialDetailPage`
+  // as a child, and child passive effects run before the parent's. The detail
+  // page injects as a fallback, so a parent `useEffect` here would arrive
+  // second and append the layered sheet beside the unlayered one. Insertion
+  // effects run before every passive effect, which is what makes the first
+  // injection on the page the one that decides.
+  const styleMode = useRef(styles);
+  useInsertionEffect(() => {
+    injectStylesForHost(styleMode.current);
   }, []);
 
   /** This mount's own root, for the canary below. */
