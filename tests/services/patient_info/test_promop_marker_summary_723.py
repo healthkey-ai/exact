@@ -21,7 +21,13 @@ from trials.services.patient_info.promop_adapter import (
 from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
 from exact_matching.patient_info.patient_info_attributes import PatientInfoAttributes
 
-SUMMARIES = ['TP53: R175H', 'TP53: R175H; KMT2D: Q3912*', 'NOTCH1: p.P2514fs ;  CCND1: amplification']
+SUMMARIES = [
+    'TP53: R175H', 'TP53: R175H; KMT2D: Q3912*', 'NOTCH1: p.P2514fs ;  CCND1: amplification',
+    'CCND1/IGH: t(11;14)',                 # a translocation: `;` inside brackets
+    'CCND1/IGH: t(11;14); TP53: R175H',
+    'TP53: ',                              # an empty variant
+    'BRAF: c.[1799T>A;1800G>A]',           # an HGVS variant with `;` in brackets
+]
 
 
 class TestShape:
@@ -33,7 +39,8 @@ class TestShape:
         'tp53Mutation', 'TP53 Mutation', 'tp53Mutation, kmt2dMutation',
         't(11;14) Translocation',          # a real title with a semicolon
         'TP53: R175H; tp53Mutation',       # mixed: not purely a summary
-        'TP53:', ': R175H', 'none', '', None, 7,
+        'tp53Mutation, x: y',              # a code list with a stray colon
+        ': R175H', 'none', '', None, 7,
     ])
     def test_anything_else_is_not(self, value):
         assert not _is_promop_findings_summary(value)
@@ -86,6 +93,43 @@ class TestItStaysUnknownDownstream:
         assert {'tp53_mutation', 'kmt2d_mutation'} <= set(
             attrs.high_risk_mcl_criteria_unknown_codes(['tp53_mutation', 'kmt2d_mutation'])
         )
+
+    def test_without_promops_aggregate_tp53_is_unknown_not_false(self):
+        # The dropped summary may name TP53. With no `tp53_disruption` in the
+        # row, the derivation would have answered a confirmed False.
+        patient = build_patient_info_from_promop_row({
+            'disease': 'mantle cell lymphoma',
+            'molecular_markers': 'TP53: R175H',
+        })
+        assert PatientInfoAttributes(patient).tp53_disruption is None
+
+    @pytest.mark.parametrize('aggregate', [True, False])
+    def test_promops_own_aggregate_is_kept_when_tp53_is_not_in_the_summary(self, aggregate):
+        patient = build_patient_info_from_promop_row({
+            'disease': 'mantle cell lymphoma',
+            'molecular_markers': 'KMT2D: Q3912*',
+            'tp53_disruption': aggregate,
+        })
+        assert PatientInfoAttributes(patient).tp53_disruption is aggregate
+
+    @pytest.mark.parametrize('summary', ['TP53: R175H', '17p: del(17p)', 'KMT2D: x; tp53: y'])
+    def test_a_false_that_the_summary_contradicts_becomes_unknown(self, summary):
+        # PROMOP answers False unless a TP53 finding is strictly `pathogenic`;
+        # the summary lists the finding anyway. Unknown, not a confirmed "no".
+        patient = build_patient_info_from_promop_row({
+            'disease': 'mantle cell lymphoma',
+            'molecular_markers': summary,
+            'tp53_disruption': False,
+        })
+        assert PatientInfoAttributes(patient).tp53_disruption is None
+
+    def test_a_true_stays_true(self):
+        patient = build_patient_info_from_promop_row({
+            'disease': 'mantle cell lymphoma',
+            'molecular_markers': '17p: del(17p)',
+            'tp53_disruption': True,
+        })
+        assert PatientInfoAttributes(patient).tp53_disruption is True
 
     def test_a_trial_excluding_the_marker_is_not_eligible(self):
         trial = TrialFactory(disease='mantle cell lymphoma', molecular_markers_excluded=['tp53Mutation'])

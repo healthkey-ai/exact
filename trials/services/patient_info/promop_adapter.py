@@ -443,20 +443,53 @@ def _cytogenetic_markers_with_legacy_titles(value):
 
 #: One item of PROMOP's `molecular_markers` summary: `"{feature or GENE}: {variant}"`,
 #: joined with `"; "` (promop `patient_record_service.py`, present findings only).
-_PROMOP_FINDING_ITEM = re.compile(r'^[^:;]+:\s*\S')
+#: The name has no colon or comma; the variant may be empty or carry brackets.
+_PROMOP_FINDING_ITEM = re.compile(r'^[^:,]+:')
+_TP53_FINDING_NAME = re.compile(r'tp53|17p', re.IGNORECASE)
+
+
+def _promop_summary_items(value):
+    """`value` split on `;` outside brackets: `t(11;14)` stays one item."""
+    items, start, depth = [], 0, 0
+    for index, char in enumerate(value):
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            depth = max(depth - 1, 0)
+        elif char == ';' and depth == 0:
+            items.append(value[start:index].strip())
+            start = index + 1
+    items.append(value[start:].strip())
+    return items
 
 
 def _is_promop_findings_summary(value):
     """Whether `value` is PROMOP's display summary of genomic findings (#723).
 
-    Every `;`-separated item must read `name: variant`. No marker code or title
-    contains a colon, so a real code list never matches; titles such as
-    `t(11;14) Translocation` hold a semicolon but no colon, and do not either.
+    Every `;`-separated item (outside brackets) must read `name: variant`, with
+    a non-empty name free of commas. No marker code or title contains a colon,
+    so a real code list never matches; titles such as `t(11;14) Translocation`
+    hold a semicolon but no colon, and do not either.
+
+    A shape test is a stopgap by nature (#723 reads the structured findings).
+    It errs safe both ways: an unrecognised summary still gets the strict 422,
+    and a recognised one only becomes unknown.
     """
     if not isinstance(value, str) or ':' not in value:
         return False
-    items = [item.strip() for item in value.split(';')]
-    return all(items) and all(_PROMOP_FINDING_ITEM.match(item) for item in items)
+    items = _promop_summary_items(value)
+    return all(items) and all(
+        _PROMOP_FINDING_ITEM.match(item) and item.split(':', 1)[0].strip()
+        for item in items
+    )
+
+
+def _summary_names_tp53(value):
+    """Whether any summary item is a TP53 or 17p finding."""
+    return any(
+        _TP53_FINDING_NAME.search(item.split(':', 1)[0])
+        for item in _promop_summary_items(value)
+    )
 
 
 def _marker_assessment(value, model_name, aliases=None):
@@ -648,7 +681,21 @@ def normalize_promop_row(row: dict) -> dict:
             # own `tp53_disruption`. Anything else still goes through the
             # strict check and is refused if unsupported. The real fix reads
             # the structured findings (#723).
+            summary = row['molecular_markers']
             row['molecular_markers'] = ''
+            # The TP53 derivation reads `tp53Mutation` from these markers and,
+            # with no aggregate supplied, answers a confirmed False. The summary
+            # just dropped may well name TP53, so without PROMOP's own aggregate
+            # the honest answer is unknown: an explicit null, which the adapter
+            # keeps and the derivation honours.
+            row.setdefault('tp53_disruption', None)
+            # PROMOP's False needs a strictly `pathogenic` TP53 finding to turn
+            # True, so del(17p) left uninterpreted or a "likely pathogenic" TP53
+            # reads False while the summary lists that very finding. The markers
+            # used to expose the contradiction (`_tp53_contradiction`); with them
+            # dropped, say unknown instead of a confirmed "no". A True stays.
+            if row['tp53_disruption'] is False and _summary_names_tp53(summary):
+                row['tp53_disruption'] = None
         else:
             row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
     for _field, _model in [
