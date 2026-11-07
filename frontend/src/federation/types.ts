@@ -540,6 +540,21 @@ export interface TrialMatchesProps {
    *  fires for an opening, and carries the whole row; this one carries what
    *  goes in an address bar. */
   onTrialIdChange?: (trialId: number | null) => void;
+  /** The host owns the Standard of Care comparison. Supplied, the detail page
+   *  draws the affordance; the host opens its own comparison. */
+  onCompareToSoc?: (trialId: number | string) => void;
+  /** The host owns high-risk MCL authoring. Drawn only on a trial that gates
+   *  on the criteria (`highRiskMclCriteriaBreakdown`), which is the same
+   *  condition CB's own route is reachable under. */
+  onAuthorHighRiskMcl?: (trialId: number | string) => void;
+  /** The host owns share/invite. Supplied, the detail header draws a share
+   *  control; the host opens its own dialog or chat. */
+  onShareTrial?: (trialId: number | string) => void;
+  /** The host owns the Missing Attributes panel. Drawn when the trial asks
+   *  for at least one attribute the patient has not supplied
+   *  (`matchingType: "unknown"`). Supplied alone it does nothing on a trial
+   *  with nothing to fill. */
+  onOpenMissingAttributes?: (trialId: number | string) => void;
   /** 1-indexed page the HOST has in its address bar.
    *
    *  Pass it together with `onPageChange`. The pager is then CONTROLLED: a

@@ -558,6 +558,10 @@ export interface TrialMatchesProps {
   features?: import("../federation/types").TrialMatchesProps["features"];
   /** Host-owned genomic editor; see the production type. */
   renderGenomicsEditor?: import("../federation/types").TrialMatchesProps["renderGenomicsEditor"];
+  onCompareToSoc?: import("../federation/types").TrialMatchesProps["onCompareToSoc"];
+  onAuthorHighRiskMcl?: import("../federation/types").TrialMatchesProps["onAuthorHighRiskMcl"];
+  onShareTrial?: import("../federation/types").TrialMatchesProps["onShareTrial"];
+  onOpenMissingAttributes?: import("../federation/types").TrialMatchesProps["onOpenMissingAttributes"];
   /** Which cascade mode the injected sheet uses; see the production type. */
   styles?: import("../federation/types").TrialMatchesProps["styles"];
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
@@ -619,6 +623,10 @@ export function renderTrialMatches(
         capabilities={next.capabilities}
         features={next.features}
         renderGenomicsEditor={next.renderGenomicsEditor}
+        onCompareToSoc={next.onCompareToSoc}
+        onAuthorHighRiskMcl={next.onAuthorHighRiskMcl}
+        onShareTrial={next.onShareTrial}
+        onOpenMissingAttributes={next.onOpenMissingAttributes}
         styles={next.styles}
         onPatientRecordChanged={next.onPatientRecordChanged}
         onTrialSelect={next.onTrialSelect}

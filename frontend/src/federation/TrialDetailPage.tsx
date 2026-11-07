@@ -101,6 +101,11 @@ interface Props {
   editing?: RowEditing;
   /** Host-owned genomic-findings editor; replaces EXACT's dialog when given. */
   renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
+  /** Host-owned detail actions; each affordance is drawn only when supplied. */
+  onCompareToSoc?: TrialMatchesProps["onCompareToSoc"];
+  onAuthorHighRiskMcl?: TrialMatchesProps["onAuthorHighRiskMcl"];
+  onShareTrial?: TrialMatchesProps["onShareTrial"];
+  onOpenMissingAttributes?: TrialMatchesProps["onOpenMissingAttributes"];
 }
 
 const BackArrow = () => (
@@ -826,6 +831,10 @@ export function TrialDetailPage({
   trialState,
   editing,
   renderGenomicsEditor,
+  onCompareToSoc,
+  onAuthorHighRiskMcl,
+  onShareTrial,
+  onOpenMissingAttributes,
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
@@ -913,6 +922,12 @@ export function TrialDetailPage({
   const showHeaderRegister = registerButton != null && !trialState!.advancedStatus;
   // Whether the table actually lists a mismatch; see `RegisterInterest`.
   const mismatchesShown = eligibility.some((f) => f.matchingType === "not_matched");
+  // The trial asks for something the patient has not supplied. That is what
+  // the host's Missing Attributes panel exists for; with nothing missing the
+  // affordance would open an empty list.
+  const hasMissingAttributes = eligibility.some(
+    (f) => f.matchingType === "unknown",
+  );
   const registerTextId = useId();
 
   return (
@@ -957,6 +972,15 @@ export function TrialDetailPage({
               />
               {showHeaderRegister ? (
                 <RegisterButton {...registerButton!} describedBy={registerTextId} />
+              ) : null}
+              {onShareTrial ? (
+                <button
+                  type="button"
+                  className="exact-detail__host-action"
+                  onClick={() => onShareTrial(trialId)}
+                >
+                  Share trial
+                </button>
               ) : null}
             </div>
           </div>
@@ -1009,6 +1033,18 @@ export function TrialDetailPage({
               tooltip={ACTION_TOOLTIPS.suitabilityScore}
             />
           </div>
+
+          {onCompareToSoc ? (
+            <div className="exact-detail__host-actions">
+              <button
+                type="button"
+                className="exact-detail__host-action"
+                onClick={() => onCompareToSoc(trialId)}
+              >
+                Compare to Standard of Care
+              </button>
+            </div>
+          ) : null}
 
           <div className="exact-detail__meta">
             <div className="exact-card__fields">
@@ -1065,6 +1101,15 @@ export function TrialDetailPage({
               <div className="exact-panel__head">
                 <h2 className="exact-panel__title">Trial Eligibility Attributes</h2>
                 <FieldTooltip text={ACTION_TOOLTIPS.eligibilityAttributes} />
+                {onOpenMissingAttributes && hasMissingAttributes ? (
+                  <button
+                    type="button"
+                    className="exact-detail__host-action"
+                    onClick={() => onOpenMissingAttributes(trialId)}
+                  >
+                    Missing attributes
+                  </button>
+                ) : null}
               </div>
               {eligibility.length ? (
                 <div className="exact-elig">
@@ -1096,7 +1141,20 @@ export function TrialDetailPage({
           </div>
 
           {mcl && mclNamesSettled ? (
-            <HighRiskMclPanel breakdown={mcl} titleOf={mclTitle} />
+            <>
+              <HighRiskMclPanel breakdown={mcl} titleOf={mclTitle} />
+              {onAuthorHighRiskMcl ? (
+                <div className="exact-detail__host-actions">
+                  <button
+                    type="button"
+                    className="exact-detail__host-action"
+                    onClick={() => onAuthorHighRiskMcl(trialId)}
+                  >
+                    Author high-risk MCL criteria
+                  </button>
+                </div>
+              ) : null}
+            </>
           ) : null}
 
           {registerButton ? (
