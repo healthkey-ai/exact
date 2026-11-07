@@ -8,6 +8,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { fakeApi, fakeState, renderTrialMatches, trial } from "../test/renderTrialMatches";
+import { BAND_LABEL_COLOR, bandLabel } from "./graphLayout";
 
 const graphRequests = (api: ReturnType<typeof fakeApi>) =>
   api.requests.filter((r) => r.url.includes("/trials-graph/graph/"));
@@ -38,6 +39,25 @@ describe("Explore Trials", () => {
     // screen reader and a narrow window get.
     await screen.findByText(/Met: Disease/);
     await screen.findByText(/Not known: ECOG/);
+  });
+
+  it("paints the band labels in their text tones, not the nodes' (#562)", async () => {
+    // `contrast.test.ts` measures `BAND_LABEL_COLOR`; this pins that the
+    // labels are actually drawn with it. A label pointed back at the verdict
+    // token (`STATUS_COLOR`) reads at 3.30:1 / 2.15:1 as text.
+    const api = fakeApi();
+    renderTrialMatches(api);
+    await waitFor(() => expect(api.listRequests().length).toBeGreaterThan(0));
+    await userEvent.click(screen.getByRole("button", { name: "Explore Trials" }));
+    await screen.findByText(/Which requirements you meet/);
+
+    for (const status of ["matched", "missing"] as const) {
+      const label = screen
+        .getAllByText(bandLabel(status))
+        .find((el) => el.tagName.toLowerCase() === "text");
+      expect(label, `${status} band label`).toBeDefined();
+      expect(label!.getAttribute("fill")).toBe(BAND_LABEL_COLOR[status]);
+    }
   });
 
   it("opens the trial's detail page from the map", async () => {

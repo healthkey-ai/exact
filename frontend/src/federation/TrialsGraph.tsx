@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 
 import {
   BAND_ORDER,
+  BAND_LABEL_COLOR,
   bandLabel,
   buildGraphLayout,
   type ConceptStatus,
@@ -203,7 +204,7 @@ export function TrialsGraph({
                 textAnchor="end"
                 fontSize="11"
                 fontWeight="600"
-                fill={STATUS_COLOR[status]}
+                fill={BAND_LABEL_COLOR[status]}
               >
                 {bandLabel(status)}
               </text>
