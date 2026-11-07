@@ -669,6 +669,16 @@ export interface TrialMatchesProps {
     export?: boolean;
     graph?: boolean;
   };
+  /** What the HOST's own role allows it to offer, as opposed to what the
+   *  server can serve (`capabilities`). Never inferred from data.
+   *
+   *  `admin` draws the admin-only list surface: the All Trials tab and the
+   *  validated-only filter. The server still gates `?type=all` with its own
+   *  permission, so a host that guesses wrong gets a refusal rather than the
+   *  corpus; this only decides whether the controls are offered at all. */
+  features?: {
+    admin?: boolean;
+  };
   /** Which cascade mode the injected stylesheet uses.
    *
    *  `"layered"` (the default) wraps the sheet in `@layer mf-remote`. That is

@@ -90,6 +90,11 @@ weights and nothing else) means the rest stops being remembered.
   the in-flight request is already on page 1. A saved preference set landing
   after mount is hydration, not a filter change, and does not reset the page.
 
+- `features.admin` — render the admin-only list surface: the All Trials tab
+  and the validated-only filter. The host sets it from its own role; it is
+  never inferred from data, and the server still gates `?type=all`
+  independently.
+
 ### `./TrialMatchesBridge` — hosts that are not React
 
 HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.

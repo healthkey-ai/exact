@@ -331,3 +331,57 @@ describe("tabCount for the state tabs", () => {
     expect(tabCount("favorites", counts, null, { favorites: 0 })).toBe(0);
   });
 });
+
+describe("the admin list surface", () => {
+  const counts = { eligible: 7, potential: 12 };
+
+  it("offers the All Trials tab only when the host declares the admin surface", () => {
+    expect(tabsFor(false).map((t) => t.value)).not.toContain("all");
+    expect(tabsFor(false, undefined, { admin: true }).map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "all",
+    ]);
+    expect(tabsFor(true, undefined, { admin: true }).map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "all",
+      "registered",
+      "favorites",
+    ]);
+  });
+
+  it("opens on `initialFilters.type=all` only when the tab is offered", () => {
+    expect(tabValueForType("all", { admin: true })).toBe("all");
+    expect(tabValueForType("all")).toBe("eligible_and_potential");
+    expect(tabValueForType("all", { admin: false })).toBe("eligible_and_potential");
+  });
+
+  it("leaves All unnumbered without blanking its numbered neighbours", () => {
+    // Its count is absent by construction under `?type=all`. Unlike another
+    // corpus tab, that absence must not take the whole bar down while the
+    // reader is on a tab the server did count.
+    const numbered = barCounts(
+      tabsFor(true, undefined, { admin: true }),
+      "eligible_and_potential",
+      counts,
+      19,
+      { favorites: 1, registered: 2 },
+    );
+    expect(numbered).not.toBeNull();
+    expect(numbered!.get("eligible_and_potential")).toBe(19);
+    expect(numbered!.has("all")).toBe(false);
+  });
+
+  it("shows no badges on the All tab, even with the previous view's counts in hand", () => {
+    // `corpusKey` excludes `type`, so the Eligible view's counts stay warm
+    // across a switch to All. They describe a different corpus and must not
+    // be painted beside it.
+    const numbered = barCounts(
+      tabsFor(true, undefined, { admin: true }),
+      "all",
+      counts,
+      40,
+      { favorites: 1, registered: 2 },
+    );
+    expect(numbered).toBeNull();
+  });
+});

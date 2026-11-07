@@ -177,6 +177,7 @@ function TrialMatchesInner({
   patientRecord,
   preferences,
   capabilities,
+  features,
   styles,
   page: hostPage,
   onPageChange,
@@ -185,6 +186,9 @@ function TrialMatchesInner({
   // Editing can come from the full state adapter or from the narrower record
   // adapter the self-contained widget has. Favourites still require `state`.
   const record = patientRecord ?? state;
+  // The admin surface is a HOST decision, never inferred from data: the same
+  // account can be an admin on one deployment and not another.
+  const admin = features?.admin === true;
   // Read once: the mode is a property of this bundle instance, not of a
   // render. `injectStylesForHost` latches the first mode, and a second sheet
   // in the other mode would fight the first in the cascade. The detail
@@ -279,7 +283,7 @@ function TrialMatchesInner({
   // prop is public API, and a host that mounts the remote asking for the
   // potential subset must not silently get the default tab's result set.
   const [activeTab, setActiveTab] = useState<TabValue>(() =>
-    tabValueForType(initialFilters?.type),
+    tabValueForType(initialFilters?.type, { admin }),
   );
   const [sort, setSort] = useState<string>(initialFilters?.sort ?? DEFAULT_SORT);
   /** Whether the sort is being walked with the arrow keys; see
@@ -447,7 +451,10 @@ function TrialMatchesInner({
   }, [onPatientRecordChanged, record, patientInfo, namesPatient]);
 
   // The bar depends on whether a host gave us somewhere to keep bookmarks.
-  const tabs = useMemo(() => tabsFor(state != null, activeTab), [state, activeTab]);
+  const tabs = useMemo(
+    () => tabsFor(state != null, activeTab, { admin }),
+    [state, activeTab, admin],
+  );
   // A host can take the adapter away — on logout, or when reconfiguring it.
   // The tab the reader was on then stops existing, and falling back only in
   // `activeTabDef` would list the default tab's trials while no tab in the
@@ -2267,6 +2274,7 @@ function TrialMatchesInner({
           onReset={handleFiltersReset}
           canReset={activeFilterCount > 0}
           diseaseCode={diseaseCode}
+          showValidatedOnly={admin}
         />
       ) : null}
 

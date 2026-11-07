@@ -25,6 +25,9 @@ interface Props {
   /** Drives the per-disease overrides in `/form-settings/` (#44 / #63), so
    *  the trial-type list matches the patient's disease. */
   diseaseCode?: string;
+  /** Offer the admin-only validated-only filter. Same host decision as the
+   *  All Trials tab (`features.admin`), never inferred from data. */
+  showValidatedOnly?: boolean;
 }
 
 interface Option {
@@ -247,6 +250,7 @@ export function FilterPanel({
   onReset,
   canReset,
   diseaseCode,
+  showValidatedOnly,
 }: Props) {
   const formSettings = useFormSettings(apiClient, diseaseCode);
   const options = (key: string): Option[] =>
@@ -382,6 +386,19 @@ export function FilterPanel({
           </div>
         </Field>
 
+        {showValidatedOnly ? (
+          <label className="exact-filter exact-filter--check">
+            <input
+              type="checkbox"
+              checked={filters.validatedOnly ?? false}
+              // Unchecked means "no filter", not `false`: the latter would go
+              // on the wire as a value the panel then counts and Reset has to
+              // clear, while the reader asked for nothing.
+              onChange={(e) => set({ validatedOnly: e.target.checked || undefined })}
+            />
+            <span className="exact-filter__label">Validated only</span>
+          </label>
+        ) : null}
       </div>
 
       <div className="exact-filters__footer">
