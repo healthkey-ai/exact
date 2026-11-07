@@ -177,8 +177,7 @@ class TestPortalTokenProvisioning:
         client.credentials(HTTP_AUTHORIZATION=f'Bearer {portal_token()}')
         _match(client)
         assert Identity.objects.filter(issuer=ISSUER, sub='phr:42').exists()
-        # A bare portal id would occupy the globally-unique `sub` namespace and
-        # could collide with another issuer's subject.
+        # The prefix is what every existing portal identity is stored under.
         assert not Identity.objects.filter(sub='42').exists()
 
     def test_returning_user_reuses_the_same_identity(self, trial, portal_token):
@@ -188,6 +187,28 @@ class TestPortalTokenProvisioning:
         client.credentials(HTTP_AUTHORIZATION=f'Bearer {portal_token(jti="second")}')
         _match(client)
         assert Identity.objects.filter(issuer=ISSUER, sub='phr:42').count() == 1
+
+    def test_switching_issuer_does_not_collide_with_earlier_identities(
+        self, trial, portal_token, settings
+    ):
+        """#700: a deployment moved from phr to PROMOP keeps phr-era rows, and
+        both number their users from 1. The PROMOP user whose id an old phr
+        user had must get an Identity of their own — not a 500 on the global
+        unique `sub`, and not the old user's row.
+        """
+        old = Identity.objects.create(issuer=ISSUER, sub='phr:42')
+        promop = 'https://promop.example'
+        settings.PHR_ISSUER = promop
+
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {portal_token(iss=promop, user_id=42)}'
+        )
+        assert _match(client).status_code == 200
+
+        new = Identity.objects.get(issuer=promop, sub='phr:42')
+        assert new.pk != old.pk
+        assert Identity.objects.filter(sub='phr:42').count() == 2
 
     def test_forged_unsigned_token_does_not_provision_an_identity(
         self, trial, portal_token

@@ -239,9 +239,10 @@ class PhrTokenProvider(TokenProvider):
     forged token through, so the path stays opt-in and out of production.
 
     Identity maps as (issuer=PHR_ISSUER, sub="phr:<phr user id>"). The
-    "phr:" prefix is load-bearing, not cosmetic: `Identity.sub` is
-    `unique=True` *globally*, not per issuer, so a bare portal id could
-    collide with another issuer's subject. Do not remove it.
+    "phr:" prefix no longer guards against collisions — `Identity.sub` is
+    unique per issuer since #700 — but every existing portal identity is
+    stored under it, so removing it would re-provision each of them as a new,
+    empty Identity. Do not remove it.
     """
 
     def can_handle(self, token: str, unverified_payload: dict[str, Any] | None) -> bool:

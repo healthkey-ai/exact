@@ -10,8 +10,8 @@
   per-request-pin + fail-closed core).
 - **Relates / supersedes:** reverses the **access mechanism** of epic #234 (per-request
   concept-graph API + result cache); depends on **promop ADR 0001** (*promop is the
-  vocabulary source of truth*, to be revised from "API + cache" to "release-pinned
-  mirror") and **promop [#334](https://github.com/healthkey-ai/promop/blob/dev/docs/vocab-consumer-cache-protocol.md)**
+  vocabulary source of truth*, revised from "API + cache" to "release-pinned mirror"
+  on 2026-09-14 in promop#337) and **promop [#334](https://github.com/healthkey-ai/promop/blob/dev/docs/vocab-consumer-cache-protocol.md)**
   (vocabulary consumer cache protocol). Does **not** change [ADR 0001](0001-cross-vocabulary-mapping.md)
   (already Superseded) or the [cb_code↔concept_id exception](../omop/cb-code-concept-id-exception.md).
 

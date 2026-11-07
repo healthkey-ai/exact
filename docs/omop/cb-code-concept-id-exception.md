@@ -10,8 +10,9 @@ which supersedes [EXACT ADR 0001](../adr/0001-cross-vocabulary-mapping.md).
 ## Why this exists
 
 promop ADR 0001 makes promop the **single** vocabulary source of truth: consumers
-pull promop-owned standard OMOP concepts (and the concept graph) via API + cache
-rather than vendoring them. The permitted exception is **not** a promop vocabulary
+read promop-owned standard OMOP concepts (and the concept graph) from a
+release-pinned mirror of promop's published releases (EXACT ADR 0002) rather than
+vendoring their own copies. The permitted exception is **not** a promop vocabulary
 copy — it is **consumer-specific policy** (CB drug-class *categories*) that promop
 must not encode. This document records that one exception inside EXACT (ported from
 CB), why it cannot be removed today, and the gate that retires it.
@@ -44,9 +45,9 @@ The exception is the **`cb_code ↔ concept_id` bridge**, which exists in two fo
 - **Version (policy intent, not yet enforced):** the concept_ids are curated against
   a specific promop/OMOP vocabulary release and are only valid against it, so a
   release bump **should** trigger re-curation. Note this is currently a **policy
-  intent**: neither the CSV nor `TherapyOmopMapping` records a release id, and the
-  concept-graph cache's release is caller-supplied and not verified against promop's
-  response — so re-curation on bump is **not machine-enforced** today.
+  intent**: neither the CSV nor `TherapyOmopMapping` records a release id, so
+  nothing ties a curated row to the vocabulary mirror release it was curated
+  against — re-curation on bump is **not machine-enforced** today.
 
 ## Why it can't be retired by HemOnc coverage alone
 
