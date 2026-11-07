@@ -441,6 +441,24 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             {'trial_ids': [f'{original!r} is not a trial id.']}
         )
 
+    def _distance_filter_status(self, patient_info):
+        """Whether a requested radius was applied, for the response (#475).
+
+        The queryset applies `distance` only with a patient location
+        (`filter_by_study_info`); without one it falls through to the
+        country/region filter, which is no filter at all when no country was
+        sent. The caller who asked for trials within 50 miles then gets the
+        whole corpus with a 200 and nothing to tell them so. This says it.
+        `None` when no radius was asked for, so the key is absent then.
+        """
+        if not self._resolve_study_preferences().distance:
+            return None
+        if patient_info is None:
+            return {'applied': False, 'reason': 'no_patient'}
+        if not getattr(patient_info, 'geo_point', None):
+            return {'applied': False, 'reason': 'no_patient_location'}
+        return {'applied': True}
+
     def get_queryset(self, patient_info=None):
         # Before the patient round trip: a malformed body should not pay for a
         # PROMOP fetch to be told it is malformed.
@@ -452,6 +470,9 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         if patient_info is None:
             patient_info = self._resolve_patient_info()
+
+        if self.action in ('list', 'count', 'search'):
+            self._distance_filter = self._distance_filter_status(patient_info)
 
         from trials.services.matching.typed_runtime import resolve_evaluation
         evaluation = resolve_evaluation(self.request, patient_info)
@@ -811,6 +832,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_paginated_response(self, data, extra_keys=None):
         assert self.paginator is not None
+        if getattr(self, '_distance_filter', None) is not None:
+            extra_keys = {**(extra_keys or {}), 'distanceFilter': self._distance_filter}
         if hasattr(self, '_typed_status_counts'):
             from exact_matching.request_evaluation import RESULT_SCHEMA
             extra_keys = {**(extra_keys or {}), 'schema': RESULT_SCHEMA,
@@ -824,6 +847,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # for it: a country scope carries `.distinct()` from `by_location`, and
         # counting it row-wise measured 7.1s against 0.018s (#492).
         data = {'count': count_over_keys(queryset)}
+        if getattr(self, '_distance_filter', None) is not None:
+            data['distanceFilter'] = self._distance_filter
         if hasattr(self, '_typed_status_counts'):
             from exact_matching.request_evaluation import RESULT_SCHEMA
             data.update(schema=RESULT_SCHEMA, matchingCounts=self._typed_status_counts)
