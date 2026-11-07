@@ -10,7 +10,8 @@ identities have usable passwords, so the name is resolved through
 
 This replaces django.contrib.auth's command because `accounts` is listed
 before `django.contrib.auth` in INSTALLED_APPS: Django lets the earlier app
-win. `handle` is Django 5.2's, with only the lookup changed.
+win. `handle` is Django 5.2.17's, with only the lookup changed: re-sync it
+with upstream when upgrading Django.
 """
 import getpass
 

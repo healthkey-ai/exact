@@ -41,8 +41,12 @@ def test_changes_the_local_identity_when_an_external_one_shares_its_sub(_):
 
 
 @pytest.mark.django_db
+# Patch getpass too: if django.contrib.auth's command ever wins again it
+# never calls this subclass's _get_pass, and would block on real stdin
+# instead of failing on the assertion.
+@mock.patch('getpass.getpass', return_value='n3w-Pa55-phrase!')
 @mock.patch.object(changepassword.Command, '_get_pass', return_value='n3w-Pa55-phrase!')
-def test_an_external_only_sub_is_not_a_user_with_a_password(_):
+def test_an_external_only_sub_is_not_a_user_with_a_password(*_):
     external = Identity.objects.create(issuer='https://issuer-a.example', sub='external-only')
     external.set_unusable_password()
     external.save()
