@@ -430,6 +430,36 @@
   gap: 0.5rem;
   margin-bottom: 1rem;
 }
+/* Host-owned detail actions (SoC comparison, MCL authoring, share and Missing
+   Attributes). EXACT draws the affordance; the host owns what it opens. */
+.exact-root .exact-detail__host-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+.exact-root .exact-detail__host-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  border: 1px solid var(--exact-color-border);
+  border-radius: 0.5rem;
+  background: var(--exact-color-surface);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--exact-color-text);
+  cursor: pointer;
+}
+.exact-root .exact-detail__host-action:hover {
+  background: var(--exact-color-primary-50);
+}
+.exact-root .exact-detail__host-action:focus-visible {
+  outline: 2px solid var(--exact-color-primary);
+  outline-offset: 2px;
+}
 .exact-root .exact-detail__meta {
   display: flex;
   flex-direction: column;

@@ -179,6 +179,10 @@ function TrialMatchesInner({
   capabilities,
   features,
   renderGenomicsEditor,
+  onCompareToSoc,
+  onAuthorHighRiskMcl,
+  onShareTrial,
+  onOpenMissingAttributes,
   styles,
   page: hostPage,
   onPageChange,
@@ -1981,6 +1985,10 @@ function TrialMatchesInner({
         patientInfo={patientInfo}
         personId={personId}
         renderGenomicsEditor={renderGenomicsEditor}
+        onCompareToSoc={onCompareToSoc}
+        onAuthorHighRiskMcl={onAuthorHighRiskMcl}
+        onShareTrial={onShareTrial}
+        onOpenMissingAttributes={onOpenMissingAttributes}
         // What actually withholds the controls is the descriptor itself:
         // `fields` undefined answers "unknown" for every row, which is the
         // page exactly as it reads today. That covers loading, a failed read

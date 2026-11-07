@@ -102,6 +102,13 @@ weights and nothing else) means the rest stops being remembered.
   `onClose`. CB uses this to mount PROMOP's `mountGenomics`, whose catalog,
   validation and legacy cytogenetics EXACT does not reproduce.
 
+- `onCompareToSoc`, `onAuthorHighRiskMcl`, `onShareTrial` and
+  `onOpenMissingAttributes` — host-owned detail actions. EXACT draws each
+  affordance only when the callback is passed; the host opens its own
+  comparison, authoring route, share dialog or Missing Attributes panel.
+  MCL authoring is drawn only for a trial that gates on the criteria, and
+  Missing Attributes only when at least one row is `unknown`.
+
 ### `./TrialMatchesBridge` — hosts that are not React
 
 HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.
