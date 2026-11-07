@@ -17,6 +17,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fakeApi, fakeState, renderTrialMatches } from "../test/renderTrialMatches";
+import { errorsAfterTeardown } from "../test/afterTeardown";
 import { WIZARD_WRITE_GRACE_MS } from "./TrialMatches";
 import { WeightsWizard } from "./WeightsWizard";
 import { FACTORS, PLACES, weightsFor } from "./weightRanking";
@@ -1020,6 +1021,31 @@ describe("when the write never comes back", () => {
         vi.advanceTimersByTime(WIZARD_WRITE_GRACE_MS);
       });
       expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("after the page is gone (#728)", () => {
+  it("a write deadline still pending does not fire into React", async () => {
+    const { state } = withWizard(false);
+    (state.weightsWizard.record as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<void>(() => {}),
+    );
+    renderTrialMatches(fakeApi(), { state });
+    await screen.findByText(OFFER);
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Keep them equal" }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      cleanup();
+      const escaped = await errorsAfterTeardown(() => {
+        vi.advanceTimersByTime(WIZARD_WRITE_GRACE_MS);
+      });
+      expect(escaped).toEqual([]);
     } finally {
       vi.useRealTimers();
     }

@@ -228,12 +228,28 @@ export function useQueuedPatientFields(
   //
   // So an answer only settles a field that has nothing newer waiting.
   const owed = useRef<Record<string, number>>({});
-  const retire = (fields: string[]) =>
+  // Whether this hook is still mounted. A write on the wire when the page
+  // unmounts is still finished (the flush below sends it), but its answer
+  // must not reach React: nothing is left to repaint, and after a test's
+  // environment is torn down a setState makes React DOM read `window.event`
+  // and throw (#728). `writerRef` cannot say this: it is also null when a
+  // host takes the adapter away from a page that is still on screen.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const retire = (fields: string[]) => {
+    if (!mountedRef.current) return;
     setOutstanding((current) => {
       const next = { ...current };
       for (const field of fields) delete next[field];
       return next;
     });
+  };
 
   // A batch settling is what makes the match move, so the invalidation
   // belongs to the writer rather than to each field: one re-read per request,
@@ -350,6 +366,7 @@ export function useQueuedPatientFields(
           if (outcome.status !== "unconfirmed") {
             settledValues.current[field] = outcome.value;
           }
+          if (!mountedRef.current) return;
           setFailed((current) => {
             if (!(field in current)) return current;
             const next = { ...current };
@@ -425,6 +442,7 @@ export function useQueuedPatientFields(
             return owed.current[field] === 0;
           });
           if (settled.length === 0) return;
+          if (!mountedRef.current) return;
           setFailed((current) => {
             const next = { ...current };
             for (const field of settled) next[field] = sentRef.current[field];
@@ -1141,11 +1159,13 @@ export function useSavedFilters(
     // The message described the PREVIOUS patient's row. Left standing it reads
     // as a failure to save this patient's filters, which nobody has tried yet.
     setFailed(false);
-    // No cleanup: a cap belonging to a replaced writer can only fire into
-    // `release`, which ignores it. Clearing it as well would be a second
-    // mechanism for the same thing, and untestable because the first already
-    // covers it.
-    setTimeout(() => release(writer), SAVED_FILTERS_GRACE_MS);
+    // Cleared on cleanup. Not for a replaced writer: its cap would only fire
+    // into `release`, which ignores it. For an UNMOUNT: `release` is a
+    // setState, and React DOM stamps every update from `window.event` before
+    // the updater can decline it, so a cap firing after a test's environment
+    // is torn down threw an uncaught "window is not defined" (#728).
+    const cap = setTimeout(() => release(writer), SAVED_FILTERS_GRACE_MS);
+    return () => clearTimeout(cap);
   }, [writer]);
 
   useEffect(() => {

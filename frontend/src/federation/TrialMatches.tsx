@@ -1294,6 +1294,22 @@ function TrialMatchesInner({
       : stateTab != null && trialIds === undefined
         ? "Your saved trials aren't available right now, so this tab can't be exported."
         : "An export needs a patient, and this view has none.";
+  // Whether the list is still mounted. Work started here that settles on its
+  // own time (an export, the wizard's read and write deadline) must not reach
+  // React after unmount: after a test's environment is torn down, a setState
+  // makes React DOM read `window.event` and throw (#728).
+  const mountedRef = useRef(true);
+  const wizardDeadlines = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    mountedRef.current = true;
+    const deadlines = wizardDeadlines.current;
+    return () => {
+      mountedRef.current = false;
+      for (const deadline of deadlines) clearTimeout(deadline);
+      deadlines.clear();
+    };
+  }, []);
+
   const handleExport = async () => {
     if (exportUnavailable) return;
     setExportState("working");
@@ -1314,12 +1330,14 @@ function TrialMatchesInner({
       // The view moved while this was in flight. Dropping it costs the reader
       // a click; handing it over downloads one tab's rows while the screen
       // shows another's, under a filename that says neither.
-      if (viewKeyRef.current !== issuedFor) return;
+      // And not at all once the page is gone: that would start a download for
+      // a reader who has left, and reach React after a test's teardown (#728).
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
       const complete = await exportIsComplete(blob);
       // Checked again on the far side of that await: scanning a large export
       // takes long enough for the reader to change tabs while it runs, and the
       // file would then be handed over under a view it does not describe.
-      if (viewKeyRef.current !== issuedFor) return;
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
       if (!complete) {
         // The server said so on the last line, because its 200 was spent
         // before the first row. Saving it anyway hands over a file that looks
@@ -1344,7 +1362,7 @@ function TrialMatchesInner({
       setTimeout(() => URL.revokeObjectURL(url), EXPORT_URL_LIFETIME_MS);
       setExportState("idle");
     } catch {
-      if (viewKeyRef.current !== issuedFor) return;
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
       setExportState("failed");
     }
   };
@@ -1613,6 +1631,11 @@ function TrialMatchesInner({
    *  The return value is the only permission anything needs. Every dispatch
    *  goes through here so the mirror is never behind. */
   const send = (event: WizardEvent): boolean => {
+    // Nothing after unmount. Reads and writes started here settle on their
+    // own time (`wasOffered`, the 8-second write deadline), and a dispatch
+    // after the tree is gone makes React DOM read `window.event`: after a
+    // test's environment is torn down that is an uncaught error (#728).
+    if (!mountedRef.current) return false;
     const before = wizardRef.current;
     const after = nextWizard(before, event);
     wizardRef.current = after;
@@ -1700,13 +1723,16 @@ function TrialMatchesInner({
   const closeWhenSettled = (patient: string, visit: number, work: Promise<unknown>) => {
     let shut = false;
     const deadline = setTimeout(() => close(), WIZARD_WRITE_GRACE_MS);
+    wizardDeadlines.current.add(deadline);
     const close = () => {
       if (shut) return;
       shut = true;
       // Cleared rather than left to fire into a no-op: one dangling eight-
       // second timer per answer is not a leak anybody would notice in a
-      // browser, and is one per test in a suite that runs thousands.
+      // browser, and is one per test in a suite that runs thousands. An
+      // unmount clears whatever is still pending (#728).
       clearTimeout(deadline);
+      wizardDeadlines.current.delete(deadline);
       send({ kind: "written", patient, visit });
     };
     void work.then(close, close);
