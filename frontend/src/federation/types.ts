@@ -717,6 +717,14 @@ export interface TrialMatchesProps {
    *  corpus; this only decides whether the controls are offered at all. */
   features?: {
     admin?: boolean;
+    /** Hide the Favorites tab and every bookmark control.
+     *
+     *  CB sets it while a navigator is impersonating a patient: the
+     *  navigator's own bookmarks are not the patient's, and a bookmark
+     *  written through the impersonation token would be filed under the
+     *  patient anyway. Never inferred from data — the host knows when it is
+     *  impersonating. Registered interest is not affected. */
+    hideFavorites?: boolean;
   };
   /** Draw the genomic-findings editor for a row.
    *

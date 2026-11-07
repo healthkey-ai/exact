@@ -47,6 +47,10 @@ export interface TabOptions {
    *  still enforces `?type=all` with its own permission; this only decides
    *  whether the control is drawn. */
   admin?: boolean;
+  /** Hide the Favorites tab even when a state adapter can answer for it.
+   *  CB sets this while a navigator impersonates a patient; Registered
+   *  interest stays. */
+  hideFavorites?: boolean;
 }
 
 const MATCH_TABS: TabDef[] = [
@@ -91,11 +95,14 @@ export function tabsFor(
   active?: TabValue,
   options?: TabOptions,
 ): TabDef[] {
+  const stateTabs = options?.hideFavorites
+    ? STATE_TABS.filter((tab) => tab.value !== "favorites")
+    : STATE_TABS;
   return [
     ...MATCH_TABS,
     ...(options?.admin ? ADMIN_TABS : []),
     ...DEEP_LINK_TABS.filter((tab) => tab.value === active),
-    ...(hasState ? STATE_TABS : []),
+    ...(hasState ? stateTabs : []),
   ];
 }
 

@@ -385,3 +385,18 @@ describe("the admin list surface", () => {
     expect(numbered).toBeNull();
   });
 });
+
+describe("hiding Favorites", () => {
+  it("drops the Favorites tab but keeps Registered", () => {
+    expect(tabsFor(true, undefined, { hideFavorites: true }).map((t) => t.value)).toEqual([
+      "eligible_and_potential",
+      "registered",
+    ]);
+  });
+
+  it("composes with the admin tab", () => {
+    expect(
+      tabsFor(true, undefined, { admin: true, hideFavorites: true }).map((t) => t.value),
+    ).toEqual(["eligible_and_potential", "all", "registered"]);
+  });
+});

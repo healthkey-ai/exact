@@ -95,6 +95,11 @@ weights and nothing else) means the rest stops being remembered.
   never inferred from data, and the server still gates `?type=all`
   independently.
 
+- `features.hideFavorites` — hide the Favorites tab and every bookmark
+  control. CB sets it while a navigator impersonates a patient, where a
+  bookmark written through the impersonation token belongs to the patient.
+  Registered interest is unaffected.
+
 - `renderGenomicsEditor` — draw the genomic-findings editor for a row. It
   replaces EXACT's `GenomicsFindingsDialog`, and the pencil appears on a
   genomics row even without a `patientRecord` genomics adapter, because the
