@@ -112,7 +112,10 @@ class TestItStaysUnknownDownstream:
         })
         assert PatientInfoAttributes(patient).tp53_disruption is aggregate
 
-    @pytest.mark.parametrize('summary', ['TP53: R175H', '17p: del(17p)', 'KMT2D: x; tp53: y'])
+    @pytest.mark.parametrize('summary', [
+        'TP53: R175H', '17p: del(17p)', 'KMT2D: x; tp53: y',
+        'Chromosome 17: monosomy', 'del(17)(p13): loss',
+    ])
     def test_a_false_that_the_summary_contradicts_becomes_unknown(self, summary):
         # PROMOP answers False unless a TP53 finding is strictly `pathogenic`;
         # the summary lists the finding anyway. Unknown, not a confirmed "no".
@@ -120,6 +123,18 @@ class TestItStaysUnknownDownstream:
             'disease': 'mantle cell lymphoma',
             'molecular_markers': summary,
             'tp53_disruption': False,
+        })
+        assert PatientInfoAttributes(patient).tp53_disruption is None
+
+    @pytest.mark.parametrize('surrogate', [{'p53_ihc': 60}, {'p53_ihc': '75'}, {'cytogenetic_markers': 'del17p'}])
+    def test_with_a_surrogate_the_contradiction_still_answers_unknown(self, surrogate):
+        # Nulling the False here would let the surrogate make it a confirmed
+        # True; keeping it lets `_tp53_contradiction` answer unknown.
+        patient = build_patient_info_from_promop_row({
+            'disease': 'mantle cell lymphoma',
+            'molecular_markers': 'TP53: R175H',
+            'tp53_disruption': False,
+            **surrogate,
         })
         assert PatientInfoAttributes(patient).tp53_disruption is None
 

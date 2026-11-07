@@ -445,7 +445,7 @@ def _cytogenetic_markers_with_legacy_titles(value):
 #: joined with `"; "` (promop `patient_record_service.py`, present findings only).
 #: The name has no colon or comma; the variant may be empty or carry brackets.
 _PROMOP_FINDING_ITEM = re.compile(r'^[^:,]+:')
-_TP53_FINDING_NAME = re.compile(r'tp53|17p', re.IGNORECASE)
+_TP53_EVIDENCE = re.compile(r'tp53|17p|del\(17|chromosome 17', re.IGNORECASE)
 
 
 def _promop_summary_items(value):
@@ -485,11 +485,32 @@ def _is_promop_findings_summary(value):
 
 
 def _summary_names_tp53(value):
-    """Whether any summary item is a TP53 or 17p finding."""
-    return any(
-        _TP53_FINDING_NAME.search(item.split(':', 1)[0])
-        for item in _promop_summary_items(value)
-    )
+    """Whether the summary may carry TP53-disruption evidence.
+
+    The whole text, not just the item names: an unclosed bracket can swallow
+    a later item, and chromosome-17 losses are spelled several ways. Matching
+    too much only turns PROMOP's False into unknown, which is safe.
+    """
+    return bool(_TP53_EVIDENCE.search(value))
+
+
+def _row_has_tp53_surrogate(row):
+    """Whether the row carries the derivation's other TP53-positive inputs.
+
+    Mirrors `PatientInfoAttributes.tp53_disruption`: del17p13 in the (already
+    translated) cytogenetic markers, or p53 IHC of 50% or more.
+    """
+    cytogenic = row.get('cytogenic_markers')
+    if isinstance(cytogenic, str):
+        cytogenic = cytogenic.split(',')
+    if isinstance(cytogenic, (list, tuple)) and 'del17p13' in [
+        str(code).strip() for code in cytogenic
+    ]:
+        return True
+    try:
+        return float(row.get('p53_ihc')) >= 50
+    except (TypeError, ValueError):
+        return False
 
 
 def _marker_assessment(value, model_name, aliases=None):
@@ -694,7 +715,12 @@ def normalize_promop_row(row: dict) -> dict:
             # reads False while the summary lists that very finding. The markers
             # used to expose the contradiction (`_tp53_contradiction`); with them
             # dropped, say unknown instead of a confirmed "no". A True stays.
-            if row['tp53_disruption'] is False and _summary_names_tp53(summary):
+            # Only where nothing else on the row says TP53: with a surrogate
+            # (p53 IHC >= 50, del17p13) the derivation would turn a null into a
+            # confirmed True, while a kept False lets `_tp53_contradiction`
+            # answer unknown, as it did when the markers were still readable.
+            if (row['tp53_disruption'] is False and _summary_names_tp53(summary)
+                    and not _row_has_tp53_surrogate(row)):
                 row['tp53_disruption'] = None
         else:
             row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
