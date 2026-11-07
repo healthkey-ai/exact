@@ -10,8 +10,9 @@ which supersedes [EXACT ADR 0001](../adr/0001-cross-vocabulary-mapping.md).
 ## Why this exists
 
 promop ADR 0001 makes promop the **single** vocabulary source of truth: consumers
-pull promop-owned standard OMOP concepts (and the concept graph) via API + cache
-rather than vendoring them. The permitted exception is **not** a promop vocabulary
+read promop-owned standard OMOP concepts (and the concept graph) from a
+release-pinned mirror of promop's published releases (EXACT ADR 0002) rather than
+vendoring their own copies. The permitted exception is **not** a promop vocabulary
 copy — it is **consumer-specific policy** (CB drug-class *categories*) that promop
 must not encode. This document records that one exception inside EXACT (ported from
 CB), why it cannot be removed today, and the gate that retires it.

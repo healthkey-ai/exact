@@ -1,6 +1,6 @@
 # ADR 0001: Cross-vocabulary mapping between EXACT, PROMOP, and CancerBot
 
-- **Status:** **Superseded** by [promop ADR 0001 — *promop is the vocabulary source of truth*](https://github.com/healthkey-ai/promop/blob/dev/docs/adr/0001-vocabulary-source-of-truth.md) (currently *Proposed*; formal ratification tracked in promop#254 — EXACT's code already implements it, #234).
+- **Status:** **Superseded** by [promop ADR 0001 — *promop is the vocabulary source of truth*](https://github.com/healthkey-ai/promop/blob/dev/docs/adr/0001-vocabulary-source-of-truth.md) (still *Proposed*: revised on 2026-09-14 to a release-pinned vocabulary mirror in promop#337, with ratification tracked in promop#254. EXACT implements it through its local mirror, [ADR 0002](0002-vocab-mirror-consumer-consistency.md)).
 - **Date:** 2026-06-18 (superseded 2026-07-27)
 - **Deciders:** EXACT team (pending review by CancerBot + PROMOP terminology owners)
 - **Reviews:** Codex (consult) on architecture options + the ETL re-keying idea; gstack `/plan-eng-review` (eng-manager pass) — substrate decision (OMOP `concept_relationship` upstream + compiled EXACT table), governance-as-Phase-0, per-domain kill switch, resolver test matrix, and outbound-annotation caching folded in.
@@ -15,29 +15,28 @@ consumer-side (Decision §1–2, "compile a denormalized lookup table into EXACT
 
 That substrate decision is **superseded**. The superseding decision ([promop ADR
 0001](https://github.com/healthkey-ai/promop/blob/dev/docs/adr/0001-vocabulary-source-of-truth.md)
-— currently *Proposed*, ratification tracked in promop#254) makes **promop the
-single vocabulary source of truth**, accessed by consumers **via API + cache —
-not** a bulk export, replica, or locally-compiled artifact. EXACT implemented
-this in #234: `ConceptGraphClient` + `CachedConceptGraphClient` (DB-backed,
-release-pinned, fail-closed) — so EXACT no longer keeps a local copy of the OMOP
-**concept graph / `concept_relationship` tables**. (EXACT still persists
+— still *Proposed*, ratification tracked in promop#254) makes **promop the
+single vocabulary source of truth**. Consumers read it through a **release-pinned
+local mirror** of promop's published vocabulary releases ([ADR
+0002](0002-vocab-mirror-consumer-consistency.md); promop#337), not through an
+independently compiled artifact. EXACT's `vocab_mirror` app syncs a promop release,
+verifies it, and pins one release generation per request. Graph traversal runs
+locally against that mirror. (EXACT still persists
 `OmopConcept` titles, the `omop_concept_id` columns on its vocab models, the trial
 `omop_*` projections, and the two curated mapping tables — the last of these is
 the documented exception below, not a promop vocabulary copy.)
 
-> **Update (#251).** The "API + cache" access mechanism described in this note
-> was itself an interim step: promop ADR 0001 is being revised (promop#337), and
-> EXACT now consumes a **release-pinned local vocabulary mirror** ([ADR
-> 0002](0002-vocab-mirror-consumer-consistency.md)). The `ConceptGraphClient` /
-> `CachedConceptGraphClient` named above are **retired** (#251), replaced by
-> `vocab_mirror` + local traversal. (Full reconciliation of this note is tracked
-> in #247, gated on the promop ADR revision.)
+> **History.** Before the mirror, EXACT briefly implemented promop ADR 0001 as
+> "API + cache" (#234: `ConceptGraphClient` + `CachedConceptGraphClient`).
+> promop ADR 0001 was revised to the release-pinned mirror on 2026-09-14
+> (promop#337), and that interim client and cache were retired in #251 in favour
+> of `vocab_mirror` + local traversal. This note was reconciled in #247.
 
 **Reconciled language.** Wherever the body below says "compiled/vendored
 artifact into an EXACT table", "consumer-side target resolution", or "do not
 stand up a live network terminology service", read it as **historical**: the
-live model is promop-owned data pulled through the release-pinned concept-graph
-cache. What still holds from this ADR: **direction** (map patient → CB/EXACT
+live model is promop-owned data synced into the release-pinned local vocabulary
+mirror. What still holds from this ADR: **direction** (map patient → CB/EXACT
 vocabulary, preserve source values, never let a lossy/unmapped fact strengthen
 eligibility — the [Invariant](#invariant)), the **relationship-typed** crosswalk
 shape, **shadow mode / per-domain kill switch**, and the **resolver test
