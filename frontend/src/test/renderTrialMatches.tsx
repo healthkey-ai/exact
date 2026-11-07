@@ -293,10 +293,20 @@ export function fakeApi(initial: Partial<TrialsResponse> = {}): FakeApi {
       if (ids === undefined) return { data: response };
       const wanted = new Set(ids.map(String));
       const results = response.results.filter((t) => wanted.has(String(t.trialId)));
+      // `count` is the server's PAGE total, `ceil(itemsTotalCount / page size)`
+      // (`TrialsPagination`). Left at the corpus value it read as one trial
+      // spread over three pages, and two pager tests were pinned to a pager
+      // no server could produce (#542). The page size is the one the corpus
+      // response implies.
+      const perPage =
+        response.count > 0
+          ? Math.ceil(response.itemsTotalCount / response.count)
+          : Math.max(results.length, 1);
       return {
         data: {
           ...response,
           results,
+          count: Math.ceil(results.length / perPage),
           itemsTotalCount: results.length,
           // Counted over the narrowed queryset, the way the server counts
           // its own — which is the whole premise of #536. Passing the
