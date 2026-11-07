@@ -616,6 +616,10 @@ _TEXT_FIELDS_TAKING_A_LIST = frozenset({
     'richter_transformation', 'tumor_burden', 'disease_activity', 'binet_stage',
     'morphologic_variant', 'disease_behavior', 'disease_subtype', 'mipi_risk',
     'mipi_c_risk', 'bulky_disease_criteria', 'high_risk_mcl_criteria',
+    # M2M ids, popped before the field filter only under the snake_case key;
+    # a camelCase `concomitantMedications` list reaches this check and used to
+    # pass. Kept as it was; which spelling counts is #717.
+    'concomitant_medications',
 })
 
 
@@ -851,7 +855,9 @@ def _coerce_json_fields(data: dict, model_cls, strict: bool = False):
         # Try JSON first, then Python repr (CB stores lists as Python repr strings)
         try:
             data[key] = json.loads(val)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
+            # RecursionError: a deeply nested string escapes json.loads as one,
+            # and was a 500 on the inline path.
             try:
                 data[key] = ast.literal_eval(val)
             except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):

@@ -97,8 +97,39 @@ class TestTextColumns:
 
     def test_the_upstream_path_is_unchanged(self):
         # Adapter and batch commands: not the reader's value, so no 400 here.
+        # Pins that this change left the lenient path alone, not that an int
+        # on a text column is right (#716).
         pi = build({'stage': 3}, strict=False)
         assert pi.stage == 3
+
+    def test_it_names_the_key_the_caller_wrote(self):
+        with pytest.raises(ValidationError) as raised:
+            inline({'disease': 'multiple myeloma', 'histologicType': {'a': 1}})
+        assert 'histologicType' in raised.value.detail
+
+    def test_a_camel_case_m2m_list_still_goes_through(self):
+        # `concomitantMedications` misses the snake_case M2M pop and reaches
+        # the text check; it used to pass and still does (#717 decides more).
+        build({'concomitantMedications': ['1', '2']})
+
+    def test_a_normalized_promop_row_posted_back_inline_passes(self):
+        # The federated host posts `/normalize-promop-row/`'s answer back as
+        # the inline payload; the strict check must not 400 that round trip.
+        from trials.services.patient_info.promop_adapter import normalize_promop_row
+        row = normalize_promop_row({
+            'disease': 'multiple myeloma',
+            'gender': 'F',
+            'patient_age': 64,
+            'stage': 'II',
+            # Therapy-line codes need the patient vocabulary loaded, which the
+            # test DB does not seed; the lines' own shape is pinned above.
+            'prior_therapy': 'None',
+            'supportive_therapies': 'Zoledronic acid; Denosumab',
+            'genetic_mutations': [],
+            'english_speak': True,
+            'english_read': True,
+        })
+        build(row)
 
     def test_the_list_set_names_only_real_text_columns(self):
         text_columns = {
@@ -129,6 +160,11 @@ class TestJsonColumns:
     def test_a_blank_string_is_still_absent(self, value):
         pi = build({'genetic_mutations': value})
         assert not pi.genetic_mutations
+
+    def test_a_deeply_nested_string_is_a_400_not_a_500(self):
+        with pytest.raises(MalformedPatientValue) as raised:
+            build({'genetic_mutations': '[' * 100000})
+        assert raised.value.field_name == 'genetic_mutations'
 
     def test_the_upstream_path_still_drops_it(self):
         pi = build({'genetic_mutations': '{not json'}, strict=False)
