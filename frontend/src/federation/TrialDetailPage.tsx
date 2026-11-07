@@ -101,6 +101,8 @@ interface Props {
   editing?: RowEditing;
   /** Host-owned genomic-findings editor; replaces EXACT's dialog when given. */
   renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
+  /** Host-owned patient-value editor, rendered per eligibility row. */
+  renderFieldEditor?: TrialMatchesProps["renderFieldEditor"];
   /** Host-owned detail actions; each affordance is drawn only when supplied. */
   onCompareToSoc?: TrialMatchesProps["onCompareToSoc"];
   onAuthorHighRiskMcl?: TrialMatchesProps["onAuthorHighRiskMcl"];
@@ -328,6 +330,7 @@ function EligibilityRow({
   openSubform,
   onSubformOpen,
   renderGenomicsEditor,
+  renderFieldEditor,
 }: {
   field: TrialDetailField;
   trialId?: string | number;
@@ -337,6 +340,7 @@ function EligibilityRow({
   openSubform?: string | null;
   onSubformOpen?: (name: string | null) => void;
   renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
+  renderFieldEditor?: TrialMatchesProps["renderFieldEditor"];
 }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
@@ -532,6 +536,17 @@ function EligibilityRow({
             Couldn't save that. Your value is not in the record.
           </span>
         ) : null}
+        {/* The host's patient-value editor. It is per ROW, not per canonical
+            attribute: PROMOP's slot is keyed by the row's own name (its
+            `ufield`), and the host's widget owns saving. Returning null is
+            how a host leaves a row alone. */}
+        {renderFieldEditor
+          ? renderFieldEditor({
+              field: field.ufield ?? field.name,
+              label: field.label,
+              trialId,
+            })
+          : null}
         {/* A computed row cannot be written, but what it is computed FROM
             can — and the payload names those values. Offered only where at
             least one of them is actually writable: a dialog listing four
@@ -580,7 +595,7 @@ function EligibilityRow({
             onClose={() => setGenomicsOpen(false)}
           />
         ) : null}
-        {editable.can === "edit" && editing && !editable.negative ? (
+        {editable.can === "edit" && editing && !editable.negative && !renderFieldEditor ? (
           <FieldEdit
             field={editable.field}
             label={field.label}
@@ -615,7 +630,7 @@ function EligibilityRow({
             onOpenChange={setEditorOpen}
           />
         ) : null}
-        {editable.can === "edit" && editing && editable.negative ? (
+        {editable.can === "edit" && editing && editable.negative && !renderFieldEditor ? (
           <>
             <button
               type="button"
@@ -834,6 +849,7 @@ export function TrialDetailPage({
   trialState,
   editing,
   renderGenomicsEditor,
+  renderFieldEditor,
   onCompareToSoc,
   onAuthorHighRiskMcl,
   onShareTrial,
@@ -1145,6 +1161,7 @@ export function TrialDetailPage({
                       openSubform={openSubform}
                       onSubformOpen={setOpenSubform}
                       renderGenomicsEditor={renderGenomicsEditor}
+                      renderFieldEditor={renderFieldEditor}
                     />
                   ))}
                 </div>

@@ -737,6 +737,26 @@ export interface TrialMatchesProps {
     /** Unmount the editor. */
     onClose: () => void;
   }) => ReactNode;
+  /** Draw the host's patient-value editor for a trial row.
+   *
+   *  Called for each eligibility row on each render with the row's own
+   *  attribute name (`ufield`, falling back to `name`) — the key CB gives
+   *  PROMOP's `data-promop-field` slot. CB returns an empty
+   *  `<div data-promop-field={field} data-promop-label={label}>` there and
+   *  mounts one PROMOP `mountFields` root inside a `data-promop-form`
+   *  container; the widget picks up every slot in that container by portal.
+   *  Return `null` for a row the host cannot edit.
+   *
+   *  Supplied, it replaces EXACT's scalar inline editor and its negated
+   *  boolean dialog on the rows; the subform and genomics doors are
+   *  unaffected. The host owns saving and refresh — EXACT initiates no write
+   *  for these rows. A host that keeps a writer but wants EXACT's controls
+   *  should omit this prop instead of returning null everywhere. */
+  renderFieldEditor?: (props: {
+    field: string;
+    label: string;
+    trialId?: string | number;
+  }) => ReactNode;
   /** Which cascade mode the injected stylesheet uses.
    *
    *  `"layered"` (the default) wraps the sheet in `@layer mf-remote`. That is
