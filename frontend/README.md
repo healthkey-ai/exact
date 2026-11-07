@@ -102,6 +102,14 @@ weights and nothing else) means the rest stops being remembered.
   `onClose`. CB uses this to mount PROMOP's `mountGenomics`, whose catalog,
   validation and legacy cytogenetics EXACT does not reproduce.
 
+- `renderFieldEditor` — the host's per-row patient-value editor. Called with
+  the row's own attribute name (`ufield`, falling back to `name`) and label.
+  CB returns an empty `data-promop-field` node there and mounts one PROMOP
+  `mountFields` root inside a `data-promop-form` container; the widget portals
+  an editor into every slot. Supplied, EXACT's scalar inline editor and its
+  negated boolean dialog are not drawn; the subform and genomics doors are
+  unaffected. Returning `null` leaves a row alone.
+
 - `onCompareToSoc`, `onAuthorHighRiskMcl`, `onShareTrial` and
   `onOpenMissingAttributes` — host-owned detail actions. EXACT draws each
   affordance only when the callback is passed; the host opens its own

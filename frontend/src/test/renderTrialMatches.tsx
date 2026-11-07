@@ -558,6 +558,8 @@ export interface TrialMatchesProps {
   features?: import("../federation/types").TrialMatchesProps["features"];
   /** Host-owned genomic editor; see the production type. */
   renderGenomicsEditor?: import("../federation/types").TrialMatchesProps["renderGenomicsEditor"];
+  /** Host-owned per-row patient-value editor; see the production type. */
+  renderFieldEditor?: import("../federation/types").TrialMatchesProps["renderFieldEditor"];
   onCompareToSoc?: import("../federation/types").TrialMatchesProps["onCompareToSoc"];
   onAuthorHighRiskMcl?: import("../federation/types").TrialMatchesProps["onAuthorHighRiskMcl"];
   onShareTrial?: import("../federation/types").TrialMatchesProps["onShareTrial"];
@@ -624,6 +626,7 @@ export function renderTrialMatches(
         capabilities={next.capabilities}
         features={next.features}
         renderGenomicsEditor={next.renderGenomicsEditor}
+        renderFieldEditor={next.renderFieldEditor}
         onCompareToSoc={next.onCompareToSoc}
         onAuthorHighRiskMcl={next.onAuthorHighRiskMcl}
         onShareTrial={next.onShareTrial}
