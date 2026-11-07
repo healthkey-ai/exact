@@ -556,6 +556,8 @@ export interface TrialMatchesProps {
   capabilities?: import("../federation/types").TrialMatchesProps["capabilities"];
   /** Host-declared admin surface; see the production type. */
   features?: import("../federation/types").TrialMatchesProps["features"];
+  /** Host-owned genomic editor; see the production type. */
+  renderGenomicsEditor?: import("../federation/types").TrialMatchesProps["renderGenomicsEditor"];
   /** Which cascade mode the injected sheet uses; see the production type. */
   styles?: import("../federation/types").TrialMatchesProps["styles"];
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
@@ -616,6 +618,7 @@ export function renderTrialMatches(
         preferences={next.preferences}
         capabilities={next.capabilities}
         features={next.features}
+        renderGenomicsEditor={next.renderGenomicsEditor}
         styles={next.styles}
         onPatientRecordChanged={next.onPatientRecordChanged}
         onTrialSelect={next.onTrialSelect}
