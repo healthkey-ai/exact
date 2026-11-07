@@ -64,8 +64,9 @@ def test_natural_key_lookup_never_returns_an_external_identity():
 
 @pytest.mark.django_db
 def test_async_natural_key_lookup_is_scoped_the_same_way():
-    # async_to_sync runs the coroutine on this thread, inside the test's
-    # transaction, so no `transaction=True` is needed.
+    # The event loop runs on a worker thread, but `aget` is thread-sensitive
+    # and hands the query back to this thread — inside the test's transaction,
+    # so no `transaction=True` is needed.
     Identity.objects.create(issuer='https://issuer-a.example', sub='shared')
     local = Identity.objects.create(issuer='urn:local', sub='shared')
     found = async_to_sync(Identity.objects.aget_by_natural_key)('shared')
