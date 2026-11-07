@@ -6,7 +6,7 @@
 // error shown for a write that succeeded. All three are about the wiring.
 
 import { StrictMode } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { TrialMatches } from "./TrialMatches";
@@ -217,6 +217,59 @@ describe("saving", () => {
     );
     return api;
   };
+
+  // #728. A write still on the wire when the page unmounts is finished, but
+  // its answer must not touch React: after a test's jsdom is torn down, any
+  // setState makes React DOM read `window.event`, and CI failed with an
+  // unhandled `window is not defined` while every test passed. Reproduced
+  // here deterministically: the answer lands with no global `window`.
+  it.each(["saved", "refused"] as const)(
+    "does not touch React when a write is answered (%s) after the page is gone",
+    async (answer) => {
+      const state = fakeState({ writable: WRITABLE });
+      let release: (() => void) | null = null;
+      state.adapter.setPatientFields = vi.fn(
+        (fields: Record<string, unknown>) =>
+          new Promise<Record<string, WriteOutcome>>((resolve, reject) => {
+            release = () =>
+              answer === "saved"
+                ? resolve(
+                    Object.fromEntries(
+                      Object.entries(fields).map(([f, v]) => [f, { status: "saved", value: v }]),
+                    ),
+                  )
+                : reject(new Error("refused"));
+          }),
+      );
+      await startEditing(state);
+      const box = screen.getByRole("textbox", { name: "Hemoglobin" });
+      await userEvent.clear(box);
+      await userEvent.type(box, "13");
+      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(release).not.toBeNull());
+
+      cleanup();
+      const g = globalThis as { window?: unknown };
+      const saved = Object.getOwnPropertyDescriptor(g, "window");
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      delete g.window;
+      try {
+        release!();
+        for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+      } finally {
+        if (saved) Object.defineProperty(g, "window", saved);
+        process.off("unhandledRejection", onUnhandled);
+      }
+      const leaked = warn.mock.calls.filter((c) => String(c[1] ?? c[0]).includes("window is not defined"));
+      warn.mockRestore();
+      expect(unhandled.map(String)).toEqual([]);
+      expect(leaked).toEqual([]);
+      expect(state.adapter.setPatientFields).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("writes the value to the attribute PROMOP named, as a number", async () => {
     // Not "13" — the column is numeric, and a string would make the server
