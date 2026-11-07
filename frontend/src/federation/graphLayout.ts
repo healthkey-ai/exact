@@ -15,6 +15,18 @@ import type { GraphMatchItem, GraphTrialNode } from "./types";
 /** Which of the three answers this attribute got for a given trial. */
 export type ConceptStatus = "matched" | "missing" | "notMatched";
 
+/** The colour of a band's LABEL ("Met", "Not known", "Not met"), as opposed
+ *  to its nodes. The label is 11px text, held to AA's 4.5:1; the verdict tokens
+ *  the nodes use are marks, held to 3:1, and two of them read as text at
+ *  3.30:1 and 2.15:1 (#562). These are the text tones the rest of the remote
+ *  already writes those verdicts in. The nodes keep the verdict colours, so
+ *  what a verdict looks like is unchanged. */
+export const BAND_LABEL_COLOR: Record<ConceptStatus, string> = {
+  matched: "var(--exact-color-success-700)",
+  missing: "var(--exact-color-warning-700)",
+  notMatched: "var(--exact-color-not-eligible)",
+};
+
 export interface ConceptNode {
   /** The TRIAL's field, not the patient's. Both are stable across trials, so
    *  either would share a node between them — but several trial fields map to

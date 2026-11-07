@@ -13,6 +13,7 @@
 // each pair is painted; a new pair is a line here.
 
 import { readFileSync } from "node:fs";
+import { BAND_LABEL_COLOR } from "./graphLayout";
 
 import { describe, expect, it } from "vitest";
 
@@ -287,23 +288,26 @@ describe("the palette, in the pairs the page paints", () => {
     }
   });
 
-  // Resolved here, not inside the `it.fails` below: see `token`.
+  // Resolved here, not inside an `it.fails`: see `token`. Read from the map
+  // the graph paints its labels with, so a label pointed back at a verdict
+  // token fails here rather than passing on a token nobody draws.
+  const labelToken = (status: keyof typeof BAND_LABEL_COLOR) =>
+    BAND_LABEL_COLOR[status].replace(/^var\((--[\w-]+)\)$/, "$1");
   const band = {
-    eligible: contrast(token("--exact-color-eligible"), token("--exact-color-surface")),
-    potential: contrast(token("--exact-color-potential"), token("--exact-color-surface")),
-    notEligible: contrast(token("--exact-color-not-eligible"), token("--exact-color-surface")),
+    eligible: contrast(token(labelToken("matched")), token("--exact-color-surface")),
+    potential: contrast(token(labelToken("missing")), token("--exact-color-surface")),
+    notEligible: contrast(token(labelToken("notMatched")), token("--exact-color-surface")),
   };
 
-  // `STATUS_COLOR` in `TrialsGraph.tsx` is not only the colour of a node: the
-  // same three tokens are the `fill` of the band LABELS — "Met", "Not known",
-  // "Not met" — drawn at 11px and 600 weight. That is text, so the bar is 4.5
-  // and not the 3 a mark answers to. One test each, so that fixing one of
-  // them is not swallowed by another still failing in the same loop.
-  it.fails("reads Met as a band label — #562", () => {
+  // The band LABELS — "Met", "Not known", "Not met" — are 11px, 600-weight
+  // text, so the bar is 4.5 and not the 3 a mark answers to. They used to
+  // share `STATUS_COLOR` with the nodes, at 3.30:1 and 2.15:1 (#562). One test
+  // each, so that one regressing is not swallowed by another in a loop.
+  it("reads Met as a band label", () => {
     expect(band.eligible, `eligible (${shown(band.eligible)})`).toBeGreaterThanOrEqual(AA);
   });
 
-  it.fails("reads Not known as a band label — #562", () => {
+  it("reads Not known as a band label", () => {
     expect(band.potential, `potential (${shown(band.potential)})`).toBeGreaterThanOrEqual(AA);
   });
 
