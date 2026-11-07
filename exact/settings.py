@@ -84,6 +84,13 @@ INSTALLED_APPS = [
 # .User, so EXACT only adopts this on a fresh database (see accounts app).
 AUTH_USER_MODEL = 'accounts.Identity'
 
+# `Identity.sub` (the USERNAME_FIELD) is deliberately NOT globally unique: a
+# subject is unique only within its issuer, enforced by the composite
+# (issuer, sub) constraint. auth.E003 assumes a globally unique USERNAME_FIELD;
+# the login path is kept unambiguous by IdentityManager.get_by_natural_key,
+# which only looks at urn:local rows. See #700.
+SILENCED_SYSTEM_CHECKS = ['auth.E003']
+
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
