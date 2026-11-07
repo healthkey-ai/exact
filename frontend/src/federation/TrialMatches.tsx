@@ -196,6 +196,10 @@ function TrialMatchesInner({
   // The admin surface is a HOST decision, never inferred from data: the same
   // account can be an admin on one deployment and not another.
   const admin = features?.admin === true;
+  // Same for the navigator's impersonation state: the host knows, EXACT does
+  // not, and a bookmark written through an impersonation token belongs to the
+  // patient rather than to the navigator looking at the page.
+  const hideFavorites = features?.hideFavorites === true;
   // Read once: the mode is a property of this bundle instance, not of a
   // render. `injectStylesForHost` latches the first mode, and a second sheet
   // in the other mode would fight the first in the cascade. The detail
@@ -459,8 +463,8 @@ function TrialMatchesInner({
 
   // The bar depends on whether a host gave us somewhere to keep bookmarks.
   const tabs = useMemo(
-    () => tabsFor(state != null, activeTab, { admin }),
-    [state, activeTab, admin],
+    () => tabsFor(state != null, activeTab, { admin, hideFavorites }),
+    [state, activeTab, admin, hideFavorites],
   );
   // A host can take the adapter away — on logout, or when reconfiguring it.
   // The tab the reader was on then stops existing, and falling back only in
@@ -2038,15 +2042,20 @@ function TrialMatchesInner({
                   ? favorites.data.includes(selectedId)
                   : undefined,
                 favoriteBusy: writes.favorites.pending.includes(selectedId),
-                onToggleFavorite: (on) =>
-                  write("favorites", setFavorite, selectedId, on),
-                favoriteFailed: writes.favorites.failed.includes(selectedId),
+                onToggleFavorite: hideFavorites
+                  ? undefined
+                  : (on) => write("favorites", setFavorite, selectedId, on),
+                favoriteFailed:
+                  !hideFavorites && writes.favorites.failed.includes(selectedId),
                 // `data === undefined` too: a query that has errored KEEPS
                 // the data it had, so after a failed background refetch this
                 // was true while the star was still being drawn from the
                 // retained ids — an "unavailable" notice printed underneath
                 // a control that is present and works.
-                favoritesUnavailable: favorites.isError && favorites.data === undefined,
+                favoritesUnavailable:
+                  !hideFavorites &&
+                  favorites.isError &&
+                  favorites.data === undefined,
                 isRegistered:
                   registered.data && advanced.data
                     ? registered.data.includes(selectedId)
@@ -2330,7 +2339,7 @@ function TrialMatchesInner({
           that read fails every star vanishes — on EVERY tab, not just the
           Favorites one, and with nothing on screen to say why. The reader
           would conclude the feature had been removed. */}
-      {favorites.isError && favorites.data === undefined && !idsFailed ? (
+      {!hideFavorites && favorites.isError && favorites.data === undefined && !idsFailed ? (
         <p style={{ color: "var(--exact-color-not-eligible)" }}>
           Couldn't load your favorites, so bookmarking is unavailable right
           now.
@@ -2345,7 +2354,7 @@ function TrialMatchesInner({
           that rejects after the reader has gone back to the list had no
           surface here at all, so the only thing they ever saw was
           "Saving…". */}
-      {writes.favorites.failed.length ? (
+      {!hideFavorites && writes.favorites.failed.length ? (
         <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
           Couldn't update your favorites. Please try again.
         </p>
@@ -2410,7 +2419,7 @@ function TrialMatchesInner({
             }
             busy={writes.favorites.pending.includes(String(t.trialId))}
             onToggleFavorite={
-              state
+              state && !hideFavorites
                 ? (on) => write("favorites", setFavorite, String(t.trialId), on)
                 : undefined
             }
