@@ -8,20 +8,30 @@ from django.utils import timezone
 class IdentityManager(BaseUserManager):
     use_in_migrations = True
 
-    def get_by_natural_key(self, username):
-        """Look up by USERNAME_FIELD (`sub`), scoped to local identities.
+    def get_by_natural_key(self, *key):
+        """Resolve a natural key: `(issuer, sub)`, or a bare `sub` at login.
 
-        `sub` is unique only within an issuer (#700), so a bare `get(sub=...)`
-        could match rows from several issuers and raise MultipleObjectsReturned
-        on the password / admin login path. Only `urn:local` identities ever
-        password-authenticate — external rows get `set_unusable_password()` —
-        so the lookup is scoped to them.
+        Django calls this with two shapes. Serialization (`loaddata` of a
+        `--natural-foreign` dump) passes whatever `Identity.natural_key()`
+        produced — `(issuer, sub)`, the real key. ModelBackend passes the one
+        login string. `sub` is unique only within an issuer (#700), so a bare
+        `get(sub=...)` could match rows from several issuers; only `urn:local`
+        identities ever password-authenticate (external rows get
+        `set_unusable_password()`), so the login form is scoped to them.
         """
-        return self.get(issuer="urn:local", sub=username)
+        return self.get(**self._natural_key_lookup(key))
 
-    async def aget_by_natural_key(self, username):
-        """Async mirror of `get_by_natural_key`, scoped the same way."""
-        return await self.aget(issuer="urn:local", sub=username)
+    async def aget_by_natural_key(self, *key):
+        """Async mirror of `get_by_natural_key`, resolved the same way."""
+        return await self.aget(**self._natural_key_lookup(key))
+
+    @staticmethod
+    def _natural_key_lookup(key):
+        if len(key) == 2:
+            issuer, sub = key
+            return {"issuer": issuer, "sub": sub}
+        (username,) = key
+        return {"issuer": "urn:local", "sub": username}
 
     def get_or_create_from_claims(self, claims):
         """Get or create an Identity from TokenClaims."""
@@ -101,6 +111,12 @@ class Identity(AbstractBaseUser, PermissionsMixin):
                 name="uq_identity_local_email",
             ),
         ]
+
+    def natural_key(self):
+        # (issuer, sub), not AbstractBaseUser's (sub,): `sub` alone no longer
+        # names one row, so a dump keyed on it would reattach an external
+        # identity's rows to whichever identity shares its subject on load.
+        return (self.issuer, self.sub)
 
     @property
     def is_local(self) -> bool:

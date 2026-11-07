@@ -62,8 +62,10 @@ def test_natural_key_lookup_never_returns_an_external_identity():
         Identity.objects.get_by_natural_key('external-only')
 
 
-@pytest.mark.django_db(transaction=True)
+@pytest.mark.django_db
 def test_async_natural_key_lookup_is_scoped_the_same_way():
+    # async_to_sync runs the coroutine on this thread, inside the test's
+    # transaction, so no `transaction=True` is needed.
     Identity.objects.create(issuer='https://issuer-a.example', sub='shared')
     local = Identity.objects.create(issuer='urn:local', sub='shared')
     found = async_to_sync(Identity.objects.aget_by_natural_key)('shared')
@@ -71,8 +73,42 @@ def test_async_natural_key_lookup_is_scoped_the_same_way():
 
 
 @pytest.mark.django_db
-def test_local_superuser_can_still_log_in(client):
-    """createsuperuser rows are urn:local, so the scoped lookup must find them."""
+def test_local_superuser_logs_in_despite_an_external_row_with_the_same_sub(client):
     Identity.objects.create_superuser(email='admin@example.com', password='pw-123456!')
     admin = Identity.objects.get(email='admin@example.com')
+    Identity.objects.create(issuer='https://issuer-a.example', sub=admin.sub)
     assert client.login(username=admin.sub, password='pw-123456!')
+
+
+@pytest.mark.django_db
+def test_natural_key_round_trips_an_external_identity():
+    """`dumpdata --natural-foreign` + `loaddata` resolve FKs through this pair.
+
+    With the inherited `(sub,)` key an external identity would not resolve, or
+    would resolve to a local identity sharing its subject.
+    """
+    Identity.objects.create(issuer='urn:local', sub='shared')
+    external = Identity.objects.create(issuer='https://issuer-a.example', sub='shared')
+    key = external.natural_key()
+    assert key == ('https://issuer-a.example', 'shared')
+    assert Identity.objects.get_by_natural_key(*key).pk == external.pk
+
+
+@pytest.mark.django_db
+def test_serialized_foreign_key_reattaches_to_the_external_identity():
+    """End to end through Django's serializers, not just the manager method."""
+    from django.contrib.admin.models import LogEntry
+    from django.core import serializers
+
+    Identity.objects.create(issuer='urn:local', sub='shared')
+    external = Identity.objects.create(
+        issuer='https://issuer-a.example', sub='shared', is_staff=True
+    )
+    entry = LogEntry.objects.create(
+        user=external, object_repr='x', action_flag=1, change_message=''
+    )
+    dumped = serializers.serialize('json', [entry], use_natural_foreign_keys=True)
+    entry.delete()
+    (obj,) = serializers.deserialize('json', dumped, handle_forward_references=False)
+    obj.save()
+    assert LogEntry.objects.get().user_id == external.pk

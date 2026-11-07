@@ -346,9 +346,8 @@ class TestJwksVerification:
         claims = provider.verify(rs256())
         assert claims is not None
         assert claims.issuer == ISSUER
-        # The "phr:" prefix is load-bearing: Identity.sub is unique globally,
-        # not per issuer, so a bare portal id could collide with another
-        # issuer's subject.
+        # Every existing portal identity is stored under the "phr:" prefix, so
+        # dropping it would re-provision each of them as a new Identity.
         assert claims.sub == 'phr:42'
 
     def test_email_claim_is_carried_through(self, provider, rs256, jwks):
