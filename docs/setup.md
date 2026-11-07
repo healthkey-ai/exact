@@ -385,7 +385,6 @@ environment variables — never commit secret values to git.
 | `PROMOP_VOCAB_OAUTH_SCOPE` | `system/*.read` | Scope for the vocabulary mirror |
 | `PROMOP_VOCAB_OAUTH_TOKEN_URL` | `{base}/o/token/` | Token endpoint override |
 | `EXACT_ALLOW_PERSON_ID_LOOKUP` | `true` in DEBUG/`local`, else `false` | Enables the server-side `?person_id=` lookup — a PHI IDOR outside local use (#150/#108) |
-
 | `PARTNER_AUTH_PROVIDERS` | Firebase + PHR | Comma-separated dotted paths of the token providers this deployment has. Set to the portal provider alone where there is no Firebase. |
 | `FIREBASE_PROJECT_ID` | _(empty)_ | Firebase project that ID tokens are verified against. Empty means the Admin SDK takes it from its credential or `GOOGLE_CLOUD_PROJECT`. The Auth emulator does not supply one, so local development against it sets this explicitly (local-stack uses `demo-healthkey`). Not derived from `DEBUG` (#411). |
 | `FIREBASE_SKIP_REVOCATION_CHECK` | `false` | `true` makes Firebase verification skip the revocation and disabled-user check (`verify_id_token(check_revoked=False)`), so a revoked token stays valid until it expires. For deployments whose service account cannot look users up (#410); it logs a warning at startup. Works against the Auth emulator, so local development leaves it off. Not derived from `DEBUG` (#411). |
