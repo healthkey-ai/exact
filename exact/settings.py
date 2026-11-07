@@ -360,10 +360,12 @@ PHR_JWKS_CACHE_TTL = int(os.environ.get('PHR_JWKS_CACHE_TTL', '3600'))
 PHR_JWKS_MIN_REFRESH_INTERVAL = int(
     os.environ.get('PHR_JWKS_MIN_REFRESH_INTERVAL', '60')
 )
-FIREBASE_PROJECT_ID = os.environ.get('FIREBASE_PROJECT_ID', 'exact-test' if DEBUG else '')
-FIREBASE_SKIP_REVOCATION_CHECK = os.environ.get(
-    'FIREBASE_SKIP_REVOCATION_CHECK', 'true' if DEBUG else 'false'
-).lower() in ('1', 'true')
+# Firebase ID-token verification. Auth controls, so not derived from DEBUG
+# (#411): revocation is checked unless a deployment opts out explicitly, and
+# the project is never a hard-coded default. See exact/firebase_config.py.
+from exact.firebase_config import firebase_auth_settings  # noqa: E402
+
+FIREBASE_PROJECT_ID, FIREBASE_SKIP_REVOCATION_CHECK = firebase_auth_settings(os.environ)
 SERVICE_AUTH_TOKEN = os.environ.get('SERVICE_AUTH_TOKEN', '')
 
 # Persistent DRF tokens (username/password -> never-expiring bearer, no scope,
@@ -639,9 +641,20 @@ def _init_firebase_admin():
     try:
         firebase_admin.initialize_app(cred, options)
     except ValueError:
-        pass  # Already initialized
+        return  # Already initialized
     except Exception:
         _logger.warning("Firebase Admin SDK initialization failed", exc_info=True)
+        return
+
+    # Once per process, and only where Firebase is actually in use: a revoked
+    # token or a disabled user stays valid until the token expires, and an
+    # operator who disables an account in Firebase should be able to see that
+    # this service will not notice (#410).
+    if FIREBASE_SKIP_REVOCATION_CHECK:
+        _logger.warning(
+            "FIREBASE_SKIP_REVOCATION_CHECK is on: Firebase ID tokens are not "
+            "checked for revocation or disabled users (#410)"
+        )
 
 
 _init_firebase_admin()
