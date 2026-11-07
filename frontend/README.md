@@ -109,6 +109,15 @@ weights and nothing else) means the rest stops being remembered.
   MCL authoring is drawn only for a trial that gates on the criteria, and
   Missing Attributes only when at least one row is `unknown`.
 
+- `renderRegisterInterest` — host-owned registration, called twice as CB draws
+  it: `variant: "header"` for the action beside the bookmark and
+  `variant: "card"` for the panel at the foot. When supplied, EXACT draws no
+  registration UI of its own and never calls `setRegistered`; the host opens
+  the CRC chat or the EU invite, owns pending/success/completion, and receives
+  `advancedStatus` for an `entered`/`completed` trial. CB uses this because
+  only the host can open those flows and only a navigator may toggle the
+  registration directly.
+
 ### `./TrialMatchesBridge` — hosts that are not React
 
 HealthTree ONE is SvelteKit, so it mounts through the provider contract instead.

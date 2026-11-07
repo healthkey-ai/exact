@@ -106,6 +106,9 @@ interface Props {
   onAuthorHighRiskMcl?: TrialMatchesProps["onAuthorHighRiskMcl"];
   onShareTrial?: TrialMatchesProps["onShareTrial"];
   onOpenMissingAttributes?: TrialMatchesProps["onOpenMissingAttributes"];
+  /** Host-owned register-interest affordance; replaces EXACT's control and
+   *  card when given. */
+  renderRegisterInterest?: TrialMatchesProps["renderRegisterInterest"];
 }
 
 const BackArrow = () => (
@@ -835,6 +838,7 @@ export function TrialDetailPage({
   onAuthorHighRiskMcl,
   onShareTrial,
   onOpenMissingAttributes,
+  renderRegisterInterest,
 }: Props) {
   // Idempotent: ensures the scoped stylesheet is present even if this page is
   // mounted without `TrialMatches` having run (it already injects on mount).
@@ -919,7 +923,11 @@ export function TrialDetailPage({
         onToggle: trialState!.onToggleRegistered!,
       }
     : null;
-  const showHeaderRegister = registerButton != null && !trialState!.advancedStatus;
+  // When the host owns registration, it decides what an advanced trial looks
+  // like too: `advancedStatus` travels with the slot instead of hiding it.
+  const hostRegister = renderRegisterInterest != null;
+  const showHeaderRegister =
+    hostRegister || (registerButton != null && !trialState!.advancedStatus);
   // Whether the table actually lists a mismatch; see `RegisterInterest`.
   const mismatchesShown = eligibility.some((f) => f.matchingType === "not_matched");
   // The trial asks for something the patient has not supplied. That is what
@@ -970,7 +978,15 @@ export function TrialDetailPage({
                 busy={trialState?.favoriteBusy}
                 boxed
               />
-              {showHeaderRegister ? (
+              {hostRegister ? (
+                renderRegisterInterest({
+                  trialId,
+                  variant: "header",
+                  isRegistered: registerButton?.isRegistered ?? false,
+                  pending: registerButton?.pending ?? false,
+                  advancedStatus: trialState?.advancedStatus,
+                })
+              ) : showHeaderRegister ? (
                 <RegisterButton {...registerButton!} describedBy={registerTextId} />
               ) : null}
               {onShareTrial ? (
@@ -988,7 +1004,7 @@ export function TrialDetailPage({
               button must not read as "you may be eligible" when the matcher
               says otherwise, and the card saying so is at the foot of the
               page. A statement, not an alert — it is there on load. */}
-          {showHeaderRegister && notEligible ? (
+          {!hostRegister && showHeaderRegister && notEligible ? (
             <p className="exact-detail__eligibility-warning">
               You may not meet this trial's eligibility criteria
               {mismatchesShown
@@ -999,7 +1015,7 @@ export function TrialDetailPage({
           {/* Not gated on the button: an advanced status that arrives after a
               refused write swaps the card for a statement that shows no
               failure, and this line is then the only place it is said. */}
-          {registerButton && trialState?.registerFailed ? (
+          {!hostRegister && registerButton && trialState?.registerFailed ? (
             <p className="exact-register__error exact-detail__register-error" role="alert">
               Couldn't save that. Please try again.
             </p>
@@ -1157,7 +1173,15 @@ export function TrialDetailPage({
             </>
           ) : null}
 
-          {registerButton ? (
+          {hostRegister ? (
+            renderRegisterInterest({
+              trialId,
+              variant: "card",
+              isRegistered: registerButton?.isRegistered ?? false,
+              pending: registerButton?.pending ?? false,
+              advancedStatus: trialState?.advancedStatus,
+            })
+          ) : registerButton ? (
             <RegisterInterest
               {...registerButton}
               advancedStatus={trialState!.advancedStatus}
@@ -1168,7 +1192,7 @@ export function TrialDetailPage({
             />
           ) : null}
 
-          {trialState?.registeredUnavailable ? (
+          {!hostRegister && trialState?.registeredUnavailable ? (
             <p style={{ color: "var(--exact-color-not-eligible)" }}>
               Couldn't load whether you have registered interest in this trial,
               so that control is unavailable right now.

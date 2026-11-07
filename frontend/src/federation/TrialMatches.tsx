@@ -183,6 +183,7 @@ function TrialMatchesInner({
   onAuthorHighRiskMcl,
   onShareTrial,
   onOpenMissingAttributes,
+  renderRegisterInterest,
   styles,
   page: hostPage,
   onPageChange,
@@ -1989,6 +1990,7 @@ function TrialMatchesInner({
         onAuthorHighRiskMcl={onAuthorHighRiskMcl}
         onShareTrial={onShareTrial}
         onOpenMissingAttributes={onOpenMissingAttributes}
+        renderRegisterInterest={renderRegisterInterest}
         // What actually withholds the controls is the descriptor itself:
         // `fields` undefined answers "unknown" for every row, which is the
         // page exactly as it reads today. That covers loading, a failed read

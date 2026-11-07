@@ -562,6 +562,7 @@ export interface TrialMatchesProps {
   onAuthorHighRiskMcl?: import("../federation/types").TrialMatchesProps["onAuthorHighRiskMcl"];
   onShareTrial?: import("../federation/types").TrialMatchesProps["onShareTrial"];
   onOpenMissingAttributes?: import("../federation/types").TrialMatchesProps["onOpenMissingAttributes"];
+  renderRegisterInterest?: import("../federation/types").TrialMatchesProps["renderRegisterInterest"];
   /** Which cascade mode the injected sheet uses; see the production type. */
   styles?: import("../federation/types").TrialMatchesProps["styles"];
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
@@ -627,6 +628,7 @@ export function renderTrialMatches(
         onAuthorHighRiskMcl={next.onAuthorHighRiskMcl}
         onShareTrial={next.onShareTrial}
         onOpenMissingAttributes={next.onOpenMissingAttributes}
+        renderRegisterInterest={next.renderRegisterInterest}
         styles={next.styles}
         onPatientRecordChanged={next.onPatientRecordChanged}
         onTrialSelect={next.onTrialSelect}

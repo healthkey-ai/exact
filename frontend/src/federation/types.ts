@@ -13,7 +13,11 @@ import type { ReactNode } from "react";
 
 import type { MapRenderer } from "./TrialsMap";
 
-import type { TrialPreferenceStore, TrialStateAdapter } from "./state";
+import type {
+  AdvancedStatus,
+  TrialPreferenceStore,
+  TrialStateAdapter,
+} from "./state";
 
 /** Sparse, schema-tolerant patient payload — mirrors EXACT's stateless
  *  `PatientInfo` Python class. Keys are camelCase as sent over the wire.
@@ -555,6 +559,25 @@ export interface TrialMatchesProps {
    *  (`matchingType: "unknown"`). Supplied alone it does nothing on a trial
    *  with nothing to fill. */
   onOpenMissingAttributes?: (trialId: number | string) => void;
+  /** The host owns the register-interest affordance.
+   *
+   *  Called twice, because CB draws it twice: once in the header beside the
+   *  bookmark (`variant: "header"`) and once as the card at the foot of the
+   *  page (`variant: "card"`). The host returns its own control or panel for
+   *  each, owns its label, pending/success state and completion, and decides
+   *  what an advanced trial (`entered`/`completed`) looks like.
+   *
+   *  Supplied, EXACT renders no registration UI of its own and never calls
+   *  `setRegistered`: the native patient flow opens the CRC chat or the EU
+   *  invite, which only the host can do. Without it, the existing
+   *  `state`-driven control is unchanged. */
+  renderRegisterInterest?: (props: {
+    trialId: number | string;
+    variant: "header" | "card";
+    isRegistered: boolean;
+    pending: boolean;
+    advancedStatus?: AdvancedStatus;
+  }) => ReactNode;
   /** 1-indexed page the HOST has in its address bar.
    *
    *  Pass it together with `onPageChange`. The pager is then CONTROLLED: a
