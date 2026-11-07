@@ -56,7 +56,10 @@ from math import isfinite
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
-from django.db.models import BooleanField, DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from django.db.models import (
+    BooleanField, CharField, DateField, DateTimeField, DecimalField, FloatField,
+    IntegerField, JSONField, TextField,
+)
 from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
@@ -367,6 +370,11 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=(),
         if name in model_fields:
             filtered.setdefault(name, None)
 
+    if strict:
+        # Before `_coerce_numerics`, whose non-finite scrub runs over every
+        # field: a NaN sent for a text column would otherwise turn into None
+        # before it could be named (#479).
+        _reject_malformed_text(filtered, PatientInfo)
     # Coerce date strings from JSON into proper date objects
     _coerce_dates(filtered, PatientInfo, strict)
     # Coerce numeric strings into proper numeric types (CB API can send "10.20" etc.)
@@ -375,7 +383,7 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=(),
     # boolean restriction (see _coerce_booleans).
     _coerce_booleans(filtered, PatientInfo)
     # Coerce string-encoded lists/dicts for JSONField columns (CB can send "[{...}]" as str)
-    _coerce_json_fields(filtered, PatientInfo)
+    _coerce_json_fields(filtered, PatientInfo, strict)
     # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
     _normalize_structured_json_fields(filtered)
 
@@ -587,6 +595,59 @@ def _reject_malformed_number(field, val):
         raise MalformedPatientValue(field.name, expected, val)
 
 
+#: Text columns the matcher reads as several values, so a list is how a caller
+#: may send them: the queryset takes a list or a separator-joined string
+#: (`_csv`, `_csv_stripped`, `_as_list_stripped` and the language handler in
+#: `exact_matching/querysets/trial.py`'s dispatch table). Whether every
+#: downstream reader of these is safe with a list is the contract question in
+#: #716; this set only keeps today's behaviour for them.
+#:
+#: Left out on purpose, measured on `cb-like-trials`: a list in
+#: `cytogenic_markers` / `molecular_markers` (`.split` in
+#: patient_info_attributes.py:1076-1077) or in the three therapy-line columns
+#: (patient_info_attributes.py:851-855) already crashes the build, so on the
+#: inline path they become a 400 instead of a 500.
+_TEXT_FIELDS_TAKING_A_LIST = frozenset({
+    'ethnicity', 'languages_skills', 'languages_asked', 'planned_therapies',
+    'histologic_type',
+    'estrogen_receptor_status', 'progesterone_receptor_status', 'her2_status',
+    'hrd_status', 'hr_status', 'tumor_stage', 'nodes_stage',
+    'distant_metastasis_stage', 'staging_modalities', 'protein_expressions',
+    'richter_transformation', 'tumor_burden', 'disease_activity', 'binet_stage',
+    'morphologic_variant', 'disease_behavior', 'disease_subtype', 'mipi_risk',
+    'mipi_c_risk', 'bulky_disease_criteria', 'high_risk_mcl_criteria',
+    # M2M ids, popped before the field filter only under the snake_case key;
+    # a camelCase `concomitantMedications` list reaches this check and used to
+    # pass. Kept as it was; which spelling counts is #717.
+    'concomitant_medications',
+})
+
+
+def _reject_malformed_text(data: dict, model_cls):
+    """Strict (inline) path: a text column holds a string or null (#479).
+
+    A number, boolean or object used to reach `normalize`, and the first
+    `.strip()` on it was a 500 (`disease: 123` at `normalize.py:483`) — and
+    `normalize.py` stays byte-identical to CancerBot, so the boundary is where
+    this is answered. A list is accepted only where the readers take one
+    (`_TEXT_FIELDS_TAKING_A_LIST`), and then only a list of strings. Blank
+    strings are left as they are; what they mean is #716's question.
+    """
+    for f in model_cls._meta.get_fields():
+        if not hasattr(f, 'column') or f.name not in data:
+            continue
+        if not isinstance(f, (TextField, CharField)):
+            continue
+        val = data[f.name]
+        if val is None or isinstance(val, str):
+            continue
+        if f.name in _TEXT_FIELDS_TAKING_A_LIST:
+            if isinstance(val, (list, tuple)) and all(isinstance(v, str) for v in val):
+                continue
+            raise MalformedPatientValue(f.name, 'a string or a list of strings', val)
+        raise MalformedPatientValue(f.name, 'a string', val)
+
+
 def _coerce_dates(data: dict, model_cls, strict: bool = False):
     """Parse ISO date strings into datetime.date for all DateField entries.
 
@@ -776,8 +837,13 @@ def _normalize_structured_json_fields(data: dict):
         data[key] = [s.strip() for s in val if isinstance(s, str) and s.strip()]
 
 
-def _coerce_json_fields(data: dict, model_cls):
-    """Parse string-encoded JSON/Python-repr values for JSONField columns."""
+def _coerce_json_fields(data: dict, model_cls, strict: bool = False):
+    """Parse string-encoded JSON/Python-repr values for JSONField columns.
+
+    `strict` refuses a string that is neither instead of discarding it: the
+    inline caller sent a value and was answered as though they had not (#479).
+    A blank string stays an absent value. The upstream path is unchanged.
+    """
     json_fields = {
         f.name for f in model_cls._meta.get_fields()
         if hasattr(f, 'column') and isinstance(f, JSONField)
@@ -789,10 +855,16 @@ def _coerce_json_fields(data: dict, model_cls):
         # Try JSON first, then Python repr (CB stores lists as Python repr strings)
         try:
             data[key] = json.loads(val)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
+            # RecursionError: a deeply nested string escapes json.loads as one,
+            # and was a 500 on the inline path.
             try:
                 data[key] = ast.literal_eval(val)
-            except (ValueError, SyntaxError):
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                if strict and val.strip():
+                    raise MalformedPatientValue(
+                        key, 'a list or object, or a JSON string encoding one', val,
+                    )
                 data[key] = None
 
 
