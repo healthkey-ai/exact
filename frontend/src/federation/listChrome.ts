@@ -40,6 +40,15 @@ export interface TabDef {
   needsState?: "favorites" | "registered";
 }
 
+/** Options a host sets from its own state, never inferred from data. */
+export interface TabOptions {
+  /** Offer the admin-only All Trials tab (and, in the panel, the
+   *  validated-only filter — CB gates both on the admin role). The server
+   *  still enforces `?type=all` with its own permission; this only decides
+   *  whether the control is drawn. */
+  admin?: boolean;
+}
+
 const MATCH_TABS: TabDef[] = [
   // CB labels this one "Eligible". The label names the union instead, because
   // the count beside it is `eligible + potential` (see `tabCount`) and the
@@ -54,6 +63,13 @@ const MATCH_TABS: TabDef[] = [
  *  the active one. Without that, `TrialMatches` would find the reader on a tab
  *  the bar cannot name and reset them to the default, dropping the narrowing
  *  the host asked for. */
+const ADMIN_TABS: TabDef[] = [
+  // CB's all-corpus tab. Its count is intentionally absent while it is not
+  // the active tab: the server suppresses `tabCounts` under `?type=all`,
+  // and this tab does not narrow the corpus the counts were computed over.
+  { value: "all", label: "All Trials", param: "all" },
+];
+
 const DEEP_LINK_TABS: TabDef[] = [
   { value: "eligible", label: "Fully matched", param: "eligible" },
   { value: "potential", label: "Potential", param: "potential" },
@@ -70,9 +86,14 @@ const STATE_TABS: TabDef[] = [
  *  active, so leaving it removes it and the reader cannot return without a
  *  remount. Deliberate — the bar is CB's, and the subset is something a host
  *  asked for rather than a view this UI offers. */
-export function tabsFor(hasState: boolean, active?: TabValue): TabDef[] {
+export function tabsFor(
+  hasState: boolean,
+  active?: TabValue,
+  options?: TabOptions,
+): TabDef[] {
   return [
     ...MATCH_TABS,
+    ...(options?.admin ? ADMIN_TABS : []),
     ...DEEP_LINK_TABS.filter((tab) => tab.value === active),
     ...(hasState ? STATE_TABS : []),
   ];
@@ -84,7 +105,13 @@ export const TABS: TabDef[] = MATCH_TABS;
 /** The tab whose `param` matches a `type` the host passed in `initialFilters`.
  *  Falls back to the default tab for `undefined` and for values that are not
  *  tabs (`all` is a supported server value but is not offered as a tab). */
-export function tabValueForType(type: string | undefined): TabValue {
+export function tabValueForType(
+  type: string | undefined,
+  options?: TabOptions,
+): TabValue {
+  // `all` is a supported server value and a tab only for a host that offered
+  // the admin surface; without it the request must stay on the default tab.
+  if (type === "all" && options?.admin) return "all";
   const match = DEEP_LINK_TABS.find((tab) => tab.param === type);
   return match ? match.value : "eligible_and_potential";
 }
@@ -106,6 +133,11 @@ export function tabCount(
   // whether or not those trials still match today.
   if (tab === "favorites") return stateCounts?.favorites ?? null;
   if (tab === "registered") return stateCounts?.registered ?? null;
+  // The admin corpus is deliberately unnumbered: `?type=all` suppresses
+  // `tabCounts` server-side, and labelling it with another tab's total would
+  // be a lie. Unlike the other corpus tabs this absence does not blank the
+  // bar — see `barCounts`.
+  if (tab === "all") return null;
   if (tab === "eligible_and_potential") {
     if (counts) return counts.eligible + counts.potential;
     // Without counts the total is only the whole corpus when this tab is
@@ -158,6 +190,11 @@ export function barCounts(
   activeTabTotal: number | null,
   stateCounts?: { favorites?: number; registered?: number },
 ): Map<TabValue, number> | null {
+  // The admin All view has no per-row verdicts, so it has no badges to show.
+  // The counts in hand can still describe the PREVIOUS corpus: `corpusKey`
+  // deliberately excludes `type`, so switching to All keeps them warm. Shown
+  // here, they would label a corpus they were not computed over.
+  if (active === "all") return null;
   const numbered = new Map<TabValue, number>();
   const fromState: TabValue[] = [];
   let stateIncomplete = false;
@@ -175,8 +212,14 @@ export function barCounts(
     // and the default tab's count is a SUM, so one missing field paints a
     // badge reading `NaN` and an accessible name reading "NaN trials".
     if (count == null || !Number.isFinite(count)) {
-      // Written for any corpus tab, though only the default one can reach
-      // it today: `tabsFor` carries a deep-link tab only while it is
+      // The admin corpus is the one corpus tab allowed to be unnumbered
+      // beside numbered ones: its absence is by construction (see
+      // `tabCount`), not a missing count that would make the neighbours'
+      // numbers read as real. Blanking the whole bar for it would take the
+      // default tab's count away on every ordinary admin view.
+      if (tab.value === "all") continue;
+      // Written for any other corpus tab, though only the default one can
+      // reach it today: `tabsFor` carries a deep-link tab only while it is
       // active, and an unnumberable deep-link tab means the counts are
       // missing, which leaves the default tab unnumberable too — and it
       // comes first. So this arm is the rule, not a tested path.
