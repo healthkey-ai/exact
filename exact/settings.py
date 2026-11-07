@@ -64,6 +64,11 @@ ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(','
 CSRF_TRUSTED_ORIGINS = [x for x in os.environ.get('CSRF_TRUSTED_ORIGINS', '').split(',') if x]
 
 INSTALLED_APPS = [
+    # Before django.contrib.auth so its `changepassword` replaces auth's: Django
+    # lets the earlier app win a command name. auth's looks the user up by a
+    # bare `sub`, which is no longer unique (#700); see
+    # accounts/management/commands/changepassword.py.
+    'accounts',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -75,7 +80,6 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'corsheaders',
     'drf_yasg',
-    'accounts',
     'trials',
 ]
 
