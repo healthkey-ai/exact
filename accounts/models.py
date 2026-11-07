@@ -8,6 +8,21 @@ from django.utils import timezone
 class IdentityManager(BaseUserManager):
     use_in_migrations = True
 
+    def get_by_natural_key(self, username):
+        """Look up by USERNAME_FIELD (`sub`), scoped to local identities.
+
+        `sub` is unique only within an issuer (#700), so a bare `get(sub=...)`
+        could match rows from several issuers and raise MultipleObjectsReturned
+        on the password / admin login path. Only `urn:local` identities ever
+        password-authenticate — external rows get `set_unusable_password()` —
+        so the lookup is scoped to them.
+        """
+        return self.get(issuer="urn:local", sub=username)
+
+    async def aget_by_natural_key(self, username):
+        """Async mirror of `get_by_natural_key`, scoped the same way."""
+        return await self.aget(issuer="urn:local", sub=username)
+
     def get_or_create_from_claims(self, claims):
         """Get or create an Identity from TokenClaims."""
         return self.get_or_create(
@@ -53,7 +68,12 @@ class Identity(AbstractBaseUser, PermissionsMixin):
     Local identities (iss="urn:local"): email + password for admin/standalone.
     """
     issuer = models.CharField(max_length=255)
-    sub = models.CharField(max_length=255, unique=True)
+    # NOT globally unique: a `sub` is unique only within its issuer, and the
+    # real key is the composite (issuer, sub) constraint below. A standalone
+    # `unique=True` 500s `get_or_create_from_claims` as soon as a second issuer
+    # mints a subject an earlier one already used — which is what switching
+    # PHR_ISSUER from phr to PROMOP does, since both number users from 1 (#700).
+    sub = models.CharField(max_length=255)
 
     email = models.EmailField(blank=True, default="")
     name = models.CharField(max_length=255, blank=True, default="")
