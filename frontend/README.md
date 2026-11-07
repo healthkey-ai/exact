@@ -223,6 +223,19 @@ first mount decides; the widget build is the other user of the unlayered mode),
 because two sheets in different modes would fight over the cascade. See
 `src/federation/injectStyles.ts`.
 
+### Analytics ownership (both exports)
+
+EXACT emits no analytics events. The host owns them, for the same reason it
+owns authentication and the trial URL: it is the only party that knows the
+product's event names, its identity model and its consent state.
+
+| What | Where the host gets it |
+| --- | --- |
+| Trial opened | Its own route or `onTrialIdChange` / `onTrialSelect`. CB already tracks `Visited Trial` from its detail route. |
+| Interest / share | Host-owned UI: `renderRegisterInterest` and `onShareTrial`. When these hooks are supplied EXACT fires neither flow itself, so track the interaction inside the host's control, not in the render callback. Without `renderRegisterInterest` the built-in state-driven control remains. |
+| Eligible / Potential / All / Registered / Favorites tab | Not reported. EXACT owns this state, and CB's native list does not track it today either. |
+| List filter / sort | Not reported, for the same reason. If a host needs per-change analytics, that is a separate additive `onEvent` contract — firing one implicitly here would either double-count the host's events or emit per keystroke. |
+
 ## The widget build — hosts that cannot share our React tree
 
 `dist/widget/exact-trials.js` is the same `TrialMatches`, built to stand alone:
