@@ -378,9 +378,15 @@ function EligibilityRow({
   // when the descriptor says this caller may write it. The adapter exists for
   // read-only hosts too; the pencil must not promise a save they will refuse.
   const rowHasGenomics = Boolean(
-    field.subform_details?.some(
-      (entry) => entry.upatientField === "genetic_mutations",
-    ),
+    // CB names the row by its own attribute (`ufield`); the subform entry it
+    // sends carries `name`, not necessarily `upatientField`. Accept all three
+    // spellings so the host slot does not depend on one payload revision.
+    field.ufield === "geneticMutations" ||
+      field.subform_details?.some(
+        (entry) =>
+          entry.upatientField === "genetic_mutations" ||
+          entry.name === "geneticMutations",
+      ),
   );
   // A host slot owns the writer, so it does not need EXACT's `genomics`
   // adapter; without one, keep the descriptor gate so a read-only host never
