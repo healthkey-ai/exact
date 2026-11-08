@@ -198,17 +198,44 @@ class TestPortalTokenProvisioning:
         """
         old = Identity.objects.create(issuer=ISSUER, sub='phr:42')
         promop = 'https://promop.example'
+        promop_sub = 'urn:local:5b0f3c1e-2a4d-4c8e-9f1a-0d6e7b8c9a01'
         settings.PHR_ISSUER = promop
 
         client = APIClient()
         client.credentials(
-            HTTP_AUTHORIZATION=f'Bearer {portal_token(iss=promop, user_id=42)}'
+            HTTP_AUTHORIZATION=(
+                f'Bearer {portal_token(iss=promop, user_id=42, sub=promop_sub)}'
+            )
         )
         assert _match(client).status_code == 200
 
-        new = Identity.objects.get(issuer=promop, sub='phr:42')
+        new = Identity.objects.get(issuer=promop, sub=promop_sub)
         assert new.pk != old.pk
-        assert Identity.objects.filter(sub='phr:42').count() == 2
+        assert Identity.objects.filter(issuer=ISSUER, sub='phr:42').get() == old
+
+    def test_promop_identity_survives_a_reused_pk(
+        self, trial, portal_token, settings
+    ):
+        """#700: PROMOP's `user_id` is a pk, and a restore from a dump hands it
+        out again. The second person must get an Identity of their own, not
+        sign in as the first and inherit their saved state.
+        """
+        promop = 'https://promop.example'
+        settings.PHR_ISSUER = promop
+
+        client = APIClient()
+        for sub in ('urn:local:first-person', 'urn:local:second-person'):
+            client.credentials(
+                HTTP_AUTHORIZATION=(
+                    f'Bearer {portal_token(iss=promop, user_id=7, sub=sub)}'
+                )
+            )
+            assert _match(client).status_code == 200
+
+        subs = set(
+            Identity.objects.filter(issuer=promop).values_list('sub', flat=True)
+        )
+        assert subs == {'urn:local:first-person', 'urn:local:second-person'}
 
     def test_forged_unsigned_token_does_not_provision_an_identity(
         self, trial, portal_token
