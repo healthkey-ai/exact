@@ -427,3 +427,52 @@ def test_menopausal_labels_map_only_to_the_two_known_states(stored, expected):
     surface = PatientRecordSurface(_record(menopausal_status=stored))
 
     assert surface.menopausal_status == expected
+
+
+def test_egfr_is_computed_from_the_creatinine_pair_not_the_stored_alias():
+    """#5667: the pair is the eGFR source; the rounded canonical would flip 60."""
+    record = _record(
+        serum_creatinine_level=148.63,
+        serum_creatinine_level_units='UMOL/L',
+        gender='M',
+        patient_age=18,
+        estimated_glomerular_filtration_rate=1.68,
+        egfr_ml_min_173m2=90,
+    )
+    # `patient_age` is trusted only when the Person's birth year is real.
+    record.person = SimpleNamespace(year_of_birth=2008)
+
+    surface = BoundSurface(record)
+
+    assert surface.estimated_glomerular_filtration_rate == 59.99
+
+
+def test_egfr_falls_back_to_a_stored_answer_when_the_inputs_are_missing():
+    person = SimpleNamespace(year_of_birth=2008)
+
+    record = _record(patient_age=18, gender='M', estimated_glomerular_filtration_rate=0)
+    record.person = person
+    assert BoundSurface(record).estimated_glomerular_filtration_rate == 0
+
+    record = _record(patient_age=18, gender='M', egfr_ml_min_173m2=42)
+    record.person = person
+    assert BoundSurface(record).estimated_glomerular_filtration_rate == 42
+
+    record = _record(patient_age=18, gender='M')
+    record.person = person
+    assert BoundSurface(record).estimated_glomerular_filtration_rate is None
+
+
+def test_egfr_does_not_resurrect_an_unknown_age():
+    """`patient_age=18` without a birth date is exactly the case the surface guards."""
+    from exact_matching.patient_record import UNKNOWN_YEAR_OF_BIRTH
+
+    record = _record(
+        serum_creatinine_level=148.63,
+        serum_creatinine_level_units='UMOL/L',
+        gender='M',
+        patient_age=18,
+        estimated_glomerular_filtration_rate=None,
+    )
+    record.person = SimpleNamespace(year_of_birth=UNKNOWN_YEAR_OF_BIRTH)
+    assert BoundSurface(record).estimated_glomerular_filtration_rate is None
