@@ -476,3 +476,32 @@ def test_egfr_does_not_resurrect_an_unknown_age():
     )
     record.person = SimpleNamespace(year_of_birth=UNKNOWN_YEAR_OF_BIRTH)
     assert BoundSurface(record).estimated_glomerular_filtration_rate is None
+
+
+def test_a_cleared_pair_does_not_compute_from_the_stale_canonical():
+    """The surface mapping substitutes the canonical when the pair is null; eGFR must not."""
+    record = _record(
+        serum_creatinine_level=None,
+        serum_creatinine_level_units=None,
+        serum_creatinine_mg_dl=1.68,
+        gender='M',
+        patient_age=18,
+        estimated_glomerular_filtration_rate=42,
+    )
+    record.person = SimpleNamespace(year_of_birth=2008)
+
+    assert BoundSurface(record).estimated_glomerular_filtration_rate == 42
+
+
+@pytest.mark.parametrize('units', [None, '', 'bogus', 'MMOL/L'])
+def test_an_unsupported_unit_does_not_compute(units):
+    record = _record(
+        serum_creatinine_level=148.63,
+        serum_creatinine_level_units=units,
+        gender='M',
+        patient_age=18,
+        estimated_glomerular_filtration_rate=42,
+    )
+    record.person = SimpleNamespace(year_of_birth=2008)
+
+    assert BoundSurface(record).estimated_glomerular_filtration_rate == 42

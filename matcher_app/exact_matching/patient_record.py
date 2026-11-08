@@ -714,12 +714,30 @@ class PatientRecordSurface:
         When the inputs are incomplete, the stored answer is returned as before
         — including a stored 0, which `or` would drop.
         """
+        from types import SimpleNamespace
+
         from exact_matching.patient_info.convertors.egfr_calculator import EgfrCalculator
 
-        computed = EgfrCalculator.call(self)
+        record = object.__getattribute__(self, '_record')
+        # Read the record's own pair, not `self.serum_creatinine_level`: that
+        # mapping substitutes the canonical mg/dL column when the pair is
+        # cleared, which would resurrect a stale answer after a deliberate clear.
+        value = getattr(record, 'serum_creatinine_level', None)
+        units = getattr(record, 'serum_creatinine_level_units', None)
+        supported = {'mg/dl', 'micromoles/l', 'umol/l', 'µmol/l', 'μmol/l'}
+        computed = None
+        if value is not None and isinstance(units, str) and units.strip().lower() in supported:
+            # Only a unit the converter understands may compute. A missing or
+            # unknown unit is not "mg/dL": `SimpleCToSiConvertor` returns the raw
+            # number for '', and divides anything else by cf.
+            computed = EgfrCalculator.call(SimpleNamespace(
+                serum_creatinine_level=value,
+                serum_creatinine_level_units=units.strip().lower(),
+                patient_age=self.patient_age,
+                gender=self.gender,
+            ))
         if computed is not None:
             return computed
-        record = object.__getattribute__(self, '_record')
         for name in ('estimated_glomerular_filtration_rate', 'egfr_ml_min_173m2'):
             stored = getattr(record, name, None)
             if stored is not None:
