@@ -505,3 +505,19 @@ def test_an_unsupported_unit_does_not_compute(units):
     record.person = SimpleNamespace(year_of_birth=2008)
 
     assert BoundSurface(record).estimated_glomerular_filtration_rate == 42
+
+
+@pytest.mark.parametrize('units', [None, '', 'bogus', 'MMOL/L'])
+def test_an_unsupported_unit_still_reaches_the_legacy_column(units):
+    """Without the direct alias the fallback chain must continue, not stop at None."""
+    record = _record(
+        serum_creatinine_level=148.63,
+        serum_creatinine_level_units=units,
+        gender='M',
+        patient_age=18,
+        estimated_glomerular_filtration_rate=None,
+        egfr_ml_min_173m2=42,
+    )
+    record.person = SimpleNamespace(year_of_birth=2008)
+
+    assert BoundSurface(record).estimated_glomerular_filtration_rate == 42
