@@ -82,7 +82,8 @@ class Identity(AbstractBaseUser, PermissionsMixin):
     # real key is the composite (issuer, sub) constraint below. A standalone
     # `unique=True` 500s `get_or_create_from_claims` as soon as a second issuer
     # mints a subject an earlier one already used — which is what switching
-    # PHR_ISSUER from phr to PROMOP does, since both number users from 1 (#700).
+    # PHR_ISSUER from phr to PROMOP did while both were keyed on an integer
+    # user id numbered from 1 (#700).
     sub = models.CharField(max_length=255)
 
     email = models.EmailField(blank=True, default="")

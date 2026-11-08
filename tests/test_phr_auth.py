@@ -397,6 +397,96 @@ class TestJwksVerification:
         assert provider.verify(rs256()) is None
 
 
+# ── subject: which claim keys the Identity, per issuer ────────────────
+
+PROMOP = 'https://promop.example'
+PROMOP_SUB = 'urn:local:5b0f3c1e-2a4d-4c8e-9f1a-0d6e7b8c9a01'
+
+
+class TestPromopSubject:
+    """#700: a PROMOP-issued token is keyed on its `sub`, unprefixed.
+
+    PROMOP's `user_id` is an integer `Identity` pk, which a restore from a
+    dump hands out again; keyed on it, a new PROMOP user would sign in as an
+    existing exact Identity and inherit someone else's saved state. The `sub`
+    (`urn:local:<uuid4>`) is never reused. The legacy phr issuer keeps
+    "phr:<user_id>" — see TestJwksVerification — because every identity it
+    already has is stored under that.
+    """
+
+    @pytest.fixture(autouse=True)
+    def promop_issuer(self, phr_settings):
+        phr_settings.PHR_ISSUER = PROMOP
+
+    def test_sub_is_the_subject_as_issued(self, provider, rs256, jwks):
+        claims = provider.verify(rs256(iss=PROMOP, user_id=42, sub=PROMOP_SUB))
+        assert claims is not None
+        assert claims.issuer == PROMOP
+        assert claims.sub == PROMOP_SUB
+
+    def test_user_id_never_keys_a_promop_identity(self, provider, rs256, jwks):
+        """Not even as a fallback: that is the reusable pk, and keying on it
+        for some tokens would split one person across two Identities."""
+        assert provider.verify(rs256(iss=PROMOP, user_id=42)) is None
+
+    @pytest.mark.parametrize('sub', ['', '   '])
+    def test_blank_sub_is_rejected(self, provider, rs256, jwks, sub):
+        """Otherwise every such user collapses onto one shared Identity."""
+        assert provider.verify(rs256(iss=PROMOP, user_id=42, sub=sub)) is None
+
+    def test_non_string_sub_is_rejected(self, provider, rs256, jwks):
+        assert provider.verify(rs256(iss=PROMOP, sub=42)) is None
+
+    def test_a_restored_pk_does_not_reach_the_earlier_identity(
+        self, provider, rs256, jwks
+    ):
+        """The case that decided this: two people, one reused `user_id`."""
+        before = provider.verify(rs256(iss=PROMOP, user_id=7, sub=PROMOP_SUB))
+        after = provider.verify(
+            rs256(iss=PROMOP, user_id=7, sub='urn:local:another-person')
+        )
+        assert before.sub != after.sub
+
+    def test_the_legacy_rule_still_applies_to_the_legacy_issuer(
+        self, provider, rs256, jwks, phr_settings
+    ):
+        phr_settings.PHR_ISSUER = ISSUER
+        assert provider.verify(rs256(user_id=42, sub=PROMOP_SUB)).sub == 'phr:42'
+
+
+class TestPromopSubjectViaIntrospection:
+    """Both paths must agree, or moving a deployment from HS256 to RS256
+    would re-provision every user under a second Identity."""
+
+    @pytest.fixture(autouse=True)
+    def promop_issuer(self, phr_settings):
+        phr_settings.PHR_ISSUER = PROMOP
+        phr_settings.PHR_ALLOW_INTROSPECTION = True
+
+    def test_response_sub_is_the_subject(self, provider, hs256, introspect):
+        introspect.body = {'active': True, 'user_id': 7, 'sub': PROMOP_SUB}
+        assert provider.verify(hs256(iss=PROMOP, sub='urn:local:payload')).sub == PROMOP_SUB
+
+    def test_payload_sub_is_the_fallback_when_the_response_is_silent(
+        self, provider, hs256, introspect
+    ):
+        introspect.body = {'active': True, 'user_id': 7}
+        assert provider.verify(hs256(iss=PROMOP, sub=PROMOP_SUB)).sub == PROMOP_SUB
+
+    def test_user_id_alone_is_rejected(self, provider, hs256, introspect):
+        introspect.body = {'active': True, 'user_id': 7}
+        assert provider.verify(hs256(iss=PROMOP)) is None
+
+    @pytest.mark.parametrize('bad', [42, ['urn:local:x'], '   '])
+    def test_an_unusable_response_sub_does_not_fall_back_to_the_payload(
+        self, provider, hs256, introspect, bad
+    ):
+        """The response is authoritative where it speaks; a malformed answer
+        is a rejection, not permission to read the unverified payload."""
+        introspect.body = {'active': True, 'sub': bad}
+        assert provider.verify(hs256(iss=PROMOP, sub=PROMOP_SUB)) is None
+
+
 # ── JWKS cache: the refresh floor is the DoS bound ────────────────────
 
 class TestJwksCache:
