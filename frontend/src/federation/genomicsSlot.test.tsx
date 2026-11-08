@@ -121,6 +121,104 @@ describe("the host genomics slot", () => {
     expect(genomics.list).not.toHaveBeenCalled();
   });
 
+  it("finds a row named by ufield when the subform entry has no upatientField", async () => {
+    // CB's detail payload names the row `geneticMutations` in `ufield` and
+    // sends a subform entry with `name`, not `upatientField`. The host slot
+    // must still be offered.
+    const api = fakeApi();
+    api.setDetail(
+      trialDetail(1, {
+        details: {
+          trialEligibilityAttributes: [
+            {
+              ...genomicsRow,
+              ufield: "geneticMutations",
+              upatientField: undefined,
+              subform_details: [
+                {
+                  name: "geneticMutations",
+                  label: "Mutations",
+                  type: "multiselect",
+                  value: null,
+                },
+              ],
+            },
+          ],
+        },
+      } as never),
+    );
+    const render = vi.fn(() => <div>host genomics editor</div>);
+    renderTrialMatches(api, { renderGenomicsEditor: render });
+
+    await open();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Edit Mutation Genes genetic findings" }),
+    );
+    expect(screen.getByText("host genomics editor")).toBeInTheDocument();
+  });
+
+  it("finds the row by ufield alone", async () => {
+    const api = fakeApi();
+    api.setDetail(
+      trialDetail(1, {
+        details: {
+          trialEligibilityAttributes: [
+            {
+              ...genomicsRow,
+              ufield: "geneticMutations",
+              upatientField: undefined,
+              subform_details: [
+                {
+                  name: "notGenomics",
+                  label: "Other",
+                  type: "string",
+                  value: null,
+                },
+              ],
+            },
+          ],
+        },
+      } as never),
+    );
+    renderTrialMatches(api, { renderGenomicsEditor: vi.fn(() => <div />) });
+
+    await open();
+    expect(
+      await screen.findByRole("button", { name: "Edit Mutation Genes genetic findings" }),
+    ).toBeInTheDocument();
+  });
+
+  it("finds the row by subform name alone", async () => {
+    const api = fakeApi();
+    api.setDetail(
+      trialDetail(1, {
+        details: {
+          trialEligibilityAttributes: [
+            {
+              ...genomicsRow,
+              ufield: "mutationGenes",
+              upatientField: undefined,
+              subform_details: [
+                {
+                  name: "geneticMutations",
+                  label: "Mutations",
+                  type: "multiselect",
+                  value: null,
+                },
+              ],
+            },
+          ],
+        },
+      } as never),
+    );
+    renderTrialMatches(api, { renderGenomicsEditor: vi.fn(() => <div />) });
+
+    await open();
+    expect(
+      await screen.findByRole("button", { name: "Edit Mutation Genes genetic findings" }),
+    ).toBeInTheDocument();
+  });
+
   it("draws no pencil for a read-only host that supplied no slot", async () => {
     const api = fakeApi();
     api.setDetail(detailWithRow());
