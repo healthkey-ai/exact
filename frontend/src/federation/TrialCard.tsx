@@ -4,8 +4,6 @@
 // Both the card body and the "View Trial" button select the trial, which the
 // host-agnostic `TrialMatches` turns into the in-remote detail page (CB shows
 // its own `/t/:id`; the remote owns the detail view itself).
-import type { KeyboardEvent } from "react";
-
 import {
   ActionTooltip,
   EyeIcon,
@@ -56,30 +54,18 @@ export function TrialCard({
   const notEligible = trial.matchingType === "not_eligible";
 
   const handleSelect = () => onSelect?.(trial);
-  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (!onSelect) return;
-    // Ignore Enter/Space that bubbled up from a nested control (the
-    // "View Trial" button, a score link, or the Field `[more]` toggle) so
-    // activating one of those doesn't also re-fire card selection.
-    if (e.target !== e.currentTarget) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      handleSelect();
-    }
-  };
 
-  // Card is a `<div role="button">`, not a real `<button>`: it contains its
-  // own interactive controls (the "View Trial" button, score links), and
-  // nesting interactive elements inside a `<button>` is invalid HTML.
+  // Not a `role="button"`: the card holds its own controls (the bookmark,
+  // the "View Trial" button, score links), and a button role around them is
+  // a nested-interactive tree — axe fails it and screen readers announce a
+  // button that contains buttons. The keyboard path is the "View Trial"
+  // button, which is a real control and keeps the whole flow reachable; the
+  // click handler on the card stays for the pointer affordance only.
   return (
     <div
       className={`exact-card${isSelected ? " is-selected" : ""}`}
       style={onSelect ? undefined : { cursor: "default" }}
-      role={onSelect ? "button" : undefined}
-      tabIndex={onSelect ? 0 : undefined}
-      aria-pressed={onSelect ? isSelected : undefined}
       onClick={onSelect ? handleSelect : undefined}
-      onKeyDown={onSelect ? handleKeyDown : undefined}
     >
       <div className="exact-card__body">
         <div className="exact-card__main">

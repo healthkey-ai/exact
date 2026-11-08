@@ -286,8 +286,8 @@ describe("the derived filters reach everything the reader sees", () => {
     renderTrialMatches(api, { patientInfo: { disease: "multiple myeloma", country: "US" } });
     await waitFor(() => expect(listed(api).length).toBe(1));
 
-    // Exact name: the card itself is a `role="button"` whose accessible
-    // name contains the inner button's text, so a regex matches both.
+    // Exact name: the card is not a button any more (the nested-interactive
+    // fix), so this matches only the control, never the container.
     await userEvent.click(await screen.findByRole("button", { name: "View Trial" }));
     await waitFor(() => expect(api.detailRequests().length).toBe(1));
     expect(api.detailRequests()[0].params.country).toBe("US");
@@ -1277,9 +1277,8 @@ describe("the controls on the detail page", () => {
   // Both write through the same adapter the list uses, which is why they
   // live in this suite rather than in one of their own: the thing that can
   // go wrong is not the button, it is the button and the card disagreeing.
-  /** Open the nth listed trial. Exact name: the card is itself a
-   *  `role="button"` whose accessible name contains the inner button's
-   *  text, so a regex would match both. */
+  /** Open the nth listed trial through its real control. The card is no
+   *  longer a button, so the exact name matches one node per row. */
   const openDetail = async (api: ReturnType<typeof fakeApi>, nth = 0) => {
     await waitFor(() => expect(listed(api).length).toBe(1));
     const cards = await screen.findAllByRole("button", { name: "View Trial" });
