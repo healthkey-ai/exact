@@ -31,6 +31,9 @@ _INTROSPECTABLE_ALGS = frozenset({"HS256", "HS384", "HS512"})
 # while its `sub` (`urn:local:<uuid4>`) is never reused.
 LEGACY_PHR_ISSUER = "healthkey-phr"
 
+# `Identity.sub` is a CharField(max_length=255).
+_MAX_SUBJECT_LENGTH = 255
+
 
 class _CallBudget:
     """Fixed-window counter bounding outbound introspection calls.
@@ -230,11 +233,12 @@ _introspect_budget = _CallBudget()
 
 
 class PhrTokenProvider(TokenProvider):
-    """Verify JWTs issued by the phr identity service.
+    """Verify JWTs issued by the family's identity service.
 
-    phr owns the user accounts for the service family. RS256 tokens are
-    verified offline against phr's JWKS document — this is the only path a
-    deployment should rely on.
+    That is the original phr service (`iss=healthkey-phr`) or, for a
+    PROMOP-hosted installation, PROMOP's family auth (`iss` = PROMOP's
+    origin). RS256 tokens are verified offline against the issuer's JWKS
+    document — this is the only path a deployment should rely on.
 
     An HS256 token is signed with a shared secret this service does not hold
     and can therefore only be checked by asking the portal, which is what the
@@ -274,10 +278,9 @@ class PhrTokenProvider(TokenProvider):
         except jwt.InvalidTokenError:
             return None
 
-        # Each path resolves its own subject: the two sources name it
-        # differently and neither order is right for both. A SimpleJWT payload
-        # carries `user_id`; an RFC 7662 response carries `sub` — optionally,
-        # §2.2 does not require it — and may carry neither.
+        # Each path returns its own subject, both through `_subject`: the JWKS
+        # path reads the verified token, introspection reads the portal's
+        # response before the unverified payload.
         #
         # Dispatch on an allowlist, never on "not RS256". The `alg` header is
         # attacker-supplied, so an `else` branch handed the caller the choice
@@ -469,11 +472,17 @@ def _subject(*sources: dict[str, Any]) -> str | None:
     Any other issuer: `sub` exactly as issued, never `user_id`. A token
     without a string `sub` is rejected rather than keyed on `user_id`: that is
     the reusable pk this rule exists to avoid, and a fallback to it would
-    re-key the same person differently from one token to the next.
+    re-key the same person differently from one token to the next. Only an
+    absent (or null) `sub` passes on to the next source; any other value the
+    first source gives is final, so a malformed answer from the portal is a
+    rejection, not permission to read the unverified payload.
 
-    Selection falls through falsy values, and the result is checked with
-    `not`, so an empty subject is rejected rather than accepted: it would
-    collapse every such user onto one shared Identity.
+    The rule is chosen by the issuer string alone, so it assumes PROMOP runs
+    with its documented `FAMILY_AUTH_ISSUER` (its origin). A PROMOP set to
+    `healthkey-phr` would be keyed on its reusable `user_id` again.
+
+    An empty subject is rejected on both branches: it would collapse every
+    such user onto one shared Identity.
     """
     if settings.PHR_ISSUER == LEGACY_PHR_ISSUER:
         for source in sources:
@@ -484,13 +493,24 @@ def _subject(*sources: dict[str, Any]) -> str | None:
         return None
     for source in sources:
         value = source.get("sub")
-        if value:
-            # PyJWT already enforces a string `sub` on the JWKS path; an
-            # introspection response is plain JSON and can carry anything.
-            if not isinstance(value, str) or not value.strip():
-                logger.debug("phr token rejected: unusable sub=%r", value)
-                return None
-            return value
+        if value is None:
+            continue
+        # PyJWT already enforces a string `sub` on the JWKS path; an
+        # introspection response is plain JSON and can carry anything. The
+        # length cap is `Identity.sub`'s column: a longer value would fail the
+        # insert with a 500 instead of a 401 (PROMOP's `uid` column is wider).
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > _MAX_SUBJECT_LENGTH
+        ):
+            logger.debug(
+                "phr token rejected: unusable sub (%s, %s chars)",
+                type(value).__name__,
+                len(value) if isinstance(value, str) else "-",
+            )
+            return None
+        return value
     return None
 
 

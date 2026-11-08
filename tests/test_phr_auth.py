@@ -435,7 +435,16 @@ class TestPromopSubject:
         assert provider.verify(rs256(iss=PROMOP, user_id=42, sub=sub)) is None
 
     def test_non_string_sub_is_rejected(self, provider, rs256, jwks):
+        """PyJWT refuses this itself today (InvalidSubjectError); pinned so a
+        library change cannot quietly key an Identity on an integer."""
         assert provider.verify(rs256(iss=PROMOP, sub=42)) is None
+
+    def test_sub_longer_than_the_column_is_rejected_not_a_500(
+        self, provider, rs256, jwks
+    ):
+        """`Identity.sub` is 255 chars; PROMOP's `uid` column is wider."""
+        assert provider.verify(rs256(iss=PROMOP, sub='urn:x:' + 'a' * 250)) is None
+        assert provider.verify(rs256(iss=PROMOP, sub='u' * 255)).sub == 'u' * 255
 
     def test_a_restored_pk_does_not_reach_the_earlier_identity(
         self, provider, rs256, jwks
@@ -477,7 +486,7 @@ class TestPromopSubjectViaIntrospection:
         introspect.body = {'active': True, 'user_id': 7}
         assert provider.verify(hs256(iss=PROMOP)) is None
 
-    @pytest.mark.parametrize('bad', [42, ['urn:local:x'], '   '])
+    @pytest.mark.parametrize('bad', [42, ['urn:local:x'], '   ', '', False, 'x' * 256])
     def test_an_unusable_response_sub_does_not_fall_back_to_the_payload(
         self, provider, hs256, introspect, bad
     ):
