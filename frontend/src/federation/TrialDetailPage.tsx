@@ -480,7 +480,7 @@ function EligibilityRow({
         <span className="exact-elig__val">{renderMd(required)}</span>
         {field.units ? <span className="exact-elig__units">{field.units}</span> : null}
         {matched ? (
-          <span className="exact-elig__check" aria-label="matches">
+          <span className="exact-elig__check" role="img" aria-label="matches">
             <CheckIcon />
           </span>
         ) : null}
