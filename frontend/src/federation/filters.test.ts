@@ -343,7 +343,7 @@ describe("what the stored set is trusted to contain", () => {
       searchTreatment: "len",
       sponsor: "Acme",
       trialType: "drug",
-      trialPurpose: "treatment",
+      trialPurpose: ["treatment"],
       recruitmentStatus: "RECRUITING",
       phase: "PHASE3",
       register: "NCT",
@@ -356,6 +356,54 @@ describe("what the stored set is trusted to contain", () => {
       distanceUnits: "km" as const,
     };
     expect(sanitizeStoredFilters(everything)).toEqual(everything);
+  });
+
+  it("keeps a saved trialPurpose, which is an array rather than a string", () => {
+    // The host adapter hands back `["treatment"]`; the string loop this set
+    // used to travel through skipped every array without a word, so the saved
+    // purpose never reached the panel or the request and CB's "treatment
+    // only" preference was silently dropped (#428).
+    expect(sanitizeStoredFilters({ trialPurpose: ["treatment", "prevention"] })).toEqual({
+      trialPurpose: ["treatment", "prevention"],
+    });
+  });
+
+  it("reads a trialPurpose spelled as the pre-#428 string", () => {
+    expect(sanitizeStoredFilters({ trialPurpose: "treatment" })).toEqual({
+      trialPurpose: ["treatment"],
+    });
+    expect(sanitizeStoredFilters({ trialPurpose: "treatment,prevention" })).toEqual({
+      trialPurpose: ["treatment", "prevention"],
+    });
+    expect(sanitizeStoredFilters({ trialPurpose: " treatment , ,prevention " })).toEqual({
+      trialPurpose: ["treatment", "prevention"],
+    });
+  });
+
+  it("drops the parts of a trialPurpose this control could not show", () => {
+    expect(
+      sanitizeStoredFilters({ trialPurpose: [42, { not: "a string" }, "treatment", null] }),
+    ).toEqual({ trialPurpose: ["treatment"] });
+    // An empty set is "All", not a filter that narrows to nothing.
+    expect(sanitizeStoredFilters({ trialPurpose: [] })).toEqual({});
+    expect(sanitizeStoredFilters({ trialPurpose: "" })).toEqual({});
+    expect(sanitizeStoredFilters({ trialPurpose: 42 })).toEqual({});
+  });
+
+  it("deduplicates a trialPurpose before it caps it, like the backend", () => {
+    // `_str_list` drops repeats case-insensitively and then takes fifty. A
+    // cap-first copy would spend the budget on duplicates and lose a real
+    // value the backend kept, narrowing the search the row describes.
+    expect(
+      sanitizeStoredFilters({ trialPurpose: ["Treatment", "treatment", "prevention"] }),
+    ).toEqual({ trialPurpose: ["Treatment", "prevention"] });
+
+    // Forty-nine unique values, a full duplicate copy of them, and one more
+    // value: deduplicating first leaves room for it under the cap.
+    const fortyNine = Array.from({ length: 49 }, (_, i) => `purpose-${i}`);
+    expect(
+      sanitizeStoredFilters({ trialPurpose: [...fortyNine, ...fortyNine, "prevention"] }),
+    ).toEqual({ trialPurpose: [...fortyNine, "prevention"] });
   });
 
   it("drops a key it does not know", () => {

@@ -66,6 +66,24 @@ describe("a host that supplies preferences only", () => {
     );
   });
 
+  it("applies a saved trialPurpose, which arrives as an array", async () => {
+    // The multi-value half of a saved set: `sanitizeStoredFilters` used to
+    // read only strings, so an array was dropped in silence and CB's
+    // "treatment only" preference never reached the request. The badge and
+    // the wire are checked together — a filter shown but not sent, or sent
+    // but not shown, is the same bug from the reader's side.
+    const api = fakeApi();
+    const { store } = preferenceOnlyHost({ trialPurpose: ["treatment"] });
+    renderTrialMatches(api, { preferences: store });
+
+    await screen.findByRole("button", { name: /Filters \(1\)/ });
+    await waitFor(() =>
+      expect(
+        api.listRequests().some((r) => r.params.trialPurpose === "treatment"),
+      ).toBe(true),
+    );
+  });
+
   it("is written to when the reader changes a filter", async () => {
     const api = fakeApi();
     const { store, saved } = preferenceOnlyHost();

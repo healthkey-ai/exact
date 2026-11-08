@@ -341,7 +341,13 @@ export function isUsableLastUpdate(value: unknown): boolean {
 /** How each stored field is checked on the way back in. `distance`,
  *  `distanceUnits` and `lastUpdate` are handled separately below. */
 const STORED_STRING_FIELDS: readonly string[] = PANEL_FIELDS.filter(
-  (f) => f !== "distance" && f !== "validatedOnly" && f !== "lastUpdate",
+  (f) =>
+    f !== "distance" &&
+    f !== "validatedOnly" &&
+    f !== "lastUpdate" &&
+    // The one multi-value field (#428): read below, because an array is not a
+    // string and the loop would drop it without a word.
+    f !== "trialPurpose",
 );
 
 /** What to trust from storage.
@@ -387,6 +393,36 @@ export function sanitizeStoredFilters(raw: unknown): FilterState {
     if (typeof value !== "string" || value === "") continue;
     (out as Record<string, unknown>)[field] = value;
   }
+
+  // `trialPurpose` is the one saved field that is not a string. A host
+  // adapter hands back an array (`["treatment"]`); a build from before #428,
+  // or a hand-edited `localStorage`, still spells it `"treatment"` or
+  // `"treatment,prevention"`. Both read the same way the panel's own
+  // `normalizeFilterState` reads them. Anything else — a number, an object,
+  // an element that is not a string — is a claim this control could not show,
+  // so it is dropped rather than sent as `[object Object]`. An empty result is
+  // "All", which is what an absent key already means.
+  // Deduplicated the way the backend reads it (`_str_list`: case-insensitive,
+  // first spelling wins) and only then capped, because the backend caps too —
+  // slicing first would drop a value the backend would have kept, turning a
+  // duplicate-heavy saved set into a narrower search than the row describes.
+  const seenPurposes = new Set<string>();
+  const storedPurposes: string[] = [];
+  for (const code of Array.isArray(input.trialPurpose)
+    ? input.trialPurpose
+    : typeof input.trialPurpose === "string"
+      ? input.trialPurpose.split(",")
+      : []) {
+    if (typeof code !== "string") continue;
+    const trimmed = code.trim();
+    if (!trimmed || seenPurposes.has(trimmed.toLowerCase())) continue;
+    seenPurposes.add(trimmed.toLowerCase());
+    storedPurposes.push(trimmed);
+    // The backend reads at most fifty (`_str_list(limit=50)`); a longer saved
+    // set would otherwise become a URL it silently truncates for us.
+    if (storedPurposes.length === 50) break;
+  }
+  if (storedPurposes.length) out.trialPurpose = storedPurposes;
 
   // A count of years the backend can actually use — see
   // `isUsableLastUpdate`. What this drops is an ISO date, which is what CB
