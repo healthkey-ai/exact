@@ -23,6 +23,17 @@ logger = logging.getLogger(__name__)
 # introspection endpoint's own laxness, by writing a single header field.
 _INTROSPECTABLE_ALGS = frozenset({"HS256", "HS384", "HS512"})
 
+# The `iss` of tokens minted by the original phr service. Its identities are
+# keyed on the integer `user_id` under a "phr:" prefix, and every one already
+# stored in a deployment is under that key, so the rule stays for this issuer.
+# Any other issuer (PROMOP family auth, #700) is keyed on its `sub` as issued:
+# PROMOP's `user_id` is an integer pk that comes back after a dump restore,
+# while its `sub` (`urn:local:<uuid4>`) is never reused.
+LEGACY_PHR_ISSUER = "healthkey-phr"
+
+# `Identity.sub` is a CharField(max_length=255).
+_MAX_SUBJECT_LENGTH = 255
+
 
 class _CallBudget:
     """Fixed-window counter bounding outbound introspection calls.
@@ -222,11 +233,12 @@ _introspect_budget = _CallBudget()
 
 
 class PhrTokenProvider(TokenProvider):
-    """Verify JWTs issued by the phr identity service.
+    """Verify JWTs issued by the family's identity service.
 
-    phr owns the user accounts for the service family. RS256 tokens are
-    verified offline against phr's JWKS document — this is the only path a
-    deployment should rely on.
+    That is the original phr service (`iss=healthkey-phr`) or, for a
+    PROMOP-hosted installation, PROMOP's family auth (`iss` = PROMOP's
+    origin). RS256 tokens are verified offline against the issuer's JWKS
+    document — this is the only path a deployment should rely on.
 
     An HS256 token is signed with a shared secret this service does not hold
     and can therefore only be checked by asking the portal, which is what the
@@ -238,11 +250,21 @@ class PhrTokenProvider(TokenProvider):
     introspection endpoint does not fully verify signatures therefore lets a
     forged token through, so the path stays opt-in and out of production.
 
-    Identity maps as (issuer=PHR_ISSUER, sub="phr:<phr user id>"). The
-    "phr:" prefix no longer guards against collisions — `Identity.sub` is
-    unique per issuer since #700 — but every existing portal identity is
-    stored under it, so removing it would re-provision each of them as a new,
-    empty Identity. Do not remove it.
+    Identity maps as (issuer=PHR_ISSUER, sub=<subject>), where the subject
+    depends on the issuer (see `_subject`):
+
+    * the legacy phr issuer (`healthkey-phr`): "phr:<user_id>". The prefix no
+      longer guards against collisions — `Identity.sub` is unique per issuer
+      since #700 — but every existing portal identity is stored under it, so
+      removing it would re-provision each of them as a new, empty Identity.
+      Do not remove it.
+    * any other issuer, i.e. PROMOP: the token's `sub`, unprefixed. PROMOP's
+      `user_id` is an integer pk, reused after a restore from a dump, and a
+      new user would then sign in as someone else's Identity.
+
+    The rule follows from the issuer rather than from a setting on purpose:
+    switching it for an issuer that already has identities re-provisions all
+    of them, so it must not be something a deploy can flip.
     """
 
     def can_handle(self, token: str, unverified_payload: dict[str, Any] | None) -> bool:
@@ -256,10 +278,9 @@ class PhrTokenProvider(TokenProvider):
         except jwt.InvalidTokenError:
             return None
 
-        # Each path resolves its own subject: the two sources name it
-        # differently and neither order is right for both. A SimpleJWT payload
-        # carries `user_id`; an RFC 7662 response carries `sub` — optionally,
-        # §2.2 does not require it — and may carry neither.
+        # Each path returns its own subject, both through `_subject`: the JWKS
+        # path reads the verified token, introspection reads the portal's
+        # response before the unverified payload.
         #
         # Dispatch on an allowlist, never on "not RS256". The `alg` header is
         # attacker-supplied, so an `else` branch handed the caller the choice
@@ -284,7 +305,7 @@ class PhrTokenProvider(TokenProvider):
 
         return TokenClaims(
             issuer=settings.PHR_ISSUER,
-            sub=f"phr:{sub}",
+            sub=sub,
             email=claims.get("email") or "",
             name=None,
             raw=claims,
@@ -325,11 +346,8 @@ class PhrTokenProvider(TokenProvider):
             return None
         if not _is_access_token(claims):
             return None
-        sub = claims.get("user_id") or claims.get("sub")
-        # `not sub`, not `is None`: the selection above falls through falsy
-        # values, so a terminal empty string would otherwise be accepted and
-        # collapse every such user onto a shared "phr:" Identity.
-        return (claims, str(sub)) if sub else None
+        sub = _subject(claims)
+        return (claims, sub) if sub else None
 
     def _verify_introspect(self, token: str) -> tuple[dict[str, Any], str] | None:
         if not settings.PHR_ALLOW_INTROSPECTION:
@@ -431,23 +449,69 @@ class PhrTokenProvider(TokenProvider):
         # answer with nothing but `active`, so the payload stays as a fallback:
         # without it those deployments 401 on a token the portal just affirmed.
         #
-        # Within each source, `user_id` before `sub`, matching the JWKS path
-        # exactly.  If the two paths disagreed, moving a deployment off the
-        # HS256 fallback onto RS256 would silently re-provision every user
-        # under a second Identity — same issuer, different sub, so nothing
-        # would flag it.  A portal that publishes only `sub`, differing from
-        # its `user_id`, still splits; that cannot be resolved here and needs
-        # the portal's contract pinned down.
-        sub = (
-            data.get("user_id")
-            or data.get("sub")
-            or payload.get("user_id")
-            or payload.get("sub")
-        )
-        if not sub:  # see the note on the JWKS path
-            logger.warning("phr introspection returned no subject")
+        # Within each source the claims are read exactly as on the JWKS path
+        # (`_subject` serves both).  If the two paths disagreed, moving a
+        # deployment off the HS256 fallback onto RS256 would silently
+        # re-provision every user under a second Identity — same issuer,
+        # different sub, so nothing would flag it.
+        sub = _subject(data, payload)
+        if not sub:
+            logger.warning("phr introspection returned no usable subject")
             return None
-        return {**payload, **data}, str(sub)
+        return {**payload, **data}, sub
+
+
+def _subject(*sources: dict[str, Any]) -> str | None:
+    """The `Identity.sub` a verified token maps to, or None to reject it.
+
+    *sources* are read in order, the authoritative one first.
+
+    Legacy phr issuer: "phr:<user_id>", taking `sub` where `user_id` is absent
+    — the rule every stored portal identity was created under.
+
+    Any other issuer: `sub` exactly as issued, never `user_id`. A token
+    without a string `sub` is rejected rather than keyed on `user_id`: that is
+    the reusable pk this rule exists to avoid, and a fallback to it would
+    re-key the same person differently from one token to the next. Only an
+    absent (or null) `sub` passes on to the next source; any other value the
+    first source gives is final, so a malformed answer from the portal is a
+    rejection, not permission to read the unverified payload.
+
+    The rule is chosen by the issuer string alone, so it assumes PROMOP runs
+    with its documented `FAMILY_AUTH_ISSUER` (its origin). A PROMOP set to
+    `healthkey-phr` would be keyed on its reusable `user_id` again.
+
+    An empty subject is rejected on both branches: it would collapse every
+    such user onto one shared Identity.
+    """
+    if settings.PHR_ISSUER == LEGACY_PHR_ISSUER:
+        for source in sources:
+            for claim in ("user_id", "sub"):
+                value = source.get(claim)
+                if value:
+                    return f"phr:{value}"
+        return None
+    for source in sources:
+        value = source.get("sub")
+        if value is None:
+            continue
+        # PyJWT already enforces a string `sub` on the JWKS path; an
+        # introspection response is plain JSON and can carry anything. The
+        # length cap is `Identity.sub`'s column: a longer value would fail the
+        # insert with a 500 instead of a 401 (PROMOP's `uid` column is wider).
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > _MAX_SUBJECT_LENGTH
+        ):
+            logger.debug(
+                "phr token rejected: unusable sub (%s, %s chars)",
+                type(value).__name__,
+                len(value) if isinstance(value, str) else "-",
+            )
+            return None
+        return value
+    return None
 
 
 def _is_access_token(claims: dict[str, Any]) -> bool:
