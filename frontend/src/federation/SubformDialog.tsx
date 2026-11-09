@@ -14,8 +14,8 @@
 
 import { Dialog } from "./Dialog";
 import { FieldEdit } from "./FieldEdit";
-import { editabilityOf } from "./writable";
 import type { Editability } from "./writable";
+import { resolveEditor, toEditability } from "./editorResolver";
 import { formatValue } from "./TrialDetailPage";
 import type { RowEditing } from "./TrialDetailPage";
 import type { SubformEntry, TrialDetailField } from "./types";
@@ -46,27 +46,18 @@ export interface SubformDialogProps {
  *  door onto a wall; it is a door into the wrong room.
  */
 function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
-  // Recomputed here means EXACT derives it, so there is nothing to say and
-  // nobody to say it to: the row upstairs already carries that story.
-  if (entry.upatientRecomputed) return { can: "unknown" };
-  // The dialog passes the row's vocabulary for the same reason the detail
-  // page does, but the ROW branch can only ever produce a single select here:
-  // the server overwrites a subform entry's type with `select` whenever it
-  // attaches options at all (`trial_attributes.py:882-884`). A descriptor
-  // that carries its own options and `multiple` still yields a multiselect,
-  // as it does anywhere else. Passed rather than hard-coded, so the day the
-  // server stops overwriting this does not have to be found again.
-  const verdict = editabilityOf(entry.upatientField, editing.fields, {
-    type: entry.type,
-    options: entry.options,
-  });
-  if (verdict.can !== "edit") return verdict;
-  // A demographic reached through a threshold row is a door into the wrong
-  // room, not a refusal worth explaining — see the note above.
-  const projection = verdict.entry.projection_target;
-  return projection === "person" || projection === "location"
-    ? { can: "unknown" }
-    : verdict;
+  if (!entry.upatientField) return { can: "unknown" };
+  // The same resolver as the row path, told that this is a subform entry:
+  // recompute, person-scoped demographics, aliases and the unmapped-vocabulary
+  // guard all live in one place now. `toEditability` adapts the decision to
+  // the editor this dialog already draws.
+  return toEditability(
+    resolveEditor(entry.upatientField, editing.fields, {
+      surface: "subform",
+      entry,
+    }),
+    editing.fields,
+  );
 }
 
 function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
