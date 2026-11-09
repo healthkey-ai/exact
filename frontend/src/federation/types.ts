@@ -756,7 +756,12 @@ export interface TrialMatchesProps {
    *  Return `null` for a row the host cannot edit.
    *
    *  Supplied, it replaces EXACT's scalar inline editor and its negated
-   *  boolean dialog on the rows; the subform and genomics doors are
+   *  boolean dialog. By default it replaces only the editor: EXACT still
+   *  draws the row's value and units, which is what a host returning a bare
+   *  edit button needs. Set `fieldEditorOwnsValue` when the node renders the
+   *  value as well (CB mounts a whole PROMOP field there), and EXACT stops
+   *  drawing it. Return `null` for a row the host does not own — the value
+   *  stays with EXACT either way. The subform and genomics doors are
    *  unaffected. The host owns saving and refresh — EXACT initiates no write
    *  for these rows. A host that keeps a writer but wants EXACT's controls
    *  should omit this prop instead of returning null everywhere. */
@@ -765,6 +770,25 @@ export interface TrialMatchesProps {
     label: string;
     trialId?: string | number;
   }) => ReactNode;
+  /** Asked per row: does the node returned by `renderFieldEditor` render the
+   *  patient's value and units as well as its control?
+   *
+   *  A host can mount two different things through one slot. CB returns a
+   *  whole PROMOP field widget for a scalar row — the widget renders the value
+   *  and units, so EXACT must not paint them twice — and a pencil-only therapy
+   *  editor for a therapy row, which renders no value at all. A single boolean
+   *  cannot describe both; this is called with the same props as
+   *  `renderFieldEditor`.
+   *
+   *  Absent or `false` keeps the default contract: the slot replaces the
+   *  editor alone and EXACT draws the value, which is what a host returning a
+   *  bare edit button needs. A `null` slot leaves the value with EXACT either
+   *  way. */
+  fieldEditorOwnsValue?: (props: {
+    field: string;
+    label: string;
+    trialId?: string | number;
+  }) => boolean;
   /** Which cascade mode the injected stylesheet uses.
    *
    *  `"layered"` (the default) wraps the sheet in `@layer mf-remote`. That is

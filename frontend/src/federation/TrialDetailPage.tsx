@@ -103,6 +103,8 @@ interface Props {
   renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
   /** Host-owned patient-value editor, rendered per eligibility row. */
   renderFieldEditor?: TrialMatchesProps["renderFieldEditor"];
+  /** Whether that node renders the value and units too (see the prop's doc). */
+  fieldEditorOwnsValue?: TrialMatchesProps["fieldEditorOwnsValue"];
   /** Host-owned detail actions; each affordance is drawn only when supplied. */
   onCompareToSoc?: TrialMatchesProps["onCompareToSoc"];
   onAuthorHighRiskMcl?: TrialMatchesProps["onAuthorHighRiskMcl"];
@@ -331,6 +333,7 @@ function EligibilityRow({
   onSubformOpen,
   renderGenomicsEditor,
   renderFieldEditor,
+  fieldEditorOwnsValue,
 }: {
   field: TrialDetailField;
   trialId?: string | number;
@@ -341,6 +344,7 @@ function EligibilityRow({
   onSubformOpen?: (name: string | null) => void;
   renderGenomicsEditor?: TrialMatchesProps["renderGenomicsEditor"];
   renderFieldEditor?: TrialMatchesProps["renderFieldEditor"];
+  fieldEditorOwnsValue?: TrialMatchesProps["fieldEditorOwnsValue"];
 }) {
   const matched = field.matchingType === "matched";
   const notMatched = field.matchingType === "not_matched";
@@ -465,6 +469,26 @@ function EligibilityRow({
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
+  // Resolved once, not inline in the cell: the host widget renders the
+  // patient's value as well as its control, so EXACT must not paint the same
+  // value beside it. Deciding twice would let the two disagree.
+  const hostEditor = renderFieldEditor
+    ? renderFieldEditor({
+        field: field.ufield ?? field.name,
+        label: field.label,
+        trialId,
+      })
+    : null;
+  // Only when the host says THIS row's node renders the value too. Asked per
+  // row because one slot can carry two shapes: a PROMOP field that draws the
+  // value, and a therapy pencil that does not.
+  const hostOwnsValue =
+    Boolean(hostEditor) &&
+    fieldEditorOwnsValue?.({
+      field: field.ufield ?? field.name,
+      label: field.label,
+      trialId,
+    }) === true;
 
   return (
     <div className="exact-elig__row">
@@ -477,11 +501,23 @@ function EligibilityRow({
         data-col="required"
       >
         <span className="exact-elig__colhdr">Required</span>
-        <span className="exact-elig__val">{renderMd(required)}</span>
+        <span className={`exact-elig__val${notMatched ? " is-mismatch" : ""}`}>
+          {renderMd(required)}
+        </span>
         {field.units ? <span className="exact-elig__units">{field.units}</span> : null}
         {matched ? (
           <span className="exact-elig__check" role="img" aria-label="matches">
             <CheckIcon />
+          </span>
+        ) : null}
+        {/* The mismatch mark lives beside the REQUIREMENT, not in the value
+            cell: a host widget owns that cell, and a mark rendered there would
+            sit in front of its control. It is the only non-colour signal —
+            the cell tint alone is not announced — so it stays visible and
+            labelled. */}
+        {notMatched ? (
+          <span className="exact-elig__mismatch" role="img" aria-label="does not match">
+            ✕
           </span>
         ) : null}
         {notEvaluated ? (
@@ -489,7 +525,7 @@ function EligibilityRow({
         ) : null}
       </div>
       <div
-        className={`exact-elig__cell${notMatched ? " is-mismatch" : ""}`}
+        className={`exact-elig__cell${notMatched && !hostOwnsValue ? " is-mismatch" : ""}`}
         data-col="yours"
       >
         <span className="exact-elig__colhdr">Your Value</span>
@@ -497,7 +533,7 @@ function EligibilityRow({
             beside it: this column can be a few characters wide, and showing
             the old value next to the box that is replacing it is a question
             nobody should have to answer. */}
-        {editorOpen ? null : (
+        {editorOpen || hostOwnsValue ? null : (
           <>
             <span className="exact-elig__val">{renderMd(yours)}</span>
             {field.uunits ?? field.units ? (
@@ -505,19 +541,6 @@ function EligibilityRow({
             ) : null}
           </>
         )}
-        {/* A mismatch was marked in red and nowhere else, while the register
-            card below tells the reader the mismatches are marked above. For
-            anyone not seeing the colour that was a promise the page did not
-            keep.
-
-            After the units, where the matched cell puts its tick: before
-            them it split the value from its unit — "12 ✕ years", read out
-            as "12, does not match, years". */}
-        {notMatched && !editorOpen ? (
-          <span className="exact-elig__mismatch" aria-label="does not match">
-            ✕
-          </span>
-        ) : null}
         {/* Said out loud, not left to silence, in the two cases `announce`
             names: a control EXACT took away, and a write PROMOP routes to
             another resource. Both sentences are EXACT's own. The rows the
@@ -546,13 +569,7 @@ function EligibilityRow({
             attribute: PROMOP's slot is keyed by the row's own name (its
             `ufield`), and the host's widget owns saving. Returning null is
             how a host leaves a row alone. */}
-        {renderFieldEditor
-          ? renderFieldEditor({
-              field: field.ufield ?? field.name,
-              label: field.label,
-              trialId,
-            })
-          : null}
+        {hostEditor}
         {/* A computed row cannot be written, but what it is computed FROM
             can — and the payload names those values. Offered only where at
             least one of them is actually writable: a dialog listing four
@@ -856,6 +873,7 @@ export function TrialDetailPage({
   editing,
   renderGenomicsEditor,
   renderFieldEditor,
+  fieldEditorOwnsValue,
   onCompareToSoc,
   onAuthorHighRiskMcl,
   onShareTrial,
@@ -1168,6 +1186,7 @@ export function TrialDetailPage({
                       onSubformOpen={setOpenSubform}
                       renderGenomicsEditor={renderGenomicsEditor}
                       renderFieldEditor={renderFieldEditor}
+                      fieldEditorOwnsValue={fieldEditorOwnsValue}
                     />
                   ))}
                 </div>

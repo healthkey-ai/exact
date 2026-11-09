@@ -583,6 +583,11 @@
   display: inline-flex;
   color: var(--exact-color-not-eligible);
 }
+/* The requirement the patient's value fails is the red one, as in CB's native
+   row. The ✕ beside it is the part a reader who cannot see the colour gets. */
+.exact-root .exact-elig__val.is-mismatch {
+  color: var(--exact-color-error-700);
+}
 .exact-root .exact-elig__units {
   font-size: 0.75rem;
   color: var(--exact-color-text-tertiary);
