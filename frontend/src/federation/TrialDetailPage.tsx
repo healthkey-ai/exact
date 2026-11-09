@@ -36,6 +36,7 @@ import type { AdvancedStatus, GenomicFinding, GenomicsAdapter } from "./state";
 import type {
   FilterState,
   PatientInfo,
+  SubformEntry,
   TrialDetailField,
   TrialMatchesProps,
 } from "./types";
@@ -350,10 +351,71 @@ function subformRowNames(fields: TrialDetailField[]): Set<string> {
   );
 }
 
+/** Build the inputs of a computed row the server did not send a subform for.
+ *
+ *  The descriptor names the inputs; eligibility rows already carry the label,
+ *  control type and current value for most of them. An input with no row of
+ *  its own (Date of birth) falls back to a minimal entry from the descriptor.
+ */
+function computedSubformEntries(
+  inputs: string[],
+  allFields: TrialDetailField[],
+  writable: WritableFields | undefined,
+  patientInfo: PatientInfo | null | undefined,
+): SubformEntry[] {
+  const entries: SubformEntry[] = [];
+  for (const input of inputs) {
+    // A ULN row carries the RATIO in `uvalue`, not the absolute lab value.
+    // Picking it as the input would seed a ratio into the absolute column.
+    // Read-only rows are the ULN/display rows; the writable sibling is the
+    // canonical input.
+    const row = allFields.find(
+      (candidate) => candidate.upatientField === input
+        && candidate.ureadonly !== true,
+    );
+    if (row) {
+      entries.push({
+        name: row.name,
+        label: row.label,
+        type: row.utype ?? row.type,
+        value: row.uvalue,
+        options: row.uoptions ?? row.options,
+        upatientField: input,
+        upatientRecomputed: row.upatientRecomputed,
+        units: row.units,
+        uunits: row.uunits,
+      });
+      continue;
+    }
+    const entry = writable?.[input];
+    if (!entry) continue;
+    const kind = entry.value_kind;
+    const camel = input.replace(/_([a-z])/g, (_match, letter: string) =>
+      letter.toUpperCase(),
+    );
+    const current = patientInfo?.[input] ?? patientInfo?.[camel] ?? null;
+    entries.push({
+      name: input,
+      label: input
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      type: kind === "date" ? "date" : kind === "number" ? "int" : "string",
+      value: current,
+      options: Array.isArray(entry.options)
+        ? entry.options as SubformEntry["options"]
+        : null,
+      upatientField: input,
+    });
+  }
+  return entries;
+}
+
 function EligibilityRow({
   field,
   trialId,
   editing,
+  allFields,
+  patientInfo,
   editableHere,
   subformHere,
   openSubform,
@@ -365,6 +427,8 @@ function EligibilityRow({
   field: TrialDetailField;
   trialId?: string | number;
   editing?: RowEditing;
+  allFields: TrialDetailField[];
+  patientInfo?: PatientInfo | null;
   editableHere?: boolean;
   subformHere?: boolean;
   openSubform?: string | null;
@@ -403,9 +467,36 @@ function EligibilityRow({
     setGenomicsOpen(false);
     setExplicitOpen(false);
   }, [trialId]);
+  // One decision for the row. The resolver owns kinds, permissions, aliases
+  // and recompute; `toEditability` adapts scalar/negated decisions to the
+  // editors this page already draws. A resolved refusal carries its reason;
+  // it is not rendered yet (the next slice adds the note), but the row no
+  // longer depends on three separate gates.
+  const decision = editing
+    ? resolveEditor(field.upatientField, editing.fields, {
+      surface: "row",
+      row: field,
+      negativeSource: field.negative_source,
+    })
+    : null;
   const subformOpen = openSubform === field.name;
+  const computedEditor = decision?.state === "handled"
+    && decision.editor.kind === "computed-subform"
+    ? decision.editor
+    : null;
+  const subformEntries = field.subform_details?.length
+    ? field.subform_details
+    : computedEditor
+      ? computedSubformEntries(
+        computedEditor.inputs,
+        allFields,
+        editing?.fields,
+        patientInfo,
+      )
+      : null;
   const canOpenSubform =
-    Boolean(subformHere) && subformCanBeEdited(field.subform_details, editing);
+    Boolean(subformHere || computedEditor)
+    && subformCanBeEdited(subformEntries, editing);
   // `genetic_mutations` is structured, so the generic dialog refuses it. This
   // is the same source, opened through the endpoint that owns it — and only
   // when the descriptor says this caller may write it. The adapter exists for
@@ -430,18 +521,6 @@ function EligibilityRow({
         (editing?.genomics &&
           editing.fields?.genetic_mutations?.writable === true)),
   );
-  // One decision for the row. The resolver owns kinds, permissions, aliases
-  // and recompute; `toEditability` adapts scalar/negated decisions to the
-  // editors this page already draws. A resolved refusal carries its reason;
-  // it is not rendered yet (the next slice adds the note), but the row no
-  // longer depends on three separate gates.
-  const decision = editing
-    ? resolveEditor(field.upatientField, editing.fields, {
-      surface: "row",
-      row: field,
-      negativeSource: field.negative_source,
-    })
-    : null;
   const resolved = decision
     ? toEditability(decision, editing?.fields)
     : ({ can: "unknown" } as const);
@@ -609,10 +688,10 @@ function EligibilityRow({
             <PencilIcon />
           </button>
         ) : null}
-        {subformOpen && editing && field.subform_details ? (
+        {subformOpen && editing && subformEntries ? (
           <SubformDialog
             field={field}
-            entries={field.subform_details}
+            entries={subformEntries}
             editing={editing}
             onClose={() => onSubformOpen?.(null)}
           />
@@ -1227,6 +1306,8 @@ export function TrialDetailPage({
                       field={field}
                       trialId={trialId}
                       editing={editing}
+                      allFields={eligibility}
+                      patientInfo={patientInfo}
                       editableHere={editableRows.has(field.name)}
                       subformHere={subformRows.has(field.name)}
                       openSubform={openSubform}
