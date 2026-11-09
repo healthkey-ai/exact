@@ -667,7 +667,7 @@ describe("explicit attestations", () => {
   it("sends the selected categories with the same snapshot", async () => {
     const client = clientFor({
       no_pre_existing_conditions: null,
-      preexisting_conditions: [],
+      preexisting_conditions: null,
     });
     await adapter(client).explicitAnswers!.answer(
       "pre_existing_condition_categories",
@@ -680,7 +680,7 @@ describe("explicit attestations", () => {
       {
         action: "set_categories",
         expected_flag: null,
-        expected_categories: [],
+        expected_categories: null,
         categories: ["infections"],
       },
     );
@@ -689,7 +689,7 @@ describe("explicit attestations", () => {
   it("uses the negative-answer snapshot for the derived negatives", async () => {
     const client = clientFor({
       fields: {
-        no_active_infection_status: { value: null, source: "derived" },
+        no_active_infection_status: { value: null, source: false },
       },
     });
     await adapter(client).explicitAnswers!.answer(
@@ -703,7 +703,7 @@ describe("explicit attestations", () => {
         field: "no_active_infection_status",
         action: "confirm_negative",
         expected_value: null,
-        expected_source: "derived",
+        expected_source: false,
       },
     );
   });

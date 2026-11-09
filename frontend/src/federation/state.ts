@@ -279,10 +279,15 @@ export interface GenomicCatalogMarker {
  * field, the descriptor's action and the action's payload.
  */
 export interface ExplicitAnswerAdapter {
+  /** The snapshot the answer will be compared against, read when the dialog
+   *  opens rather than when it submits. Optional: an adapter that omits it
+   *  still works, but its concurrency window is the submit request. */
+  snapshot?(field: string): Promise<Record<string, unknown>>;
   answer(
     field: string,
     action: string,
     payload?: Record<string, unknown>,
+    snapshot?: Record<string, unknown>,
   ): Promise<void>;
 }
 
@@ -652,17 +657,63 @@ export function createPromopState({
     // carries the values the dialog was opened against, so PROMOP can refuse
     // a concurrent answer instead of overwriting it.
     explicitAnswers: {
-      answer: async (field, action, payload) => {
+      snapshot: async (field) => {
         if (field === "pre_existing_condition_categories") {
-          const url = `${records}/${person}/preexisting-conditions-answer/`;
-          const snapshot = await client.get<{
+          const response = await client.get<{
             no_pre_existing_conditions?: boolean | null;
             preexisting_conditions?: string[] | null;
-          }>(url);
+          }>(`${records}/${person}/preexisting-conditions-answer/`);
+          return {
+            kind: "preexisting",
+            expectedFlag: response.data?.no_pre_existing_conditions ?? null,
+            expectedCategories: response.data?.preexisting_conditions ?? null,
+          };
+        }
+        if (
+          field === "no_active_infection_status"
+          || field === "no_other_active_malignancies"
+        ) {
+          const response = await client.get<{
+            fields?: Record<string, { value?: unknown; source?: unknown }>;
+            field?: string;
+            value?: unknown;
+            source?: unknown;
+          }>(`${records}/${person}/negative-answer/`, {
+            // CB returns one snapshot for both fields; PROMOP answers one
+            // field per request. Sending `field` is ignored by CB and required
+            // by PROMOP.
+            params: { field },
+          });
+          const current = response.data?.fields?.[field]
+            ?? (response.data?.field === field ? response.data : {});
+          return {
+            kind: "negative",
+            expectedValue: current.value ?? null,
+            expectedSource: current.source ?? null,
+          };
+        }
+        throw new Error(`No explicit-answer snapshot for ${field}.`);
+      },
+      answer: async (field, action, payload, known) => {
+        if (field === "pre_existing_condition_categories") {
+          const url = `${records}/${person}/preexisting-conditions-answer/`;
+          const snapshot = known ?? await (async () => {
+            const response = await client.get<{
+              no_pre_existing_conditions?: boolean | null;
+              preexisting_conditions?: string[] | null;
+            }>(url);
+            return {
+              expectedFlag: response.data?.no_pre_existing_conditions ?? null,
+              expectedCategories: response.data?.preexisting_conditions ?? null,
+            };
+          })();
           const body: Record<string, unknown> = {
             action,
-            expected_flag: snapshot.data?.no_pre_existing_conditions ?? null,
-            expected_categories: snapshot.data?.preexisting_conditions ?? [],
+            // `null` is a stored value and must stay null: both backends
+            // compare it strictly, and replacing it with [] turns every
+            // answer into a stale-snapshot conflict.
+            expected_flag: snapshot.expectedFlag ?? null,
+            expected_categories: snapshot.expectedCategories ?? null,
           };
           if (action === "set_categories") {
             body.categories = Array.isArray(payload?.categories)
@@ -677,15 +728,25 @@ export function createPromopState({
           || field === "no_other_active_malignancies"
         ) {
           const url = `${records}/${person}/negative-answer/`;
-          const snapshot = await client.get<{
-            fields?: Record<string, { value?: unknown; source?: unknown }>;
-          }>(url);
-          const current = snapshot.data?.fields?.[field] ?? {};
+          const snapshot = known ?? await (async () => {
+            const response = await client.get<{
+              fields?: Record<string, { value?: unknown; source?: unknown }>;
+              field?: string;
+              value?: unknown;
+              source?: unknown;
+            }>(url, { params: { field } });
+            const current = response.data?.fields?.[field]
+              ?? (response.data?.field === field ? response.data : {});
+            return {
+              expectedValue: current.value ?? null,
+              expectedSource: current.source ?? null,
+            };
+          })();
           await client.post(url, {
             field,
             action,
-            expected_value: current.value ?? null,
-            expected_source: current.source ?? null,
+            expected_value: snapshot.expectedValue ?? null,
+            expected_source: snapshot.expectedSource ?? null,
           });
           return;
         }

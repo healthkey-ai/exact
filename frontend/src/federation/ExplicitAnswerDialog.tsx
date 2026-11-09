@@ -29,6 +29,7 @@ export function ExplicitAnswerDialog({
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [snapshot, setSnapshot] = useState<Record<string, unknown> | undefined>();
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -36,6 +37,19 @@ export function ExplicitAnswerDialog({
       mounted.current = false;
     };
   }, []);
+  useEffect(() => {
+    let active = true;
+    if (!adapter?.snapshot) {
+      setSnapshot(undefined);
+      return () => { active = false; };
+    }
+    adapter.snapshot(editor.field)
+      .then((value) => { if (active) setSnapshot(value); })
+      // The answer call can still take its own snapshot; a failed read here
+      // is not a reason to take the dialog away.
+      .catch(() => { if (active) setSnapshot(undefined); });
+    return () => { active = false; };
+  }, [adapter, editor.field]);
 
   // The descriptor is the authority on the words. An action without a label is
   // an incomplete contract, not an invitation to invent clinical wording.
@@ -72,7 +86,11 @@ export function ExplicitAnswerDialog({
     try {
       const payload =
         action === "set_categories" ? { categories: selected } : undefined;
-      await adapter.answer(editor.field, action, payload);
+      if (snapshot) {
+        await adapter.answer(editor.field, action, payload, snapshot);
+      } else {
+        await adapter.answer(editor.field, action, payload);
+      }
       if (!mounted.current) return;
       editing.onExplicitAnswerChanged?.();
       onClose();
