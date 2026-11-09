@@ -181,6 +181,37 @@ describe("explicit answers", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("keeps focus in the dialog after an in-flight Tab and a rejection", async () => {
+    let reject: (reason: Error) => void = () => {};
+    const answer = vi.fn(
+      () => new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; }),
+    );
+    const state = fakeState({
+      writable: DESCRIPTOR,
+      overrides: { explicitAnswers: { answer } },
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "No pre-existing conditions" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Close" })).toBeDisabled(),
+    );
+    await userEvent.tab();
+    reject(new Error("Could not save."));
+    await screen.findByRole("alert");
+    await userEvent.tab({ shift: true });
+    expect(
+      screen.getByRole("dialog").contains(document.activeElement),
+    ).toBe(true);
+  });
+
   it("keeps the dialog open and shows the failure when the adapter rejects", async () => {
     const answer = vi.fn(async () => {
       throw new Error("The answer could not be saved.");

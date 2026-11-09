@@ -65,6 +65,14 @@ export function Dialog({ label, title, onClose, dismissible = true, children }: 
       const first = items[0];
       const last = items[items.length - 1];
       const active = document.activeElement;
+      if (active === panel.current) {
+        // The trap parked focus on the panel while the controls were disabled.
+        // Once they are enabled again, the panel is neither `first` nor
+        // `last`, so the edge checks below would let Shift+Tab escape.
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
       // Also when focus has already escaped — a click on the scrim, a
       // programmatic move — because the next Tab is the reader's way back in.
       if (!panel.current?.contains(active as Node)) {
