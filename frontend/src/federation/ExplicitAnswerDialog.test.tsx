@@ -166,6 +166,15 @@ describe("explicit answers", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Close" })).toBeDisabled(),
     );
+    // Escape is read through a ref: the handler was registered before the
+    // write started, and must not close the dialog now.
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // With every control disabled, Tab stays in the modal.
+    await userEvent.tab();
+    expect(
+      screen.getByRole("dialog").contains(document.activeElement),
+    ).toBe(true);
     await userEvent.click(confirm);
     expect(answer).toHaveBeenCalledTimes(1);
     release();

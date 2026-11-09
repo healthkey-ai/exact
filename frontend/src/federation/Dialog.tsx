@@ -29,6 +29,8 @@ export function Dialog({ label, title, onClose, dismissible = true, children }: 
   // the reader was typing in.
   const close = useRef(onClose);
   close.current = onClose;
+  const dismissibleRef = useRef(dismissible);
+  dismissibleRef.current = dismissible;
 
   // `aria-modal` is a claim about behaviour, not a mechanism: it tells a
   // screen reader the rest of the page is inert and does nothing whatever to
@@ -48,12 +50,18 @@ export function Dialog({ label, title, onClose, dismissible = true, children }: 
 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (dismissible) close.current();
+        if (dismissibleRef.current) close.current();
         return;
       }
       if (event.key !== "Tab") return;
       const items = focusable();
-      if (items.length === 0) return;
+      if (items.length === 0) {
+        // Everything inside is disabled (a write is in flight). Keep focus in
+        // the modal rather than letting Tab walk into the page behind it.
+        event.preventDefault();
+        panel.current?.focus();
+        return;
+      }
       const first = items[0];
       const last = items[items.length - 1];
       const active = document.activeElement;
@@ -89,6 +97,7 @@ export function Dialog({ label, title, onClose, dismissible = true, children }: 
         ref={panel}
         className="exact-subform"
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
         aria-label={label}
         // The scrim closes on click; the panel must not, or every click
