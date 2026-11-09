@@ -199,10 +199,13 @@ describe("resolveEditor", () => {
     );
     if (result.state === "handled") {
       expect(result.field).toBe("hiv_status");
-      expect(result.editor.kind).toBe("scalar");
-      if (result.editor.kind === "scalar") {
+      expect(result.editor.kind).toBe("negated");
+      if (result.editor.kind === "negated") {
         expect(result.editor.invert).toBe(true);
         expect(result.editor.control).toBe("boolean");
+        expect(result.editor.positive).toBe("HIV Positive");
+        expect(result.editor.negative).toBe("No HIV");
+        expect(result.editor.source).toMatchObject({ upatientField: "hiv_status", available: true });
       }
     }
   });
@@ -222,6 +225,31 @@ describe("resolveEditor", () => {
           "withdraw",
         ]);
       }
+    }
+  });
+
+  it("refuses a negated source with no value key", () => {
+    const result = decision(
+      resolveEditor("no_hiv_status", described(), {
+        ...context,
+        negativeSource: { upatientField: "hiv_status", available: true },
+      }),
+      "unsupported",
+    );
+    if (result.state === "unsupported") {
+      expect(result.diagnostic).toBe("negated_source_value_missing");
+    }
+  });
+
+  it("accepts an explicit null or false negated source value", () => {
+    for (const value of [null, false]) {
+      decision(
+        resolveEditor("no_hiv_status", described(), {
+          ...context,
+          negativeSource: { upatientField: "hiv_status", available: true, value },
+        }),
+        "handled",
+      );
     }
   });
 
@@ -254,6 +282,21 @@ describe("resolveEditor", () => {
       if (result.editor.kind === "computed-subform") {
         expect(result.editor.inputs).toContain("serum_creatinine_level");
       }
+    }
+  });
+
+  it("uses the child entry metadata, not the computed parent row", () => {
+    const result = decision(
+      resolveEditor("serum_creatinine_level", described(), {
+        surface: "subform",
+        row: { upatientRecomputed: true, utype: "multiselect", uoptions: [{ value: "x", label: "X" }] },
+        entry: { name: "serumCreatinineLevel", label: "Serum Creatinine", type: "float", value: 1 },
+      }),
+      "handled",
+    );
+    if (result.state === "handled" && result.editor.kind === "scalar") {
+      expect(result.editor.control).toBe("number");
+      expect(result.editor.options).toEqual([]);
     }
   });
 

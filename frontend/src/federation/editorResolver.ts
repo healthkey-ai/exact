@@ -53,6 +53,24 @@ export interface ScalarEditor {
   scope: "record" | "person";
 }
 
+export interface NegatedEditor {
+  kind: "negated";
+  /** The canonical boolean the dialog writes. The displayed row is its
+   *  opposite; the dialog itself saves the positive answer. */
+  field: string;
+  control: "boolean";
+  invert: true;
+  /** Provenance from the row (`negative_source`). */
+  source: NegativeSource;
+  /** The two answer labels the dialog shows. */
+  positive: string;
+  negative: string;
+  options: [];
+  multiple: false;
+  joined: false;
+  scope: "record";
+}
+
 export interface ExplicitAnswerEditor {
   kind: "explicit-answer";
   field: string;
@@ -81,6 +99,7 @@ export interface AuthoredEditor {
 
 export type EditorSpec =
   | ScalarEditor
+  | NegatedEditor
   | ExplicitAnswerEditor
   | ComputedSubformEditor
   | AuthoredEditor;
@@ -246,9 +265,16 @@ export function resolveEditor(
     );
   }
 
+  // Metadata belongs to the surface being resolved. A subform call may carry
+  // both the parent row and the child entry; taking the parent's flags would
+  // mark an editable input as recomputed and would let the parent's
+  // vocabulary override the child's picker.
+  const rowMeta = context.surface === "row" ? context.row : null;
+  const entryMeta = context.surface === "subform" ? context.entry : null;
+
   // A row may be read-only in the trial template even when the record would
   // accept the write (a ×ULN ratio, a composed value). The row wins.
-  if (context.row?.ureadonly === true) {
+  if (rowMeta?.ureadonly === true) {
     return unsupported(
       current,
       "This row is shown for information and is not edited here.",
@@ -264,9 +290,8 @@ export function resolveEditor(
   // allowed through. A computed row is the exception: its value is derived,
   // but its INPUTS are the edit path — refusing here would make every
   // computed subform unreachable. Subform entries carry their own flag.
-  const entryRecomputed =
-    context.surface === "subform" && context.entry?.upatientRecomputed === true;
-  const recomputed = context.row?.upatientRecomputed === true || entryRecomputed;
+  const entryRecomputed = entryMeta?.upatientRecomputed === true;
+  const recomputed = rowMeta?.upatientRecomputed === true || entryRecomputed;
   if (recomputed && kind !== "computed") {
     const overridable = entry.overridable === true;
     const supported = context.matcherOverride === true || overridable;
@@ -276,8 +301,8 @@ export function resolveEditor(
         "This value is recomputed from other fields.",
         `recomputed:${
           (entryRecomputed
-            ? context.entry?.upatientRecomputedWhen?.when
-            : context.row?.upatientRecomputedWhen?.when) ?? "true"
+            ? entryMeta?.upatientRecomputedWhen?.when
+            : rowMeta?.upatientRecomputedWhen?.when) ?? "true"
         }`,
         "matcher",
       );
@@ -367,6 +392,14 @@ function resolveEntry(
         "exact",
       );
     }
+    if (!("value" in source)) {
+      return unsupported(
+        field,
+        "This row carries no value for the field it writes.",
+        "negated_source_value_missing",
+        "exact",
+      );
+    }
     if (source.type != null && source.type !== "boolean") {
       return unsupported(
         field,
@@ -429,10 +462,23 @@ function resolveEntry(
         "descriptor",
       );
     }
+    const labels = answerLabels(target)!;
     return {
       state: "handled",
       field: canonical,
-      editor: { ...resolved.editor, invert: true },
+      editor: {
+        kind: "negated",
+        field: canonical,
+        control: "boolean",
+        invert: true,
+        source,
+        positive: labels.positive,
+        negative: labels.negative,
+        options: [],
+        multiple: false,
+        joined: false,
+        scope: "record",
+      },
     };
   }
 
@@ -558,9 +604,11 @@ function resolveEntry(
     );
   }
 
+  const rowMeta = context.surface === "row" ? context.row : null;
+  const entryMeta = context.surface === "subform" ? context.entry : null;
   const rowVocabulary = {
-    type: context.row?.utype ?? context.entry?.type,
-    options: context.row?.uoptions ?? context.entry?.options,
+    type: rowMeta?.utype ?? entryMeta?.type,
+    options: rowMeta?.uoptions ?? entryMeta?.options,
   };
   const control = controlFor(entry, rowVocabulary);
 
