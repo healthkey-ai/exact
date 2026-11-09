@@ -43,10 +43,12 @@ import { FieldEdit, PencilIcon } from "./FieldEdit";
 import { NegatedBooleanDialog } from "./NegatedBooleanDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { GenomicsFindingsDialog } from "./GenomicsFindingsDialog";
+import { ExplicitAnswerDialog } from "./ExplicitAnswerDialog";
 import { splitJoined } from "./writable";
 import { invertBoolean } from "./writable";
 import { resolveEditor, toEditability } from "./editorResolver";
 import type { WritableFields } from "./writable";
+import type { ExplicitAnswerAdapter } from "./state";
 
 /** Everything the two writing controls need, as plain values and callbacks.
  *
@@ -209,6 +211,11 @@ export interface RowEditing {
   /** Re-read the trial (and the list) after a finding is written, with the
    *  new findings so an inline-profile host can update its own copy. */
   onGenomicsChanged?: (findings: GenomicFinding[]) => void;
+  /** Explicit attestations (pre-existing conditions, derived negatives) go
+   *  through their own endpoints, never `save`. */
+  explicitAnswers?: ExplicitAnswerAdapter;
+  /** Ask the host to re-read the patient payload after an attestation. */
+  onExplicitAnswerChanged?: () => void;
 }
 
 /** The fields whose last write was refused, named the way the reader saw them.
@@ -308,7 +315,11 @@ function editableRowNames(
       negativeSource: field.negative_source,
     });
     if (decision.state !== "handled") continue;
-    if (decision.editor.kind !== "scalar" && decision.editor.kind !== "negated") {
+    if (
+      decision.editor.kind !== "scalar"
+      && decision.editor.kind !== "negated"
+      && decision.editor.kind !== "explicit-answer"
+    ) {
       continue;
     }
     // One control per ROW attribute, as before: an alias and its canonical
@@ -382,6 +393,7 @@ function EligibilityRow({
   // did. One flag for both would blank the row behind a modal.
   const [dialogOpen, setDialogOpen] = useState(false);
   const [genomicsOpen, setGenomicsOpen] = useState(false);
+  const [explicitOpen, setExplicitOpen] = useState(false);
   // A different trial is a different question. Without this a dialog left open
   // across a trial switch keeps the previous requirement on screen and seeds
   // from the previous patient's provenance.
@@ -389,6 +401,7 @@ function EligibilityRow({
     setEditorOpen(false);
     setDialogOpen(false);
     setGenomicsOpen(false);
+    setExplicitOpen(false);
   }, [trialId]);
   const subformOpen = openSubform === field.name;
   const canOpenSubform =
@@ -439,6 +452,11 @@ function EligibilityRow({
   const editable = editableHere || resolved.can === "no"
     ? resolved
     : ({ can: "unknown" } as const);
+  const explicitEditor = decision?.state === "handled"
+    && decision.editor.kind === "explicit-answer"
+    ? decision.editor
+    : null;
+  const explicitAvailable = Boolean(explicitEditor && editing?.explicitAnswers);
   // The queue is keyed by the field the write LANDS IN, not by the row's own
   // attribute: an alias writes its canonical field and a negated view writes
   // the positive one, so a pending or refused value under the row's name
@@ -604,6 +622,27 @@ function EligibilityRow({
           >
             <PencilIcon />
           </button>
+        ) : null}
+        {explicitAvailable && editing ? (
+          <>
+            <button
+              type="button"
+              className="exact-elig__edit"
+              aria-label={`Answer ${field.label}`}
+              title={`Answer ${field.label}`}
+              onClick={() => setExplicitOpen(true)}
+            >
+              <PencilIcon />
+            </button>
+            {explicitOpen && explicitEditor ? (
+              <ExplicitAnswerDialog
+                label={field.label}
+                editor={explicitEditor}
+                editing={editing}
+                onClose={() => setExplicitOpen(false)}
+              />
+            ) : null}
+          </>
         ) : null}
         {genomicsOpen && renderGenomicsEditor ? (
           renderGenomicsEditor({
