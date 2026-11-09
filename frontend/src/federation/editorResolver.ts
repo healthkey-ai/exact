@@ -35,6 +35,7 @@ import {
   controlFor,
   optionsOf,
   unmappedVocabulary,
+  writtenElsewhere,
 } from "./writable";
 import type { NegativeSource, SubformEntry, TrialDetailField } from "./types";
 
@@ -740,16 +741,19 @@ export function toEditability(
   if (decision.state !== "handled") {
     const entry = fields?.[decision.field];
     if (!entry) return { can: "unknown" };
+    const routed = decision.diagnostic.startsWith("authored_target:")
+      ? writtenElsewhere(decision.diagnostic.slice("authored_target:".length))
+      : undefined;
     return {
       can: "no",
       field: decision.field,
       entry,
-      why: decision.reason,
-      // Preserve the two refusals the page already spoke aloud: an unmapped
-      // vocabulary and a write routed to another resource. Everything else
-      // stays silent exactly as before.
+      why: routed ?? decision.reason,
+      // Preserve exactly the refusals the page already spoke aloud: an
+      // unmapped vocabulary and a write routed to a target we have wording
+      // for. An unknown target stays silent, as it did before.
       announce: decision.diagnostic.startsWith("unmapped_vocabulary:")
-        || decision.diagnostic.startsWith("authored_target:"),
+        || routed !== undefined,
     };
   }
   const editor = decision.editor;
@@ -784,15 +788,25 @@ export function toEditability(
   }
   const entry = fields?.[editor.field];
   if (!entry) return { can: "unknown" };
+  if (editor.kind === "authored") {
+    const routed = writtenElsewhere(editor.target);
+    return {
+      can: "no",
+      field: editor.field,
+      entry,
+      why: routed ?? "This value is edited through another resource.",
+      // A writable authored resource is the old `elsewhere` case and was
+      // announced; one the record would refuse anyway stays silent.
+      announce: Boolean(entry.writable && routed !== undefined),
+    };
+  }
   return {
     can: "no",
     field: editor.field,
     entry,
     why: editor.kind === "explicit-answer"
       ? "This answer is recorded through its own attestation."
-      : editor.kind === "computed-subform"
-        ? "This value is worked out from the fields below."
-        : "This value is edited through another resource.",
+      : "This value is worked out from the fields below.",
     announce: false,
   };
 }
