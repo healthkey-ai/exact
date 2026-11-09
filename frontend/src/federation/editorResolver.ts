@@ -24,6 +24,7 @@
 
 import type {
   EditControl,
+  Editability,
   FieldOption,
   WritableFieldEntry,
   WritableFields,
@@ -34,6 +35,7 @@ import {
   controlFor,
   optionsOf,
   unmappedVocabulary,
+  writtenElsewhere,
 } from "./writable";
 import type { NegativeSource, SubformEntry, TrialDetailField } from "./types";
 
@@ -365,6 +367,39 @@ function resolveEntry(
         "descriptor",
       );
     }
+    // An older descriptor has no `inputs` at all. It predates the dedicated
+    // dialog, so keep the generic inverted scalar editor rather than taking
+    // the control away. `inputs: null` is different: the key is present and
+    // malformed, which must fail closed.
+    const hasInputs = Object.prototype.hasOwnProperty.call(entry, "inputs");
+    if (!hasInputs) {
+      const target = rawEntry(canonical, fields);
+      if (!target) {
+        return unsupported(
+          field,
+          "The field behind this row is not described.",
+          `negated_missing_target:${canonical}`,
+          "descriptor",
+        );
+      }
+      const resolved = resolveEntry(canonical, target, String(target.kind ?? ""), fields, context, seen);
+      if (resolved.state !== "handled" || resolved.editor.kind !== "scalar"
+          || resolved.editor.control !== "boolean") {
+        return resolved.state === "handled"
+          ? unsupported(
+              field,
+              "This row is a yes/no view, but the field behind it is not a yes/no value.",
+              "negated_target_not_boolean",
+              "descriptor",
+            )
+          : resolved;
+      }
+      return {
+        state: "handled",
+        field: resolved.field,
+        editor: { ...resolved.editor, invert: true },
+      };
+    }
     const inputs = Array.isArray(entry.inputs) ? entry.inputs : [];
     if (inputs.length !== 1 || inputs[0] !== canonical) {
       return unsupported(
@@ -690,4 +725,88 @@ function resolveEditorWithSeen(
     );
   }
   return resolveEntry(field, entry, String(entry.kind ?? ""), fields, context, seen);
+}
+
+/** Adapt a resolver decision to the shape `FieldEdit`/`NegatedBooleanDialog`
+ *  already consume.
+ *
+ *  Only scalar and negated decisions map to an editor here. `explicit-answer`,
+ *  `computed-subform` and `authored` need their own surfaces; returning
+ *  `unknown`/`no` keeps the row on its current path until those are wired.
+ */
+export function toEditability(
+  decision: EditorDecision,
+  fields: WritableFields | undefined,
+): Editability {
+  if (decision.state !== "handled") {
+    const entry = fields?.[decision.field];
+    if (!entry) return { can: "unknown" };
+    const routed = decision.diagnostic.startsWith("authored_target:")
+      ? writtenElsewhere(decision.diagnostic.slice("authored_target:".length))
+      : undefined;
+    return {
+      can: "no",
+      field: decision.field,
+      entry,
+      why: routed ?? decision.reason,
+      // Preserve exactly the refusals the page already spoke aloud: an
+      // unmapped vocabulary and a write routed to a target we have wording
+      // for. An unknown target stays silent, as it did before.
+      announce: decision.diagnostic.startsWith("unmapped_vocabulary:")
+        || routed !== undefined,
+    };
+  }
+  const editor = decision.editor;
+  if (editor.kind === "scalar" || editor.kind === "negated") {
+    const entry = fields?.[editor.field];
+    if (!entry) return { can: "unknown" };
+    if (editor.kind === "scalar") {
+      return {
+        can: "edit",
+        field: editor.field,
+        entry,
+        control: editor.control,
+        options: editor.options,
+        joined: editor.joined,
+        invert: editor.invert,
+      };
+    }
+    return {
+      can: "edit",
+      field: editor.field,
+      entry,
+      control: "boolean",
+      options: [],
+      joined: false,
+      invert: true,
+      negative: {
+        source: editor.source,
+        positive: editor.positive,
+        negative: editor.negative,
+      },
+    };
+  }
+  const entry = fields?.[editor.field];
+  if (!entry) return { can: "unknown" };
+  if (editor.kind === "authored") {
+    const routed = writtenElsewhere(editor.target);
+    return {
+      can: "no",
+      field: editor.field,
+      entry,
+      why: routed ?? "This value is edited through another resource.",
+      // A writable authored resource is the old `elsewhere` case and was
+      // announced; one the record would refuse anyway stays silent.
+      announce: Boolean(entry.writable && routed !== undefined),
+    };
+  }
+  return {
+    can: "no",
+    field: editor.field,
+    entry,
+    why: editor.kind === "explicit-answer"
+      ? "This answer is recorded through its own attestation."
+      : "This value is worked out from the fields below.",
+    announce: false,
+  };
 }

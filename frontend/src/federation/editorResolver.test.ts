@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   resolveEditor,
+  toEditability,
   type EditorDecision,
 } from "./editorResolver";
 import { editabilityOf, type WritableFields } from "./writable";
@@ -468,6 +469,97 @@ describe("resolveEditor", () => {
       "handled",
     );
     if (allowed.state === "handled") expect(allowed.editor.kind).toBe("scalar");
+  });
+
+  it("adapts a scalar decision to the editor shape the page consumes", () => {
+    const fields = described();
+    const decision = resolveEditor("anc_thousand_per_ul", fields, context);
+    const editable = toEditability(decision, fields);
+    expect(editable.can).toBe("edit");
+    if (editable.can === "edit") {
+      expect(editable.field).toBe("anc_thousand_per_ul");
+      expect(editable.control).toBe("number");
+    }
+  });
+
+  it("adapts a negated decision with its source and labels", () => {
+    const fields = described();
+    const decision = resolveEditor("no_hiv_status", fields, {
+      ...context,
+      negativeSource: { upatientField: "hiv_status", available: true, value: false },
+    });
+    const editable = toEditability(decision, fields);
+    expect(editable.can).toBe("edit");
+    if (editable.can === "edit") {
+      expect(editable.field).toBe("hiv_status");
+      expect(editable.invert).toBe(true);
+      expect(editable.negative?.positive).toBe("HIV Positive");
+    }
+  });
+
+  it("announces a refusal routed to a known external target", () => {
+    const fields = described();
+    fields.genomics_target = {
+      kind: "direct",
+      writable: true,
+      target: "genomics",
+    };
+    const editable = toEditability(
+      resolveEditor("genomics_target", fields, context),
+      fields,
+    );
+    expect(editable.can).toBe("no");
+    if (editable.can === "no") {
+      expect(editable.announce).toBe(true);
+      expect(editable.why).toContain("genomics");
+    }
+  });
+
+  it("stays silent for an unknown external target", () => {
+    const fields = described();
+    fields.telepathy_target = {
+      kind: "direct",
+      writable: true,
+      target: "telepathy",
+    };
+    const editable = toEditability(
+      resolveEditor("telepathy_target", fields, context),
+      fields,
+    );
+    expect(editable.can).toBe("no");
+    if (editable.can === "no") {
+      expect(editable.announce).toBe(false);
+    }
+  });
+
+  it("announces a writable authored resource with known wording", () => {
+    const fields = described();
+    fields.authored_genomics = {
+      kind: "authored",
+      writable: true,
+      target: "genomics",
+    };
+    const editable = toEditability(
+      resolveEditor("authored_genomics", fields, context),
+      fields,
+    );
+    expect(editable.can).toBe("no");
+    if (editable.can === "no") {
+      expect(editable.announce).toBe(true);
+      expect(editable.why).toContain("genomics");
+    }
+  });
+
+  it("adapts an unsupported decision to a refusal with the reason", () => {
+    const fields = described();
+    const editable = toEditability(
+      resolveEditor("structured_json", fields, context),
+      fields,
+    );
+    expect(editable.can).toBe("no");
+    if (editable.can === "no") {
+      expect(editable.why).toContain("structured");
+    }
   });
 
   it("honours an overridable descriptor flag for a recomputed value", () => {

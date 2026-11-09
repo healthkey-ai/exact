@@ -437,6 +437,10 @@ export interface Unaccepted {
  *  would route the reader into a different application — the same failure
  *  that keeps the nineteen aliases silent.
  */
+export function writtenElsewhere(target: string): string | undefined {
+  return WRITTEN_ELSEWHERE[target];
+}
+
 const WRITTEN_ELSEWHERE: Record<string, string> = {
   genomics:
     "This is recorded with each individual variant, in the genomics part " +
