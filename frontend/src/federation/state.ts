@@ -648,6 +648,51 @@ export function createPromopState({
       },
     },
 
+    // Explicit attestations have their own endpoints and snapshots. The POST
+    // carries the values the dialog was opened against, so PROMOP can refuse
+    // a concurrent answer instead of overwriting it.
+    explicitAnswers: {
+      answer: async (field, action, payload) => {
+        if (field === "pre_existing_condition_categories") {
+          const url = `${records}/${person}/preexisting-conditions-answer/`;
+          const snapshot = await client.get<{
+            no_pre_existing_conditions?: boolean | null;
+            preexisting_conditions?: string[] | null;
+          }>(url);
+          const body: Record<string, unknown> = {
+            action,
+            expected_flag: snapshot.data?.no_pre_existing_conditions ?? null,
+            expected_categories: snapshot.data?.preexisting_conditions ?? [],
+          };
+          if (action === "set_categories") {
+            body.categories = Array.isArray(payload?.categories)
+              ? payload.categories
+              : [];
+          }
+          await client.post(url, body);
+          return;
+        }
+        if (
+          field === "no_active_infection_status"
+          || field === "no_other_active_malignancies"
+        ) {
+          const url = `${records}/${person}/negative-answer/`;
+          const snapshot = await client.get<{
+            fields?: Record<string, { value?: unknown; source?: unknown }>;
+          }>(url);
+          const current = snapshot.data?.fields?.[field] ?? {};
+          await client.post(url, {
+            field,
+            action,
+            expected_value: current.value ?? null,
+            expected_source: current.source ?? null,
+          });
+          return;
+        }
+        throw new Error(`No explicit-answer endpoint for ${field}.`);
+      },
+    },
+
     // `person_id` is not optional here even though the endpoint accepts its
     // absence. Without it the answer describes the deployment — "could
     // someone write this" — and an analyst holding read-only access to every
