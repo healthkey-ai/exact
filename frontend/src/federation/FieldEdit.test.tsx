@@ -82,6 +82,37 @@ describe("when the control is drawn at all", () => {
     expect(screen.queryByRole("button", { name: "Edit BMI" })).toBeNull();
   });
 
+  it("still says why an unmapped vocabulary cannot be edited", async () => {
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({
+          label: "Languages",
+          upatientField: "languages_skills",
+          ufield: "languagesSkills",
+        }),
+      ]),
+    );
+    renderTrialMatches(api, {
+      state: fakeState({
+        writable: {
+          languages_skills: {
+            kind: "direct",
+            writable: true,
+            target: "patient_record",
+            value_kind: "string",
+          },
+        },
+      }).adapter,
+    });
+    await openDetail();
+
+    expect(
+      await screen.findByText(/language vocabulary is still moving/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit Languages" })).toBeNull();
+  });
+
   it("is not drawn for a row EXACT could not name an attribute for", async () => {
     const api = fakeApi();
     api.setDetail(detailWith([row({ label: "MIPI", upatientField: null })]));

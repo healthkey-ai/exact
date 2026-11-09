@@ -395,7 +395,7 @@ function resolveEntry(
       }
       return {
         state: "handled",
-        field: canonical,
+        field: resolved.field,
         editor: { ...resolved.editor, invert: true },
       };
     }
@@ -745,7 +745,11 @@ export function toEditability(
       field: decision.field,
       entry,
       why: decision.reason,
-      announce: false,
+      // Preserve the two refusals the page already spoke aloud: an unmapped
+      // vocabulary and a write routed to another resource. Everything else
+      // stays silent exactly as before.
+      announce: decision.diagnostic.startsWith("unmapped_vocabulary:")
+        || decision.diagnostic.startsWith("authored_target:"),
     };
   }
   const editor = decision.editor;

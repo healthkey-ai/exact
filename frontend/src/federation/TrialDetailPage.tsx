@@ -311,9 +311,11 @@ function editableRowNames(
     if (decision.editor.kind !== "scalar" && decision.editor.kind !== "negated") {
       continue;
     }
-    const key = decision.field;
-    if (taken.has(key)) continue;
-    taken.add(key);
+    // One control per ROW attribute, as before: an alias and its canonical
+    // are different rows here, and collapsing them by the canonical name would
+    // silently move the control to whichever row happens to come first.
+    if (taken.has(attribute)) continue;
+    taken.add(attribute);
     rows.add(field.name);
   }
   return rows;
@@ -420,15 +422,22 @@ function EligibilityRow({
   // editors this page already draws. A resolved refusal carries its reason;
   // it is not rendered yet (the next slice adds the note), but the row no
   // longer depends on three separate gates.
-  const decision = editing && editableHere
+  const decision = editing
     ? resolveEditor(field.upatientField, editing.fields, {
       surface: "row",
       row: field,
       negativeSource: field.negative_source,
     })
     : null;
-  const editable = decision
+  const resolved = decision
     ? toEditability(decision, editing?.fields)
+    : ({ can: "unknown" } as const);
+  // A duplicate row does not get a second control, but a refusal still
+  // belongs to the row it was made for: `editableRowNames` excludes refused
+  // rows, so gating the whole decision on `editableHere` would take their
+  // explanation away.
+  const editable = editableHere || resolved.can === "no"
+    ? resolved
     : ({ can: "unknown" } as const);
   // The queue is keyed by the field the write LANDS IN, not by the row's own
   // attribute: an alias writes its canonical field and a negated view writes
