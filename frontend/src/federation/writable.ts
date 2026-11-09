@@ -65,6 +65,22 @@ export interface WritableFieldEntry {
  *  what EXACT puts in `upatientField`. */
 export type WritableFields = Record<string, WritableFieldEntry>;
 
+/** Trial-side spellings that are legacy typos of the patient column.
+ *
+ *  The trial model carries `cytogenic_markers_*` (no second “t”); PROMOP's
+ *  record and descriptor carry `cytogenetic_markers`. Looking the trial
+ *  spelling up directly missed the descriptor and left both rows without a
+ *  control (healthkey-ai/exact#755). The alias is one-way: the canonical name
+ *  is what is read and written.
+ */
+const FIELD_ALIASES: Readonly<Record<string, string>> = {
+  cytogenic_markers: "cytogenetic_markers",
+};
+
+export function canonicalFieldName(name: string): string {
+  return FIELD_ALIASES[name] ?? name;
+}
+
 export interface FieldOption {
   value: string;
   label: string;
@@ -387,7 +403,7 @@ const NOT_IN_RECORD =
  *  writing down a path PROMOP says nothing should write. Someone deletes that
  *  entry by hand when the write path lands.
  */
-interface Unaccepted {
+export interface Unaccepted {
   why: string;
   /** Whether a usable control is enough to lift the block.
    *
@@ -430,6 +446,12 @@ const WRITTEN_ELSEWHERE: Record<string, string> = {
     "than here.",
 };
 
+export function unmappedVocabulary(name: string): Unaccepted | undefined {
+  return Object.prototype.hasOwnProperty.call(UNMAPPED_VOCABULARY, name)
+    ? UNMAPPED_VOCABULARY[name]
+    : undefined;
+}
+
 const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
   languages_skills: {
     why:
@@ -470,7 +492,7 @@ const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
  *  dedicated dialog: guessing "Yes"/"No" would put a generic control over a
  *  polarity boundary, which is the one place a guess is clinically wrong.
  */
-function answerLabels(
+export function answerLabels(
   entry: WritableFieldEntry,
 ): { positive: string; negative: string } | null {
   const raw = entry.answer_labels;
@@ -583,7 +605,8 @@ export function editabilityOf(
   row?: RowVocabulary,
 ): Editability {
   if (!patientField || !fields) return { can: "unknown" };
-  const entry = fields[patientField];
+  const name = canonicalFieldName(patientField);
+  const entry = fields[name];
   // A name the descriptor does not carry is the ORDINARY case, not drift: the
   // descriptor covers PROMOP's record, and 19 of EXACT's 133 mapped
   // attributes have no column in it — `mipi_risk`, `high_risk_mcl_criteria`,
@@ -653,9 +676,9 @@ export function editabilityOf(
   // and lose the descriptor's actionable "edit it in the Genomics tab".
   const unaccepted = Object.prototype.hasOwnProperty.call(
     UNMAPPED_VOCABULARY,
-    patientField,
+    name,
   )
-    ? UNMAPPED_VOCABULARY[patientField]
+    ? UNMAPPED_VOCABULARY[name]
     : undefined;
   const unmapped =
     entry.writable &&
@@ -689,7 +712,7 @@ export function editabilityOf(
     // this is `routedText !== undefined` rather than `elsewhere`.
     return {
       can: "no",
-      field: patientField,
+      field: name,
       entry,
       why,
       announce: Boolean(unmapped || routedText),
@@ -703,7 +726,7 @@ export function editabilityOf(
   const picker = control === "select" || control === "multiselect";
   return {
     can: "edit",
-    field: patientField,
+    field: name,
     entry,
     control,
     options:
