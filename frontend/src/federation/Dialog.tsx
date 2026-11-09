@@ -13,10 +13,14 @@ export interface DialogProps {
   /** Shown in the head. Omit for a dialog that titles itself. */
   title?: React.ReactNode;
   onClose: () => void;
+  /** Whether the shell may dismiss itself (scrim, Escape, Close). A dialog
+   *  with a write in flight passes `false`, so the write cannot be abandoned
+   *  and replayed behind its own back. */
+  dismissible?: boolean;
   children: React.ReactNode;
 }
 
-export function Dialog({ label, title, onClose, children }: DialogProps) {
+export function Dialog({ label, title, onClose, dismissible = true, children }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
   const closer = useRef<HTMLButtonElement>(null);
   // Read through a ref so the effect below can run ONCE. Keyed on `onClose`
@@ -25,6 +29,8 @@ export function Dialog({ label, title, onClose, children }: DialogProps) {
   // the reader was typing in.
   const close = useRef(onClose);
   close.current = onClose;
+  const dismissibleRef = useRef(dismissible);
+  dismissibleRef.current = dismissible;
 
   // `aria-modal` is a claim about behaviour, not a mechanism: it tells a
   // screen reader the rest of the page is inert and does nothing whatever to
@@ -44,15 +50,29 @@ export function Dialog({ label, title, onClose, children }: DialogProps) {
 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        close.current();
+        if (dismissibleRef.current) close.current();
         return;
       }
       if (event.key !== "Tab") return;
       const items = focusable();
-      if (items.length === 0) return;
+      if (items.length === 0) {
+        // Everything inside is disabled (a write is in flight). Keep focus in
+        // the modal rather than letting Tab walk into the page behind it.
+        event.preventDefault();
+        panel.current?.focus();
+        return;
+      }
       const first = items[0];
       const last = items[items.length - 1];
       const active = document.activeElement;
+      if (active === panel.current) {
+        // The trap parked focus on the panel while the controls were disabled.
+        // Once they are enabled again, the panel is neither `first` nor
+        // `last`, so the edge checks below would let Shift+Tab escape.
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
       // Also when focus has already escaped — a click on the scrim, a
       // programmatic move — because the next Tab is the reader's way back in.
       if (!panel.current?.contains(active as Node)) {
@@ -77,11 +97,15 @@ export function Dialog({ label, title, onClose, children }: DialogProps) {
   }, []);
 
   return (
-    <div className="exact-subform__scrim" onClick={onClose}>
+    <div
+      className="exact-subform__scrim"
+      onClick={dismissible ? onClose : undefined}
+    >
       <div
         ref={panel}
         className="exact-subform"
         role="dialog"
+        tabIndex={-1}
         aria-modal="true"
         aria-label={label}
         // The scrim closes on click; the panel must not, or every click
@@ -92,7 +116,13 @@ export function Dialog({ label, title, onClose, children }: DialogProps) {
           {/* Only when there is one: an empty heading is a violation in its
               own right, and the prop is optional. */}
           {title ? <h3 className="exact-subform__title">{title}</h3> : <span />}
-          <button type="button" ref={closer} className="exact-subform__close" onClick={onClose}>
+          <button
+            type="button"
+            ref={closer}
+            className="exact-subform__close"
+            disabled={!dismissible}
+            onClick={onClose}
+          >
             Close
           </button>
         </div>

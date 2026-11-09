@@ -172,6 +172,7 @@ function TrialMatchesInner({
   trialId: hostTrialId,
   onTrialIdChange,
   onPatientRecordChanged,
+  onExplicitAnswerChanged,
   renderMap,
   state,
   patientRecord,
@@ -2054,6 +2055,14 @@ function TrialMatchesInner({
                   queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
                   queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
                   onPatientRecordChanged?.({ genetic_mutations: findings });
+                },
+                // Attestations are not scalar fields: the host owns the
+                // endpoint, and the payload has to be re-read after it lands.
+                explicitAnswers: record?.explicitAnswers,
+                onExplicitAnswerChanged: () => {
+                  queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
+                  queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+                  onExplicitAnswerChanged?.();
                 },
               }
             : undefined

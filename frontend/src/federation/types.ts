@@ -653,6 +653,11 @@ export interface TrialMatchesProps {
    *  payload names no patient, so a host could not tell that what it was
    *  handed belongs to whoever was on screen a moment ago. */
   onPatientRecordChanged?: (fields: Record<string, unknown>) => void;
+  /** Called after an explicit attestation (pre-existing conditions, a derived
+   *  negative) is accepted. The host should re-read its patient payload: the
+   *  answer lives behind its own endpoint, so the normal field-write callback
+   *  cannot describe it. */
+  onExplicitAnswerChanged?: () => void;
   /** Draws the map behind the list/map view mode.
    *
    *  A function rather than an API key, because rendering tiles means loading

@@ -234,6 +234,9 @@ export interface TrialStateAdapter extends TrialPreferenceStore {
    *  separate from `setPatientFields`; a host that cannot serve it gets no
    *  findings editor rather than a half-working PATCH. */
   genomics?: GenomicsAdapter;
+  /** The host's explicit-answer writer, when it serves one. Without it the
+   *  attestation rows stay read-only rather than offering a dead control. */
+  explicitAnswers?: ExplicitAnswerAdapter;
 }
 
 /** One finding in `genetic_mutations`. The endpoint uses the same keys. */
@@ -267,6 +270,22 @@ export interface GenomicCatalogMarker {
   writable: boolean;
 }
 
+/** Explicit attestations are not scalar writes.
+ *
+ * `explicit-answer` fields (pre-existing conditions, the two derived
+ * negatives) live behind dedicated endpoints with snapshot/concurrency
+ * semantics; a PATCH would overwrite an answer it does not own. The host
+ * adapter owns the endpoint and expected-value fields; EXACT only names the
+ * field, the descriptor's action and the action's payload.
+ */
+export interface ExplicitAnswerAdapter {
+  answer(
+    field: string,
+    action: string,
+    payload?: Record<string, unknown>,
+  ): Promise<void>;
+}
+
 export interface GenomicsAdapter {
   list(): Promise<GenomicFinding[]>;
   catalog(): Promise<{ markers: GenomicCatalogMarker[]; attributes?: string[] }>;
@@ -283,7 +302,7 @@ export interface GenomicsAdapter {
  *  gets the pencils without lighting up tabs that have nowhere to write. */
 export type PatientRecordAdapter = Pick<
   TrialStateAdapter,
-  "getWritableFields" | "setPatientFields" | "genomics"
+  "getWritableFields" | "setPatientFields" | "genomics" | "explicitAnswers"
 >;
 
 /** What the record showed after a write.
