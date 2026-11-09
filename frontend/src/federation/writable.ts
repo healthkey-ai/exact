@@ -403,7 +403,7 @@ const NOT_IN_RECORD =
  *  writing down a path PROMOP says nothing should write. Someone deletes that
  *  entry by hand when the write path lands.
  */
-interface Unaccepted {
+export interface Unaccepted {
   why: string;
   /** Whether a usable control is enough to lift the block.
    *
@@ -446,6 +446,12 @@ const WRITTEN_ELSEWHERE: Record<string, string> = {
     "than here.",
 };
 
+export function unmappedVocabulary(name: string): Unaccepted | undefined {
+  return Object.prototype.hasOwnProperty.call(UNMAPPED_VOCABULARY, name)
+    ? UNMAPPED_VOCABULARY[name]
+    : undefined;
+}
+
 const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
   languages_skills: {
     why:
@@ -486,7 +492,7 @@ const UNMAPPED_VOCABULARY: Record<string, Unaccepted> = {
  *  dedicated dialog: guessing "Yes"/"No" would put a generic control over a
  *  polarity boundary, which is the one place a guess is clinically wrong.
  */
-function answerLabels(
+export function answerLabels(
   entry: WritableFieldEntry,
 ): { positive: string; negative: string } | null {
   const raw = entry.answer_labels;

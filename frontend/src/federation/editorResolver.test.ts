@@ -42,6 +42,7 @@ const described = (): WritableFields => ({
     writable: true,
     target: "patient_record",
     value_kind: "boolean",
+    answer_labels: { true: "HIV Positive", false: "No HIV" },
   },
   pre_existing_condition_categories: {
     kind: "explicit-answer",
@@ -79,6 +80,12 @@ const described = (): WritableFields => ({
     kind: "unmapped",
     writable: false,
     reason: "Derived from PersonLanguageSkill; write via the language-skills API.",
+  },
+  staging_modalities: {
+    kind: "direct",
+    writable: true,
+    target: "patient_record",
+    value_kind: "string",
   },
   treatment_refractory_status: {
     kind: "direct",
@@ -143,6 +150,20 @@ describe("resolveEditor", () => {
     }
   });
 
+  it("normalizes a legacy alias target to the canonical write field", () => {
+    const fields = described();
+    fields.legacy_cytogenetics = {
+      kind: "alias",
+      writable: false,
+      canonical: "cytogenic_markers",
+    };
+    const result = decision(resolveEditor("legacy_cytogenetics", fields, context), "handled");
+    if (result.state === "handled") {
+      expect(result.field).toBe("cytogenetic_markers");
+      expect(result.editor.field).toBe("cytogenetic_markers");
+    }
+  });
+
   it("follows an alias to the canonical field", () => {
     const fields = described();
     fields.refractory_status = {
@@ -165,7 +186,17 @@ describe("resolveEditor", () => {
   });
 
   it("turns a negated descriptor into a scalar editor over the canonical field", () => {
-    const result = decision(resolveEditor("no_hiv_status", described(), context), "handled");
+    const result = decision(
+      resolveEditor("no_hiv_status", described(), {
+        ...context,
+        negativeSource: {
+          upatientField: "hiv_status",
+          available: true,
+          value: false,
+        },
+      }),
+      "handled",
+    );
     if (result.state === "handled") {
       expect(result.field).toBe("hiv_status");
       expect(result.editor.kind).toBe("scalar");
@@ -194,6 +225,13 @@ describe("resolveEditor", () => {
     }
   });
 
+  it("refuses a negated row without provenance", () => {
+    const result = decision(resolveEditor("no_hiv_status", described(), context), "unsupported");
+    if (result.state === "unsupported") {
+      expect(result.diagnostic).toBe("negated_missing_provenance");
+    }
+  });
+
   it("does not treat answerable=false as a permission to write", () => {
     const fields = described();
     fields.pre_existing_condition_categories = {
@@ -203,9 +241,12 @@ describe("resolveEditor", () => {
     decision(resolveEditor("pre_existing_condition_categories", fields, context), "unsupported");
   });
 
-  it("offers the inputs of a computed row as a subform", () => {
+  it("offers the inputs of a computed row even when the row is recomputed", () => {
     const result = decision(
-      resolveEditor("estimated_glomerular_filtration_rate", described(), context),
+      resolveEditor("estimated_glomerular_filtration_rate", described(), {
+        ...context,
+        row: { upatientRecomputed: true },
+      }),
       "handled",
     );
     if (result.state === "handled") {
@@ -213,6 +254,19 @@ describe("resolveEditor", () => {
       if (result.editor.kind === "computed-subform") {
         expect(result.editor.inputs).toContain("serum_creatinine_level");
       }
+    }
+  });
+
+  it("refuses a recomputed subform entry before reaching its editor", () => {
+    const result = decision(
+      resolveEditor("serum_creatinine_level", described(), {
+        surface: "subform",
+        entry: { name: "serumCreatinineLevel", label: "Serum Creatinine", type: "float", value: 1, upatientRecomputed: true },
+      }),
+      "unsupported",
+    );
+    if (result.state === "unsupported") {
+      expect(result.diagnostic).toBe("recomputed:true");
     }
   });
 
@@ -242,9 +296,37 @@ describe("resolveEditor", () => {
     }
   });
 
+  it("returns the authored recipe when the descriptor publishes one", () => {
+    const fields = described();
+    fields.authored_therapy = {
+      kind: "authored",
+      writable: false,
+      authored_via: { target: "episode", endpoint: "/api/v1/episodes/" },
+    };
+    const result = decision(resolveEditor("authored_therapy", fields, context), "handled");
+    if (result.state === "handled" && result.editor.kind === "authored") {
+      expect(result.editor.target).toBe("episode");
+      expect(result.editor.recipe).toEqual({ target: "episode", endpoint: "/api/v1/episodes/" });
+    }
+  });
+
   it("refuses an unmapped or non-writable entry with an explicit reason", () => {
     const result = decision(resolveEditor("languages_skills", described(), context), "unsupported");
     if (result.state === "unsupported") expect(result.diagnostic).toBe("not_writable:unmapped");
+  });
+
+  it("keeps the unmapped-vocabulary guard even when the descriptor says writable", () => {
+    const fields = described();
+    fields.languages_skills = {
+      kind: "direct",
+      writable: true,
+      target: "patient_record",
+      value_kind: "string",
+    };
+    const result = decision(resolveEditor("languages_skills", fields, context), "unsupported");
+    if (result.state === "unsupported") {
+      expect(result.diagnostic).toBe("unmapped_vocabulary:languages_skills");
+    }
   });
 
   it("refuses an unknown kind with a diagnostic instead of guessing", () => {
@@ -275,16 +357,10 @@ describe("resolveEditor", () => {
 
   it("marks a multiselect over comma-joined text as joined", () => {
     const fields = described();
-    fields.languages_skills = {
-      kind: "direct",
-      writable: true,
-      target: "patient_record",
-      value_kind: "string",
-    };
     const result = decision(
-      resolveEditor("languages_skills", fields, {
+      resolveEditor("staging_modalities", fields, {
         ...context,
-        row: { utype: "multiselect", uoptions: [{ value: "en", label: "English" }] },
+        row: { utype: "multiselect", uoptions: [{ value: "CT", label: "CT" }] },
       }),
       "handled",
     );

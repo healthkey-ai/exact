@@ -28,8 +28,14 @@ import type {
   WritableFieldEntry,
   WritableFields,
 } from "./writable";
-import { canonicalFieldName, controlFor, optionsOf } from "./writable";
-import type { SubformEntry, TrialDetailField } from "./types";
+import {
+  answerLabels,
+  canonicalFieldName,
+  controlFor,
+  optionsOf,
+  unmappedVocabulary,
+} from "./writable";
+import type { NegativeSource, SubformEntry, TrialDetailField } from "./types";
 
 export type ResolverSurface = "row" | "subform";
 
@@ -67,6 +73,9 @@ export interface AuthoredEditor {
   kind: "authored";
   field: string;
   target: string;
+  /** The descriptor's authoring recipe, when it publishes one
+   *  (`authored_via`). The host uses it to choose the resource editor. */
+  recipe?: unknown;
   reason?: string;
 }
 
@@ -120,6 +129,9 @@ export interface ResolveContext {
    *  PROMOP accepting the write is not enough: EXACT must not overwrite it
    *  on the next match. */
   matcherOverride?: boolean;
+  /** Provenance for a negated row's canonical field (#5667). The dedicated
+   *  dialog requires it; without it the resolver refuses the editor. */
+  negativeSource?: NegativeSource | null;
 }
 
 /** Fields whose trial-side spelling is a legacy typo of the patient column.
@@ -245,24 +257,33 @@ export function resolveEditor(
     );
   }
 
+  const kind = typeof entry.kind === "string" ? entry.kind : "";
+
   // Recompute handling. A write PROMOP accepts but EXACT replaces is an edit
   // that silently undoes itself; only an explicitly supported override is
-  // allowed through.
-  const recomputed = context.row?.upatientRecomputed === true;
-  if (recomputed) {
+  // allowed through. A computed row is the exception: its value is derived,
+  // but its INPUTS are the edit path — refusing here would make every
+  // computed subform unreachable. Subform entries carry their own flag.
+  const entryRecomputed =
+    context.surface === "subform" && context.entry?.upatientRecomputed === true;
+  const recomputed = context.row?.upatientRecomputed === true || entryRecomputed;
+  if (recomputed && kind !== "computed") {
     const overridable = entry.overridable === true;
     const supported = context.matcherOverride === true || overridable;
     if (!supported) {
       return unsupported(
         current,
         "This value is recomputed from other fields.",
-        `recomputed:${context.row?.upatientRecomputedWhen?.when ?? "true"}`,
+        `recomputed:${
+          (entryRecomputed
+            ? context.entry?.upatientRecomputedWhen?.when
+            : context.row?.upatientRecomputedWhen?.when) ?? "true"
+        }`,
         "matcher",
       );
     }
   }
 
-  const kind = typeof entry.kind === "string" ? entry.kind : "";
   return resolveEntry(current, entry, kind, fields, context, new Set(seen));
 }
 
@@ -285,7 +306,9 @@ function resolveEntry(
   seen.add(field);
 
   if (kind === "alias") {
-    const canonical = typeof entry.canonical === "string" ? entry.canonical : "";
+    const canonical = canonicalFieldName(
+      typeof entry.canonical === "string" ? entry.canonical : "",
+    );
     if (!canonical || !rawEntry(canonical, fields)) {
       return unsupported(
         field,
@@ -298,7 +321,9 @@ function resolveEntry(
   }
 
   if (kind === "negated") {
-    const canonical = typeof entry.canonical === "string" ? entry.canonical : "";
+    const canonical = canonicalFieldName(
+      typeof entry.canonical === "string" ? entry.canonical : "",
+    );
     if (!canonical) {
       return unsupported(
         field,
@@ -315,12 +340,73 @@ function resolveEntry(
         "descriptor",
       );
     }
+    const inputs = Array.isArray(entry.inputs) ? entry.inputs : [];
+    if (inputs.length !== 1 || inputs[0] !== canonical) {
+      return unsupported(
+        field,
+        "This row's inputs do not name the field it writes.",
+        "negated_inputs_mismatch",
+        "descriptor",
+      );
+    }
+    const source = context.negativeSource;
+    if (!source || source.upatientField !== canonical
+        || typeof source.available !== "boolean") {
+      return unsupported(
+        field,
+        "This row carries no provenance for the field it writes.",
+        "negated_missing_provenance",
+        "exact",
+      );
+    }
+    if (!source.available) {
+      return unsupported(
+        field,
+        "The positive answer is not part of this patient's context.",
+        "negated_source_unavailable",
+        "exact",
+      );
+    }
+    if (source.type != null && source.type !== "boolean") {
+      return unsupported(
+        field,
+        "This row's provenance names a type it cannot carry.",
+        "negated_source_type",
+        "exact",
+      );
+    }
+    if ("value" in source
+        && source.value !== null && typeof source.value !== "boolean") {
+      return unsupported(
+        field,
+        "This row's provenance names an answer it cannot carry.",
+        "negated_source_value",
+        "exact",
+      );
+    }
     const target = rawEntry(canonical, fields);
     if (!target) {
       return unsupported(
         field,
         "The field behind this row is not described.",
         `negated_missing_target:${canonical}`,
+        "descriptor",
+      );
+    }
+    if (target.kind !== "direct" || target.writable !== true
+        || target.target !== "patient_record" || target.value_kind !== "boolean") {
+      return unsupported(
+        field,
+        "The field behind this row is not a writable yes/no value.",
+        "negated_target_contract",
+        "descriptor",
+      );
+    }
+    if (!answerLabels(target)) {
+      return unsupported(
+        field,
+        "This row's answers are not named, so the dialog cannot ask them.",
+        "negated_answer_labels",
         "descriptor",
       );
     }
@@ -377,14 +463,29 @@ function resolveEntry(
   }
 
   if (kind === "authored") {
-    const target = typeof entry.target === "string" ? entry.target : "resource";
+    const recipe = entry.authored_via;
+    const recipeTarget =
+      recipe && typeof recipe === "object" && !Array.isArray(recipe)
+        && typeof (recipe as { target?: unknown }).target === "string"
+        ? String((recipe as { target: string }).target)
+        : "";
+    const target = typeof entry.target === "string" ? entry.target : recipeTarget;
+    if (!target && !recipe) {
+      return unsupported(
+        field,
+        "This value is authored elsewhere, but the descriptor names no resource.",
+        "authored_missing_recipe",
+        "descriptor",
+      );
+    }
     return {
       state: "handled",
       field,
       editor: {
         kind: "authored",
         field,
-        target,
+        target: target || "resource",
+        recipe,
         reason: typeof entry.reason === "string" ? entry.reason : undefined,
       },
     };
@@ -444,6 +545,25 @@ function resolveEntry(
     );
   }
 
+  if (!kind || (kind !== "direct" && kind !== "profile" && kind !== "editable"
+      && kind !== "selectable" && kind !== "unmapped")) {
+    // An unknown kind is a contract gap, not a decision. Fail with a
+    // diagnostic; the UI may show the row as read-only, but the contract test
+    // fails on the same code.
+    return unsupported(
+      field,
+      "This value's editor is not supported by this version of the trial page.",
+      `unknown_kind:${kind || "none"}`,
+      "descriptor",
+    );
+  }
+
+  const rowVocabulary = {
+    type: context.row?.utype ?? context.entry?.type,
+    options: context.row?.uoptions ?? context.entry?.options,
+  };
+  const control = controlFor(entry, rowVocabulary);
+
   const elsewhere =
     entry.writable && entry.target != null && entry.target !== "patient_record";
   if (elsewhere) {
@@ -472,24 +592,18 @@ function resolveEntry(
       "descriptor",
     );
   }
-  if (!kind || (kind !== "direct" && kind !== "profile" && kind !== "editable"
-      && kind !== "selectable")) {
-    // An unknown kind is a contract gap, not a decision. Fail with a
-    // diagnostic; the UI may show the row as read-only, but the contract test
-    // fails on the same code.
+  const unaccepted = unmappedVocabulary(field);
+  const unmapped = unaccepted !== undefined
+    && !(unaccepted.releasedByAControl && control === "multiselect");
+  if (unmapped) {
     return unsupported(
       field,
-      "This value's editor is not supported by this version of the trial page.",
-      `unknown_kind:${kind || "none"}`,
+      unaccepted.why,
+      `unmapped_vocabulary:${field}`,
       "descriptor",
     );
   }
 
-  const rowVocabulary = {
-    type: context.row?.utype ?? context.entry?.type,
-    options: context.row?.uoptions ?? context.entry?.options,
-  };
-  const control = controlFor(entry, rowVocabulary);
   const fromDescriptor = optionsOf(entry);
   const picker = control === "select" || control === "multiselect";
   return {
