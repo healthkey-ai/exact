@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -64,7 +64,7 @@ function renderWithAnswer() {
   const api = fakeApi();
   api.setDetail(detailWith([row()]));
   renderTrialMatches(api, { state: state.adapter });
-  return { answer };
+  return { answer, state };
 }
 
 describe("explicit answers", () => {
@@ -78,7 +78,7 @@ describe("explicit answers", () => {
   });
 
   it("confirms none through the dedicated adapter, never a field save", async () => {
-    const { answer } = renderWithAnswer();
+    const { answer, state } = renderWithAnswer();
     await openDetail();
     await userEvent.click(
       screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
@@ -93,7 +93,36 @@ describe("explicit answers", () => {
       "confirm_none",
       undefined,
     );
+    expect(state.adapter.setPatientFields).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("withdraws through the adapter", async () => {
+    const { answer } = renderWithAnswer();
+    await openDetail();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Withdraw answer" }),
+    );
+
+    expect(answer).toHaveBeenCalledWith(
+      "pre_existing_condition_categories",
+      "withdraw",
+      undefined,
+    );
+  });
+
+  it("does not save an empty category set", async () => {
+    renderWithAnswer();
+    await openDetail();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Save these conditions" }),
+    ).toBeDisabled();
   });
 
   it("saves selected categories through the same adapter", async () => {
@@ -112,6 +141,35 @@ describe("explicit answers", () => {
       "set_categories",
       { categories: ["infections"] },
     );
+  });
+
+  it("cannot be dismissed or submitted twice while the write is in flight", async () => {
+    let release: () => void = () => {};
+    const answer = vi.fn(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    const state = fakeState({
+      writable: DESCRIPTOR,
+      overrides: { explicitAnswers: { answer } },
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "No pre-existing conditions",
+    });
+    await userEvent.click(confirm);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Close" })).toBeDisabled(),
+    );
+    await userEvent.click(confirm);
+    expect(answer).toHaveBeenCalledTimes(1);
+    release();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("keeps the dialog open and shows the failure when the adapter rejects", async () => {

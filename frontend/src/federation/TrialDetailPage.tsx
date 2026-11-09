@@ -456,7 +456,12 @@ function EligibilityRow({
     && decision.editor.kind === "explicit-answer"
     ? decision.editor
     : null;
-  const explicitAvailable = Boolean(explicitEditor && editing?.explicitAnswers);
+  const explicitAvailable = Boolean(
+    explicitEditor
+    && editing?.explicitAnswers
+    && editableHere
+    && !renderFieldEditor,
+  );
   // The queue is keyed by the field the write LANDS IN, not by the row's own
   // attribute: an alias writes its canonical field and a negated view writes
   // the positive one, so a pending or refused value under the row's name
