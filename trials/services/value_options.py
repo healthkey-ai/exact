@@ -1,9 +1,14 @@
+import logging
+
 from django.utils.functional import cached_property
+from django.db import ProgrammingError
 from django.db.models import F
 
 from django.core.cache import cache
 
 from trials.models import *
+
+logger = logging.getLogger(__name__)
 
 
 def ordered_dict(data):
@@ -289,23 +294,39 @@ class ValueOptions:
         items = PlannedTherapy.objects.filter(plannedtherapydiseaseconnection__disease__code__in=[disease_code.lower(), disease_code.upper()]).order_by('id')
         return {'none': 'No planned therapy', **{x.code: x.title for x in items}}
 
-    @property
-    def cytogenic_markers(self):
+    def _marker_options(self, category_code):
+        """Marker dropdown, or the explicit "None" choice when the catalog is absent.
+
+        The shared legacy trial corpus behind TRIALS_DATABASE_URL does not have
+        `trials_marker` / `trials_markercategory`. That is a missing capability,
+        not a server fault: the form still needs its "None" sentinel, and every
+        other dropdown keeps working. Only the two PostgreSQL "not installed"
+        codes are swallowed; permissions and other database errors stay loud.
+        """
         from trials.models import MarkerCategory, Marker
 
-        category = MarkerCategory.objects.get(code='cytogenic')
-        markers = Marker.objects.filter(categories=category).order_by('id')
+        try:
+            category = MarkerCategory.objects.get(code=category_code)
+            markers = Marker.objects.filter(categories=category).order_by('id')
+            return {'none': 'None', **{x.code: x.title for x in markers}}
+        except ProgrammingError as exc:
+            if getattr(exc.__cause__, 'pgcode', None) not in ('42P01', '42703'):
+                raise
+            logger.warning(
+                'marker catalog table/column unavailable (SQLSTATE %s); '
+                'returning only the None option for %s markers',
+                getattr(exc.__cause__, 'pgcode', 'unknown'),
+                category_code,
+            )
+            return {'none': 'None'}
 
-        return {'none': 'None', **{x.code: x.title for x in markers}}
+    @property
+    def cytogenic_markers(self):
+        return self._marker_options('cytogenic')
 
     @property
     def molecular_markers(self):
-        from trials.models import MarkerCategory, Marker
-
-        category = MarkerCategory.objects.get(code='molecular')
-        markers = Marker.objects.filter(categories=category).order_by('id')
-
-        return {'none': 'None', **{x.code: x.title for x in markers}}
+        return self._marker_options('molecular')
 
     @property
     def gelf_criteria_statuses(self):
