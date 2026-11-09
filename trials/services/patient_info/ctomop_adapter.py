@@ -285,6 +285,22 @@ OUTCOME_MAP = {
 }
 
 
+#: PROMOP / SNOMED disease surface names → the title the trial corpus stores.
+#: The list filter is ``disease__iexact`` against the corpus value ("breast
+#: cancer"), so a raw concept name such as "Malignant tumor of breast" matches
+#: nothing at all. Keep this to exact-name aliases; unknown diseases pass through.
+DISEASE_ALIASES = {
+    'malignant tumor of breast': 'Breast Cancer',
+    'malignant tumor of breast (disorder)': 'Breast Cancer',
+    'malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of breast (disorder)': 'Breast Cancer',
+    'carcinoma of breast': 'Breast Cancer',
+    'carcinoma of breast (disorder)': 'Breast Cancer',
+    'primary malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of female breast': 'Breast Cancer',
+}
+
+
 def normalize_ctomop_row(row: dict) -> dict:
     """Normalize a raw CTOMOP patient_info row to EXACT's internal value format.
 
@@ -292,6 +308,13 @@ def normalize_ctomop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # ── Disease name — PROMOP sends the raw SNOMED concept name ────────
+    disease = row.get('disease')
+    if isinstance(disease, str):
+        row['disease'] = DISEASE_ALIASES.get(
+            disease.strip().lower(), disease.strip()
+        )
+
     # ── Receptor statuses ──────────────────────────────────────────────
     # Resolved via DB-backed LRU map; aliases handle CTOMOP-specific labels
     # (e.g. "Equivocal" → her2_low, "Borderline" → er_plus_with_low_exp).
