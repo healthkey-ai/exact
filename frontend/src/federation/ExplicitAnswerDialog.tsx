@@ -30,6 +30,8 @@ export function ExplicitAnswerDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [snapshot, setSnapshot] = useState<Record<string, unknown> | undefined>();
+  const [snapshotState, setSnapshotState] = useState<"ready" | "loading" | "error">("ready");
+  const [snapshotAttempt, setSnapshotAttempt] = useState(0);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -39,17 +41,27 @@ export function ExplicitAnswerDialog({
   }, []);
   useEffect(() => {
     let active = true;
+    setSnapshot(undefined);
     if (!adapter?.snapshot) {
-      setSnapshot(undefined);
+      // The adapter takes its own snapshot inside `answer`; there is nothing
+      // to wait for here.
+      setSnapshotState("ready");
       return () => { active = false; };
     }
+    setSnapshotState("loading");
     adapter.snapshot(editor.field)
-      .then((value) => { if (active) setSnapshot(value); })
-      // The answer call can still take its own snapshot; a failed read here
-      // is not a reason to take the dialog away.
-      .catch(() => { if (active) setSnapshot(undefined); });
+      .then((value) => {
+        if (!active) return;
+        setSnapshot(value);
+        setSnapshotState("ready");
+      })
+      .catch(() => {
+        if (!active) return;
+        setSnapshot(undefined);
+        setSnapshotState("error");
+      });
     return () => { active = false; };
-  }, [adapter, editor.field]);
+  }, [adapter, editor.field, snapshotAttempt]);
 
   // The descriptor is the authority on the words. An action without a label is
   // an incomplete contract, not an invitation to invent clinical wording.
@@ -80,7 +92,7 @@ export function ExplicitAnswerDialog({
   };
 
   const submit = async (action: string) => {
-    if (busy) return;
+    if (busy || snapshotState !== "ready") return;
     setBusy(true);
     setError("");
     try {
@@ -109,6 +121,7 @@ export function ExplicitAnswerDialog({
   const setCategories = labelled.includes("set_categories");
   const others = labelled.filter((action) => action !== "set_categories");
   const hasAction = setCategories || others.length > 0;
+  const blocked = busy || snapshotState !== "ready";
 
   return (
     <Dialog
@@ -121,6 +134,23 @@ export function ExplicitAnswerDialog({
         This answer is recorded as your attestation; it is not a plain field
         edit.
       </p>
+      {snapshotState === "loading" ? (
+        <p className="exact-subform__note" role="status">
+          Reading the current answer…
+        </p>
+      ) : null}
+      {snapshotState === "error" ? (
+        <p className="exact-elig__error" role="alert">
+          Couldn&apos;t read the current answer.{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => setSnapshotAttempt((value) => value + 1)}
+          >
+            Retry
+          </button>
+        </p>
+      ) : null}
       {!hasAction ? (
         <p className="exact-subform__note">
           This answer is not available in this view.
@@ -154,7 +184,7 @@ export function ExplicitAnswerDialog({
           <button
             type="button"
             className="exact-elig__save"
-            disabled={busy || selected.length === 0}
+            disabled={blocked || selected.length === 0}
             onClick={() => void submit("set_categories")}
           >
             {editor.actionLabels.set_categories}
@@ -165,7 +195,7 @@ export function ExplicitAnswerDialog({
             key={action}
             type="button"
             className={action === "withdraw" ? "exact-elig__cancel" : "exact-elig__save"}
-            disabled={busy}
+            disabled={blocked}
             onClick={() => void submit(action)}
           >
             {editor.actionLabels[action]}
