@@ -143,6 +143,38 @@ describe("explicit answers", () => {
     );
   });
 
+  it("waits for the open-time snapshot and passes it to the answer", async () => {
+    let resolveSnapshot: (value: Record<string, unknown>) => void = () => {};
+    const snapshot = vi.fn(
+      () => new Promise<Record<string, unknown>>((resolve) => { resolveSnapshot = resolve; }),
+    );
+    const answer = vi.fn(async () => undefined);
+    const state = fakeState({
+      writable: DESCRIPTOR,
+      overrides: { explicitAnswers: { snapshot, answer } },
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    );
+    const confirm = await screen.findByRole("button", {
+      name: "No pre-existing conditions",
+    });
+    expect(confirm).toBeDisabled();
+    resolveSnapshot({ expectedFlag: true, expectedCategories: ["infections"] });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await userEvent.click(confirm);
+    expect(answer).toHaveBeenCalledWith(
+      "pre_existing_condition_categories",
+      "confirm_none",
+      undefined,
+      { expectedFlag: true, expectedCategories: ["infections"] },
+    );
+  });
+
   it("cannot be dismissed or submitted twice while the write is in flight", async () => {
     let release: () => void = () => {};
     const answer = vi.fn(

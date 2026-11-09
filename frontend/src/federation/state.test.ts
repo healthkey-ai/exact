@@ -630,3 +630,88 @@ describe("naming the fields the record refused", () => {
     }
   });
 });
+
+describe("explicit attestations", () => {
+  const clientFor = (snapshot: unknown) => {
+    const get = vi.fn().mockResolvedValue({ data: snapshot });
+    const post = vi.fn().mockResolvedValue({ data: {} });
+    return { get, post } as unknown as AxiosInstance & {
+      get: ReturnType<typeof vi.fn>;
+      post: ReturnType<typeof vi.fn>;
+    };
+  };
+
+  it("posts the pre-existing-conditions snapshot the answer was opened against", async () => {
+    const client = clientFor({
+      no_pre_existing_conditions: false,
+      preexisting_conditions: ["cardiacIssues"],
+    });
+    await adapter(client).explicitAnswers!.answer(
+      "pre_existing_condition_categories",
+      "confirm_none",
+    );
+
+    expect(client.get).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/preexisting-conditions-answer/",
+    );
+    expect(client.post).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/preexisting-conditions-answer/",
+      {
+        action: "confirm_none",
+        expected_flag: false,
+        expected_categories: ["cardiacIssues"],
+      },
+    );
+  });
+
+  it("sends the selected categories with the same snapshot", async () => {
+    const client = clientFor({
+      no_pre_existing_conditions: null,
+      preexisting_conditions: null,
+    });
+    await adapter(client).explicitAnswers!.answer(
+      "pre_existing_condition_categories",
+      "set_categories",
+      { categories: ["infections"] },
+    );
+
+    expect(client.post).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/preexisting-conditions-answer/",
+      {
+        action: "set_categories",
+        expected_flag: null,
+        expected_categories: null,
+        categories: ["infections"],
+      },
+    );
+  });
+
+  it("uses the negative-answer snapshot for the derived negatives", async () => {
+    const client = clientFor({
+      fields: {
+        no_active_infection_status: { value: null, source: false },
+      },
+    });
+    await adapter(client).explicitAnswers!.answer(
+      "no_active_infection_status",
+      "confirm_negative",
+    );
+
+    expect(client.post).toHaveBeenCalledWith(
+      "/api/v1/patient-records/9001/negative-answer/",
+      {
+        field: "no_active_infection_status",
+        action: "confirm_negative",
+        expected_value: null,
+        expected_source: false,
+      },
+    );
+  });
+
+  it("refuses a field it has no endpoint for", async () => {
+    const client = clientFor({});
+    await expect(
+      adapter(client).explicitAnswers!.answer("unknown_answer", "confirm_none"),
+    ).rejects.toThrow("No explicit-answer endpoint");
+  });
+});
