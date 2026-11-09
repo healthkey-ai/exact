@@ -25,10 +25,37 @@ from datetime import date
 from decimal import Decimal
 from functools import lru_cache
 
+from django.db import ProgrammingError
+
 from trials.services.therapy_match_profile import omop_therapy_enabled
 
 
 logger = logging.getLogger(__name__)
+
+
+def _catalog_rows(model):
+    """Rows for one reference model, or none when the corpus lacks its table.
+
+    The shared trial corpus behind ``TRIALS_DATABASE_URL`` predates some
+    catalog tables. ``TRIALS_DB_TOLERATE_MISSING_COLUMNS`` defers absent
+    columns, but a missing table still reaches the ORM as ``ProgrammingError``
+    and, before this, took the whole normalisation endpoint down with a 500.
+    Treat only PostgreSQL's "undefined table" / "undefined column" codes as an
+    empty catalog; permissions and every other database failure must still
+    fail loudly.
+    """
+    try:
+        return list(model.objects.values('title', 'code'))
+    except ProgrammingError as exc:
+        if getattr(exc.__cause__, 'pgcode', None) not in ('42P01', '42703'):
+            raise
+        logger.warning(
+            'catalog table/column for %s is unavailable (SQLSTATE %s); '
+            'resolving its values as unknown',
+            model._meta.db_table,
+            getattr(exc.__cause__, 'pgcode', 'unknown'),
+        )
+        return []
 
 
 @lru_cache(maxsize=1)
@@ -78,7 +105,7 @@ def _build_code_lookup():
     for model in all_models:
         lookup[model.__name__] = {
             row['title'].lower().strip(): row['code']
-            for row in model.objects.values('title', 'code')
+            for row in _catalog_rows(model)
         }
 
     # Therapy overrides TherapyComponent when both share the same title so
