@@ -180,6 +180,7 @@ function TrialMatchesInner({
   features,
   renderGenomicsEditor,
   renderFieldEditor,
+  fieldEditorOwnsValue,
   onCompareToSoc,
   onAuthorHighRiskMcl,
   onShareTrial,
@@ -2018,6 +2019,7 @@ function TrialMatchesInner({
         personId={personId}
         renderGenomicsEditor={renderGenomicsEditor}
         renderFieldEditor={renderFieldEditor}
+        fieldEditorOwnsValue={fieldEditorOwnsValue}
         onCompareToSoc={onCompareToSoc}
         onAuthorHighRiskMcl={onAuthorHighRiskMcl}
         onShareTrial={onShareTrial}

@@ -112,8 +112,14 @@ weights and nothing else) means the rest stops being remembered.
   CB returns an empty `data-promop-field` node there and mounts one PROMOP
   `mountFields` root inside a `data-promop-form` container; the widget portals
   an editor into every slot. Supplied, EXACT's scalar inline editor and its
-  negated boolean dialog are not drawn; the subform and genomics doors are
-  unaffected. Returning `null` leaves a row alone.
+  negated boolean dialog are not drawn. `fieldEditorOwnsValue` is asked per
+  row: when it says the node renders the patient's value as well as its
+  control (CB's PROMOP field does), EXACT also stops drawing the row's value
+  and units — drawing both duplicated every row (editable rows showed the
+  value beside the same value in a select; derived rows showed it twice plus
+  the read-only note). A row whose slot is only a pencil keeps EXACT's value.
+  The subform and genomics doors are unaffected. Returning `null` leaves the
+  value and units with EXACT.
 
 - `onCompareToSoc`, `onAuthorHighRiskMcl`, `onShareTrial` and
   `onOpenMissingAttributes` — host-owned detail actions. EXACT draws each
