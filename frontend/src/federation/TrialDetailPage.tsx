@@ -361,10 +361,18 @@ function computedSubformEntries(
   inputs: string[],
   allFields: TrialDetailField[],
   writable: WritableFields | undefined,
+  patientInfo: PatientInfo | null | undefined,
 ): SubformEntry[] {
   const entries: SubformEntry[] = [];
   for (const input of inputs) {
-    const row = allFields.find((candidate) => candidate.upatientField === input);
+    // A ULN row carries the RATIO in `uvalue`, not the absolute lab value.
+    // Picking it as the input would seed a ratio into the absolute column.
+    // Read-only rows are the ULN/display rows; the writable sibling is the
+    // canonical input.
+    const row = allFields.find(
+      (candidate) => candidate.upatientField === input
+        && candidate.ureadonly !== true,
+    );
     if (row) {
       entries.push({
         name: row.name,
@@ -374,19 +382,25 @@ function computedSubformEntries(
         options: row.uoptions ?? row.options,
         upatientField: input,
         upatientRecomputed: row.upatientRecomputed,
+        units: row.units,
+        uunits: row.uunits,
       });
       continue;
     }
     const entry = writable?.[input];
     if (!entry) continue;
     const kind = entry.value_kind;
+    const camel = input.replace(/_([a-z])/g, (_match, letter: string) =>
+      letter.toUpperCase(),
+    );
+    const current = patientInfo?.[input] ?? patientInfo?.[camel] ?? null;
     entries.push({
       name: input,
       label: input
         .replace(/_/g, " ")
         .replace(/\b\w/g, (letter) => letter.toUpperCase()),
       type: kind === "date" ? "date" : kind === "number" ? "int" : "string",
-      value: null,
+      value: current,
       options: Array.isArray(entry.options)
         ? entry.options as SubformEntry["options"]
         : null,
@@ -401,6 +415,7 @@ function EligibilityRow({
   trialId,
   editing,
   allFields,
+  patientInfo,
   editableHere,
   subformHere,
   openSubform,
@@ -413,6 +428,7 @@ function EligibilityRow({
   trialId?: string | number;
   editing?: RowEditing;
   allFields: TrialDetailField[];
+  patientInfo?: PatientInfo | null;
   editableHere?: boolean;
   subformHere?: boolean;
   openSubform?: string | null;
@@ -471,7 +487,12 @@ function EligibilityRow({
   const subformEntries = field.subform_details?.length
     ? field.subform_details
     : computedEditor
-      ? computedSubformEntries(computedEditor.inputs, allFields, editing?.fields)
+      ? computedSubformEntries(
+        computedEditor.inputs,
+        allFields,
+        editing?.fields,
+        patientInfo,
+      )
       : null;
   const canOpenSubform =
     Boolean(subformHere || computedEditor)
@@ -1286,6 +1307,7 @@ export function TrialDetailPage({
                       trialId={trialId}
                       editing={editing}
                       allFields={eligibility}
+                      patientInfo={patientInfo}
                       editableHere={editableRows.has(field.name)}
                       subformHere={subformRows.has(field.name)}
                       openSubform={openSubform}
