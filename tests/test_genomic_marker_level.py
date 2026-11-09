@@ -107,6 +107,7 @@ class TestTheCodeToConceptTable:
         assert MARKER_CONCEPTS['mycRearrangements'] == (MYC,)
         assert MARKER_CONCEPTS['1q21'] == (GAIN1Q21,)
         assert MARKER_CONCEPTS['1q21Amplification'] == (GAIN1Q21,)
+        assert MARKER_CONCEPTS['btkMutation'] == ('35952290',)
         assert MARKER_CONCEPTS['hyperdiploidy'] == (HYPERDIPLOIDY,)
         assert COMPOSITE_MARKER_CODES == {'atmOrAtrMutations', 'notch1or2Mutations'}
         assert MARKER_CONCEPTS['complexKaryotype'] == (COMPLEX_KARYOTYPE,)
@@ -118,6 +119,13 @@ class TestTheCodeToConceptTable:
     def test_bcma_has_a_local_concept_but_the_envelope_is_unresolved(self):
         assert BCMA in UNRESOLVED_MARKER_CODES
         assert MARKER_CONCEPTS[BCMA] == ('2100007900',)
+
+    def test_the_exclusion_only_marker_gaps_are_code_only(self):
+        # No exact standard concept exists for these; they are exclusions, so
+        # the canonical code is the safe identity. (#5674 gap inventory.)
+        for code in ('chromothripsis', 'complexKaryotypeExcludingT1114'):
+            assert code in UNRESOLVED_MARKER_CODES
+            assert code not in MARKER_CONCEPTS
 
 
 class TestTheMarkerState:
