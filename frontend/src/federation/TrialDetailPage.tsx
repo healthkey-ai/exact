@@ -44,7 +44,8 @@ import { NegatedBooleanDialog } from "./NegatedBooleanDialog";
 import { SubformDialog, subformCanBeEdited } from "./SubformDialog";
 import { GenomicsFindingsDialog } from "./GenomicsFindingsDialog";
 import { splitJoined } from "./writable";
-import { editabilityOf, invertBoolean, negatedEditability } from "./writable";
+import { invertBoolean } from "./writable";
+import { resolveEditor, toEditability } from "./editorResolver";
 import type { WritableFields } from "./writable";
 
 /** Everything the two writing controls need, as plain values and callbacks.
@@ -288,18 +289,31 @@ function failedFieldLabels(
  *  max show the same value, so which one wins does not matter, only that one
  *  does.
  */
-function editableRowNames(fields: TrialDetailField[]): Set<string> {
+function editableRowNames(
+  fields: TrialDetailField[],
+  writable: WritableFields | undefined,
+): Set<string> {
   const taken = new Set<string>();
   const rows = new Set<string>();
   for (const field of fields) {
     const attribute = field.upatientField;
-    // `upatientRecomputed` is the one refusal PROMOP cannot give: it will
-    // take the write, and EXACT will replace the value from its inputs before
-    // the next match is scored. Accepted, undone, no error — which reads to
-    // the patient as an edit that did nothing.
-    if (!attribute || field.ureadonly || field.upatientRecomputed) continue;
-    if (taken.has(attribute)) continue;
-    taken.add(attribute);
+    if (!attribute || field.ureadonly) continue;
+    // One resolver decides whether the row may carry a control. It owns the
+    // recompute/override rule, aliases and the unmapped-vocabulary guard;
+    // `editableRowNames` only keeps the one-control-per-attribute rule for
+    // min/max and ULN pairs.
+    const decision = resolveEditor(attribute, writable, {
+      surface: "row",
+      row: field,
+      negativeSource: field.negative_source,
+    });
+    if (decision.state !== "handled") continue;
+    if (decision.editor.kind !== "scalar" && decision.editor.kind !== "negated") {
+      continue;
+    }
+    const key = decision.field;
+    if (taken.has(key)) continue;
+    taken.add(key);
     rows.add(field.name);
   }
   return rows;
@@ -401,44 +415,21 @@ function EligibilityRow({
         (editing?.genomics &&
           editing.fields?.genetic_mutations?.writable === true)),
   );
-  // Whether the descriptor carries the negated pair's new metadata (#5667).
-  // `inputs` is also set on computed entries, so the kind is part of the test:
-  // only a `negated` entry with inputs means "the dedicated dialog's contract
-  // is here". A descriptor without it predates the change, and those rows keep
-  // the generic inline editor rather than losing their control.
-  const negatedEntry =
-    editing?.fields && field.upatientField
-      ? editing.fields[field.upatientField]
-      : undefined;
-  // The PRESENCE of the key, not its shape: a malformed `inputs` is the new
-  // metadata contradicting itself, and that must fail closed in the guard
-  // rather than fall back to the generic editor (which would invert an
-  // unvalidated pair).
-  const hasNegatedMetadata = Boolean(
-    negatedEntry && negatedEntry.kind === "negated" && "inputs" in negatedEntry,
-  );
-  const editable =
-    editing && editableHere
-      ? hasNegatedMetadata
-        ? negatedEditability(
-            field.upatientField,
-            editing.fields,
-            field.negative_source,
-          )
-        : editabilityOf(field.upatientField, editing.fields, {
-          // EXACT ships some value sets on the row itself; without this the
-          // editor asks PROMOP, gets nothing, and draws a text box over a
-          // column the matcher reads as a list of codes.
-          //
-          // `uoptions` alone, though the cell above displays through
-          // `uoptions ?? options`. The bare `options` is the TRIAL's
-          // vocabulary for its own requirement, and offering it as answers
-          // the PATIENT can give is how a trial's value ends up in a
-          // patient's record.
-          type: field.utype,
-          options: field.uoptions,
-        })
-      : ({ can: "unknown" } as const);
+  // One decision for the row. The resolver owns kinds, permissions, aliases
+  // and recompute; `toEditability` adapts scalar/negated decisions to the
+  // editors this page already draws. A resolved refusal carries its reason;
+  // it is not rendered yet (the next slice adds the note), but the row no
+  // longer depends on three separate gates.
+  const decision = editing && editableHere
+    ? resolveEditor(field.upatientField, editing.fields, {
+      surface: "row",
+      row: field,
+      negativeSource: field.negative_source,
+    })
+    : null;
+  const editable = decision
+    ? toEditability(decision, editing?.fields)
+    : ({ can: "unknown" } as const);
   // The queue is keyed by the field the write LANDS IN, not by the row's own
   // attribute: an alias writes its canonical field and a negated view writes
   // the positive one, so a pending or refused value under the row's name
@@ -920,7 +911,10 @@ export function TrialDetailPage({
   const mclNamesSettled = formSettings.isFetched;
 
   const eligibility = data?.details?.trialEligibilityAttributes ?? [];
-  const editableRows = useMemo(() => editableRowNames(eligibility), [eligibility]);
+  const editableRows = useMemo(
+    () => editableRowNames(eligibility, editing?.fields),
+    [eligibility, editing?.fields],
+  );
   const subformRows = useMemo(() => subformRowNames(eligibility), [eligibility]);
   // Which row's dialog is open, if any. Held here rather than in the row so
   // the notice below can stay quiet about what an open dialog is already
