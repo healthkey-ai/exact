@@ -223,7 +223,7 @@ describe("tab counts", () => {
       tabCounts: { eligible: 7, potential: 12 },
     });
     renderTrialMatches(api);
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     // The accessible name is an `aria-label`, so it is computed rather than
     // read off the DOM — asserting only on it leaves what is actually
     // painted unobserved.
@@ -238,7 +238,7 @@ describe("tab counts", () => {
     });
     renderTrialMatches(api, { initialFilters: { type: "eligible" } });
     await screen.findByRole("button", { name: "Fully matched, 7 trials" });
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     // Not offered: the subset the host did not ask for.
     expect(screen.queryByRole("button", { name: /^Potential/ })).toBeNull();
   });
@@ -249,7 +249,7 @@ describe("tab counts", () => {
     const api = fakeApi({ itemsTotalCount: 3, tabCounts: undefined });
     renderTrialMatches(api);
     // Named without a count at all, rather than "…, 0 trials".
-    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
+    await screen.findByRole("button", { name: "Eligible, 3 trials" });
     expect(screen.queryByRole("button", { name: /0 trials/ })).toBeNull();
     // Exactly one badge is painted — the active tab's, labelled from its
     // own `itemsTotalCount`, which is a number the response really carries.
@@ -271,7 +271,7 @@ describe("tab counts", () => {
     const api = fakeApi({ itemsTotalCount: 3, tabCounts: undefined });
     renderTrialMatches(api, { initialFilters: { type: "eligible" } });
     await screen.findByRole("button", { name: "Fully matched" });
-    await screen.findByRole("button", { name: "Eligible & Potential" });
+    await screen.findByRole("button", { name: "Eligible" });
     expect(screen.queryByTestId("tab-count")).toBeNull();
   });
 });
@@ -795,15 +795,15 @@ describe("counts while a state tab is active", () => {
 
   it("does not label the match tabs with counts from a narrowed response", async () => {
     // Those counts came back from a request filtered to the saved ids, so
-    // they describe the bookmarks. On the Eligible & Potential badge they
-    // would read as the corpus — "Eligible & Potential, 1" for a reader with
+    // they describe the bookmarks. On the Eligible badge they
+    // would read as the corpus — "Eligible, 1" for a reader with
     // one bookmarked eligible trial and many matching.
     // 19 against a narrowed 1, so the two are distinguishable. With a corpus
     // of 1 they are the same badge, and this test — whose whole subject is
     // telling them apart — passes either way.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     // The state counts are there to begin with — without this the test
     // cannot tell "put away" from "never arrived".
     await screen.findByRole("button", { name: "Favorites, 1 trial" });
@@ -817,7 +817,7 @@ describe("counts while a state tab is active", () => {
     // reader keeps the one number the page exists to show. The state tabs
     // keep theirs too, because nothing beside them is blank to read as a
     // zero (#536).
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     await screen.findByRole("button", { name: "Favorites, 1 trial" });
     expect(screen.queryAllByTestId("tab-count")).toHaveLength(3);
   });
@@ -842,7 +842,7 @@ describe("counts while a state tab is active", () => {
     // The corpus number is out as soon as it is known — it does not wait for
     // the adapter — and it is the ONLY number: Registered has resolved and
     // its 0 is true, but printed beside a blank Favorites it reads as one.
-    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await screen.findByRole("button", { name: "Eligible, 1 trial" });
     await waitFor(() => expect(screen.queryAllByTestId("tab-count")).toHaveLength(1));
     await screen.findByRole("button", { name: "Registered" });
     await screen.findByRole("button", { name: "Favorites" });
@@ -865,7 +865,7 @@ describe("counts while a state tab is active", () => {
       }),
     });
 
-    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await screen.findByRole("button", { name: "Eligible, 1 trial" });
     await waitFor(() => expect(listed(api).length).toBe(1));
     // And BOTH state tabs go quiet, not just the one that failed: Registered
     // read fine and its 0 is true, but printed beside a blank Favorites it
@@ -881,12 +881,12 @@ describe("counts while a state tab is active", () => {
     // the reader has left that tab, so asking "is a state tab active" gets
     // the wrong answer for the whole placeholder window: leave Favorites,
     // change the sort, come back, and the corpus badge is painted from the
-    // narrowed counts — "Eligible & Potential, 1 trial" against a corpus of
+    // narrowed counts — "Eligible, 1 trial" against a corpus of
     // 19. This is the exact lie the withholding exists to prevent, arriving
     // through the cache instead of through the request.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
     // A narrowed response, counted over the saved ids: one trial.
@@ -902,15 +902,15 @@ describe("counts while a state tab is active", () => {
     await waitFor(() => expect(listed(api).length).toBe(4));
     // The lie stays refused: whatever the badge says, it is not the 1 that
     // came back over the saved ids.
-    expect(screen.queryByRole("button", { name: /Eligible & Potential, 1 trial/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Eligible, 1 trial/ })).toBeNull();
     // And what it does say is this corpus's own 19 — same patient, same
     // filters; only the sort moved, which cannot change how many match.
     expect(screen.getByRole("button", { name: /^Eligible/ })).toHaveAccessibleName(
-      "Eligible & Potential, 19 trials",
+      "Eligible, 19 trials",
     );
 
     release();
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
   });
 
   it("does not flicker its numbers on the way to a state tab", async () => {
@@ -921,7 +921,7 @@ describe("counts while a state tab is active", () => {
     // this all exists to prevent. Same numbers throughout.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     const release = api.deferNextList();
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
@@ -953,7 +953,7 @@ describe("counts while a state tab is active", () => {
     await waitFor(() => expect(listed(api).length).toBe(1));
 
     const release = api.deferNextList();
-    await userEvent.click(screen.getByRole("button", { name: /^Eligible & Potential/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Eligible/ }));
     await waitFor(() => expect(listed(api).length).toBe(2));
 
     // Not 5, and not anything: the answer for this tab has not arrived.
@@ -964,7 +964,7 @@ describe("counts while a state tab is active", () => {
   it("brings every count back on a tab that can be counted", async () => {
     const api = fakeApi({ tabCounts: { eligible: 1, potential: 0 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 1 trial" });
+    await screen.findByRole("button", { name: "Eligible, 1 trial" });
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
     await waitFor(() => expect(listed(api).length).toBe(2));
 
@@ -1006,7 +1006,7 @@ describe("counts while a state tab is active", () => {
     // for this corpus.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     api.setResponse({ tabCounts: { eligible: 5 } as never });
     await userEvent.click(screen.getByRole("radio", { name: "Sort by Matching Score" }));
@@ -1017,7 +1017,7 @@ describe("counts while a state tab is active", () => {
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
 
     // The good counts are still what this corpus is remembered by.
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
   });
 
   it("does not file the previous filters' count under the new ones", async () => {
@@ -1028,7 +1028,7 @@ describe("counts while a state tab is active", () => {
     // on a state tab as a number for a corpus nobody counted.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     // New filters, held open, so the old response is all there is.
     const before = listed(api).length;
@@ -1054,9 +1054,9 @@ describe("counts while a state tab is active", () => {
     const { setProps } = renderTrialMatches(api, {
       state: fakeState({ favorites: ["1"] }).adapter,
     });
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     setProps({ patientInfo: { disease: "mantle cell lymphoma" } });
 
@@ -1069,9 +1069,9 @@ describe("counts while a state tab is active", () => {
     // counted, so it goes — and the bar goes with it.
     const api = fakeApi({ tabCounts: { eligible: 7, potential: 12 } });
     renderIt(api, state());
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     await userEvent.click(screen.getByRole("button", { name: /^Favorites/ }));
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     await userEvent.click(
       screen.getByRole("button", { name: /Filter Results|Filters \(/ }),
@@ -3764,7 +3764,7 @@ describe("the counts across a patient switch", () => {
       </QueryClientProvider>
     );
     const view = render(ui("A"));
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
 
     armed = true;
     // A different corpus for B, so the closing assertion can tell whose
@@ -3774,10 +3774,10 @@ describe("the counts across a patient switch", () => {
 
     await waitFor(() => expect(gate.release).not.toBeNull());
     expect(screen.queryAllByTestId("tab-count")).toHaveLength(0);
-    expect(screen.queryByRole("button", { name: /Eligible & Potential, 19/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Eligible, 19/ })).toBeNull();
 
     gate.release?.();
-    await screen.findByRole("button", { name: "Eligible & Potential, 3 trials" });
+    await screen.findByRole("button", { name: "Eligible, 3 trials" });
   });
 
   it("keeps the counts when the host re-spells the same patient", async () => {
@@ -3803,7 +3803,7 @@ describe("the counts across a patient switch", () => {
       </QueryClientProvider>
     );
     const view = render(ui({ disease: "multiple myeloma", ref: "A" }));
-    await screen.findByRole("button", { name: "Eligible & Potential, 19 trials" });
+    await screen.findByRole("button", { name: "Eligible, 19 trials" });
     const before = listed(api).length;
 
     view.rerender(ui({ ref: "A", disease: "multiple myeloma" }));

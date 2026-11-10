@@ -249,7 +249,7 @@ describe("the tab strip, when the tabs themselves move", () => {
     // has already brought it to the right edge.
     expect(strip().scrollLeft).toBe(100);
 
-    // "Eligible & Potential 369" arrives and the tab it lands on grows.
+    // "Eligible 369" arrives and the tab it lands on grows.
     widths[0] = 160;
     view.rerender(bar(COUNTS));
 
