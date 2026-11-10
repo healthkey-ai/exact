@@ -59,9 +59,12 @@ class PatientInfoSerializer:
 
 
 class GraphPatientInfoSerializer(PatientInfoSerializer):
-    """Strip the heavy fields from PatientInfoSerializer for the graph endpoint."""
+    """Strip the heavy and non-JSON fields from PatientInfoSerializer for the graph endpoint."""
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data.pop('details', None)
+        # PostGIS `Point` is not JSON-serializable and the graph client reads
+        # no coordinate from it; the distance work uses the object server-side.
+        data.pop('geo_point', None)
         return data

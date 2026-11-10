@@ -261,6 +261,20 @@ def test_condition_codes_reach_matcher_without_database_access(codes, builder):
 
 
 @pytest.mark.parametrize('builder', BUILDERS)
+def test_graph_patient_payload_drops_the_postgis_point(builder):
+    """A PostGIS Point is not JSON-serializable (#graph 500).
+
+    The graph endpoint returns the patient beside the trial nodes; the point
+    is used server-side for distance and read by no client.
+    """
+    from django.contrib.gis.geos import Point
+
+    patient = builder({})
+    patient.geo_point = Point(-118.24, 34.05, srid=4326)
+    assert 'geo_point' not in GraphPatientInfoSerializer(patient).data
+
+
+@pytest.mark.parametrize('builder', BUILDERS)
 def test_malformed_source_item_does_not_erase_known_condition_codes(builder):
     patient = builder({'preexisting_conditions': ['diabetes', None, '', 123]})
     assert PatientInfoAttributes(patient).get_value('pre_existing_condition_categories') == ['diabetes']
