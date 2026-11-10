@@ -153,6 +153,10 @@ export interface ResolveContext {
   /** Provenance for a negated row's canonical field (#5667). The dedicated
    *  dialog requires it; without it the resolver refuses the editor. */
   negativeSource?: NegativeSource | null;
+  /** The computed row whose subform this entry belongs to. `patient_age`'s
+   *  only input is `date_of_birth`, a person-scoped field: the demographics
+   *  guard below would otherwise hide the one control the row has. */
+  parentField?: string | null;
 }
 
 /** Fields whose trial-side spelling is a legacy typo of the patient column.
@@ -610,14 +614,20 @@ function resolveEntry(
 
   // Person-scoped demographics are legitimately editable from a row, but are
   // a different question when reached through a threshold dialog: changing
-  // gender/race from the bilirubin row is a door into the wrong room.
+  // gender/race from the bilirubin row is a door into the wrong room. Date of
+  // birth is the exception when it is the input of `patient_age`: the row has
+  // no other way to be changed, and the door leads exactly where the reader
+  // asked.
   const scope: ScalarEditor["scope"] =
     kind === "profile"
     || entry.projection_target === "person"
     || entry.projection_target === "location"
       ? "person"
       : "record";
-  if (context.surface === "subform" && scope === "person") {
+  const dateOfBirthBehindAge =
+    field === "date_of_birth"
+    && canonicalFieldName(String(context.parentField ?? "")) === "patient_age";
+  if (context.surface === "subform" && scope === "person" && !dateOfBirthBehindAge) {
     return unsupported(
       field,
       "This value describes the patient, not the threshold.",

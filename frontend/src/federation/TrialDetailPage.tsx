@@ -496,7 +496,7 @@ function EligibilityRow({
       : null;
   const canOpenSubform =
     Boolean(subformHere || computedEditor)
-    && subformCanBeEdited(subformEntries, editing);
+    && subformCanBeEdited(subformEntries, editing, field.upatientField);
   // `genetic_mutations` is structured, so the generic dialog refuses it. This
   // is the same source, opened through the endpoint that owns it — and only
   // when the descriptor says this caller may write it. The adapter exists for

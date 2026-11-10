@@ -45,7 +45,11 @@ export interface SubformDialogProps {
  *  patient's demographics, record-wide, from a threshold row. That is not a
  *  door onto a wall; it is a door into the wrong room.
  */
-function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
+function verdictFor(
+  entry: SubformEntry,
+  editing: RowEditing,
+  parentField?: string | null,
+): Editability {
   if (!entry.upatientField) return { can: "unknown" };
   // The same resolver as the row path, told that this is a subform entry:
   // recompute, person-scoped demographics, aliases and the unmapped-vocabulary
@@ -55,13 +59,18 @@ function verdictFor(entry: SubformEntry, editing: RowEditing): Editability {
     resolveEditor(entry.upatientField, editing.fields, {
       surface: "subform",
       entry,
+      parentField,
     }),
     editing.fields,
   );
 }
 
-function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
-  return verdictFor(entry, editing).can === "edit";
+function entryIsOffered(
+  entry: SubformEntry,
+  editing: RowEditing,
+  parentField?: string | null,
+): boolean {
+  return verdictFor(entry, editing, parentField).can === "edit";
 }
 
 /** Whether a subform is worth opening at all.
@@ -73,9 +82,10 @@ function entryIsOffered(entry: SubformEntry, editing: RowEditing): boolean {
 export function subformCanBeEdited(
   entries: SubformEntry[] | null | undefined,
   editing: RowEditing | undefined,
+  parentField?: string | null,
 ): boolean {
   if (!entries?.length || !editing) return false;
-  return entries.some((entry) => entryIsOffered(entry, editing));
+  return entries.some((entry) => entryIsOffered(entry, editing, parentField));
 }
 
 export function SubformDialog({ field, entries, editing, onClose }: SubformDialogProps) {
@@ -92,7 +102,7 @@ export function SubformDialog({ field, entries, editing, onClose }: SubformDialo
 
         <ul className="exact-subform__list">
           {entries.map((entry) => {
-            const editable = verdictFor(entry, editing);
+            const editable = verdictFor(entry, editing, field.upatientField);
             const attribute = entry.upatientField;
             const pending =
               attribute && attribute in editing.outstanding

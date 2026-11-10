@@ -136,6 +136,7 @@ describe("computed rows without server subform_details", () => {
         kind: "direct",
         writable: true,
         target: "patient_record",
+        projection_target: "person",
         value_kind: "date",
       },
     };
