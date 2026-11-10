@@ -1,14 +1,10 @@
-import logging
-
 from django.utils.functional import cached_property
-from django.db import ProgrammingError
 from django.db.models import F
 
 from django.core.cache import cache
 
 from trials.models import *
-
-logger = logging.getLogger(__name__)
+from trials.services.patient_vocabulary import catalog_rows
 
 
 def ordered_dict(data):
@@ -24,17 +20,37 @@ class ValueOptions:
         # would serve the pre-#63 shape (missing those 40 keys), letting
         # the cached blob drift from fresh `all_options()` output until
         # the 1h TTL expires.
-        return 'ValueOptions.all_options.v2'
+        # v3: #5521 adds the MM MyelomaRelatedDisorder vocabulary keys.
+        # v4: CB-owned marker axes; myeloma labels no longer require a table.
+        return 'ValueOptions.all_options.v4'
 
     @staticmethod
     def to_value_and_label(data):
         return [{'value': k, 'label': v} for k, v in data.items()]
 
-    @staticmethod
-    def therapies_by_disease_code_and_line_code(disease_code, line_code):
-        from trials.models import Disease, Therapy, TherapyRound, DiseaseRoundTherapyConnection
+    @cached_property
+    def _disease_by_code_cache(self):
+        # Per-instance memo so one all_options() build (which fans out to ~40
+        # per-disease/line therapy lists) resolves each Disease once instead of
+        # re-running `Disease WHERE code IN (lower, upper)` for every list — an
+        # N+1 (ported from CB perf(value-options) memoize disease-by-code). A
+        # fresh ValueOptions is built per all_options() call, so there is no
+        # cross-request staleness.
+        return {}
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+    def _disease_by_code(self, disease_code):
+        from trials.models import Disease
+        key = disease_code.upper()
+        if key not in self._disease_by_code_cache:
+            self._disease_by_code_cache[key] = list(
+                Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()])
+            )
+        return self._disease_by_code_cache[key]
+
+    def therapies_by_disease_code_and_line_code(self, disease_code, line_code):
+        from trials.models import Therapy, TherapyRound, DiseaseRoundTherapyConnection
+
+        disease = self._disease_by_code(disease_code)
         therapy_line = TherapyRound.objects.filter(code=line_code).first()
         connections = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease, round=therapy_line).select_related('therapy')
         items = [x.therapy.id for x in connections]
@@ -66,21 +82,19 @@ class ValueOptions:
         items = TherapyComponentCategory.objects.all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapies_by_disease_code(disease_code):
-        from trials.models import Disease, Therapy, DiseaseRoundTherapyConnection
+    def therapies_by_disease_code(self, disease_code):
+        from trials.models import Therapy, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         connections = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).select_related('therapy')
         items = [x.therapy.id for x in connections]
         items = Therapy.objects.filter(id__in=items).all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapy_components_by_disease_code(disease_code):
-        from trials.models import Disease, TherapyComponent, DiseaseRoundTherapyConnection
+    def therapy_components_by_disease_code(self, disease_code):
+        from trials.models import TherapyComponent, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         items = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).prefetch_related('therapy__components')
         ids = []
         for item in items:
@@ -89,11 +103,10 @@ class ValueOptions:
         items = TherapyComponent.objects.filter(id__in=ids).all()
         return ordered_dict({x.code: x.title for x in items})
 
-    @staticmethod
-    def therapy_types_by_disease_code(disease_code):
-        from trials.models import Disease, TherapyComponentCategory, DiseaseRoundTherapyConnection
+    def therapy_types_by_disease_code(self, disease_code):
+        from trials.models import TherapyComponentCategory, DiseaseRoundTherapyConnection
 
-        disease = Disease.objects.filter(code__in=[disease_code.lower(), disease_code.upper()]).all()
+        disease = self._disease_by_code(disease_code)
         items = DiseaseRoundTherapyConnection.objects.filter(disease__in=disease).prefetch_related('therapy__components__categories')
         ids = []
         for item in items:
@@ -294,39 +307,21 @@ class ValueOptions:
         items = PlannedTherapy.objects.filter(plannedtherapydiseaseconnection__disease__code__in=[disease_code.lower(), disease_code.upper()]).order_by('id')
         return {'none': 'No planned therapy', **{x.code: x.title for x in items}}
 
-    def _marker_options(self, category_code):
-        """Marker dropdown, or the explicit "None" choice when the catalog is absent.
-
-        The shared legacy trial corpus behind TRIALS_DATABASE_URL does not have
-        `trials_marker` / `trials_markercategory`. That is a missing capability,
-        not a server fault: the form still needs its "None" sentinel, and every
-        other dropdown keeps working. Only the two PostgreSQL "not installed"
-        codes are swallowed; permissions and other database errors stay loud.
-        """
-        from trials.models import MarkerCategory, Marker
-
-        try:
-            category = MarkerCategory.objects.get(code=category_code)
-            markers = Marker.objects.filter(categories=category).order_by('id')
-            return {'none': 'None', **{x.code: x.title for x in markers}}
-        except ProgrammingError as exc:
-            if getattr(exc.__cause__, 'pgcode', None) not in ('42P01', '42703'):
-                raise
-            logger.warning(
-                'marker catalog table/column unavailable (SQLSTATE %s); '
-                'returning only the None option for %s markers',
-                getattr(exc.__cause__, 'pgcode', 'unknown'),
-                category_code,
-            )
-            return {'none': 'None'}
-
     @property
     def cytogenic_markers(self):
-        return self._marker_options('cytogenic')
+        from trials.models import CytogenicMarker
+
+        markers = catalog_rows(CytogenicMarker)
+
+        return {'none': 'None', **{x['code']: x['title'] for x in markers}}
 
     @property
     def molecular_markers(self):
-        return self._marker_options('molecular')
+        from trials.models import MolecularMarker
+
+        markers = catalog_rows(MolecularMarker)
+
+        return {'none': 'None', **{x['code']: x['title'] for x in markers}}
 
     @property
     def gelf_criteria_statuses(self):
@@ -908,6 +903,20 @@ class ValueOptions:
         return {x.code: x.title for x in items}
 
     @property
+    def myeloma_related_disorders(self):
+        # Display labels for the fixed six boolean-source contract in
+        # exact_matching.patient_info.patient_info_attributes. Identical to
+        # migration 0026, not a clinical vocabulary inferred from empty rows.
+        return {
+            'mgus': 'Monoclonal Gammopathy of Undetermined Significance (MGUS)',
+            'smoldering_multiple_myeloma': 'Smoldering Multiple Myeloma',
+            'waldenstrom_macroglobulinemia': 'Waldenström Macroglobulinemia',
+            'igm_multiple_myeloma': 'IgM Multiple Myeloma',
+            'al_amyloidosis': 'Light-Chain (AL) Amyloidosis',
+            'poems_syndrome': 'POEMS Syndrome',
+        }
+
+    @property
     def er_statuses(self):
         from trials.models import EstrogenReceptorStatus
         items = EstrogenReceptorStatus.objects.order_by('id')
@@ -1411,5 +1420,11 @@ class ValueOptions:
             },
             'highRiskMclCriteria': {
                 'options': self.to_value_and_label(self.high_risk_mcl_criteria)
+            },
+            'myelomaRelatedDisorders': {
+                'options': self.to_value_and_label(self.myeloma_related_disorders)
+            },
+            'myelomaRelatedDisordersExcluded': {
+                'options': self.to_value_and_label(self.myeloma_related_disorders)
             },
         }

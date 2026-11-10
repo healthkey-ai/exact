@@ -21,6 +21,11 @@ class TrialSerializer(serializers.ModelSerializer):
     sponsor = serializers.CharField(source='sponsor_name')
     goodnessScore = serializers.IntegerField(source='goodness_score')
     trialType = serializers.StringRelatedField(source='trial_type')
+    # The list already knows which trials require a gene or a variant; until now
+    # only the detail page showed it (#377 follow-up: the card needs the same
+    # facts to make a genomic search legible without opening every row).
+    mutationGenesRequired = serializers.JSONField(source='mutation_genes_required')
+    mutationVariantsRequired = serializers.JSONField(source='mutation_variants_required')
 
     class Meta:
         model = Trial
@@ -43,6 +48,8 @@ class TrialSerializer(serializers.ModelSerializer):
             'link',
             'goodnessScore',
             'trialType',
+            'mutationGenesRequired',
+            'mutationVariantsRequired',
         ]
 
     def to_representation(self, instance):
@@ -51,13 +58,43 @@ class TrialSerializer(serializers.ModelSerializer):
         search_type = self.context.get('search_type')
         counts = self.context.get('counts') or {}
 
+        evaluation = self.context.get('typed_evaluation')
+        if evaluation is not None:
+            result = evaluation.result_for(instance.pk)
+            from trials.services.matching.typed_runtime import missing_attributes
+            response.update(result.summary())
+            response['attributesToFillIn'] = missing_attributes(result, counts)
+            response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
+            # Presentation only; no legacy clinical status or missing-attr inference.
+            locations = instance.sorted_locations_by_distance(
+                evaluation.patient_info.geo_point, recruitment_status=self.context.get('recruitment_status'))
+            response['location'] = [item.location.title for item in locations if item.location]
+            closest = locations[0].location.geo_point if locations and locations[0].location else None
+            response['closestLocationGeoPoint'] = ({'latitude': closest.y, 'longitude': closest.x}
+                                                   if closest is not None else None)
+            # Retain the transport key, but never infer a native display label
+            # from the legacy CB-coded stage column or stringify an envelope.
+            response['stage'] = None
+            distance = getattr(instance, 'distance', None)
+            units = self.context.get('distance_units') or 'km'
+            response['distance'] = (int((distance.mi if units == 'miles' else distance.km) + 0.5)
+                                    if distance is not None else None)
+            response['distanceUnits'] = units if distance is not None else None
+            return response
+
         if search_type == 'eligible' or getattr(instance, 'match_score', None) == 100:
             attrs_to_fill_in = []
         else:
-            attrs_to_fill_in = instance.attrs_to_fill_in(counts)
+            attrs_to_fill_in = instance.attrs_to_fill_in(counts, patient_info=patient_info)
 
         response['attributesToFillIn'] = attrs_to_fill_in
-        response['matchScore'] = getattr(instance, 'match_score', None)
+        # The SQL annotation counts answered-vs-missing fields; the card and
+        # the detail must show the same matched-vs-criteria number instead.
+        from trials.services.trial_details.match_score import criteria_match_score
+        response['matchScore'] = (
+            criteria_match_score(instance, patient_info, attrs_to_fill_in)
+            if patient_info is not None else None
+        )
         response['stage'] = ', '.join([f'Stage {x}' for x in (instance.stages or [])])
 
         recruitment_status = self.context.get('recruitment_status')
@@ -92,7 +129,26 @@ class TrialSerializer(serializers.ModelSerializer):
                 response['distance'] = None
                 response['distanceUnits'] = None
 
-        response['matchingType'] = 'eligible' if not attrs_to_fill_in else 'potential'
+        # `not_eligible` reaches this branch from one place only: a saved-ids
+        # search that kept a trial the eligibility filter would have dropped
+        # (#568). The id set comes from that filter itself, so the mark and
+        # the omission are the same judgement.
+        unmatched = self.context.get('unmatched_trial_ids') or frozenset()
+        not_eligible = patient_info is not None and instance.id in unmatched
+        response['matchingType'] = (
+            'not_eligible'
+            if not_eligible
+            else ('eligible' if not attrs_to_fill_in else 'potential')
+        )
+
+        # And the score that goes with that verdict. `match_score` here is the
+        # SQL annotation counting which criteria could be EVALUATED; it never
+        # compares values, so a trial the patient conflicts with still scores
+        # 100. `0`, not `null`: `match_score_and_status` returns the pair
+        # `(0, 'not_eligible')` unconditionally, and it is what the detail
+        # endpoint sends for the same trial.
+        if not_eligible:
+            response['matchScore'] = 0
 
         if self.context.get('explain') and patient_info:
             from trials.services.trial_match_explainer import TrialMatchExplainer
@@ -172,6 +228,19 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         template = self.context.get('template')
         attrs_to_fill_in = self.context.get('attrs_to_fill_in', [])
 
+        evaluation = self.context.get('typed_evaluation')
+        if evaluation is not None:
+            from trials.services.matching.typed_runtime import details, evaluate, missing_attributes
+            result, = evaluate(evaluation, [instance])
+            presentation = details(evaluation, instance, template)
+            response.update(result.summary())
+            response['details'] = presentation['details']
+            response['groupNames'] = presentation['group_names']
+            response['attributesToFillIn'] = missing_attributes(result, self.context.get('counts') or {})
+            response['goodnessScore'] = getattr(instance, 'goodness_score', None)
+            response['matchReasons'] = evaluation.explanations(instance.pk) if self.context.get('explain') else None
+            return response
+
         from trials.services.trial_details.trial_templates import TrialTemplates
         tt = TrialTemplates(instance, patient_info)
         details_and_groups = tt.details_and_group_names(template, attrs_to_fill_in)
@@ -190,9 +259,14 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         # eligible by the completeness annotation.
         if patient_info is not None:
             from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+            from trials.services.trial_details.match_score import criteria_match_score
             matcher = UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
-            # one pass for both (instead of trial_match_score() + trial_match_status()) — #201
-            response['matchScore'], response['matchingType'] = matcher.match_score_and_status()
+            # The verdict still comes from the conflict-aware matcher; the
+            # percentage is over the canonical eligibility rows, the same
+            # number the list card shows, whatever presentation was asked for.
+            _, response['matchingType'] = matcher.match_score_and_status()
+            response['matchScore'] = criteria_match_score(
+                instance, patient_info, attrs_to_fill_in)
             if self.context.get('explain'):
                 from trials.services.trial_match_explainer import TrialMatchExplainer
                 # reuse the matcher instance rather than building a second one — #201

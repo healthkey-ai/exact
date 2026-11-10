@@ -26,9 +26,43 @@
 4. **Enabling refactors are upstreamed to CB first.** If a change is needed to make the seam work,
    make it a *behavior-preserving* refactor in CB, merge it there, then port it down. Never create
    an EXACT-only abstraction that CB doesn't have — CB owns the stable extension point.
-5. **EXACT is stateless and read-only.** Never add patient persistence; never replicate OMOP vocab
-   tables or hierarchy expansion in EXACT (patient OMOP concepts are supplied by the API consumer;
-   trial OMOP columns are owned and filled by CB).
+5. **EXACT holds no clinical record.** Never replicate OMOP vocab tables or hierarchy expansion in
+   EXACT; patient OMOP concepts are supplied by the API consumer and trial OMOP columns are owned
+   and filled by CB. A patient's clinical facts arrive with the request and are never stored.
+
+   This rule used to read "EXACT is stateless and read-only. Never add patient persistence." It was
+   narrowed deliberately on 2026-09-26, not eroded, and the difference is worth stating because the
+   old sentence was load-bearing: it is why EXACT could be re-seeded, re-scaled and replaced freely,
+   and why compromising EXACT exposed no patient data.
+
+   **The second of those is no longer true, and pretending otherwise is the failure mode here.** A
+   saved filter set holds what somebody searched for: a disease, a treatment, a postcode, a
+   distance. Keyed to a verified identity, that is health-inferable data about a named person, and
+   a `SELECT` joining the table to `identity` is a diagnosis register. It arrives as "UI state"
+   because that is what the page calls it; it is not what it contains. The `default` database is
+   therefore sensitive from the first row, and its backups with it — which is a decision about how
+   that database is handled, not a sentence in a doc, and it is owed to whoever handles it.
+
+   What may now be stored is state about a USER of the trials page that only the trials page gives
+   meaning to — saved filters, score weights, bookmarks, and which trials they registered interest
+   in. Three conditions come with it, and a change that cannot meet all three does not belong here:
+
+   - **Keyed on the identity in the verified token**, never on a parameter. `PartnerAuthentication`
+     derives issuer+sub from a signature EXACT checks itself, and `AUTH_USER_MODEL` is that
+     identity. The `person_id` a host sends arrives in the request body and is not bound to the
+     caller (`?person_id=` is gated off for the same reason), so keying on it would let anyone
+     write into anyone's rows.
+   - **On the `default` alias**, never the `trials` one. That database is routinely dropped and
+     restored from CB dumps; anything user-scoped there is gone at the next restore.
+   - **Erasable before the first row is written**, and erasable means a PATH, not a function. A
+     `forget_identity` nothing calls, nothing configures and nothing logs satisfies a code review
+     and no data subject: deleting a patient in PROMOP has to actually delete this too, or EXACT
+     ends up holding "this identity bookmarked these oncology trials" with no owner. The path needs
+     a caller, a credential that is configured rather than defaulted to empty, a log line, and a
+     way to run it by hand when the caller is broken.
+
+   Clinical events are the edge of this. Registration interest is one, and it is moving here by an
+   explicit decision that also accepted, in writing, that EXACT has no audit journal for it.
 6. **Two-part self-review before EVERY PR / push — mandatory, no exceptions.** Before pushing a
    branch or opening a PR, run BOTH: (a) a **Claude fresh-context review in a separate subagent**
    (not inline — so the reviewer isn't anchored on the choices that produced the code), and
@@ -92,7 +126,48 @@ These already differ from CB on purpose. Leave them; do not try to re-sync them 
 - `expand_receptor_values()` for ER/PR/HR (EXACT only).
 - Parent-stage regex matching (EXACT only).
 - DB routing / read-only trials DB / OMOP fields (EXACT only).
+- **Patient language pairs are built by EXACT** (`trials/services/omop/patient_languages.py`,
+  no CB counterpart on purpose). An exception to golden rule 5: PROMOP serves
+  `english_*`/`spanish_*` capability booleans and EXACT turns them into
+  `"<language_concept_id>:<skill_concept_id>"` pairs from the `Language` / `LanguageSkillLevel`
+  vocab rows it reads, instead of PROMOP emitting a pair field (promop#1635 was closed for this).
+  In split-DB mode those rows are in the CB trials DB, so patient and trial pairs come from the
+  same rows. PROMOP unrolls only English and Spanish, so a trial language beyond those drops out
+  of the OMOP requirement; `check_omop_languages_readiness` lists such languages as a warning.
+  The `EXACT_OMOP_LANGUAGES` readiness gate (`trials/services/omop/languages_readiness.py`)
+  refuses the OMOP path while the vocab is unloaded, while the trial column is out of step with
+  the legacy list or with the vocab ids, and while any trial's language requirement maps to no
+  pair at all (cancerbot-org/cancerbot#5356).
+  On the OMOP path the patient also carries which languages were ASKED (any of the four
+  booleans non-null), and the verdict distinguishes "asked, does not have the skill"
+  (not_matched, excluded) from "never asked" (unknown, potential). That honours the rule above
+  that an empty consumer set must not read as unknown. The state model is written down in
+  `patient_languages.py`; queryset, matcher, potential count and attrs-to-fill-in share it
+  through `exact_matching/omop/languages_verdict.py`.
+- **The legacy language path has the same asked state** (#605, ported from cb-like-trials
+  #597/#607; fixes #591 on this line). `resolve.languages_skills_from_capabilities` turns the
+  same eight booleans into legacy codes (`languages_skills`, speak/write only) and
+  `languages_asked`; `exact_matching/patient_info/language_capability.py` applies the same five
+  cases over codes. `resolve.translate_language_capabilities` builds the legacy fields first
+  (keeping the booleans) and the OMOP pairs second, so both paths have their input whichever the
+  readiness snapshot picks. Callers that send codes and no booleans keep the plain overlap.
 Maintain an up-to-date inventory of these so agents can tell *intended* divergence from *drift*.
+
+## Deploy order: trial columns come from CB
+EXACT never migrates the CB-owned trials DB (`exact/db_router.py` `allow_migrate`, unless
+`TRIALS_DB_MIGRATE`), yet every Trial query SELECTs every concrete field. So a column EXACT's
+`Trial` model gains must exist in the trials DB **before** an EXACT build containing it is
+deployed, or every trial query fails with `UndefinedColumn`, whatever feature flag is set.
+
+- `omop_languages_skills_required` (EXACT migration 0023): apply **CB migration 0421** to the
+  trials DB EXACT reads first. As of 2026-09-29 that migration is on CB's `promop` branch, not
+  yet on CB `dev`/`main`.
+- Then load and backfill (`load_language_omop_concept_ids`,
+  `backfill_omop_languages_skills_column`). In split-DB mode both write the `trials` models,
+  which route to the CB trials DB, so **CB runs them there** (CB has the same commands). EXACT
+  runs them only in single-DB (local) mode. Then run `check_omop_languages_readiness` (EXACT,
+  read-only) before setting `EXACT_OMOP_LANGUAGES`. The flag falls back to legacy on its own
+  while not ready.
 
 ## Anti-patterns (never do during a port)
 - Restyling/restructuring ported code to EXACT conventions.

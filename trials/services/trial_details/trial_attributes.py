@@ -6,9 +6,16 @@ import re
 from django.db import models
 from django.db.models import Q
 
+from trials.services.patient_info.promop_adapter import (
+    PROMOP_NEGATED_FIELDS, promop_race_label,
+)
+from trials.services.patient_info.normalize import (
+    recompute_note, therapy_line_is_authorable,
+)
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
-from trials.services.therapy_match_profile import THERAPY_MATCH_PROFILE
+from trials.services.therapy_match_profile import (
+    THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled)
 from trials.services.trial_details.configs import *
 from trials.services.therapies_mapper import *
 from trials.services.user_to_trial_attrs_mapper import *
@@ -25,6 +32,25 @@ def get_nested_attribute(instance, path):
             return None
         current_obj = getattr(current_obj, part, None)
     return current_obj
+
+
+def _gender_label(value):
+    """EXACT's code (or a blank) in the record's gender vocabulary."""
+    if value is None:
+        return 'Unknown'
+    return {'M': 'Male', 'F': 'Female', 'U': 'Unknown'}.get(value, value)
+
+
+#: Subform entries that are inputs to a calculation but whose EXACT attribute
+#: is not the record's field. `ethnicity` is EXACT's RACE vocabulary (#4447)
+#: while the record keeps race in its own column, and gender arrives coded.
+#: The entry has to name the record's field and carry the record's value, or
+#: the select is seeded with a value the descriptor's options do not contain
+#: and the save writes a vocabulary the column does not speak.
+_SUBFORM_RECORD_INPUTS = {
+    'ethnicity': ('race', 'Race', promop_race_label),
+    'gender': ('gender', 'Gender', _gender_label),
+}
 
 
 class TrialAttributes:
@@ -270,7 +296,7 @@ class TrialAttributes:
             return True
         elif value is False and field_name in ATTR_FALSE_VALUE_IS_BLANK:
             return True
-        elif self._context['gender'] == 'M' and field_name in ATTR_SKIP_FOR_MALE:
+        elif self._context.get('gender') == 'M' and field_name in ATTR_SKIP_FOR_MALE:
             return True
         return False
 
@@ -319,7 +345,8 @@ class TrialAttributes:
             return 'select'
         return str(field_type)
 
-    def get_field(self, field, value, user_field, user_value, subform_details, units_data):
+    def get_field(self, field, value, user_field, user_value, subform_details, units_data,
+                  user_readonly=False):
 
         field_name = self.get_field_name(field)
 
@@ -328,7 +355,7 @@ class TrialAttributes:
         if subform_details:
             extra_attrs['subform_details'] = subform_details
 
-        ureadonly = subform_details is not None
+        ureadonly = user_readonly or subform_details is not None
 
         type = ATTR_TYPE_MAPPING.get(field_name)
         options = self.get_options(field_name)
@@ -396,21 +423,51 @@ class TrialAttributes:
             subform_details = subform_attrs[attr_name] if attr_name in subform_attrs else None
 
             units_data = {}
+            stored_value_used = False
             if attr_name in user_details:
                 user_data = user_details[attr_name]
+                # Port CB's patient-attribute resolution: patient and trial
+                # names may differ (e.g. measurable_disease_imwg_required).
+                subform_details = user_data.get('subform_details') or subform_attrs.get(attr_name)
                 user_field = AttributeNames.get_by_snake_case(user_data['ufield'])
                 user_value = user_data['uvalue']
+                canonical_value = user_value
 
                 if self._patient_info:
                     units_details = patient_info_attr_units_for(user_data['ufield'], self._patient_info)
-                    if units_details:
+                    uunits_label = (
+                        unit_label(units_details['options'], units_details['uvalue'])
+                        if units_details else None
+                    )
+                    # A ×ULN row shows a RATIO, not a physical measurement: the
+                    # stored unit label would describe a number that is not in
+                    # that unit (and the row is read-only anyway). An unknown
+                    # stored code is the other refusal: keeping the converted
+                    # value is better than pairing a raw number with the
+                    # DEFAULT unit label.
+                    if uunits_label is not None and 'uln' not in attr_name.lower():
                         units_data = {
-                            'units': units_details['options'].get(units_details['default']),
-                            'uunits': units_details['options'].get(units_details['uvalue']),
+                            'units': unit_label(units_details['options'], units_details['default']),
+                            'uunits': uunits_label,
                             'uunitsOptions': ValueOptions.to_value_and_label(units_details['options']),
                         }
+                        # `uvalue` is converted into the matcher's unit, while
+                        # `uunits` names the patient's STORED unit. Pairing them
+                        # printed 120 g/L as "12 g/Liter" and, on a writable row,
+                        # would seed the editor with the converted number.
+                        user_value = getattr(
+                            self._patient_info, user_data['ufield'], user_value)
+                        stored_value_used = True
 
-                field = self.get_field(attr, attr_value, user_field, user_value, subform_details, units_data)
+                field = self.get_field(
+                    attr, attr_value, user_field, user_value, subform_details, units_data,
+                    user_readonly=user_data['ureadonly'],
+                )
+                if stored_value_used:
+                    # The graph compares this value with the trial's, which is
+                    # in the matcher's unit. Keep it beside the stored display
+                    # value so that comparison does not silently change scale.
+                    field['uvalue_canonical'] = canonical_value
                 out[field['name']] = field
                 out[field['name']]['search_type'] = user_data.get('search_type')
             elif attr_name in ATTR_NAME_ALWAYS_INCLUDED:
@@ -418,11 +475,141 @@ class TrialAttributes:
                 out[field['name']] = field
 
         therapies = self.therapies(subform_attrs)
-        return {
+        return self.with_patient_field_names({
             **out,
             **computed_fields,
             **therapies,
-        }
+        }, negated_sources=self._patient_negated_sources())
+
+    def _patient_negated_sources(self):
+        """The canonical answers captured before the record was normalized.
+
+        Empty when the caller built this patient without provenance (an old
+        management command, a fixture): the row then carries no
+        `negative_source`, and the client opens no editor — the fail-closed
+        default (#5667).
+        """
+        if not self._patient_info:
+            return {}
+        return getattr(self._patient_info, '_negated_sources', None) or {}
+
+    @staticmethod
+    def with_patient_field_names(fields, negated_sources=None):
+        """Stamp every row with the patient attribute it is about, in snake_case.
+
+        `ufield` is camelCase for the UI, and a client that wants to WRITE
+        the value addresses PROMOP, whose API is snake_case. Deriving the
+        name client-side is a trap: PROMOP answers an unknown field with 200
+        and no change (its `partial_update` dropped the old 405 on purpose),
+        so a name converted wrongly is a save that appears to work. (That is
+        PROMOP's `dev`; its `main` still answers 405, which is the older and
+        louder behaviour — a client must not rely on either.)
+
+        The derivation is not safe even when it looks it: `p53_ihc`
+        camelizes to `p53Ihc`, and a standard snake-caser turns that back
+        into `p_53_ihc`, a field nobody has.
+
+        What this is NOT is a promise that the value can be written.
+        `upatientField` names the attribute; whether PROMOP will accept a
+        write to it — and where that write lands — is answered by
+        `GET /api/v1/patient-records/writable-fields/`, which is caller-aware
+        and moves with the vocabulary. EXACT cannot answer it: 19 of
+        its own user fields have no column on PROMOP's `PatientRecord` at
+        all, measured against its `dev` on 2026-09-12 (`mipi_risk`,
+        `high_risk_mcl_criteria`, `p53_ihc`, …), and a key here that
+        implied otherwise would put EXACT's authority behind exactly the
+        silent 200 this exists to prevent.
+
+        There is a THIRD question neither answers, and it matters as much:
+        which values EXACT itself recomputes. An edit to one of those is
+        overwritten by the next match whatever PROMOP thinks of the write —
+        `normalize.py` sets `tnbc_status` on every save and `mipi_risk` on
+        every MCL one, among a dozen others — none of them from anything
+        the reader typed.
+
+        `ureadonly` is not that answer, though it is the obvious candidate:
+        `get_field` sets it from the presence of a subform, nothing more.
+        Nor is the mapping's `is_computed_value`, which is a display flag —
+        `_normalize_mcl_derivations` overwrites four fields on consecutive
+        lines and only one of them carries it, while `meets_gelf` and
+        `meets_lugano` carry it and are plain stored booleans nothing
+        derives. A draft of this change exposed that flag as `ucomputed`
+        and would have hidden the only control that can set those two while
+        offering one over `tnbc_status`, which the next save undoes.
+
+        So EXACT does not answer it yet and this key does not pretend to:
+        making the overwrite set explicit in `normalize.py` is #449. Until
+        then an editing client should treat a value whose provenance it
+        cannot see as provisional.
+
+        Two further traps the name alone does not close, both for the
+        client: a `×ULN` row inherits the base field's `ufield`, so editing
+        it would write the raw lab value; and `None` covers two different
+        situations — a trial-only row with nothing to write ever, and a row
+        whose data exists but not under one field (the therapy lines).
+
+        Stamped here rather than in `get_field` because rows are built in
+        three places — `get_field`, `computed_general_fields`, `therapies` —
+        and a key added to one is a key the others quietly lack, which a
+        client cannot tell from "this row is about nothing".
+
+        And the name is checked, not trusted: `therapies` puts the TRIAL
+        attribute in `ufield`, so `therapiesRequired` would have become
+        `therapies_required`, which is not a patient attribute at all.
+        """
+        for field in fields.values():
+            if not isinstance(field, dict):
+                continue
+            if field.get('name') == 'ethnicityRequired':
+                # A RACE criterion. EXACT's `ethnicity` holds race categories
+                # (#4447) while the record keeps race in `race`; the row names
+                # the field a client can write and carries the record's label,
+                # so the editor's options and its value agree. `ufield` stays
+                # on EXACT's attribute: the matcher resolves the row's status
+                # through it.
+                field['label'] = 'Race'
+                field['upatientField'] = 'race'
+                field['uvalue'] = promop_race_label(field.get('uvalue'))
+            else:
+                ufield = field.get('ufield')
+                patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
+                field['upatientField'] = (
+                    patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
+                )
+            # The negated row's canonical answer, with the availability the
+            # raw boundary saw (#5667). `uvalue` cannot carry this: null means
+            # both "answered unknown" and "never in the context". A separate
+            # key, not `subform_details`, so an old client does not read it as
+            # a computed subform.
+            canonical = PROMOP_NEGATED_FIELDS.get(field['upatientField'])
+            source = (negated_sources or {}).get(canonical) if canonical else None
+            if source is not None:
+                field['negative_source'] = source
+            # Whether a stored value for it survives. EXACT recomputes these
+            # on every match from the inputs it was given, so a write upstream
+            # is replaced before the matcher ever sees it — accepted, then
+            # undone, with no error anywhere (#449). A client that offers an
+            # edit box for one of them is offering a control that does
+            # nothing, which is worse than offering none.
+            #
+            # `recompute_note` rather than the set alone, because the set is
+            # what this module WRITES and that is not the whole question.
+            # `abnormal_kappa_lambda_ratio` and `meets_meas_or_bone_status`
+            # are properties with no column and no setter — recomputed on
+            # every read, and dropped from an inbound payload before they
+            # reach the instance. They are in neither the set nor any
+            # condition, so they answered `false` here: "this value is the
+            # reader's", over a field an edit cannot reach at all. Worse than
+            # the case the key exists for.
+            note = recompute_note(field['upatientField'])
+            field['upatientRecomputed'] = note is not None
+            # The same answer with its reason, for a client that can say more
+            # than yes or no. A boolean calls `mipi_risk` recomputed for a
+            # breast-cancer patient, whose `mipi_risk` nothing here touches —
+            # so the control is hidden from the one reader who could have used
+            # it, which is the false positive #449 named on `meets_gelf`.
+            field['upatientRecomputedWhen'] = note
+        return fields
 
     def computed_general_fields(self):
         computed_fields = {}
@@ -452,13 +639,13 @@ class TrialAttributes:
         }
 
         goodness_score = getattr(self._trial, 'goodness_score', None)
-        if goodness_score is None:
+        if goodness_score is None and self._patient_info is not None:  # #318: no patient → leave blank
             goodness_score = self._trial.get_goodness_score(self._patient_info)
         computed_fields['goodnessScore'] = {
           "name": "goodnessScore",
           "label": "goodness Score",
           "type": "string",
-          "value": str(goodness_score),
+          "value": '' if goodness_score is None else str(goodness_score),
           "options": None,
           "ureadonly": True,
           "ufield": None,
@@ -468,7 +655,7 @@ class TrialAttributes:
           "dependencies": []
         }
 
-        match_score = self._trial.get_match_score(self._patient_info)
+        match_score = self._trial.get_match_score(self._patient_info) if self._patient_info is not None else None  # #318
         match_score_value = '' if match_score is None else f'{str(match_score)}%'
         computed_fields['matchScore'] = {
           "name": "matchScore",
@@ -503,7 +690,7 @@ class TrialAttributes:
         }
 
         locations_name = self._trial.sorted_locations_by_distance(
-            self._patient_info.geo_point,
+            self._patient_info.geo_point if self._patient_info is not None else None,  # #318
             recruitment_status=recruitment_status
         )
         locations_name = [x.location.title for x in locations_name if x.location]
@@ -523,11 +710,102 @@ class TrialAttributes:
 
         return computed_fields
 
-    def therapies(self, subform_attrs):
-        out = {}
-        if not self._patient_info:
-            return out
+    #: The trial vocabulary that owns each OMOP-mapped therapy level's titles.
+    #: Types are deliberately absent: they carry drug-class concept_ids but
+    #: EXACT has no curated title table for them (`TherapyComponentCategory.
+    #: omop_concept_id` is unused), so the release-pinned mirror is their only
+    #: source (#672).
+    _OMOP_THERAPY_VOCAB = {
+        'therapies_required': 'Therapy',
+        'therapies_excluded': 'Therapy',
+        'therapy_components_required': 'TherapyComponent',
+        'therapy_components_excluded': 'TherapyComponent',
+    }
 
+    def _omop_field_ids(self):
+        """`{field_name: [concept_id_str]}` for the rows the OMOP profile flips."""
+        fields = {}
+        for field_name in THERAPIES_ATTRS_UNDERSCORED:
+            active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
+            if omop_therapy_enabled() and active_col != field_name:
+                fields[field_name] = [
+                    str(item) for item in (getattr(self._trial, active_col) or [])
+                ]
+        return fields
+
+    def _prefetch_omop_therapy_titles(self):
+        """Resolve every flipped row's titles once, for the whole detail.
+
+        One query per trial vocabulary (regimens and components share their
+        model between the required and excluded rows) plus one mirror call for
+        every id neither vocabulary knows, instead of a round per row.
+        """
+        fields = self._omop_field_ids()
+        ids_by_model = {}
+        for field_name, ids in fields.items():
+            model_name = self._OMOP_THERAPY_VOCAB.get(field_name)
+            if model_name:
+                ids_by_model.setdefault(model_name, set()).update(
+                    int(item) for item in ids if item.isdigit())
+        titles_by_model = {}
+        if ids_by_model:
+            from trials import models as trial_models
+            for model_name, numeric in ids_by_model.items():
+                model = getattr(trial_models, model_name)
+                titles_by_model[model_name] = {
+                    str(concept_id): title for concept_id, title in (
+                        model.objects.filter(omop_concept_id__in=sorted(numeric))
+                        .order_by('id')
+                        .values_list('omop_concept_id', 'title')
+                    )
+                }
+        cache = {}
+        unresolved = set()
+        for field_name, ids in fields.items():
+            titles = dict(titles_by_model.get(self._OMOP_THERAPY_VOCAB.get(field_name), {}))
+            cache[field_name] = titles
+            unresolved.update(item for item in ids if not titles.get(item))
+        if unresolved:
+            from exact_matching.matcher import _resolve_omop_concepts
+            mirrored = {
+                str(item['code']): item['title']
+                for item in _resolve_omop_concepts(sorted(unresolved))
+                if item.get('title')
+            }
+            for titles in cache.values():
+                for concept_id, title in mirrored.items():
+                    titles.setdefault(concept_id, title)
+        self._omop_title_cache = cache
+
+    def _omop_option_map(self, field_name, value):
+        """`[{value, label}]` for a row whose `value` is a list of concept_ids.
+
+        The trial's own vocabulary is the first source: its rows carry both the
+        concept id the backfill wrote and the title the legacy option map used,
+        so the label does not depend on a mirror release covering the concept.
+        The pinned mirror is the fallback (and the only source for therapy
+        types). An id neither source knows stays visible as
+        "Unknown concept (<id>)" rather than being dropped or inventing a title.
+        """
+        ids = [str(item) for item in (value or [])]
+        cache = getattr(self, '_omop_title_cache', None)
+        titles = cache.get(field_name) if cache is not None else None
+        if titles is None:
+            self._prefetch_omop_therapy_titles()
+            titles = getattr(self, '_omop_title_cache', {}).get(field_name, {})
+        return [
+            {'value': item,
+             'label': titles.get(item) or f'Unknown concept ({item})'}
+            for item in ids
+        ]
+
+    def therapies(self, subform_attrs):
+        # Renders the trial's therapy criteria; patient values (uvalue) are None
+        # here and the per-criterion match status is filled in by the caller. Runs
+        # with or without a patient — without one the criteria still render and the
+        # caller marks them 'unknown' (#318), consistent with the other criteria.
+        self._prefetch_omop_therapy_titles()
+        out = {}
         for field_name in THERAPIES_ATTRS_UNDERSCORED:
             user_value = None
             active_col = getattr(THERAPY_MATCH_PROFILE, field_name, field_name)
@@ -536,6 +814,14 @@ class TrialAttributes:
             trial_field = self._trial.__class__._meta.get_field(field_name)
             trial_field_name = self.get_field_name(trial_field)
             options = self.get_options(trial_field_name)
+            if omop_therapy_enabled() and active_col != field_name:
+                # Under the OMOP profile the column holds concept_ids while the
+                # option map is keyed by the legacy code, so every row rendered a
+                # bare number (#672, #680). Resolve the ids to titles and keep an
+                # unresolved one visible rather than dropping it or inventing a
+                # title. Display-only: these rows are read-only and the editor
+                # reads `uoptions`, which stays None.
+                options = self._omop_option_map(field_name, value)
             uoptions = None
             subform_details = subform_attrs[field_name] if field_name in subform_attrs else None
 
@@ -743,12 +1029,59 @@ class TrialAttributes:
                 pi_field_names = data
 
             for pi_field_name in pi_field_names:
+                # Once per entry, the way the row site does it, rather than
+                # once for the boolean and again for the note.
+                entry_note = recompute_note(pi_field_name)
+                if therapy_line_is_authorable(
+                        pi_field_name,
+                        getattr(self._patient_info, 'prior_therapy', None)):
+                    # The line this field projects is one the patient's own
+                    # history already claims, and PROMOP now writes it through
+                    # the therapy-line service. It is not recomputed behind the
+                    # reader, so the pencil is real.
+                    entry_note = None
                 if pi_field_name in out:
                     continue
 
                 field = self._patient_info.__class__._meta.get_field(pi_field_name)
                 field_name = self.get_field_name(field)
+                units_details = patient_info_attr_units_for(pi_field_name, self._patient_info)
+                uunits_label = (
+                    unit_label(units_details['options'], units_details['uvalue'])
+                    if units_details else None
+                )
+                if units_details and uunits_label is None:
+                    # Unknown stored code: keep the matcher's value and attach
+                    # no label rather than mislabel it with the default unit.
+                    units_details = None
                 value = self._patient_info_attr.get_value(pi_field_name)
+                if pi_field_name in THERAPY_LINES_ATTRS_UNDERSCORED:
+                    # OMOP mode normalises the line to its concept id for
+                    # matching; the reader still needs the regimen name.
+                    # PROMOP sends it alongside as `*_display`, and the
+                    # writable descriptor's options are keyed by that label.
+                    display = getattr(self._patient_info, f'{pi_field_name}_display', None)
+                    if display:
+                        value = display
+                    elif pi_field_name == 'later_therapies' and isinstance(value, list):
+                        # The list entries are nested select/date maps, not
+                        # text; join their labels instead of rendering
+                        # `[object Object]`.
+                        labels = []
+                        for item in value:
+                            therapy = item.get('therapy') if isinstance(item, dict) else item
+                            if isinstance(therapy, dict):
+                                therapy = therapy.get('value')
+                            if therapy:
+                                labels.append(str(therapy))
+                        value = ', '.join(labels)
+                if units_details:
+                    # The editor shows and writes in the PATIENT's stored unit,
+                    # and `uunits` below names that unit. `get_value` converts
+                    # measurements into the matcher's unit, so using its number
+                    # here would put 12 (g/dL) beside "G/Liter" and submit 12
+                    # into a field that expects 120.
+                    value = getattr(self._patient_info, pi_field_name)
                 if pi_field_name in THERAPY_LINES_ATTRS_UNDERSCORED:
                     options = self.get_options_for(pi_field_name)
                 else:
@@ -758,13 +1091,66 @@ class TrialAttributes:
                 if options is not None:
                     utype = 'select'
 
+                entry_field = pi_field_name
+                entry_label = self.get_label(field_name)
+                rendered_value = value
+                record_input = _SUBFORM_RECORD_INPUTS.get(pi_field_name)
+                if record_input is not None:
+                    entry_field, entry_label, to_record_value = record_input
+                    rendered_value = to_record_value(value)
+
                 val = {
                     'name': field_name,
-                    'label': self.get_label(field_name),
+                    'label': entry_label,
                     'type': utype,
-                    'value': self.get_value(field_name, value),
+                    'value': self.get_value(field_name, rendered_value),
                     'options': options,
+                    # The patient attribute this entry IS — taken from the
+                    # mapping rather than derived from `name`, which is the
+                    # camelCase spelling and cannot be turned back reliably
+                    # (`p53_ihc` camelises to `p53Ihc`, which a snake-caser
+                    # returns as `p_53_ihc`). The row's own `upatientField`
+                    # has to be derived; this one does not, and taking the
+                    # harder route here would be inventing a problem.
+                    'upatientField': entry_field,
+                    # Same question as on a row, and it is asked here for the
+                    # opposite reason. A subform exists because the value
+                    # above it is COMPUTED: the reader cannot write
+                    # `tnbc_status`, they write the receptor statuses it is
+                    # computed from. So the entries are the writable part —
+                    # except where an entry is itself computed, and then it is
+                    # no more writable than the row that opened the dialog.
+                    #
+                    # Only the therapy groups contain such an entry today:
+                    # `first_line_therapy` and its date and outcome are
+                    # derived from the therapy lines. Every statically listed
+                    # input is raw data. (`creatinine_clearance_rate` looks
+                    # like a counter-example and is not one — EXACT reads it
+                    # and never writes it; the derived renal value is
+                    # `estimated_glomerular_filtration_rate`, which is in no
+                    # subform.)
+                    #
+                    # Through `recompute_note` like the row above, not off the
+                    # set: the set is what `normalize.py` WRITES, and a value
+                    # that is not stored at all — a read-only property with no
+                    # column — is in neither it nor any condition, so reading
+                    # the set alone answers `false` for one, which a client
+                    # takes as "this is yours to edit" over a field an edit
+                    # cannot reach.
+                    'upatientRecomputed': entry_note is not None,
+                    'upatientRecomputedWhen': entry_note,
                 }
+
+                # The unit the PATIENT's value is stored in, the same way a row
+                # carries it. Without this a subform prints a bare number and
+                # an editor falls back to the descriptor's unit, which is the
+                # vocabulary's and not this patient's — and CRAB, whose inputs
+                # are exactly these labs, converts through the stored one. A
+                # calcium typed in the wrong scale flips a clinical composite
+                # with nothing on screen to show which scale was meant.
+                if units_details:
+                    val['uunits'] = uunits_label
+                    val['units'] = unit_label(units_details['options'], units_details['default'])
 
                 tmp[pi_field_name] = val
 
@@ -790,6 +1176,13 @@ class TrialAttributes:
 
         mapping = USER_TO_TRIAL_ATTRS_MAPPING
 
+        def user_value_for_trial(user_attr):
+            # A trial can state its own adequacy cutoffs; the stored patient-level
+            # boolean only encodes the defaults (ported from CB, #630).
+            if user_attr == 'haematological_adequacy_status':
+                return self._patient_info_attr.haematological_adequacy_status_for_trial(self._trial)
+            return self._patient_info_attr.get_value(user_attr)
+
         for user_attr in mapping.keys():
             trial_attr_meta = mapping[user_attr]
 
@@ -810,7 +1203,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -823,7 +1216,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -836,7 +1229,7 @@ class TrialAttributes:
                 out[attr_name_min] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_min]['subform_details'] = subform_details
@@ -848,7 +1241,7 @@ class TrialAttributes:
                 out[attr_name_max] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value_for_trial(user_attr)),
                 }
                 if subform_details:
                     out[attr_name_max]['subform_details'] = subform_details
@@ -895,10 +1288,13 @@ class TrialAttributes:
                 else:
                     attr_name = trial_attr_meta["attr"]
 
+                user_value = user_value_for_trial(user_attr)
+                if user_attr == 'hepatic_adequacy_status':
+                    user_value = self._patient_info_attr.hepatic_adequacy_status_for_trial(self._trial)
                 out[attr_name] = {
                     'ureadonly': ureadonly,
                     'ufield': user_attr,
-                    'uvalue': self.get_uvalue(f'u{user_attr}', self._patient_info_attr.get_value(user_attr)),
+                    'uvalue': self.get_uvalue(f'u{user_attr}', user_value),
                 }
                 if subform_details:
                     out[attr_name]['subform_details'] = subform_details

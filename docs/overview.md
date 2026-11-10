@@ -1,9 +1,18 @@
 # EXACT — Architecture Overview
 
-EXACT (EXtracting Attributes from Clinical Trials) is a stateless search and
-matching engine for clinical trials. It reads trial data from an external
-database — it does not own or manage the trial catalog. Patient data is always
-passed inline per request; nothing is persisted.
+EXACT (EXtracting Attributes from Clinical Trials) is a search and matching
+engine for clinical trials. It reads trial data from an external database — it
+does not own or manage the trial catalog. A patient's clinical record is always
+passed inline per request and is never persisted.
+
+The matching path is stateless in that strict sense. What EXACT does keep, in
+its `default` database and since 2026-09-26, is state a USER of the trials page
+owns: the filters they last searched with, the weights they gave the score.
+Those rows are keyed on the identity in the verified token, never on a patient
+id, and **they carry clinical content** — a saved filter set can hold a disease,
+a treatment and a postcode, which together describe a person. Treat that table
+as sensitive; see rule 5 in `porting-from-cancerbot.md` for the conditions any
+such table has to meet.
 
 ---
 
@@ -65,11 +74,11 @@ passed inline per request; nothing is persisted.
 | `PatientInfo` | In-memory patient profile (unmanaged — never persisted) |
 | `Location` / `LocationTrial` | Geographic trial sites (PostGIS) |
 | `Therapy` / `TherapyComponent` / `TherapyComponentCategory` | Therapy taxonomy |
-| `Marker` / `MarkerCategory` | Biomarker taxonomy |
+| `MolecularMarker` / `CytogenicMarker` | Current CB biomarker taxonomy; retired generic marker declarations are historical only |
 | `ConcomitantMedication` | Medication taxonomy |
 | `PreExistingConditionCategory` | Comorbidity categories |
 | `TrialType` / `TrialTypeDiseaseConnection` | Trial-type taxonomy by disease |
-| `RawDataItem` | Raw ingested trial data before extraction |
+| `RawDataItem` (historical, not a runtime model) | CB/ETL-owned raw ingestion storage; physical legacy storage is not deleted by its state-only retirement |
 
 ---
 
@@ -79,8 +88,14 @@ passed inline per request; nothing is persisted.
 
 Builds an unsaved `PatientInfo` instance from the `"patientInfo": {...}` key
 in the request body. Converts camelCase to snake_case, filters to known fields,
-attaches synthetic M2M attributes, and calls `normalize_patient_info`. Returns
-`None` if no `patientInfo` payload is present.
+attaches synthetic M2M attributes, and calls `normalize_patient_info`.
+
+Returns `None` when the request names no patient at all — public browsing. A
+request that *does* name one never degrades into that case: a `person_id`
+lookup is rejected outright while the gate is off (403, #150/#108), a malformed
+`person_id` is a 400, and a well-formed one whose patient PROMOP can't supply
+is a 502 (#448). Answering "no patient" there would return the whole corpus,
+unscored, which looks like a valid result (#156).
 
 ### `study_preferences_from_query_params` (`trials/services/study_preferences.py`)
 
@@ -162,7 +177,11 @@ markers, outcomes, staging options, ethnicity, etc.). Consumed by the API's
 
 ---
 
-## Patient-info lifecycle (stateless)
+## Patient-info lifecycle (nothing persisted)
+
+The additive [typed TrialPredicate / PatientEvidence contract](omop-typed-evidence-contract.md)
+is development-only (#660). It does not replace this lifecycle or activate new
+readers. Provenance/readiness binding and all-55 reader activation remain gated.
 
 ```
 GET /trials/

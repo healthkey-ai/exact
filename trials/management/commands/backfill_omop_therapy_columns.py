@@ -2,7 +2,7 @@
 
 Idempotent batch fill of the trial ``omop_*`` therapy columns (#4453) from the
 vocab ``omop_concept_id`` mapping (#4451), using the shared conversion service.
-Until the CTOMOP release is pinned and vocab concept_ids are populated this runs
+Until the PROMOP release is pinned and vocab concept_ids are populated this runs
 cleanly but writes empty arrays.
 
 Ported from CancerBot (CB epic #4447). In split-DB production CB owns the trials

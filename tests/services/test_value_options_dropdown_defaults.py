@@ -10,23 +10,8 @@ land silently and re-introduce the original UX bug where patients had no
 way to opt out.
 """
 import pytest
-from django.core.cache import cache
-from django.db import ProgrammingError
 
-from trials.models import MarkerCategory
 from trials.services.value_options import ValueOptions
-
-
-class _PgError(Exception):
-    def __init__(self, pgcode):
-        self.pgcode = pgcode
-
-
-class _MissingMarkerCatalog:
-    def get(self, **kwargs):
-        error = ProgrammingError('relation "trials_markercategory" does not exist')
-        error.__cause__ = _PgError('42P01')
-        raise error
 
 
 class TestMarkerDropdownNoneOption:
@@ -53,27 +38,6 @@ class TestMarkerDropdownNoneOption:
         # multiselect so patients see it before the long marker list.
         assert list(ValueOptions().cytogenic_markers.keys())[0] == 'none'
         assert list(ValueOptions().molecular_markers.keys())[0] == 'none'
-
-    @pytest.mark.django_db
-    def test_missing_marker_catalog_still_returns_none_option(self, monkeypatch):
-        """The legacy corpus has no trials_markercategory; the form must not 500."""
-        monkeypatch.setattr(MarkerCategory, 'objects', _MissingMarkerCatalog())
-
-        assert ValueOptions().cytogenic_markers == {'none': 'None'}
-        assert ValueOptions().molecular_markers == {'none': 'None'}
-
-        cache.clear()
-        try:
-            options = ValueOptions().all_options()
-            assert options['cytogenicMarkers']['options'] == [
-                {'value': 'none', 'label': 'None'}
-            ]
-            assert options['molecularMarkers']['options'] == [
-                {'value': 'none', 'label': 'None'}
-            ]
-        finally:
-            # The degraded payload must not leak into another test.
-            cache.clear()
 
 
 class TestPeripheralNeuropathyGradeOptions:

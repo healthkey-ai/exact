@@ -9,6 +9,183 @@ from trials.services.patient_info.patient_info_flipi_score import PatientInfoFli
 from trials.services.patient_info.patient_info_geo_point import PatientInfoGeoPoint
 
 
+# The attributes this module computes, and therefore the attributes a stored
+# value cannot decide.
+#
+# It is written down rather than inferred because clients need it and cannot
+# see it. EXACT recomputes these on every match from the inputs it was given,
+# so a value written into the patient record upstream — by a patient editing
+# their profile, by an import — is replaced before it ever reaches the
+# matcher. A client that offers an edit box for one of them offers a control
+# whose effect is undone by the next request, with no error anywhere: the
+# write is accepted, the re-read returns the recomputed value, and the reader
+# is left to conclude that nothing happened (EXACT #449).
+#
+# Note this is NOT the same question as `is_computed_value` in the attribute
+# config, which is about presentation and disagrees with this list in both
+# directions. Nor is it PROMOP's `writable`, which answers whether the record
+# will TAKE the write — it will; this answers whether the write survives.
+#
+# `test_normalize_recomputed_register` holds it to the module: the set and
+# the assignments below are checked against each other, so adding a
+# derivation without adding its name here fails the suite.
+RECOMPUTED_ATTRIBUTES = frozenset({
+    'bmi',
+    'bulky_disease_criteria',
+    'country',
+    'estimated_glomerular_filtration_rate',
+    'first_line_date',
+    'first_line_outcome',
+    'first_line_therapy',
+    'flipi_score',
+    'geo_point',
+    'haematological_adequacy_status',
+    'hepatic_adequacy_status',
+    'high_risk_mcl_criteria',
+    'hr_status',
+    'last_treatment',
+    'later_date',
+    'later_outcome',
+    'later_therapies',
+    'later_therapy',
+    'measurable_disease_imwg',
+    'meets_crab',
+    'meets_slim',
+    'metastatic_status',
+    'mipi_c_risk',
+    'mipi_risk',
+    'postal_code',
+    'progression',
+    'renal_adequacy_status',
+    'second_line_date',
+    'second_line_outcome',
+    'second_line_therapy',
+    'stem_cell_transplant_history',
+    'stem_cell_transplant_date',
+    'supportive_therapies',
+    'supportive_therapy_date',
+    'tnbc_status',
+    'tp53_disruption',
+    'treatment_refractory_status',
+})
+
+
+#: Of the set above, the ones written only under a condition — and the
+#: condition, in prose, because a client shows it to a reader. #449 asked for
+#: this and the first pass could not carry it: a boolean says `mipi_risk` is
+#: recomputed for a breast-cancer patient, whose `mipi_risk` this module never
+#: touches, so the control is hidden from the one reader who could have used
+#: it. That is the same false positive the ticket named on `meets_gelf`, in the
+#: other direction.
+#:
+#: `test_normalize_recomputed_register` checks these names against the set
+#: above, so a condition cannot describe a field nothing writes.
+RECOMPUTED_WHEN = {
+    'bulky_disease_criteria': 'for a mantle cell lymphoma patient',
+    'country': 'cleared when the value names no country EXACT can resolve',
+    'estimated_glomerular_filtration_rate': (
+        'when serum creatinine and age are present and non-zero, the gender is '
+        'M or F, and the creatinine units are a unit EXACT converts'
+    ),
+    'first_line_date': "cleared when prior therapy is 'None' or blank",
+    'first_line_outcome': "cleared when prior therapy is 'None' or blank",
+    'first_line_therapy': "cleared when prior therapy is 'None' or blank",
+    'flipi_score': (
+        'when at least one recognised FLIPI option is selected — age, stage, '
+        'hemoglobin, nodalAreas or ldh; anything else scores nothing'
+    ),
+    # No issue numbers in here: these strings are shown to a patient. The
+    # zero-coordinate defect behind "non-zero" is #470.
+    'geo_point': (
+        'when a country or postal code is supplied, or a latitude and '
+        'longitude that are both non-zero'
+    ),
+    'high_risk_mcl_criteria': 'for a mantle cell lymphoma patient',
+    'later_date': "cleared when prior therapy is 'Two lines', 'One line', 'None' or blank",
+    'later_outcome': "cleared when prior therapy is 'Two lines', 'One line', 'None' or blank",
+    'later_therapies': "cleared when prior therapy is 'Two lines', 'One line', 'None' or blank",
+    'later_therapy': "cleared when prior therapy is 'Two lines', 'One line', 'None' or blank",
+    'mipi_c_risk': 'for a mantle cell lymphoma patient',
+    'mipi_risk': 'for a mantle cell lymphoma patient',
+    'postal_code': (
+        'cleared when a postal code is supplied without a country, or when the '
+        'country and postal code resolve to no point'
+    ),
+    'progression': (
+        'set to active when either CRAB or SLIM is met; set to smoldering when '
+        'both are known and unmet and nothing was supplied — an unknown leaves '
+        'it alone'
+    ),
+    'second_line_date': "cleared when prior therapy is 'One line', 'None' or blank",
+    'second_line_outcome': "cleared when prior therapy is 'One line', 'None' or blank",
+    'second_line_therapy': "cleared when prior therapy is 'One line', 'None' or blank",
+    'stem_cell_transplant_history': (
+        "when the therapy lines imply a transplant, or when prior therapy is 'None'"
+    ),
+    'stem_cell_transplant_date': "cleared when prior therapy is 'None'",
+    'supportive_therapies': "cleared when prior therapy is 'None' or blank",
+    'supportive_therapy_date': "cleared when prior therapy is 'None' or blank",
+}
+
+#: Written on every call, whatever the caller sent. Derived, not listed, so it
+#: cannot disagree with the two above.
+RECOMPUTED_ALWAYS = RECOMPUTED_ATTRIBUTES - frozenset(RECOMPUTED_WHEN)
+
+
+def is_computed_on_read(field):
+    """Whether `field` is a property recomputed on access, with no setter.
+
+    A THIRD way a reader's value fails to survive, and the worst: it is not
+    stored at all. `_build_in_memory` filters an inbound payload to
+    `_meta.get_fields()`, so a supplied value is dropped before it reaches the
+    instance, and `setattr` raises if it gets there.
+
+    `abnormal_kappa_lambda_ratio` and `meets_meas_or_bone_status` are the two
+    — both mapped attributes, both reaching an eligibility row. Neither is in
+    `RECOMPUTED_ATTRIBUTES`, because this module does not write them, so both
+    answered "not recomputed", which a client reads as "this value is the
+    reader's" over a field an edit cannot reach at all. Same false negative
+    #449 exists to remove, one stage further along.
+
+    Late import: `patient_info` reaches this module through `configs`, so
+    resolving it at module load is a cycle.
+    """
+    if not field:
+        return False
+    # Computed by `PatientInfoAttributes.get_value`, not by a `PatientInfo`
+    # property: no column and no setter, so the property check below cannot see
+    # it. An edit is dropped before it reaches the instance, exactly like the
+    # two properties this exists for.
+    if field == 'day_since_stem_cell_transplant':
+        return True
+    from trials.services.patient_info.patient_info import PatientInfo
+
+    attribute = getattr(PatientInfo, field, None)
+    return isinstance(attribute, property) and attribute.fset is None
+
+
+def recompute_note(field):
+    """How a value the reader supplies for `field` fails to survive, or None.
+
+        {'when': 'always'}                  rewritten on every match
+        {'when': 'sometimes', 'condition'}  rewritten under that condition
+        {'when': 'never-stored'}            computed on read; nothing to write
+        None                                EXACT leaves it alone
+
+    `None` still does not mean writable. That is PROMOP's question
+    (`writable-fields`), it is caller-aware, and the two come apart in both
+    directions.
+    """
+    if field in RECOMPUTED_ALWAYS:
+        return {'when': 'always'}
+    condition = RECOMPUTED_WHEN.get(field)
+    if condition is not None:
+        return {'when': 'sometimes', 'condition': condition}
+    if is_computed_on_read(field):
+        return {'when': 'never-stored'}
+    return None
+
+
 def normalize_patient_info(pi) -> None:
     """Compute and set all derived fields on a PatientInfo instance in-place.
 
@@ -52,6 +229,36 @@ def normalize_patient_info(pi) -> None:
 # Individual normalizers
 # ---------------------------------------------------------------------------
 
+#: Which `prior_therapy` answers keep each line's fields. It mirrors
+#: `_normalize_therapy_lines` below: a patient who says "One line" cannot be in
+#: their second, so the field reads as cleared rather than as a value.
+LINE_FIELDS_BY_PRIOR_THERAPY = {
+    'first_line_': {'One line', 'Two lines', 'More than two lines of therapy'},
+    'second_line_': {'Two lines', 'More than two lines of therapy'},
+    'later_': {'More than two lines of therapy'},
+}
+
+#: The parts of a line the trial-detail subform authors. The rest of a line's
+#: columns (concept ids, per-line lists, end dates) stay derivation's.
+AUTHORABLE_LINE_PARTS = frozenset({'therapy', 'date', 'outcome'})
+
+
+def therapy_line_is_authorable(pi_field_name, prior_therapy) -> bool:
+    """Whether normalization keeps this line field for this patient.
+
+    The subform offers a line's therapy, date and outcome as inputs. They stay
+    "recomputed on read" for everybody else: a patient whose own history does
+    not claim that line yet would be typing a second-line therapy under "no
+    prior therapy", and the payload clears it either way, so offering the
+    control would promise an edit the record then hides.
+    """
+    for prefix, answers in LINE_FIELDS_BY_PRIOR_THERAPY.items():
+        if pi_field_name.startswith(prefix):
+            part = pi_field_name[len(prefix):]
+            return part in AUTHORABLE_LINE_PARTS and prior_therapy in answers
+    return False
+
+
 def _normalize_therapy_lines(pi) -> None:
     """Clear downstream therapy fields when prior_therapy is reduced."""
     if pi.prior_therapy == 'More than two lines of therapy':
@@ -89,6 +296,7 @@ def _normalize_therapy_lines(pi) -> None:
         pi.supportive_therapy_date = None
         if pi.prior_therapy == 'None':
             pi.stem_cell_transplant_history = 'None'
+            pi.stem_cell_transplant_date = None
 
 
 def _normalize_treatment_refractory_status(pi) -> None:
@@ -243,7 +451,7 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         # real clinical signal — well below the 0.26 abnormal threshold —
         # not missing data (#81).
         if ratio is None:
-            return False
+            return None
         if not (ratio < 0.26 or ratio > 1.65):
             return False
         return pi.kappa_flc >= 100 or pi.lambda_flc >= 100
@@ -253,12 +461,8 @@ def _normalize_measurable_disease_imwg(pi) -> None:
         if component is True:
             pi.measurable_disease_imwg = True
             return
-    # All components None → no relevant lab data, result is unknown.
-    # Avoids the "shows No by default" UX bug (#4143 / #4156).
-    if all(c is None for c in components):
-        pi.measurable_disease_imwg = None
-        return
-    pi.measurable_disease_imwg = False
+    # CB's three-valued OR: a negative result needs every component evaluated.
+    pi.measurable_disease_imwg = False if all(c is False for c in components) else None
 
 
 def _normalize_last_treatment(pi) -> None:
@@ -289,3 +493,5 @@ def _normalize_mcl_derivations(pi) -> None:
     # strings (or None), per CB.
     pi.bulky_disease_criteria = attr.bulky_disease_criteria
     pi.high_risk_mcl_criteria = attr.high_risk_mcl_criteria
+
+

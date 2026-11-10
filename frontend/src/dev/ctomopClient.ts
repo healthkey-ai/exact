@@ -16,7 +16,11 @@ import axios, { AxiosError, type AxiosInstance } from "axios";
 // same-origin via a dev proxy mount is the only path where the session
 // cookie survives a plain-http dev loop.
 const DEFAULT_BASE = "/ctomop-local";
-const DEFAULT_TIMEOUT_MS = 10_000;
+/** Exported so the harness's promop state client bounds itself the same way
+ *  rather than hardcoding the number again. `exactAuth` keeps its own — it
+ *  bounds a different backend — so this shares one value between the two
+ *  CTOMOP clients, not across all three. */
+export const DEFAULT_TIMEOUT_MS = 10_000;
 const PING_TIMEOUT_MS = 2_000;
 
 function envBase(): string {
