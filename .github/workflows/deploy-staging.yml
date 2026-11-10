@@ -1,9 +1,36 @@
 name: deploy-staging
 
 # Keyless (Workload Identity Federation) build + blue-green deploy to the
-# shared staging GCP project. Mirrors the house pattern: build the image into
-# Artifact Registry, roll out a no-traffic revision, run migrations in the
-# dedicated Cloud Run job, then switch traffic.
+# shared staging GCP project: build the image into Artifact Registry, run
+# migrations in the dedicated Cloud Run job, roll out a no-traffic revision,
+# then switch traffic.
+#
+# Migrations run BEFORE the revision is created. `--no-traffic` only withholds
+# requests: Cloud Run still starts the new revision and waits for it to become
+# ready, so `gcloud run deploy` fails if the container exits on startup.
+#
+# Why that matters for the trials DB: the service's own entrypoint `migrate`
+# only ever migrates `default` (exact.db_router.allow_migrate keeps the trials
+# app off it), so the trials copy is migrated solely by the job's second pass
+# below. From the 2omop promotion (#226) on, the entrypoint runs
+# `check_trials_schema` before gunicorn and exits when the image models a
+# trials column the catalog does not have yet, so a revision carrying a trials
+# schema change cannot start before that pass has run.
+#
+# Necessary but not sufficient: the same entrypoint refuses to start at all
+# while the SERVICE env carries TRIALS_DB_MIGRATE (or the other split-DB
+# write/tolerance flags). That flag must live on the migrate job only, which
+# needs a job-only env input in the shared ht-phr `cloud_run` Terraform module;
+# this workflow cannot do it.
+#
+# The cost of this order: if the new image cannot start, its migrations have
+# already been applied while the previous revision keeps serving. The old
+# revision serves throughout the job in both orders, so migrations must stay
+# backward-compatible with it either way. From #226 on that is strict: every
+# start of the old revision (staging scales to zero, so cold starts are
+# routine) re-runs its own schema check, which wants each modeled column's
+# exact type, typmod and nullability. Relaxing NOT NULL or widening a column
+# is therefore not backward-compatible for the old revision.
 #
 # Env/secret wiring for both the service and the migrate job lives in the
 # staging infra Terraform; this workflow only swaps the container image and
@@ -60,13 +87,6 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
 
-      - name: Deploy new revision (no traffic)
-        run: |
-          gcloud run deploy "$SERVICE" \
-            --image "$IMAGE:${{ github.sha }}" \
-            --region "$REGION" \
-            --no-traffic
-
       - name: Run database migrations
         run: |
           gcloud run jobs update "$MIGRATE_JOB" \
@@ -80,13 +100,21 @@ jobs:
           # container: a no-op (returns before opening the 'trials' connection)
           # unless the flag is on, so an externally-managed/read-only trials DB
           # is never touched and its django_migrations recorder is never
-          # created. When on (a copy we own, e.g. staging) it runs
-          # `migrate --database=trials --fake-initial`, which idempotently fakes
-          # 0001 against the seeded copy and applies the rest for real.
+          # created. When on (a copy we own, e.g. staging) it applies each
+          # pending trials migration to the 'trials' alias, and fakes one only
+          # when it fails with DuplicateTable/DuplicateColumn, i.e. when the
+          # seeded copy already has that schema.
           gcloud run jobs execute "$MIGRATE_JOB" \
             --region "$REGION" \
             --wait \
             --args=manage.py,migrate_trials_db
+
+      - name: Deploy new revision (no traffic)
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --image "$IMAGE:${{ github.sha }}" \
+            --region "$REGION" \
+            --no-traffic
 
       - name: Route traffic to new revision
         run: |
