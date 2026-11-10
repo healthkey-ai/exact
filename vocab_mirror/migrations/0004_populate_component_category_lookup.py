@@ -46,7 +46,13 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('vocab_mirror', '0003_componentcategoryomoplookup_componentlookupstamp'),
-        # Read the M2M in its current shape (harmless if the trials DB is external).
+        # Read the M2M in its current shape. This dependency only orders
+        # migration state. populate() itself reads through the router, i.e.
+        # from the external `trials` catalog in split-DB mode, even though this
+        # runs under the `default` migrate. That catalog must already have
+        # trials_therapycomponent.omop_concept_id (trials 0011); otherwise the
+        # read raises ProgrammingError and aborts `migrate`, before the
+        # entrypoint's check_trials_schema can report the drift.
         ('trials', '0019_rename_ctomop_to_promop_help_text'),
     ]
 
