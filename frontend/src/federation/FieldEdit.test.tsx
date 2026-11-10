@@ -192,6 +192,60 @@ describe("when the control is drawn at all", () => {
     expect(screen.getAllByRole("button", { name: /^Edit Hemoglobin/ })).toHaveLength(1);
   });
 
+  it("draws a control on both rows of a required/excluded pair", async () => {
+    // Both rows name `planned_therapies` and both show the patient's one
+    // list. They are opposite criteria, not a min/max pair: a reader who
+    // wants to change the exclusion must find the control on that row, which
+    // is the one they clicked.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({
+          name: "plannedTherapiesRequired",
+          label: "Planned Therapies",
+          upatientField: "planned_therapies",
+          ufield: "plannedTherapies",
+          type: "multiselect",
+          utype: "multiselect",
+          uvalue: null,
+          units: undefined,
+        }),
+        row({
+          name: "plannedTherapiesExcluded",
+          label: "Planned Therapies Excluded",
+          upatientField: "planned_therapies",
+          ufield: "plannedTherapies",
+          type: "multiselect",
+          utype: "multiselect",
+          uvalue: null,
+          units: undefined,
+        }),
+      ]),
+    );
+    renderTrialMatches(api, {
+      state: fakeState({
+        writable: {
+          planned_therapies: {
+            kind: "direct",
+            writable: true,
+            value_kind: "string",
+            multiple: true,
+            options: [{ value: "immunotherapy" }, { value: "chemotherapy" }],
+          },
+        },
+      }).adapter,
+    });
+    await openDetail();
+
+    expect(await screen.findByText("Planned Therapies Excluded")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Edit Planned Therapies" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Edit Planned Therapies Excluded" }),
+    ).toBeInTheDocument();
+  });
+
   it("is not drawn for a value EXACT recomputes, however writable PROMOP says it is", async () => {
     // The two answer different questions. PROMOP says the record will TAKE
     // the write — and it does. EXACT then recomputes the value from its

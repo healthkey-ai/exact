@@ -8,7 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from trials.api.graph_serializers import GraphTrialNodeSerializer
-from trials.api.patient_info_serializers import PatientInfoSerializer
+from trials.api.patient_info_serializers import GraphPatientInfoSerializer
 from trials.api.trials_views import TrialsViewSet
 from trials.services.attribute_names import AttributeNames
 from trials.services.trial_details.trial_templates import TrialTemplates
@@ -94,15 +94,6 @@ def _bucket_by_matching_type(details: Dict[str, Any]) -> Dict[str, List[Dict[str
         buckets[k].sort(key=key_fn)
 
     return buckets
-
-
-class GraphPatientInfoSerializer(PatientInfoSerializer):
-    """Strip the heavy fields from PatientInfoSerializer for the graph endpoint."""
-
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        data.pop('details', None)
-        return data
 
 
 class TrialsGraphViewSet(TrialsViewSet):

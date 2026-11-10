@@ -150,7 +150,23 @@ export function formatValue(value: unknown, options?: TrialDetailField["options"
   if (value == null || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) {
-    const parts = value.filter((v) => v != null && v !== "").map((v) => labelOf(v, options));
+    const parts = value
+      .filter((v) => v != null && v !== "")
+      .map((v) => {
+        // Therapy-line lists are nested `{therapy: {value, …}, date}` maps;
+        // `String(object)` is the literal "[object Object]" a reader saw.
+        if (typeof v === "object") {
+          const therapy = (v as { therapy?: unknown }).therapy;
+          if (typeof therapy === "string") return labelOf(therapy, options);
+          if (therapy && typeof therapy === "object") {
+            const inner = (therapy as { value?: unknown; label?: unknown });
+            return labelOf(inner.value ?? inner.label ?? "", options);
+          }
+          return null;
+        }
+        return labelOf(v, options);
+      })
+      .filter((part): part is string => part != null && part !== "");
     return parts.length ? parts.join(", ") : "—";
   }
   // A COMMA-JOINED value is a list the column happens to store as text, and
@@ -301,8 +317,19 @@ function editableRowNames(
   fields: TrialDetailField[],
   writable: WritableFields | undefined,
 ): Set<string> {
+  // Attribute -> the answer the row that took the control shows, plus which
+  // side of the criterion it is. A second row is the same control only when
+  // both match: a min and a max read the patient's one number and belong to
+  // one measurement, while "Planned Therapies" and "… Excluded" read the same
+  // list but are opposite criteria — each row is the one the reader came to
+  // change, so each keeps its own door.
   const taken = new Set<string>();
   const rows = new Set<string>();
+  const criterionSide = (name: string): string => {
+    if (/Required$/.test(name)) return "required";
+    if (/Excluded$/.test(name)) return "excluded";
+    return "value";
+  };
   for (const field of fields) {
     const attribute = field.upatientField;
     if (!attribute || field.ureadonly) continue;
@@ -326,8 +353,10 @@ function editableRowNames(
     // One control per ROW attribute, as before: an alias and its canonical
     // are different rows here, and collapsing them by the canonical name would
     // silently move the control to whichever row happens to come first.
-    if (taken.has(attribute)) continue;
-    taken.add(attribute);
+    const shown = JSON.stringify(field.uvalue ?? null);
+    const key = `${attribute}\u0000${shown}\u0000${criterionSide(field.name)}`;
+    if (taken.has(key)) continue;
+    taken.add(key);
     rows.add(field.name);
   }
   return rows;
@@ -496,7 +525,7 @@ function EligibilityRow({
       : null;
   const canOpenSubform =
     Boolean(subformHere || computedEditor)
-    && subformCanBeEdited(subformEntries, editing);
+    && subformCanBeEdited(subformEntries, editing, field.upatientField);
   // `genetic_mutations` is structured, so the generic dialog refuses it. This
   // is the same source, opened through the endpoint that owns it — and only
   // when the descriptor says this caller may write it. The adapter exists for
@@ -588,8 +617,37 @@ function EligibilityRow({
   // normal" pair — and the ×ULN row shows a RATIO, so painting the written
   // number there would put a clinically false figure on screen, briefly, in a
   // table a patient reads.
+  // A boolean trial-side value ("has any transplant history") can sit over a
+  // list-valued patient field (`stem_cell_transplant_history`). Seeding the
+  // multiselect from the boolean adds `true` as an option the record has
+  // never heard of and hides the actual history. The patient payload names
+  // the real value; use it whenever the two shapes disagree.
+  const patientFieldValue = field.upatientField
+    ? (patientInfo as Record<string, unknown> | null | undefined)?.[field.upatientField]
+    : undefined;
+  const editorValue =
+    typeof field.uvalue === "boolean"
+    && patientFieldValue != null
+    && typeof patientFieldValue !== "boolean"
+      ? patientFieldValue
+      : field.uvalue;
+  // Therapy component/type values arrive as a mix of concept ids and their
+  // names: the matcher keeps the ids for the overlap and adds the readable
+  // names beside them. On screen the ids are noise — show the names when the
+  // payload also carries them, and keep the raw list only when it carries
+  // nothing else.
+  const visiblePatientValue = (() => {
+    const value = writePending ? pendingValue : field.uvalue;
+    if (!/therapy(Components|Types)/i.test(field.name) || !Array.isArray(value)) {
+      return value;
+    }
+    const named = value.filter(
+      (item) => !/^\d+$/.test(String(item).replace(/\*/g, "").trim()),
+    );
+    return named.length ? named : value;
+  })();
   const yours = formatValue(
-    writePending ? pendingValue : field.uvalue,
+    visiblePatientValue,
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
@@ -771,10 +829,10 @@ function EligibilityRow({
                   : editing.failed[attribute]
                 : writePending
                   ? pendingValue
-                  : field.uvalue
+                  : editorValue
             }
             // The record's own value, with neither of those in front of it.
-            recordValue={field.uvalue}
+            recordValue={editorValue}
             units={field.uunits ?? field.units}
             // A negated view crosses the polarity boundary here: the box holds
             // the row's answer ("No HIV: Yes"), and the record stores the

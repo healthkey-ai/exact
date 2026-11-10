@@ -54,11 +54,12 @@ export interface TabOptions {
 }
 
 const MATCH_TABS: TabDef[] = [
-  // CB labels this one "Eligible". The label names the union instead, because
-  // the count beside it is `eligible + potential` (see `tabCount`) and the
-  // list holds both: the trials meeting every criterion that could be checked,
-  // and the trials with information still missing.
-  { value: "eligible_and_potential", label: "Eligible & Potential" },
+  // CB labels this one "Eligible". The count beside it is `eligible +
+  // potential` (see `tabCount`) and the list holds both: the trials meeting
+  // every criterion that could be checked, and the trials with information
+  // still missing. Keep the label CB's — a reader comparing the two products
+  // should not see the same number under two different names.
+  { value: "eligible_and_potential", label: "Eligible" },
 ];
 
 /** CB's bar has no eligible-only or potential-only tab, and #517 settled that
@@ -160,8 +161,8 @@ export function tabCount(
  *  A number missing from one badge while its neighbours keep theirs does not
  *  read as "not counted" — it reads as ZERO, and it reads that way BECAUSE
  *  of the neighbours. Measured on the local stack: the bar says
- *  "Eligible & Potential 369 / Registered 1 / Favorites 1", and opening
- *  Favorites leaves "Eligible & Potential" bare beside two tabs that still
+ *  "Eligible 369 / Registered 1 / Favorites 1", and opening
+ *  Favorites leaves "Eligible" bare beside two tabs that still
  *  have their numbers. A reader with one bookmark is being told, in the only
  *  language a badge has, that nothing matches them.
  *

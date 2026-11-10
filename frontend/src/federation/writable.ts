@@ -75,6 +75,9 @@ export type WritableFields = Record<string, WritableFieldEntry>;
  */
 const FIELD_ALIASES: Readonly<Record<string, string>> = {
   cytogenic_markers: "cytogenetic_markers",
+  // EXACT derives the transplant day from the date; PROMOP's record keeps the
+  // legacy CB name for the date itself.
+  stem_cell_transplant_date: "sct_date",
 };
 
 export function canonicalFieldName(name: string): string {

@@ -142,6 +142,43 @@ describe("resolveEditor", () => {
     }
   });
 
+  it("resolves the transplant date to PROMOP's `sct_date` column", () => {
+    // The trial composes the row from EXACT's attribute name; PROMOP stores
+    // the fact under its legacy column name. Without the alias the subform
+    // entry names a field the descriptor has never heard of and the "day
+    // since transplant" row loses the only control that can change it.
+    const fields = described();
+    fields.sct_date = {
+      kind: "direct",
+      writable: true,
+      target: "patient_record",
+      value_kind: "date",
+      overridable: true,
+    };
+    const result = decision(
+      resolveEditor("stem_cell_transplant_date", fields, {
+        surface: "subform",
+        entry: {
+          name: "stemCellTransplantDate",
+          label: "Stem Cell Transplant Date",
+          type: "date",
+          value: "2017-08-01",
+          upatientField: "stem_cell_transplant_date",
+          upatientRecomputed: true,
+          upatientRecomputedWhen: {
+            when: "sometimes",
+            condition: "cleared when prior therapy is 'None'",
+          },
+        },
+      }),
+      "handled",
+    );
+    if (result.state === "handled") {
+      expect(result.field).toBe("sct_date");
+      expect(result.editor.kind).toBe("scalar");
+    }
+  });
+
   it("lets editabilityOf resolve the legacy cytogenic spelling to the descriptor entry", () => {
     const editable = editabilityOf("cytogenic_markers", described());
     expect(editable.can).toBe("edit");
@@ -423,12 +460,10 @@ describe("resolveEditor", () => {
       value_kind: "string",
       options: [{ value: "Female", label: "Female" }],
     };
-    const result = decision(
-      resolveEditor("sex_at_birth", fields, { surface: "subform" }),
-      "unsupported",
-    );
-    if (result.state === "unsupported") {
-      expect(result.diagnostic).toBe("person_scope_in_subform");
+    const result = resolveEditor("sex_at_birth", fields, { surface: "subform" });
+    expect(result.state).toBe("handled");
+    if (result.state === "handled" && result.editor.kind === "scalar") {
+      expect(result.editor.scope).toBe("person");
     }
   });
 
@@ -439,17 +474,19 @@ describe("resolveEditor", () => {
     if (result.state === "unsupported") expect(result.diagnostic).toBe("unknown_kind:none");
   });
 
-  it("offers person demographics on a row but not inside a threshold subform", () => {
+  it("offers person demographics on a row and inside a threshold subform", () => {
+    // Native CB edits every subform entry, and a ULN limit is calculated from
+    // gender and race: the dialog is where those inputs belong.
     const row = decision(resolveEditor("sex_at_birth", described(), context), "handled");
     if (row.state === "handled" && row.editor.kind === "scalar") {
       expect(row.editor.scope).toBe("person");
     }
     const subform = decision(
       resolveEditor("sex_at_birth", described(), { surface: "subform" }),
-      "unsupported",
+      "handled",
     );
-    if (subform.state === "unsupported") {
-      expect(subform.diagnostic).toBe("person_scope_in_subform");
+    if (subform.state === "handled" && subform.editor.kind === "scalar") {
+      expect(subform.editor.scope).toBe("person");
     }
   });
 
@@ -547,6 +584,29 @@ describe("resolveEditor", () => {
     if (editable.can === "no") {
       expect(editable.announce).toBe(true);
       expect(editable.why).toContain("genomics");
+    }
+  });
+
+  it("announces an authored episode field the record derives", () => {
+    // `prior_therapy` is authored by the treatment episodes, not by a column
+    // write. Without the sentence the "Therapy Lines Count" row sits mute and
+    // reads as broken; with it the reader knows where the value comes from.
+    const fields = described();
+    fields.prior_therapy = {
+      kind: "authored",
+      writable: false,
+      target: "episode",
+      authored_via: { target: "episode" },
+      reason: "Derived from the therapy episodes.",
+    };
+    const editable = toEditability(
+      resolveEditor("prior_therapy", fields, context),
+      fields,
+    );
+    expect(editable.can).toBe("no");
+    if (editable.can === "no") {
+      expect(editable.announce).toBe(true);
+      expect(editable.why).toContain("treatment episode");
     }
   });
 

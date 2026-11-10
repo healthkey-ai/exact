@@ -260,14 +260,16 @@ describe("recompute and subforms", () => {
     }
   });
 
-  it("does not offer a person-scoped input inside a threshold subform", () => {
+  it("offers a person-scoped input inside a threshold subform", () => {
+    // Demographics are inputs to the ULN calculation; native CB edits every
+    // subform entry. The row still writes through the person projection.
     const decision = decide("gender", {
       surface: "subform",
       entry: { upatientField: "gender", type: "select" },
     });
-    expect(decision.state).toBe("unsupported");
-    if (decision.state === "unsupported") {
-      expect(decision.diagnostic).toBe("person_scope_in_subform");
+    expect(decision.state).toBe("handled");
+    if (decision.state === "handled" && decision.editor.kind === "scalar") {
+      expect(decision.editor.scope).toBe("person");
     }
   });
 });

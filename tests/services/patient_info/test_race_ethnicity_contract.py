@@ -76,3 +76,30 @@ class TestUlnCalculators:
         # The PROMOP adapter names the adequacy fields, so missing inputs are
         # unresolved (None), not the legacy False that means "not adequate".
         assert attributes.hepatic_adequacy_status is None
+
+
+class TestSubformRaceInput:
+    """The ULN subform edits race, so its value must speak PROMOP's labels."""
+
+    def test_each_code_names_the_record_label_it_is_edited_by(self):
+        from trials.services.patient_info.promop_adapter import (
+            RACE_CODE_TO_PROMOP_LABEL, promop_race_label,
+        )
+
+        for code, label in RACE_CODE_TO_PROMOP_LABEL.items():
+            assert promop_race_label(code) == label
+            # And the label maps back to the same code, so saving it is a
+            # round trip rather than a one-way translation.
+            assert _patient(race=label).ethnicity == code
+
+    def test_a_legacy_title_is_translated_too(self):
+        from trials.services.patient_info.promop_adapter import promop_race_label
+
+        assert promop_race_label('Caucasian/European') == 'White'
+        assert promop_race_label('African/Black') == 'Black or African American'
+
+    def test_an_unrecognised_value_is_left_visible(self):
+        from trials.services.patient_info.promop_adapter import promop_race_label
+
+        assert promop_race_label('Klingon') == 'Klingon'
+        assert promop_race_label(None) is None

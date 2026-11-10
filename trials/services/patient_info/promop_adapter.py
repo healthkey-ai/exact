@@ -147,6 +147,18 @@ def resolve_therapy_code(display: str) -> str | None:
     return None
 
 
+#: The other direction, for the subform that edits a ULN input: the select is
+#: seeded from the record, so it carries the label PROMOP's `race` options use
+#: rather than EXACT's code. Keep this beside the forward map so the two cannot
+#: drift apart silently.
+RACE_CODE_TO_PROMOP_LABEL = {
+    'caucasian_or_european': 'White',
+    'african_or_black': 'Black or African American',
+    'asian': 'Asian',
+    'native_american': 'American Indian or Alaska Native',
+    'other': 'Other',
+}
+
 #: EXACT's `ethnicity` field holds RACE categories (#4447), while PROMOP stores
 #: the OMOP race label in `race` and OMOP ethnicity in `ethnicity`. Only these
 #: reviewed race labels map to an EXACT code. OMOP ethnicity labels (Hispanic
@@ -200,6 +212,20 @@ def _race_code(value) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return _RACE_LABEL_TO_CODE.get(_normalise_race_label(value))
+
+
+def promop_race_label(value):
+    """The label PROMOP's `race` options carry for an EXACT ethnicity value.
+
+    Accepts a code, a CB title or a PROMOP label, because a subform entry is
+    seeded from whichever of those the patient context holds. An unrecognised
+    value is returned unchanged so the select shows what the record has rather
+    than blanking a clinical answer.
+    """
+    code = _race_code(value)
+    if code is None:
+        return value
+    return RACE_CODE_TO_PROMOP_LABEL.get(code, value)
 
 
 def _race_code_from_row(row: dict) -> str | None:
@@ -272,6 +298,22 @@ JSON_FIELDS = frozenset({
     'later_therapies', 'supportive_therapies',
     'genetic_mutations', 'stem_cell_transplant_history',
 })
+
+
+#: PROMOP / SNOMED disease surface names → the title the trial corpus stores.
+#: The list filter is ``disease__iexact`` against the corpus value ("breast
+#: cancer"), so a raw concept name such as "Malignant tumor of breast" matches
+#: nothing at all. Keep this to exact-name aliases; unknown diseases pass through.
+DISEASE_ALIASES = {
+    'malignant tumor of breast': 'Breast Cancer',
+    'malignant tumor of breast (disorder)': 'Breast Cancer',
+    'malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of breast (disorder)': 'Breast Cancer',
+    'carcinoma of breast': 'Breast Cancer',
+    'carcinoma of breast (disorder)': 'Breast Cancer',
+    'primary malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of female breast': 'Breast Cancer',
+}
 
 
 #: The record stores the POSITIVE viral status; trials ask the negated question
@@ -593,6 +635,13 @@ def normalize_promop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # ── Disease name — PROMOP sends the raw SNOMED concept name ────────
+    disease = row.get('disease')
+    if isinstance(disease, str):
+        row['disease'] = DISEASE_ALIASES.get(
+            disease.strip().lower(), disease.strip()
+        )
+
     # Provenance for the negated rows (#5667), recorded before the positive
     # keys are popped below. Kept if a previous pass already recorded it: on
     # the second call the raw keys are gone, and recapturing would turn
@@ -811,6 +860,10 @@ def normalize_promop_row(row: dict) -> dict:
         # internal codes there would silently never match). A line with no concept
         # becomes None / [] (unknown) rather than an unmatchable internal code.
         for _tf in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+            # Keep the human name the matcher code replaces; PROMOP only
+            # sends `_display` for the first two, and the 3L+ line has none.
+            if not row.get(f'{_tf}_display') and row.get(_tf):
+                row[f'{_tf}_display'] = row[_tf]
             cid = row.get(f'{_tf}_id')
             row[_tf] = str(cid) if cid not in _EMPTY_CID else None
         later_ids = row.get('later_therapy_ids') or []
@@ -976,8 +1029,15 @@ def build_patient_info_from_promop_row(row: dict):
     # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info.
     # The adequacy fields are named even though PROMOP has no column for them,
     # so missing liver/blood labs stay unknown instead of becoming a refusal.
-    return _build_in_memory(
+    patient = _build_in_memory(
         cleaned,
         named_null_fields=PROMOP_NAMED_NULL_FIELDS,
         negated_sources=negated_sources,
     )
+    # OMOP mode normalises the therapy line to its concept id for matching;
+    # the reader-facing name travels beside it as `*_display`. It is not a
+    # matching field, so the PatientInfo class has no column for it — carry
+    # it on the instance for the detail/subform presentation.
+    for field in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+        setattr(patient, f'{field}_display', cleaned.get(f'{field}_display'))
+    return patient

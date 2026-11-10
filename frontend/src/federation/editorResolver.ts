@@ -153,6 +153,10 @@ export interface ResolveContext {
   /** Provenance for a negated row's canonical field (#5667). The dedicated
    *  dialog requires it; without it the resolver refuses the editor. */
   negativeSource?: NegativeSource | null;
+  /** The computed row whose subform this entry belongs to. `patient_age`'s
+   *  only input is `date_of_birth`, a person-scoped field: the demographics
+   *  guard below would otherwise hide the one control the row has. */
+  parentField?: string | null;
 }
 
 /** Fields whose trial-side spelling is a legacy typo of the patient column.
@@ -160,6 +164,9 @@ export interface ResolveContext {
  *  no cycle. */
 const FIELD_ALIASES: Readonly<Record<string, string>> = {
   cytogenic_markers: "cytogenetic_markers",
+  // EXACT derives the transplant day from the date; PROMOP's column keeps the
+  // legacy CB name for the date.
+  stem_cell_transplant_date: "sct_date",
 };
 
 export function aliasTarget(name: string): string | null {
@@ -608,23 +615,17 @@ function resolveEntry(
     };
   }
 
-  // Person-scoped demographics are legitimately editable from a row, but are
-  // a different question when reached through a threshold dialog: changing
-  // gender/race from the bilirubin row is a door into the wrong room.
+  // Person-scoped demographics are editable through a subform too: every
+  // entry in `subform_details` is, by construction, one of the values the row
+  // is calculated FROM — a ULN limit is only meaningful once gender and race
+  // are known — and native CB draws an input for each of them in the same
+  // dialog. The row itself still writes through the person projection.
   const scope: ScalarEditor["scope"] =
     kind === "profile"
     || entry.projection_target === "person"
     || entry.projection_target === "location"
       ? "person"
       : "record";
-  if (context.surface === "subform" && scope === "person") {
-    return unsupported(
-      field,
-      "This value describes the patient, not the threshold.",
-      "person_scope_in_subform",
-      "exact",
-    );
-  }
 
   if (!kind || (kind !== "direct" && kind !== "profile" && kind !== "editable"
       && kind !== "selectable" && kind !== "unmapped")) {
@@ -795,9 +796,11 @@ export function toEditability(
       field: editor.field,
       entry,
       why: routed ?? "This value is edited through another resource.",
-      // A writable authored resource is the old `elsewhere` case and was
-      // announced; one the record would refuse anyway stays silent.
-      announce: Boolean(entry.writable && routed !== undefined),
+      // A known authored target is announced even when the resource is not
+      // directly writable: "recorded with the treatment episode it belongs
+      // to" is the explanation the reader needs for the therapy row that
+      // would otherwise sit there mute.
+      announce: routed !== undefined,
     };
   }
   return {

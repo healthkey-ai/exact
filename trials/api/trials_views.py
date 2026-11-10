@@ -5,7 +5,10 @@ import logging
 import re
 from typing import TYPE_CHECKING, Optional
 
-from django.db.models import Case, F, IntegerField, Prefetch, QuerySet, Value, When
+from django.db.models import (
+    Case, F, IntegerField, Prefetch, QuerySet, Value, When,
+)
+from django.db.models.expressions import RawSQL
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 from django.utils.functional import SimpleLazyObject, cached_property
@@ -564,9 +567,28 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.with_potential_attrs_count(patient_info)
 
         if self.action == 'list':
-            queryset = queryset.order_by(
-                *sunk_first, '-match_score', '-posted_date', 'id'
-            )
+            # Same contract as `search`: the card shows the canonical criteria
+            # score, so the list orders by that number too. The SQL annotation
+            # remains the fallback when there is no patient to score.
+            if patient_info is not None:
+                ranked_ids = self._criteria_score_ranked_ids(
+                    queryset, patient_info, self.trials_counts,
+                    self.request.query_params.get('type'),
+                )
+                queryset = queryset.annotate(
+                    _criteria_match_rank=RawSQL(
+                        'array_position(%s::int[], "trials_trial"."id")',
+                        [ranked_ids],
+                        output_field=IntegerField(),
+                    )
+                )
+                queryset = queryset.order_by(
+                    *sunk_first, '_criteria_match_rank', 'id'
+                )
+            else:
+                queryset = queryset.order_by(
+                    *sunk_first, '-match_score', '-posted_date', 'id'
+                )
 
         if self.action == 'search':
             counts = self._trials_counts(queryset, patient_info)
@@ -598,7 +620,27 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             elif sort_by == 'patientBurdenScore':
                 order.append(F('patient_burden_score').asc(nulls_last=True))
             elif sort_by == 'matchScore':
-                order.append(F('match_score').desc(nulls_last=True))
+                # Rank over the number the cards show, not the SQL annotation.
+                # That annotation counts every mapped column the trial
+                # constrains; the card counts the criteria the detail renders,
+                # so ordering by it put a 100% card on page 2 under an 80% card
+                # on page 1. The scores are only computable per trial in
+                # Python, so the order travels back as an id array and
+                # `array_position` ranks the queryset with one expression.
+                if patient_info is not None:
+                    ranked_ids = self._criteria_score_ranked_ids(
+                        queryset, patient_info, self.trials_counts, search_type,
+                    )
+                    queryset = queryset.annotate(
+                        _criteria_match_rank=RawSQL(
+                            'array_position(%s::int[], "trials_trial"."id")',
+                            [ranked_ids],
+                            output_field=IntegerField(),
+                        )
+                    )
+                    order.append(F('_criteria_match_rank').asc(nulls_last=True))
+                else:
+                    order.append(F('match_score').desc(nulls_last=True))
             else:  # goodnessScore
                 order.append(F('goodness_score').desc(nulls_last=True))
             order.append(F('id').asc())
@@ -784,6 +826,124 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
+    @staticmethod
+    def _patient_facts_fingerprint(patient_info):
+        """A digest of the resolved patient context used for scoring.
+
+        The inline payload is not always present (a caller may send only
+        `person_id`), and the adapter drops that id, so the payload/query key
+        alone let two patients with the same candidate set share a cached
+        ranking. Hash the facts the rank was computed from instead.
+        """
+        import hashlib
+        import json
+
+        if patient_info is None:
+            return None
+        material = {
+            key: value for key, value in vars(patient_info).items()
+            if not key.startswith('__')
+        }
+        return hashlib.sha1(
+            json.dumps(material, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()
+
+    def _criteria_rank_cache_key(self, queryset, patient_info, counts, search_type):
+        """Cache key for the ranked id list.
+
+        The queryset's own SQL is not usable as a fingerprint: its bound
+        parameters include expression objects whose `repr` carries addresses,
+        so every request keyed differently and the cache never hit. The
+        inputs that decide the scores are the patient, the counts, the search
+        type, the filter parameters and the candidate set itself (a re-import
+        can change the rows a filter returns under the same query string).
+        """
+        import hashlib
+        import json
+
+        request = self.request
+        payload = None
+        try:
+            data = request.data
+            payload = data.get('patient_info') if hasattr(data, 'get') else None
+        except Exception:  # unparsable body: the resolver will reject it later
+            payload = None
+        if payload is None:
+            payload = (
+                request.query_params.get('person_id')
+                or getattr(patient_info, 'person_id', None)
+            )
+        params = sorted(
+            (key, tuple(values))
+            for key, values in request.query_params.lists()
+            if key not in ('page', 'limit')
+        )
+        candidates = list(
+            queryset.order_by().values_list('id', 'last_update_date')
+        )
+        candidate_ids = sorted(pk for pk, _updated in candidates)
+        # The ids alone miss a criteria edit that keeps the same trials in the
+        # set; the corpus stamps `last_update_date` when a trial changes.
+        candidate_version = max(
+            (str(updated) for _pk, updated in candidates if updated),
+            default=None,
+        )
+        material = json.dumps(
+            [
+                search_type,
+                params,
+                sorted(counts.items()) if counts else None,
+                payload,
+                self._patient_facts_fingerprint(patient_info),
+                candidate_ids,
+                candidate_version,
+            ],
+            sort_keys=True,
+            default=str,
+        )
+        return 'trials.criteria_rank.' + hashlib.sha1(material.encode('utf-8')).hexdigest()
+
+    def _criteria_score_ranked_ids(self, queryset, patient_info, counts, search_type):
+        """The candidate ids in descending order of the score the cards show.
+
+        `TrialSerializer` reports `criteria_match_score`, which builds the
+        trial's rendered eligibility rows. The SQL `match_score` annotation
+        counts a different set of columns, so it cannot order this number.
+        Scoring is per-trial and needs the location prefetch to avoid the
+        `get_distance_obj` N+1, hence the local copy rather than the caller's
+        queryset (which has not been prefetched yet at this point).
+
+        Paging costs one scoring pass per page without this cache; the key
+        covers the patient payload and the filter parameters, so an edit or a
+        changed filter asks a different question and misses.
+        """
+        from django.core.cache import cache
+        from trials.services.trial_details.match_score import criteria_match_score
+
+        cache_key = self._criteria_rank_cache_key(queryset, patient_info, counts, search_type)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        prefetched = queryset.prefetch_related(
+            Prefetch('locationtrial_set', queryset=LocationTrial.objects.select_related('location'))
+        )
+        scored = []
+        for trial in prefetched:
+            if search_type == 'eligible' or getattr(trial, 'match_score', None) == 100:
+                attrs_to_fill_in = []
+            else:
+                attrs_to_fill_in = trial.attrs_to_fill_in(counts, patient_info=patient_info)
+            scored.append((
+                criteria_match_score(trial, patient_info, attrs_to_fill_in),
+                trial.pk,
+            ))
+        # Descending score, ties broken by id so pagination is stable.
+        scored.sort(key=lambda pair: (-pair[0], pair[1]))
+        ranked_ids = [pk for _score, pk in scored]
+        cache.set(cache_key, ranked_ids, timeout=300)
+        return ranked_ids
+
     def get_serializer_class(self):
         return self.serializer_classes.get(self.action, self.default_serializer_class)
 
@@ -848,6 +1008,21 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_paginated_response(self, data, extra_keys=None):
         assert self.paginator is not None
+        # `get_queryset` already ranks `sort=matchScore` over the whole
+        # candidate set by this same number. Keep the within-page sort as a
+        # guard: no page can show 66% above 80% even if the rank fell back to
+        # the SQL annotation (no patient, cache, or a future change).
+        request = getattr(self, 'request', None)
+        if (request is not None
+                and request.query_params.get('sort') == 'matchScore'
+                and isinstance(data, list)):
+            data = sorted(
+                data,
+                key=lambda row: (
+                    row.get('matchScore') is None,
+                    -(row.get('matchScore') or 0),
+                ),
+            )
         if getattr(self, '_distance_filter', None) is not None:
             extra_keys = {**(extra_keys or {}), 'distanceFilter': self._distance_filter}
         if hasattr(self, '_typed_status_counts'):

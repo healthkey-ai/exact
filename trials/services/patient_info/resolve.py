@@ -504,6 +504,14 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=(),
     normalize_patient_info(pi)
     if supplied_egfr is not None:
         pi.estimated_glomerular_filtration_rate = supplied_egfr
+    # OMOP mode replaces the therapy line with its concept id for matching;
+    # the reader-facing name travels beside it as `*_display`. It is not a
+    # PatientInfo column, so carry it on the instance for the detail and
+    # subform presentation.
+    for field in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+        display = snake_data.get(f'{field}_display')
+        if display:
+            setattr(pi, f'{field}_display', display)
     return pi
 
 

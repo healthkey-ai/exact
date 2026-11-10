@@ -1178,7 +1178,7 @@ function TrialMatchesInner({
   //
   //   - leave Favorites, change the sort, come back: `keepPreviousData`
   //     still holds the narrowed response, and the corpus badge was painted
-  //     from counts taken over the saved ids — "Eligible & Potential, 1
+  //     from counts taken over the saved ids — "Eligible, 1
   //     trial" against a corpus of 19.
   //   - switch patient with the new request in flight: the badge held the
   //     PREVIOUS patient's 19 for the whole matcher round trip.
