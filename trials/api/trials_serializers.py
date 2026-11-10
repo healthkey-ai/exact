@@ -88,7 +88,13 @@ class TrialSerializer(serializers.ModelSerializer):
             attrs_to_fill_in = instance.attrs_to_fill_in(counts, patient_info=patient_info)
 
         response['attributesToFillIn'] = attrs_to_fill_in
-        response['matchScore'] = getattr(instance, 'match_score', None)
+        # The SQL annotation counts answered-vs-missing fields; the card and
+        # the detail must show the same matched-vs-criteria number instead.
+        from trials.services.trial_details.match_score import criteria_match_score
+        response['matchScore'] = (
+            criteria_match_score(instance, patient_info, attrs_to_fill_in)
+            if patient_info is not None else None
+        )
         response['stage'] = ', '.join([f'Stage {x}' for x in (instance.stages or [])])
 
         recruitment_status = self.context.get('recruitment_status')
@@ -253,9 +259,14 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         # eligible by the completeness annotation.
         if patient_info is not None:
             from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+            from trials.services.trial_details.match_score import score_from_criteria
             matcher = UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
-            # one pass for both (instead of trial_match_score() + trial_match_status()) — #201
-            response['matchScore'], response['matchingType'] = matcher.match_score_and_status()
+            # The verdict still comes from the conflict-aware matcher; the
+            # percentage is over the rows the detail actually shows, so a
+            # reader can count it.
+            _, response['matchingType'] = matcher.match_score_and_status()
+            response['matchScore'] = score_from_criteria(
+                details_and_groups['details'].get('trialEligibilityAttributes'))
             if self.context.get('explain'):
                 from trials.services.trial_match_explainer import TrialMatchExplainer
                 # reuse the matcher instance rather than building a second one — #201
