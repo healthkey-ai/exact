@@ -26,12 +26,28 @@ print(json.dumps(patient_form_descriptors(build_writable_field_descriptor()),
 " > /tmp/promop-descriptor.json
 ```
 
-Then rebuild the fixture: keep every entry whose kind is `alias`,
-`explicit-answer`, `negated`, `selectable`, `authored` or `unmapped`; add the
-named special cases in `descriptorContract.test.ts` (toxicity, source pairs,
-computed inputs, `genetic_mutations`, `cytogenic_markers`, demographics) and
-every alias target; strip the keys the resolver does not read; set `_meta.sha`
-and `_meta.schema_version` from the producer (`DESCRIPTOR_SCHEMA_VERSION`).
+Then rebuild the fixture:
+
+1. Set `_meta.sha` to the producer checkout's `git rev-parse HEAD` and
+   `_meta.schema_version` to `DESCRIPTOR_SCHEMA_VERSION`.
+2. Set `_meta.kinds` to the sorted distinct kinds of the **full** descriptor
+   and `_meta.descriptor_entry_count` to its entry count (reserved keys
+   excluded) — not to the sample's numbers.
+3. Include at least one entry for every kind in `_meta.kinds`, plus every
+   entry whose kind is `alias`, `explicit-answer`, `negated`, `selectable`,
+   `authored` or `unmapped`.
+4. Add the named special cases in `descriptorContract.test.ts` (toxicity,
+   source pairs, computed inputs, `genetic_mutations`, `cytogenic_markers`,
+   demographics) and every alias target.
+5. Strip the keys the resolver does not read (keep `inverted`,
+   `answer_labels`, `inputs`, `multiple`, `options`, `canonical`, `target`,
+   `writable`, `answerable`, `endpoint`, `actions`, `action_labels`,
+   `overridable`).
+
+A new producer kind therefore appears in `descriptorEntryCount`/`kinds` and
+fails the independent `RESOLVER_KINDS` gate until a sample is added. The SHA is
+provenance for review: nothing in CI can compare it against the producer, so a
+pin bump must regenerate the file in the same PR.
 
 The full descriptor is ~210 KB; this sample is ~39 KB. The producer-side
 inventory and contract tests in PROMOP own completeness — this file owns the
