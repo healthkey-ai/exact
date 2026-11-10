@@ -506,6 +506,12 @@ function EligibilityRow({
     // sends carries `name`, not necessarily `upatientField`. Accept all three
     // spellings so the host slot does not depend on one payload revision.
     field.ufield === "geneticMutations" ||
+      // `molecular_markers` is PROMOP's legacy display summary of the same
+      // genomic findings (a computed row, not a column). The shared form has
+      // no direct editor for it, so route the row to the findings editor the
+      // host already owns instead of leaving it with no control at all.
+      field.ufield === "molecularMarkers" ||
+      field.upatientField === "molecular_markers" ||
       field.subform_details?.some(
         (entry) =>
           entry.upatientField === "genetic_mutations" ||
