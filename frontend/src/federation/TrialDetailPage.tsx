@@ -535,11 +535,27 @@ function EligibilityRow({
     && decision.editor.kind === "explicit-answer"
     ? decision.editor
     : null;
+  // Resolved once, not inline in the cell: the host widget renders the
+  // patient's value as well as its control, so EXACT must not paint the same
+  // value beside it. Deciding twice would let the two disagree.
+  //
+  // Resolved BEFORE the built-in gates below, because it is what they key on:
+  // the slot is per ROW and returns null for a row the host does not own. An
+  // empty node must not take EXACT's scalar, negated or explicit-answer
+  // control away from that row — a host that covers therapy lines only would
+  // otherwise leave every other row with no editor at all.
+  const hostEditor = renderFieldEditor
+    ? renderFieldEditor({
+        field: field.ufield ?? field.name,
+        label: field.label,
+        trialId,
+      })
+    : null;
   const explicitAvailable = Boolean(
     explicitEditor
     && editing?.explicitAnswers
     && editableHere
-    && !renderFieldEditor,
+    && !hostEditor,
   );
   // The queue is keyed by the field the write LANDS IN, not by the row's own
   // attribute: an alias writes its canonical field and a negated view writes
@@ -571,16 +587,6 @@ function EligibilityRow({
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];
-  // Resolved once, not inline in the cell: the host widget renders the
-  // patient's value as well as its control, so EXACT must not paint the same
-  // value beside it. Deciding twice would let the two disagree.
-  const hostEditor = renderFieldEditor
-    ? renderFieldEditor({
-        field: field.ufield ?? field.name,
-        label: field.label,
-        trialId,
-      })
-    : null;
   // Only when the host says THIS row's node renders the value too. Asked per
   // row because one slot can carry two shapes: a PROMOP field that draws the
   // value, and a therapy pencil that does not.
@@ -669,8 +675,8 @@ function EligibilityRow({
         ) : null}
         {/* The host's patient-value editor. It is per ROW, not per canonical
             attribute: PROMOP's slot is keyed by the row's own name (its
-            `ufield`), and the host's widget owns saving. Returning null is
-            how a host leaves a row alone. */}
+            `ufield`), and the host's widget owns saving. Returning null
+            leaves the row to EXACT, which draws its own control above. */}
         {hostEditor}
         {/* A computed row cannot be written, but what it is computed FROM
             can — and the payload names those values. Offered only where at
@@ -741,7 +747,7 @@ function EligibilityRow({
             onClose={() => setGenomicsOpen(false)}
           />
         ) : null}
-        {editable.can === "edit" && editing && !editable.negative && !renderFieldEditor ? (
+        {editable.can === "edit" && editing && !editable.negative && !hostEditor ? (
           <FieldEdit
             field={editable.field}
             label={field.label}
@@ -776,7 +782,7 @@ function EligibilityRow({
             onOpenChange={setEditorOpen}
           />
         ) : null}
-        {editable.can === "edit" && editing && editable.negative && !renderFieldEditor ? (
+        {editable.can === "edit" && editing && editable.negative && !hostEditor ? (
           <>
             <button
               type="button"
