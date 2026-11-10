@@ -274,6 +274,22 @@ JSON_FIELDS = frozenset({
 })
 
 
+#: PROMOP / SNOMED disease surface names → the title the trial corpus stores.
+#: The list filter is ``disease__iexact`` against the corpus value ("breast
+#: cancer"), so a raw concept name such as "Malignant tumor of breast" matches
+#: nothing at all. Keep this to exact-name aliases; unknown diseases pass through.
+DISEASE_ALIASES = {
+    'malignant tumor of breast': 'Breast Cancer',
+    'malignant tumor of breast (disorder)': 'Breast Cancer',
+    'malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of breast (disorder)': 'Breast Cancer',
+    'carcinoma of breast': 'Breast Cancer',
+    'carcinoma of breast (disorder)': 'Breast Cancer',
+    'primary malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of female breast': 'Breast Cancer',
+}
+
+
 #: The record stores the POSITIVE viral status; trials ask the negated question
 #: ("No HIV required"). PROMOP removed the `no_*` columns in #2119, so EXACT
 #: reading them found its own class default (`True`) — a confirmed "does not
@@ -593,6 +609,13 @@ def normalize_promop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # ── Disease name — PROMOP sends the raw SNOMED concept name ────────
+    disease = row.get('disease')
+    if isinstance(disease, str):
+        row['disease'] = DISEASE_ALIASES.get(
+            disease.strip().lower(), disease.strip()
+        )
+
     # Provenance for the negated rows (#5667), recorded before the positive
     # keys are popped below. Kept if a previous pass already recorded it: on
     # the second call the raw keys are gone, and recapturing would turn
