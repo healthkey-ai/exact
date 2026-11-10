@@ -317,14 +317,19 @@ function editableRowNames(
   fields: TrialDetailField[],
   writable: WritableFields | undefined,
 ): Set<string> {
-  // Attribute -> the value the row that took the control shows. A second row
-  // for the same attribute is the same value only when it displays the same
-  // thing (a min and a max both read the patient's one number); when it
-  // displays a different answer — "Stem Cell Transplant History" as a boolean
-  // over "… Excluded" as a list — it is a different question and keeps its
-  // own control.
-  const taken = new Map<string, string>();
+  // Attribute -> the answer the row that took the control shows, plus which
+  // side of the criterion it is. A second row is the same control only when
+  // both match: a min and a max read the patient's one number and belong to
+  // one measurement, while "Planned Therapies" and "… Excluded" read the same
+  // list but are opposite criteria — each row is the one the reader came to
+  // change, so each keeps its own door.
+  const taken = new Set<string>();
   const rows = new Set<string>();
+  const criterionSide = (name: string): string => {
+    if (/Required$/.test(name)) return "required";
+    if (/Excluded$/.test(name)) return "excluded";
+    return "value";
+  };
   for (const field of fields) {
     const attribute = field.upatientField;
     if (!attribute || field.ureadonly) continue;
@@ -349,8 +354,9 @@ function editableRowNames(
     // are different rows here, and collapsing them by the canonical name would
     // silently move the control to whichever row happens to come first.
     const shown = JSON.stringify(field.uvalue ?? null);
-    if (taken.get(attribute) === shown) continue;
-    taken.set(attribute, shown);
+    const key = `${attribute}\u0000${shown}\u0000${criterionSide(field.name)}`;
+    if (taken.has(key)) continue;
+    taken.add(key);
     rows.add(field.name);
   }
   return rows;
