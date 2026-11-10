@@ -81,6 +81,47 @@ describe("the host genomics slot", () => {
     expect(screen.queryByText("host genomics editor for Mutation Genes")).toBeNull();
   });
 
+  it("routes the legacy molecular-markers row to the host's genomics editor", async () => {
+    // `molecular_markers` is PROMOP's derived summary of `genetic_mutations`,
+    // so it has no descriptor entry and no direct editor. The row must open
+    // the findings editor the host already owns rather than stay blank.
+    const api = fakeApi();
+    api.setDetail(
+      trialDetail(1, {
+        details: {
+          trialEligibilityAttributes: [{
+            name: "molecularMarkersExcluded",
+            label: "Molecular Markers Excluded",
+            type: "select",
+            value: ["krasMutation", "nrasMutation"],
+            ufield: "molecularMarkers",
+            upatientField: "molecular_markers",
+            matchingType: "unknown",
+            uvalue: null,
+            utype: "select",
+          }],
+        },
+      } as never),
+    );
+    const { render } = hostSlot();
+    renderTrialMatches(api, { renderGenomicsEditor: render });
+
+    await open();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Edit Molecular Markers Excluded genetic findings" }),
+    );
+
+    expect(
+      screen.getByText("host genomics editor for Molecular Markers Excluded"),
+    ).toBeInTheDocument();
+    expect(render).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: "Molecular Markers Excluded",
+        trialId: expect.anything(),
+      }),
+    );
+  });
+
   it("wins over EXACT's dialog when the host also supplies a writer", async () => {
     const api = fakeApi();
     api.setDetail(detailWithRow());
