@@ -259,14 +259,14 @@ class TrialDetailsSerializer(serializers.ModelSerializer):
         # eligible by the completeness annotation.
         if patient_info is not None:
             from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
-            from trials.services.trial_details.match_score import score_from_criteria
+            from trials.services.trial_details.match_score import criteria_match_score
             matcher = UserToTrialAttrMatcher(trial=instance, patient_info=patient_info)
             # The verdict still comes from the conflict-aware matcher; the
-            # percentage is over the rows the detail actually shows, so a
-            # reader can count it.
+            # percentage is over the canonical eligibility rows, the same
+            # number the list card shows, whatever presentation was asked for.
             _, response['matchingType'] = matcher.match_score_and_status()
-            response['matchScore'] = score_from_criteria(
-                details_and_groups['details'].get('trialEligibilityAttributes'))
+            response['matchScore'] = criteria_match_score(
+                instance, patient_info, attrs_to_fill_in)
             if self.context.get('explain'):
                 from trials.services.trial_match_explainer import TrialMatchExplainer
                 # reuse the matcher instance rather than building a second one — #201

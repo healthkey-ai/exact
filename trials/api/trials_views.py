@@ -567,9 +567,28 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.with_potential_attrs_count(patient_info)
 
         if self.action == 'list':
-            queryset = queryset.order_by(
-                *sunk_first, '-match_score', '-posted_date', 'id'
-            )
+            # Same contract as `search`: the card shows the canonical criteria
+            # score, so the list orders by that number too. The SQL annotation
+            # remains the fallback when there is no patient to score.
+            if patient_info is not None:
+                ranked_ids = self._criteria_score_ranked_ids(
+                    queryset, patient_info, self.trials_counts,
+                    self.request.query_params.get('type'),
+                )
+                queryset = queryset.annotate(
+                    _criteria_match_rank=RawSQL(
+                        'array_position(%s::int[], "trials_trial"."id")',
+                        [ranked_ids],
+                        output_field=IntegerField(),
+                    )
+                )
+                queryset = queryset.order_by(
+                    *sunk_first, '_criteria_match_rank', 'id'
+                )
+            else:
+                queryset = queryset.order_by(
+                    *sunk_first, '-match_score', '-posted_date', 'id'
+                )
 
         if self.action == 'search':
             counts = self._trials_counts(queryset, patient_info)
@@ -807,6 +826,28 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
 
+    @staticmethod
+    def _patient_facts_fingerprint(patient_info):
+        """A digest of the resolved patient context used for scoring.
+
+        The inline payload is not always present (a caller may send only
+        `person_id`), and the adapter drops that id, so the payload/query key
+        alone let two patients with the same candidate set share a cached
+        ranking. Hash the facts the rank was computed from instead.
+        """
+        import hashlib
+        import json
+
+        if patient_info is None:
+            return None
+        material = {
+            key: value for key, value in vars(patient_info).items()
+            if not key.startswith('__')
+        }
+        return hashlib.sha1(
+            json.dumps(material, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()
+
     def _criteria_rank_cache_key(self, queryset, patient_info, counts, search_type):
         """Cache key for the ranked id list.
 
@@ -837,14 +878,25 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             for key, values in request.query_params.lists()
             if key not in ('page', 'limit')
         )
-        candidate_ids = sorted(queryset.order_by().values_list('id', flat=True))
+        candidates = list(
+            queryset.order_by().values_list('id', 'last_update_date')
+        )
+        candidate_ids = sorted(pk for pk, _updated in candidates)
+        # The ids alone miss a criteria edit that keeps the same trials in the
+        # set; the corpus stamps `last_update_date` when a trial changes.
+        candidate_version = max(
+            (str(updated) for _pk, updated in candidates if updated),
+            default=None,
+        )
         material = json.dumps(
             [
                 search_type,
                 params,
                 sorted(counts.items()) if counts else None,
                 payload,
+                self._patient_facts_fingerprint(patient_info),
                 candidate_ids,
+                candidate_version,
             ],
             sort_keys=True,
             default=str,

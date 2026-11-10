@@ -84,3 +84,31 @@ class TestTrialsMatchPost:
         for required in ('trialId', 'briefTitle', 'matchingType',
                          'matchScore', 'goodnessScore', 'attributesToFillIn'):
             assert required in trial, f'missing field {required}'
+
+
+@pytest.mark.django_db
+def test_list_orders_by_the_score_the_cards_show(authed_client, monkeypatch):
+    """The list endpoint orders by the same number its cards report.
+
+    `TrialSerializer` shows `criteria_match_score`; ordering by the SQL
+    `match_score` annotation listed lower displayed scores above higher ones,
+    including across pages.
+    """
+    from trials.services.trial_details import match_score as match_score_module
+
+    trials = [TrialFactory(disease='Multiple Myeloma') for _ in range(3)]
+    scores = {trials[0].id: 50, trials[1].id: 90, trials[2].id: 70}
+    monkeypatch.setattr(
+        match_score_module,
+        'criteria_match_score',
+        lambda trial, patient_info, attrs_to_fill_in=None, template=None: scores[trial.id],
+    )
+    response = authed_client.post(
+        '/trials/match/',
+        {'patient_info': {'disease': 'multiple myeloma'}},
+        format='json',
+    )
+    assert response.status_code == 200
+    assert [row['trialId'] for row in response.data['results']] == [
+        trials[1].id, trials[2].id, trials[0].id,
+    ]

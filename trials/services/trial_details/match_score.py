@@ -32,17 +32,22 @@ def score_from_criteria(attributes) -> int:
     return int(matched * 100 / len(attributes))
 
 
-def criteria_match_score(trial, patient_info, attrs_to_fill_in=None, template=None) -> int:
+def criteria_match_score(trial, patient_info, attrs_to_fill_in=None) -> int:
     """Build the detail's rows for one trial and score them.
 
     Shared by `TrialSerializer` (list cards) and `TrialDetailsSerializer` so
     the two can never report different percentages for the same pair again.
+
+    The score is over the canonical eligibility view, never the requested
+    presentation: `?view=all_attributes_in_groups` returns named groups with no
+    `trialEligibilityAttributes`, and scoring that shape reported 0% for a
+    fully matched trial.
     """
     if patient_info is None:
         return 0
     from trials.services.trial_details.trial_templates import TrialTemplates
 
-    details = TrialTemplates(trial, patient_info).details_and_group_names(
-        template, list(attrs_to_fill_in or []),
-    )["details"]
+    details = TrialTemplates(trial, patient_info).potential_attributes_first_view(
+        list(attrs_to_fill_in or []),
+    )
     return score_from_criteria(details.get("trialEligibilityAttributes"))
