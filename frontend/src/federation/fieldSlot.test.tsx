@@ -156,7 +156,10 @@ describe("the host field editor slot", () => {
     expect(document.querySelector('[data-col="yours"] .exact-elig__val')).toBeNull();
   });
 
-  it("falls back to the row name and lets the host decline a row", async () => {
+  it("falls back to the row name and to EXACT's editor for a row the host declines", async () => {
+    // Returning null says "the host does not own THIS row", not "nobody may
+    // edit it". A host that only covers therapy lines must not take EXACT's
+    // scalar editor away from every other row.
     const api = fakeApi();
     api.setDetail(
       detailWith([
@@ -187,13 +190,66 @@ describe("the host field editor slot", () => {
     expect(slot).toHaveBeenCalledWith(
       expect.objectContaining({ field: "creatinineLevel", label: "Creatinine" }),
     );
-    // Returning null is a refusal, not a fallback: EXACT's own pencil must
-    // not come back for a row whose editing the host has taken over.
-    expect(screen.queryByRole("button", { name: "Edit Creatinine" })).toBeNull();
-    // The value is the other half: a declined row keeps its value and units,
-    // even with the opt-in set, because there is no host widget to draw them.
+    expect(screen.getByRole("button", { name: "Edit Creatinine" })).toBeInTheDocument();
+    // No host node drew the value, so EXACT keeps painting it even with the
+    // opt-in set.
     expect(screen.getByText("11")).toBeInTheDocument();
     expect(screen.getByText("mg/dL")).toBeInTheDocument();
+  });
+
+  it("keeps EXACT's editor on an uncovered row while the host covers another", async () => {
+    // The partial-slot case: a host adapter that only has a therapy editor
+    // returns a node for that row and null for the scalar beside it.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({ uvalue: 4242 }),
+        row({
+          name: "creatinineLevel",
+          label: "Creatinine",
+          ufield: "creatinineLevel",
+          upatientField: "creatinine_mg_dl",
+        }),
+      ]),
+    );
+    const state = fakeState({
+      writable: {
+        hemoglobin_g_dl: { kind: "direct", writable: true, value_kind: "number" },
+        creatinine_mg_dl: { kind: "direct", writable: true, value_kind: "number" },
+      },
+    });
+    const slot = vi.fn(({ field }: { field: string }) =>
+      field === "hemoglobinLevel" ? <div data-testid="host-field" /> : null,
+    );
+    renderTrialMatches(api, {
+      state: state.adapter,
+      stateIdentity: "patient-1",
+      renderFieldEditor: slot,
+      fieldEditorOwnsValue: () => true,
+    });
+
+    await open();
+    expect(screen.getByTestId("host-field")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit Hemoglobin" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Edit Creatinine" })).toBeInTheDocument();
+  });
+
+  it("lets a host suppress one row's editor with an empty node", async () => {
+    // The escape hatch the fallback needs: a node is an ownership claim, so an
+    // empty one suppresses EXACT's editor without drawing anything.
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, {
+      state: writable().adapter,
+      stateIdentity: "patient-1",
+      renderFieldEditor: () => <></>,
+      fieldEditorOwnsValue: () => false,
+    });
+
+    await open();
+    expect(screen.queryByRole("button", { name: "Edit Hemoglobin" })).toBeNull();
+    // Nothing drew the value, so EXACT still does.
+    expect(screen.getByText("11")).toBeInTheDocument();
   });
 
   it("calls the slot for every row", async () => {
@@ -322,5 +378,112 @@ describe("the host field editor slot", () => {
     await open();
     expect(screen.getByTestId("host-field-no-hiv")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Answer No HIV" })).toBeNull();
+  });
+
+  it("keeps EXACT's negated dialog on a row the slot declines", async () => {
+    // Same row as above, with the slot returning null: the host covers some
+    // other row, not this one, so the negation keeps its door.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({
+          name: "noHiv",
+          label: "No HIV",
+          type: "boolean",
+          value: true,
+          ufield: "noHivStatus",
+          upatientField: "no_hiv_status",
+          utype: "boolean",
+          uvalue: false,
+          negative_source: {
+            upatientField: "hiv_status",
+            type: "boolean",
+            available: true,
+            value: true,
+          },
+        }),
+      ]),
+    );
+    const state = fakeState({
+      writable: {
+        no_hiv_status: {
+          kind: "negated",
+          writable: true,
+          canonical: "hiv_status",
+          inverted: true,
+          value_kind: "boolean",
+          inputs: ["hiv_status"],
+        },
+        hiv_status: {
+          kind: "direct",
+          writable: true,
+          target: "patient_record",
+          value_kind: "boolean",
+          answer_labels: { true: "HIV Positive", false: "No HIV" },
+        },
+      },
+    });
+    renderTrialMatches(api, {
+      state: state.adapter,
+      stateIdentity: "patient-1",
+      renderFieldEditor: () => null,
+    });
+
+    await open();
+    expect(screen.getByRole("button", { name: "Answer No HIV" })).toBeInTheDocument();
+  });
+
+  it("keeps the explicit-answer door on a row the slot declines", async () => {
+    // The attestation is EXACT's own writer, not the host's field save. A
+    // partial host slot must not hide it on the rows it does not cover.
+    const api = fakeApi();
+    api.setDetail(
+      detailWith([
+        row({
+          name: "preExistingConditionsExcluded",
+          label: "Pre Existing Conditions Excluded",
+          type: "multiselect",
+          value: ["cardiacIssues"],
+          ufield: "preExistingConditionCategories",
+          upatientField: "pre_existing_condition_categories",
+          ureadonly: false,
+          upatientRecomputed: false,
+          uvalue: [],
+          utype: "multiselect",
+          matchingType: "unknown",
+        }),
+      ]),
+    );
+    const state = fakeState({
+      writable: {
+        pre_existing_condition_categories: {
+          kind: "explicit-answer",
+          writable: false,
+          answerable: true,
+          target: "patient_record",
+          endpoint: "preexisting-conditions-answer",
+          actions: ["confirm_none", "set_categories", "withdraw"],
+          action_labels: {
+            confirm_none: "No pre-existing conditions",
+            set_categories: "Save these conditions",
+            withdraw: "Withdraw answer",
+          },
+          value_kind: "string",
+          multiple: true,
+          options: [{ value: "cardiacIssues", label: "Cardiac Issues" }],
+        },
+      },
+      overrides: { explicitAnswers: { answer: vi.fn(async () => undefined) } },
+    });
+    renderTrialMatches(api, {
+      state: state.adapter,
+      stateIdentity: "patient-1",
+      renderFieldEditor: () => null,
+    });
+
+    await open();
+    expect(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    ).toBeInTheDocument();
   });
 });

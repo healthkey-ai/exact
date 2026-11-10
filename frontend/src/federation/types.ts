@@ -765,11 +765,14 @@ export interface TrialMatchesProps {
    *  draws the row's value and units, which is what a host returning a bare
    *  edit button needs. Set `fieldEditorOwnsValue` when the node renders the
    *  value as well (CB mounts a whole PROMOP field there), and EXACT stops
-   *  drawing it. Return `null` for a row the host does not own — the value
-   *  stays with EXACT either way. The subform and genomics doors are
+   *  drawing it. Return `null` for a row the host does not own: EXACT keeps
+   *  its own scalar, negated and explicit-answer controls for that row, and
+   *  the value and units stay with EXACT either way. A host that wants no
+   *  control at all on one row can return an empty fragment — a node claims
+   *  ownership without drawing anything. The subform and genomics doors are
    *  unaffected. The host owns saving and refresh — EXACT initiates no write
-   *  for these rows. A host that keeps a writer but wants EXACT's controls
-   *  should omit this prop instead of returning null everywhere. */
+   *  for rows it does not own. A host that keeps a writer but wants EXACT's
+   *  controls should omit this prop instead of returning null everywhere. */
   renderFieldEditor?: (props: {
     field: string;
     label: string;
