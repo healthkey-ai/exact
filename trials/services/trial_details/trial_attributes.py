@@ -1023,6 +1023,26 @@ class TrialAttributes:
                     # no label rather than mislabel it with the default unit.
                     units_details = None
                 value = self._patient_info_attr.get_value(pi_field_name)
+                if pi_field_name in THERAPY_LINES_ATTRS_UNDERSCORED:
+                    # OMOP mode normalises the line to its concept id for
+                    # matching; the reader still needs the regimen name.
+                    # PROMOP sends it alongside as `*_display`, and the
+                    # writable descriptor's options are keyed by that label.
+                    display = getattr(self._patient_info, f'{pi_field_name}_display', None)
+                    if display:
+                        value = display
+                    elif pi_field_name == 'later_therapies' and isinstance(value, list):
+                        # The list entries are nested select/date maps, not
+                        # text; join their labels instead of rendering
+                        # `[object Object]`.
+                        labels = []
+                        for item in value:
+                            therapy = item.get('therapy') if isinstance(item, dict) else item
+                            if isinstance(therapy, dict):
+                                therapy = therapy.get('value')
+                            if therapy:
+                                labels.append(str(therapy))
+                        value = ', '.join(labels)
                 if units_details:
                     # The editor shows and writes in the PATIENT's stored unit,
                     # and `uunits` below names that unit. `get_value` converts

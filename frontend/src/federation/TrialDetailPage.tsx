@@ -150,7 +150,23 @@ export function formatValue(value: unknown, options?: TrialDetailField["options"
   if (value == null || value === "") return "—";
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) {
-    const parts = value.filter((v) => v != null && v !== "").map((v) => labelOf(v, options));
+    const parts = value
+      .filter((v) => v != null && v !== "")
+      .map((v) => {
+        // Therapy-line lists are nested `{therapy: {value, …}, date}` maps;
+        // `String(object)` is the literal "[object Object]" a reader saw.
+        if (typeof v === "object") {
+          const therapy = (v as { therapy?: unknown }).therapy;
+          if (typeof therapy === "string") return labelOf(therapy, options);
+          if (therapy && typeof therapy === "object") {
+            const inner = (therapy as { value?: unknown; label?: unknown });
+            return labelOf(inner.value ?? inner.label ?? "", options);
+          }
+          return null;
+        }
+        return labelOf(v, options);
+      })
+      .filter((part): part is string => part != null && part !== "");
     return parts.length ? parts.join(", ") : "—";
   }
   // A COMMA-JOINED value is a list the column happens to store as text, and
@@ -596,8 +612,23 @@ function EligibilityRow({
     && typeof patientFieldValue !== "boolean"
       ? patientFieldValue
       : field.uvalue;
+  // Therapy component/type values arrive as a mix of concept ids and their
+  // names: the matcher keeps the ids for the overlap and adds the readable
+  // names beside them. On screen the ids are noise — show the names when the
+  // payload also carries them, and keep the raw list only when it carries
+  // nothing else.
+  const visiblePatientValue = (() => {
+    const value = writePending ? pendingValue : field.uvalue;
+    if (!/therapy(Components|Types)/i.test(field.name) || !Array.isArray(value)) {
+      return value;
+    }
+    const named = value.filter(
+      (item) => !/^\d+$/.test(String(item).replace(/\*/g, "").trim()),
+    );
+    return named.length ? named : value;
+  })();
   const yours = formatValue(
-    writePending ? pendingValue : field.uvalue,
+    visiblePatientValue,
     field.uoptions ?? field.options,
   );
   const tooltip = FIELD_TOOLTIPS[field.ufield as string] ?? FIELD_TOOLTIPS[field.name];

@@ -834,6 +834,10 @@ def normalize_promop_row(row: dict) -> dict:
         # internal codes there would silently never match). A line with no concept
         # becomes None / [] (unknown) rather than an unmatchable internal code.
         for _tf in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+            # Keep the human name the matcher code replaces; PROMOP only
+            # sends `_display` for the first two, and the 3L+ line has none.
+            if not row.get(f'{_tf}_display') and row.get(_tf):
+                row[f'{_tf}_display'] = row[_tf]
             cid = row.get(f'{_tf}_id')
             row[_tf] = str(cid) if cid not in _EMPTY_CID else None
         later_ids = row.get('later_therapy_ids') or []
@@ -999,8 +1003,15 @@ def build_patient_info_from_promop_row(row: dict):
     # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info.
     # The adequacy fields are named even though PROMOP has no column for them,
     # so missing liver/blood labs stay unknown instead of becoming a refusal.
-    return _build_in_memory(
+    patient = _build_in_memory(
         cleaned,
         named_null_fields=PROMOP_NAMED_NULL_FIELDS,
         negated_sources=negated_sources,
     )
+    # OMOP mode normalises the therapy line to its concept id for matching;
+    # the reader-facing name travels beside it as `*_display`. It is not a
+    # matching field, so the PatientInfo class has no column for it — carry
+    # it on the instance for the detail/subform presentation.
+    for field in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+        setattr(patient, f'{field}_display', cleaned.get(f'{field}_display'))
+    return patient
