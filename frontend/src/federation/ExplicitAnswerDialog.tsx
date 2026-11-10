@@ -54,6 +54,19 @@ export function ExplicitAnswerDialog({
         if (!active) return;
         setSnapshot(value);
         setSnapshotState("ready");
+        // The snapshot is also the current answer. Seed the checkboxes from
+        // it so the dialog shows the categories already recorded instead of
+        // an empty list. The write still sends the snapshot as `expected_*`;
+        // this only fixes what the reader sees when they open the row.
+        if (editor.field === "pre_existing_condition_categories") {
+          const categories = (value as { expectedCategories?: unknown })
+            .expectedCategories;
+          if (Array.isArray(categories)) {
+            setSelected(
+              categories.filter((item): item is string => typeof item === "string"),
+            );
+          }
+        }
       })
       .catch(() => {
         if (!active) return;
@@ -165,7 +178,10 @@ export function ExplicitAnswerDialog({
                 <input
                   type="checkbox"
                   checked={selected.includes(option.value)}
-                  disabled={busy}
+                  // Until the snapshot arrives the list is not the answer;
+                  // let the reader look, but do not let a click fight the
+                  // seed that is about to replace it.
+                  disabled={busy || snapshotState !== "ready"}
                   onChange={() => toggle(option.value)}
                 />
                 <span className="exact-subform__label">{option.label}</span>
