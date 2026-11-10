@@ -30,4 +30,13 @@ cat <<'EOF'
 EOF
 
 echo "Starting gunicorn..."
-exec gunicorn exact.wsgi --workers 4 --timeout 300 --log-file - --bind "0.0.0.0:${PORT:-8080}"
+# --preload: import exact.wsgi (and its require_trials_schema() gate) once, in
+# the master, before forking. Without it every worker imports the app itself,
+# so a worker that respawns after a crash or a --timeout kill re-runs the
+# catalog inspection, and if that one fails (e.g. a transient connection
+# error) gunicorn halts the whole server with "Worker failed to boot" instead
+# of losing one worker. The inspector uses and closes its own connection, so
+# no database socket is inherited by the workers. The gate certifies the
+# catalog before traffic only; drift after boot is out of its scope (see
+# docs/trials-catalog-schema.md) and is caught at the next start.
+exec gunicorn exact.wsgi --preload --workers 4 --timeout 300 --log-file - --bind "0.0.0.0:${PORT:-8080}"
