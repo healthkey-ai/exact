@@ -582,6 +582,20 @@ function EligibilityRow({
   // normal" pair — and the ×ULN row shows a RATIO, so painting the written
   // number there would put a clinically false figure on screen, briefly, in a
   // table a patient reads.
+  // A boolean trial-side value ("has any transplant history") can sit over a
+  // list-valued patient field (`stem_cell_transplant_history`). Seeding the
+  // multiselect from the boolean adds `true` as an option the record has
+  // never heard of and hides the actual history. The patient payload names
+  // the real value; use it whenever the two shapes disagree.
+  const patientFieldValue = field.upatientField
+    ? (patientInfo as Record<string, unknown> | null | undefined)?.[field.upatientField]
+    : undefined;
+  const editorValue =
+    typeof field.uvalue === "boolean"
+    && patientFieldValue != null
+    && typeof patientFieldValue !== "boolean"
+      ? patientFieldValue
+      : field.uvalue;
   const yours = formatValue(
     writePending ? pendingValue : field.uvalue,
     field.uoptions ?? field.options,
@@ -765,10 +779,10 @@ function EligibilityRow({
                   : editing.failed[attribute]
                 : writePending
                   ? pendingValue
-                  : field.uvalue
+                  : editorValue
             }
             // The record's own value, with neither of those in front of it.
-            recordValue={field.uvalue}
+            recordValue={editorValue}
             units={field.uunits ?? field.units}
             // A negated view crosses the polarity boundary here: the box holds
             // the row's answer ("No HIV: Yes"), and the record stores the
