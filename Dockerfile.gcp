@@ -2,7 +2,8 @@
 # the Module Federation remote (remoteEntry.js + chunks) is built and served
 # by WhiteNoise alongside the API. Mirrors promop/soc Dockerfile.gcp.
 #
-# The plain Dockerfile is backend-only (no frontend) for local dev/compose.
+# The plain Dockerfile also builds the frontend remote (since 9b2c85b), but on
+# its own Node major; this one follows frontend/.nvmrc.
 #
 # Build:
 #   docker build --platform linux/amd64 -f Dockerfile.gcp -t exact:gcp .
@@ -10,7 +11,8 @@
 # syntax=docker/dockerfile:1
 
 # ── Stage 1: Frontend federation remote ──────────────────────────────
-FROM node:20-slim AS frontend
+# Same major as frontend/.nvmrc and the frontend CI job (node-version "22").
+FROM node:22-slim AS frontend
 
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
