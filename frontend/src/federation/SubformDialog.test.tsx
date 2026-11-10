@@ -179,12 +179,12 @@ describe("when the door is offered", () => {
     expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
   });
 
-  it("does not offer it when the only writable inputs are demographics", async () => {
-    // Found by /qa on 2026-09-14. Six ULN groups are [the lab, gender,
-    // ethnicity]: the lab is an `alias` in PROMOP and not writable, while
-    // gender and ethnicity are — so the door opened onto a dialog captioned
-    // "the values it is computed from" whose only two controls change the
-    // patient's demographics, record-wide, from a threshold row.
+  it("offers the door when the inputs are the demographics the limit is calculated from", async () => {
+    // A ULN limit is calculated FROM gender and race, so native CB puts an
+    // input for each in the same dialog. The earlier rule refused them as
+    // "the wrong room" — but the dialog is captioned "the values it is
+    // computed from", and on a patient with an unknown gender the limit
+    // cannot be worked out at all until one is chosen.
     const api = fakeApi();
     api.setDetail(
       detailWith([
@@ -198,12 +198,12 @@ describe("when the door is offered", () => {
               value: 75,
               upatientField: "liver_enzyme_levels_alt",
             }),
-            entry({ name: "gender", label: "Gender", value: "M", upatientField: "gender" }),
+            entry({ name: "gender", label: "Gender", value: "Male", upatientField: "gender" }),
             entry({
-              name: "ethnicity",
-              label: "Ethnicity",
-              value: "caucasian_or_european",
-              upatientField: "ethnicity",
+              name: "race",
+              label: "Race",
+              value: "Black or African American",
+              upatientField: "race",
             }),
           ],
         }),
@@ -212,18 +212,19 @@ describe("when the door is offered", () => {
     renderTrialMatches(api, {
       state: fakeState({
         writable: {
-          // What PROMOP really says about these three.
           liver_enzyme_levels_alt: {
             kind: "alias", writable: false, canonical: "alt_u_l",
             reason: "Mirrors alt_u_l; edit that field instead.",
           },
           gender: {
             kind: "direct", writable: true, value_kind: "string",
-            projection_target: "person", options: [{ value: "M" }, { value: "F" }],
+            projection_target: "person",
+            options: [{ value: "Male" }, { value: "Female" }, { value: "Unknown" }],
           },
-          ethnicity: {
+          race: {
             kind: "direct", writable: true, value_kind: "string",
             projection_target: "person",
+            options: [{ value: "Black or African American" }, { value: "White" }],
           },
         },
       }).adapter,
@@ -231,7 +232,7 @@ describe("when the door is offered", () => {
     await open();
 
     expect(await screen.findByText("ALT ×ULN")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Change what/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Change what/ })).toBeInTheDocument();
   });
 
   it("does not offer it when PROMOP will not take the inputs either", async () => {

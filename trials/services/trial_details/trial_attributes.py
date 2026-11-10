@@ -6,7 +6,9 @@ import re
 from django.db import models
 from django.db.models import Q
 
-from trials.services.patient_info.promop_adapter import PROMOP_NEGATED_FIELDS
+from trials.services.patient_info.promop_adapter import (
+    PROMOP_NEGATED_FIELDS, promop_race_label,
+)
 from trials.services.patient_info.normalize import (
     recompute_note, therapy_line_is_authorable,
 )
@@ -30,6 +32,25 @@ def get_nested_attribute(instance, path):
             return None
         current_obj = getattr(current_obj, part, None)
     return current_obj
+
+
+def _gender_label(value):
+    """EXACT's code (or a blank) in the record's gender vocabulary."""
+    if value is None:
+        return 'Unknown'
+    return {'M': 'Male', 'F': 'Female', 'U': 'Unknown'}.get(value, value)
+
+
+#: Subform entries that are inputs to a calculation but whose EXACT attribute
+#: is not the record's field. `ethnicity` is EXACT's RACE vocabulary (#4447)
+#: while the record keeps race in its own column, and gender arrives coded.
+#: The entry has to name the record's field and carry the record's value, or
+#: the select is seeded with a value the descriptor's options do not contain
+#: and the save writes a vocabulary the column does not speak.
+_SUBFORM_RECORD_INPUTS = {
+    'ethnicity': ('race', 'Race', promop_race_label),
+    'gender': ('gender', 'Gender', _gender_label),
+}
 
 
 class TrialAttributes:
@@ -539,11 +560,22 @@ class TrialAttributes:
         for field in fields.values():
             if not isinstance(field, dict):
                 continue
-            ufield = field.get('ufield')
-            patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
-            field['upatientField'] = (
-                patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
-            )
+            if field.get('name') == 'ethnicityRequired':
+                # A RACE criterion. EXACT's `ethnicity` holds race categories
+                # (#4447) while the record keeps race in `race`; the row names
+                # the field a client can write and carries the record's label,
+                # so the editor's options and its value agree. `ufield` stays
+                # on EXACT's attribute: the matcher resolves the row's status
+                # through it.
+                field['label'] = 'Race'
+                field['upatientField'] = 'race'
+                field['uvalue'] = promop_race_label(field.get('uvalue'))
+            else:
+                ufield = field.get('ufield')
+                patient_field = AttributeNames.get_by_camel_case(ufield) if ufield else None
+                field['upatientField'] = (
+                    patient_field if patient_field in USER_TO_TRIAL_ATTRS_MAPPING else None
+                )
             # The negated row's canonical answer, with the availability the
             # raw boundary saw (#5667). `uvalue` cannot carry this: null means
             # both "answered unknown" and "never in the context". A separate
@@ -1059,11 +1091,19 @@ class TrialAttributes:
                 if options is not None:
                     utype = 'select'
 
+                entry_field = pi_field_name
+                entry_label = self.get_label(field_name)
+                rendered_value = value
+                record_input = _SUBFORM_RECORD_INPUTS.get(pi_field_name)
+                if record_input is not None:
+                    entry_field, entry_label, to_record_value = record_input
+                    rendered_value = to_record_value(value)
+
                 val = {
                     'name': field_name,
-                    'label': self.get_label(field_name),
+                    'label': entry_label,
                     'type': utype,
-                    'value': self.get_value(field_name, value),
+                    'value': self.get_value(field_name, rendered_value),
                     'options': options,
                     # The patient attribute this entry IS — taken from the
                     # mapping rather than derived from `name`, which is the
@@ -1072,7 +1112,7 @@ class TrialAttributes:
                     # returns as `p_53_ihc`). The row's own `upatientField`
                     # has to be derived; this one does not, and taking the
                     # harder route here would be inventing a problem.
-                    'upatientField': pi_field_name,
+                    'upatientField': entry_field,
                     # Same question as on a row, and it is asked here for the
                     # opposite reason. A subform exists because the value
                     # above it is COMPUTED: the reader cannot write

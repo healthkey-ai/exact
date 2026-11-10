@@ -615,29 +615,17 @@ function resolveEntry(
     };
   }
 
-  // Person-scoped demographics are legitimately editable from a row, but are
-  // a different question when reached through a threshold dialog: changing
-  // gender/race from the bilirubin row is a door into the wrong room. Date of
-  // birth is the exception when it is the input of `patient_age`: the row has
-  // no other way to be changed, and the door leads exactly where the reader
-  // asked.
+  // Person-scoped demographics are editable through a subform too: every
+  // entry in `subform_details` is, by construction, one of the values the row
+  // is calculated FROM — a ULN limit is only meaningful once gender and race
+  // are known — and native CB draws an input for each of them in the same
+  // dialog. The row itself still writes through the person projection.
   const scope: ScalarEditor["scope"] =
     kind === "profile"
     || entry.projection_target === "person"
     || entry.projection_target === "location"
       ? "person"
       : "record";
-  const dateOfBirthBehindAge =
-    field === "date_of_birth"
-    && canonicalFieldName(String(context.parentField ?? "")) === "patient_age";
-  if (context.surface === "subform" && scope === "person" && !dateOfBirthBehindAge) {
-    return unsupported(
-      field,
-      "This value describes the patient, not the threshold.",
-      "person_scope_in_subform",
-      "exact",
-    );
-  }
 
   if (!kind || (kind !== "direct" && kind !== "profile" && kind !== "editable"
       && kind !== "selectable" && kind !== "unmapped")) {

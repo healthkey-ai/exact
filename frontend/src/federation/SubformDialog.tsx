@@ -29,21 +29,15 @@ export interface SubformDialogProps {
 
 /** Whether an entry is one this dialog can actually offer.
  *
- *  Three refusals, and the third is the one that is easy to miss.
- *
- *  EXACT recomputing it is the first: the write would be undone.
- *
- *  PROMOP refusing it is the second — most of the ULN groups' own labs are
- *  `alias` entries there, mirrors of a canonical field, so the lab a
+ *  Two refusals. EXACT recomputing it is the first: the write would be
+ *  undone. PROMOP refusing it is the second — most of the ULN groups' own
+ *  labs are `alias` entries there, mirrors of a canonical field, so the lab a
  *  threshold is about is not writable at all.
  *
- *  And the demographics are the third. `gender` and `ethnicity` sit in six
- *  subform groups, because a creatinine or bilirubin limit is calculated
- *  against them — but they project onto the OMOP PERSON, not onto any
- *  measurement. They are writable, so counting them makes a dialog captioned
- *  "the values it is computed from" whose only two controls change the
- *  patient's demographics, record-wide, from a threshold row. That is not a
- *  door onto a wall; it is a door into the wrong room.
+ *  Person-scoped demographics ARE offered: `gender` and `race` sit in six
+ *  subform groups because a creatinine or bilirubin limit is calculated
+ *  against them. That is exactly why the dialog, captioned "the values it is
+ *  computed from", is where they belong — and it is what native CB does.
  */
 function verdictFor(
   entry: SubformEntry,

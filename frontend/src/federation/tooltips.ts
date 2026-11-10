@@ -144,7 +144,7 @@ ER–: Tumor cells do not express estrogen receptors. (<1 % of cells express ER)
 ER+: Tumor cells express estrogen receptors. (10% or more).
 ER+ with low expression: Small proportion of tumor cells express ER (usually 1–9 %).
 ER+ with high expression: Large proportion of tumor cells express ER.`,
-  "ethnicity": `We use your ethnicity to compute normal levels for creatinine and other diagnostics`,
+  "ethnicity": `We use your race and ethnicity to compute normal levels for creatinine and other diagnostics`,
   "extranodalSites": `Sites outside lymph nodes involved by Mantle Cell Lymphoma, assessed via imaging or biopsy:
 
 None: No extranodal involvement detected.

@@ -460,12 +460,10 @@ describe("resolveEditor", () => {
       value_kind: "string",
       options: [{ value: "Female", label: "Female" }],
     };
-    const result = decision(
-      resolveEditor("sex_at_birth", fields, { surface: "subform" }),
-      "unsupported",
-    );
-    if (result.state === "unsupported") {
-      expect(result.diagnostic).toBe("person_scope_in_subform");
+    const result = resolveEditor("sex_at_birth", fields, { surface: "subform" });
+    expect(result.state).toBe("handled");
+    if (result.state === "handled" && result.editor.kind === "scalar") {
+      expect(result.editor.scope).toBe("person");
     }
   });
 
@@ -476,17 +474,19 @@ describe("resolveEditor", () => {
     if (result.state === "unsupported") expect(result.diagnostic).toBe("unknown_kind:none");
   });
 
-  it("offers person demographics on a row but not inside a threshold subform", () => {
+  it("offers person demographics on a row and inside a threshold subform", () => {
+    // Native CB edits every subform entry, and a ULN limit is calculated from
+    // gender and race: the dialog is where those inputs belong.
     const row = decision(resolveEditor("sex_at_birth", described(), context), "handled");
     if (row.state === "handled" && row.editor.kind === "scalar") {
       expect(row.editor.scope).toBe("person");
     }
     const subform = decision(
       resolveEditor("sex_at_birth", described(), { surface: "subform" }),
-      "unsupported",
+      "handled",
     );
-    if (subform.state === "unsupported") {
-      expect(subform.diagnostic).toBe("person_scope_in_subform");
+    if (subform.state === "handled" && subform.editor.kind === "scalar") {
+      expect(subform.editor.scope).toBe("person");
     }
   });
 

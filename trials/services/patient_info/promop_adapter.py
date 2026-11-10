@@ -147,6 +147,18 @@ def resolve_therapy_code(display: str) -> str | None:
     return None
 
 
+#: The other direction, for the subform that edits a ULN input: the select is
+#: seeded from the record, so it carries the label PROMOP's `race` options use
+#: rather than EXACT's code. Keep this beside the forward map so the two cannot
+#: drift apart silently.
+RACE_CODE_TO_PROMOP_LABEL = {
+    'caucasian_or_european': 'White',
+    'african_or_black': 'Black or African American',
+    'asian': 'Asian',
+    'native_american': 'American Indian or Alaska Native',
+    'other': 'Other',
+}
+
 #: EXACT's `ethnicity` field holds RACE categories (#4447), while PROMOP stores
 #: the OMOP race label in `race` and OMOP ethnicity in `ethnicity`. Only these
 #: reviewed race labels map to an EXACT code. OMOP ethnicity labels (Hispanic
@@ -200,6 +212,20 @@ def _race_code(value) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return _RACE_LABEL_TO_CODE.get(_normalise_race_label(value))
+
+
+def promop_race_label(value):
+    """The label PROMOP's `race` options carry for an EXACT ethnicity value.
+
+    Accepts a code, a CB title or a PROMOP label, because a subform entry is
+    seeded from whichever of those the patient context holds. An unrecognised
+    value is returned unchanged so the select shows what the record has rather
+    than blanking a clinical answer.
+    """
+    code = _race_code(value)
+    if code is None:
+        return value
+    return RACE_CODE_TO_PROMOP_LABEL.get(code, value)
 
 
 def _race_code_from_row(row: dict) -> str | None:

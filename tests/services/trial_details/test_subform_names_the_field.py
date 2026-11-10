@@ -55,13 +55,19 @@ class TestSubformEntriesNameTheirField:
 
     def test_the_name_is_the_one_the_mapping_asked_for(self, patient_info):
         # Not derived from `name`: the mapping is the source, which is what
-        # keeps the two from drifting.
+        # keeps the two from drifting. The two person inputs are the stated
+        # exception: EXACT's `ethnicity` is a RACE vocabulary (#4447) and the
+        # record keeps race in `race`, so the entry names the field a client
+        # can actually write.
+        record_inputs = {'ethnicity': 'race'}
         groups = _groups(patient_info)
         for group, entries in groups.items():
             wanted = SUBFORM_ATTRS_MAPPING[group]
             if callable(wanted):
                 wanted = wanted(patient_info)
-            assert [e['upatientField'] for e in entries] == list(wanted)
+            assert [e['upatientField'] for e in entries] == [
+                record_inputs.get(name, name) for name in wanted
+            ]
 
     def test_an_entry_says_whether_a_write_to_it_survives(self, patient_info):
         # The subform is the writable half of a computed row — except where

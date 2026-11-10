@@ -167,3 +167,25 @@ def test_lymph_node_and_spleen_max_are_registered_in_trial_detail_config():
         assert ATTR_GROUP_MAPPING.get(field) == 'disease', \
             f'{field} not grouped (would fall back to ignore)'
         assert field in ATTR_LABEL_MAPPING, f'{field} has no label'
+
+
+@pytest.mark.django_db
+def test_the_race_criterion_edits_the_records_race_column():
+    # Trial `ethnicityRequired` is a RACE criterion: EXACT's `ethnicity` is the
+    # race vocabulary (#4447) while PROMOP keeps race in `race`. Without this
+    # the row offered an editor over the ethnicity column whose options
+    # (Hispanic / Not Hispanic) did not contain the value on screen.
+    patient_info = PatientInfo(disease='multiple myeloma', ethnicity='african_or_black')
+    trial = TrialFactory(ethnicity_required=['asian'])
+
+    row = TrialAttributes(trial, patient_info).details()['ethnicityRequired']
+
+    assert row['label'] == 'Race'
+    assert row['upatientField'] == 'race'
+    # `ufield` stays on EXACT's attribute: the matcher resolves the row's
+    # status through it.
+    assert row['ufield'] == 'ethnicity'
+    assert row['uvalue'] == 'Black or African American'
+    # The requirement itself keeps EXACT's codes, so it still renders as the
+    # trial's own answer.
+    assert row['value'] == ['asian']
