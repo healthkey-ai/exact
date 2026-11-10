@@ -164,6 +164,9 @@ export interface ResolveContext {
  *  no cycle. */
 const FIELD_ALIASES: Readonly<Record<string, string>> = {
   cytogenic_markers: "cytogenetic_markers",
+  // EXACT derives the transplant day from the date; PROMOP's column keeps the
+  // legacy CB name for the date.
+  stem_cell_transplant_date: "sct_date",
 };
 
 export function aliasTarget(name: string): string | null {
@@ -805,9 +808,11 @@ export function toEditability(
       field: editor.field,
       entry,
       why: routed ?? "This value is edited through another resource.",
-      // A writable authored resource is the old `elsewhere` case and was
-      // announced; one the record would refuse anyway stays silent.
-      announce: Boolean(entry.writable && routed !== undefined),
+      // A known authored target is announced even when the resource is not
+      // directly writable: "recorded with the treatment episode it belongs
+      // to" is the explanation the reader needs for the therapy row that
+      // would otherwise sit there mute.
+      announce: routed !== undefined,
     };
   }
   return {

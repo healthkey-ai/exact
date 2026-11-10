@@ -78,4 +78,39 @@ describe("a boolean trial value over a list patient field", () => {
     ).toEqual(["autologous SCT"]);
     expect(within(list).queryByText(/not in the list/)).toBeNull();
   });
+
+  it("keeps a control on the excluded row, which shows a different answer", async () => {
+    // Both rows name `stem_cell_transplant_history`. The required row reads the
+    // boolean ("has any transplant"), the excluded row the list itself. They
+    // answer different questions, so the second row must not lose its pencil to
+    // the one-control-per-attribute rule that merges a min/max pair.
+    const state = fakeState({ writable: WRITABLE });
+    const api = fakeApi();
+    api.setDetail(detailWith([
+      row,
+      {
+        ...row,
+        name: "stemCellTransplantHistoryExcluded",
+        label: "Stem Cell Transplant History Excluded",
+        type: "multiselect",
+        value: ["priorAllogeneicSCT"],
+        utype: "select",
+        uvalue: ["autologous SCT"],
+      },
+    ]));
+    renderTrialMatches(api, {
+      state: state.adapter,
+      patientInfo: { stem_cell_transplant_history: ["autologous SCT"] },
+    });
+    await openDetail();
+
+    expect(
+      screen.getByRole("button", { name: "Edit Stem Cell Transplant History" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Edit Stem Cell Transplant History Excluded",
+      }),
+    ).toBeInTheDocument();
+  });
 });

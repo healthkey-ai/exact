@@ -317,7 +317,13 @@ function editableRowNames(
   fields: TrialDetailField[],
   writable: WritableFields | undefined,
 ): Set<string> {
-  const taken = new Set<string>();
+  // Attribute -> the value the row that took the control shows. A second row
+  // for the same attribute is the same value only when it displays the same
+  // thing (a min and a max both read the patient's one number); when it
+  // displays a different answer — "Stem Cell Transplant History" as a boolean
+  // over "… Excluded" as a list — it is a different question and keeps its
+  // own control.
+  const taken = new Map<string, string>();
   const rows = new Set<string>();
   for (const field of fields) {
     const attribute = field.upatientField;
@@ -342,8 +348,9 @@ function editableRowNames(
     // One control per ROW attribute, as before: an alias and its canonical
     // are different rows here, and collapsing them by the canonical name would
     // silently move the control to whichever row happens to come first.
-    if (taken.has(attribute)) continue;
-    taken.add(attribute);
+    const shown = JSON.stringify(field.uvalue ?? null);
+    if (taken.get(attribute) === shown) continue;
+    taken.set(attribute, shown);
     rows.add(field.name);
   }
   return rows;
