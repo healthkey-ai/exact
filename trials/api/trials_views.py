@@ -1,7 +1,16 @@
+import csv
+import math
+import io as _io
 import logging
+import re
 from typing import TYPE_CHECKING, Optional
 
-from django.db.models import F, Prefetch, QuerySet
+from django.db.models import (
+    Case, F, IntegerField, Prefetch, QuerySet, Value, When,
+)
+from django.db.models.expressions import RawSQL
+from django.http import StreamingHttpResponse
+from django.utils import timezone
 from django.utils.functional import SimpleLazyObject, cached_property
 from rest_framework import viewsets, filters, permissions, status
 from rest_framework.decorators import action
@@ -11,6 +20,7 @@ from rest_framework.exceptions import APIException
 from rest_framework.views import APIView
 
 from trials.api.pagination import TrialsPagination, count_over_keys
+from trials.api.utils import csv_safe_cell
 from trials.api.trials_serializers import TrialSerializer, TrialDetailsSerializer
 from trials.models import Trial, Location, LocationTrial, PreferredCountry, State
 from trials.services.blank_attribute_records_count import BlankAttributeRecordsCount
@@ -19,6 +29,156 @@ from trials.services.study_preferences import StudyPreferences, study_preference
 from trials.services.value_options import ValueOptions
 
 logger = logging.getLogger(__name__)
+
+# A trial id is ASCII digits only (see TrialsViewSet._trial_id) and fits the
+# bigint `id` column; anything wider makes PostgreSQL cast the column to
+# numeric and lose the primary-key index.
+_TRIAL_ID_RE = re.compile(r'\d{1,19}', re.ASCII)
+_MAX_TRIAL_ID = 2 ** 63 - 1
+
+
+#: Excel refuses a cell past 32,767 characters, and a trial with several
+#: hundred sites — ordinary — can produce one. Cut well short of the limit so
+#: the suffix explaining the cut fits inside it too.
+EXPORT_CELL_LIMIT = 30_000
+
+
+def _clip(text: str) -> str:
+    """One cell, short enough for a spreadsheet to accept.
+
+    Applies to scalars as much as to joined lists: `brief_title` and
+    `official_title` are unbounded `TextField`s, and one long enough takes the
+    whole file down with it. Saying the cell was cut matters for the same
+    reason the export's own sentinel does — silently shorter reads as
+    genuinely shorter.
+    """
+    if len(text) <= EXPORT_CELL_LIMIT:
+        return text
+    dropped = len(text) - EXPORT_CELL_LIMIT
+    return text[:EXPORT_CELL_LIMIT] + f' … and {dropped} more characters'
+
+
+def _export_cell(value):
+    """One serialized field, as a CSV cell.
+
+    Lists are joined rather than written as their Python repr: `phase` and
+    `location` arrive as arrays, and `['PHASE2']` in a spreadsheet column is
+    not something a reader can do anything with. `None` is an empty cell, not
+    the string "None" — a spreadsheet reads the latter as data.
+
+    Free text goes through `csv_safe_cell`; numbers are handed back as numbers
+    so the spreadsheet can still sum them, and so a negative one is not quoted
+    into text by its leading `-`.
+    """
+    if value is None:
+        return ''
+    if isinstance(value, (list, tuple)):
+        # Each element neutralised before the join, not the joined string: a
+        # payload in the SECOND location would otherwise sail through.
+        parts = [str(csv_safe_cell(v)) for v in value if v is not None]
+        joined = '; '.join(parts)
+        if len(joined) <= EXPORT_CELL_LIMIT:
+            return joined
+        # Cut, and SAYING it was cut. A cell that Excel refuses takes the whole
+        # file down with it; one that quietly ends mid-list reads as a trial
+        # with fewer sites than it has.
+        kept: list[str] = []
+        length = 0
+        for part in parts:
+            if length + len(part) + 2 > EXPORT_CELL_LIMIT:
+                break
+            kept.append(part)
+            length += len(part) + 2
+        return '; '.join(kept) + f'; … and {len(parts) - len(kept)} more'
+
+    if isinstance(value, bool):
+        return 'yes' if value else 'no'
+    if isinstance(value, (int, float)):
+        return value
+    # Clipped BEFORE neutralising, so the apostrophe a formula-looking value
+    # gains is not what pushes the cell over the limit.
+    return csv_safe_cell(_clip(value if isinstance(value, str) else str(value)))
+
+
+def _export_mcl_cell(trial, patient_info, evaluation=None) -> str:
+    """The high-risk MCL rule, flattened into one cell.
+
+    Only for a trial that names criteria — the matcher is built per row here,
+    and constructing one for every trial in an export to be told "no criteria"
+    is a cost paid on the disease's whole corpus. The three lists are plain
+    columns, so the question is answered before the matcher exists.
+
+    Under typed matching the answer comes from the request evaluation the list
+    already ran, never from a second legacy matcher that could disagree with
+    the screen (#692).
+    """
+    if evaluation is not None:
+        breakdown = evaluation.high_risk_breakdown(trial.pk)
+        if not breakdown:
+            return ''
+        parts = [f"verdict={breakdown['status']}"]
+        if breakdown.get('knownViolation'):
+            parts.append('known violation')
+        for item in breakdown.get('fields', ()):
+            parts.append(f"{item['field']}={item['status']}")
+        return ' | '.join(parts)
+    if patient_info is None:
+        return ''
+    if not any((
+        trial.high_risk_mcl_criteria_required,
+        trial.high_risk_mcl_criteria_excluded,
+        trial.high_risk_mcl_criteria_sufficient_any,
+    )):
+        return ''
+    from trials.services.user_to_trial_attr_matcher import UserToTrialAttrMatcher
+    breakdown = UserToTrialAttrMatcher(trial=trial, patient_info=patient_info).high_risk_mcl_criteria_breakdown()
+    if not breakdown:
+        return ''
+    required = breakdown.get('required') or []
+    sufficient = breakdown.get('sufficientAny') or []
+    excluded = breakdown.get('excluded') or []
+
+    def inclusion(code_status):
+        # The server reports in ELIGIBILITY terms and this file has no legend,
+        # so the words are the reader's: `matched` here means they have it.
+        return {
+            'matched': 'you have this',
+            'not_matched': 'you do not have this',
+            'unknown': 'not known from your data',
+        }.get(code_status['status'], code_status['status'])
+
+    def exclusion(code_status):
+        # The inverse, which is the whole reason this is not one shared map:
+        # on an excluded criterion `matched` means CONFIRMED ABSENT, so
+        # printing the raw word tells the reader the opposite of the truth.
+        return {
+            'matched': 'you are clear of this',
+            'not_matched': 'you have this — it rules this trial out',
+            'unknown': 'not known from your data',
+        }.get(code_status['status'], code_status['status'])
+
+    parts = [f"verdict={breakdown['aggregate']}"]
+    if required:
+        # "Either" when the trial also names alternatives, because the server
+        # ORs the two inclusion rules — calling it a requirement would tell a
+        # patient who qualifies through the alternatives that they failed
+        # something.
+        head = 'either' if sufficient else 'requires'
+        parts.append(
+            f"{head} at least {breakdown.get('minCount', 1)} of these "
+            f"(you have {breakdown.get('matchedCount', 0)}): "
+            + ', '.join(f"{c['code']} — {inclusion(c)}" for c in required)
+        )
+    if sufficient:
+        head = 'or any one of these' if required else 'any one of these qualifies'
+        parts.append(f"{head}: " + ', '.join(f"{c['code']} — {inclusion(c)}" for c in sufficient))
+    if excluded:
+        parts.append(
+            'rules the trial out: '
+            + ', '.join(f"{c['code']} — {exclusion(c)}" for c in excluded)
+        )
+    return ' | '.join(parts)
+
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -81,7 +241,38 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         with MatchingReleaseContext() as ctx, component_lookup_request_cache(), \
                 type_validation_request_cache(), patient_release_check_request_cache():
             self._release_ctx = ctx
-            return super().dispatch(request, *args, **kwargs)
+            response = super().dispatch(request, *args, **kwargs)
+        # A streaming response outlives this block: the generator body runs
+        # when the server consumes it, after the release pin and the request
+        # caches have been reset. Re-enter the SAME release id for the stream,
+        # so the CSV is built against the generation its header names instead
+        # of whatever is active by then (#692).
+        if getattr(response, 'streaming', False):
+            response.streaming_content = self._streaming_response_with_context(
+                response.streaming_content,
+                ctx,
+                (
+                    component_lookup_request_cache,
+                    type_validation_request_cache,
+                    patient_release_check_request_cache,
+                ),
+            )
+        return response
+
+    @staticmethod
+    def _streaming_response_with_context(content, release_ctx, cache_factories):
+        """Run a streaming body inside the request's release pin and caches."""
+        from contextlib import ExitStack
+
+        def stream():
+            with ExitStack() as stack:
+                if release_ctx is not None:
+                    stack.enter_context(release_ctx)
+                for factory in cache_factories:
+                    stack.enter_context(factory())
+                yield from content
+
+        return stream()
 
     def finalize_response(self, request, response, *args, **kwargs):
         response = super().finalize_response(request, response, *args, **kwargs)
@@ -160,14 +351,152 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
     def _resolve_study_preferences(self) -> StudyPreferences:
         return study_preferences_from_query_params(self.request.query_params)
 
+    #: The most bookmarks one request may filter by. Every id becomes part of
+    #: an `IN (...)`, so an unbounded list expands into thousands of clauses.
+    MAX_TRIAL_IDS = 500
+
+    def _reject_user_scoped_search_type(self, search_type):
+        """EXACT holds no per-user trial state; these types cannot narrow.
+
+        `favorites` would filter a `favorite` field the Trial model does not
+        have (a FieldError surfacing as 500), and `my_trials` / `not_eligible`
+        match no branch, so they return the whole corpus under a name that
+        promises a subset. The federated UI's Favorites tab sends a bounded
+        `trial_ids` list instead; `all` stays allowed because the unnarrowed
+        corpus is what it names.
+        """
+        if search_type in ('favorites', 'my_trials'):
+            raise serializers.ValidationError({
+                'type': [
+                    f"'{search_type}' is not supported: EXACT stores no per-user "
+                    f"trial state. POST the ids to filter by as `trial_ids` "
+                    f"instead — see /trials/search/match/."
+                ]
+            })
+        if search_type == 'not_eligible':
+            raise serializers.ValidationError({
+                'type': [
+                    "'not_eligible' is not supported: the queryset has no such "
+                    "narrowing, and the value used to return the eligible and "
+                    "potential trials instead — the inverse of what it names."
+                ]
+            })
+
+    def _resolve_trial_ids(self):
+        """The `trial_ids` filter from the request body, or None.
+
+        The federated UI's Favorites/Registered tabs keep their ids in PROMOP
+        and send them here; the narrowing must happen before counting,
+        sorting and pagination so the total agrees with the rows.
+
+        `None` means no filter. An EMPTY LIST means the caller has no saved
+        trials, so the honest answer is no trials — not the whole corpus.
+        """
+        if 'trial_ids' in self.request.query_params:
+            raise serializers.ValidationError({
+                'trial_ids': [
+                    'send trial_ids in the request body, not the query string '
+                    '— see POST /trials/search/match/.'
+                ]
+            })
+
+        data = getattr(self.request, 'data', None)
+        if not isinstance(data, dict) or 'trial_ids' not in data:
+            return None
+
+        raw = data.get('trial_ids')
+        if not isinstance(raw, (list, tuple)):
+            raise serializers.ValidationError(
+                {'trial_ids': ['must be a list of trial ids.']}
+            )
+        if len(raw) > self.MAX_TRIAL_IDS:
+            raise serializers.ValidationError({
+                'trial_ids': [
+                    f'at most {self.MAX_TRIAL_IDS} ids may be sent; got {len(raw)}.'
+                ]
+            })
+        return [self._trial_id(value) for value in raw]
+
+    @staticmethod
+    def _trial_id(value):
+        """One id, or a 400.
+
+        `True` is an int in Python and `int(3.5)` truncates, so a loose parse
+        turns a boolean or a float into a DIFFERENT trial. Accept an int or an
+        ASCII-digits string, and refuse a negative or out-of-bigint value.
+        """
+        if isinstance(value, bool) or isinstance(value, float):
+            raise serializers.ValidationError(
+                {'trial_ids': [f'{value!r} is not a trial id.']}
+            )
+        if isinstance(value, int):
+            return TrialsViewSet._in_range(value, value)
+        if isinstance(value, str) and _TRIAL_ID_RE.fullmatch(value.strip()):
+            return TrialsViewSet._in_range(int(value), value)
+        raise serializers.ValidationError(
+            {'trial_ids': [f'{value!r} is not a trial id.']}
+        )
+
+    @staticmethod
+    def _in_range(number, original):
+        if 0 <= number <= _MAX_TRIAL_ID:
+            return number
+        raise serializers.ValidationError(
+            {'trial_ids': [f'{original!r} is not a trial id.']}
+        )
+
+    def _distance_filter_status(self, patient_info):
+        """Whether a requested radius was applied, for the response (#475).
+
+        The queryset applies `distance` only with a patient location
+        (`filter_by_study_info`); without one it falls through to the
+        country/region filter, which is no filter at all when no country was
+        sent. The caller who asked for trials within 50 miles then gets the
+        whole corpus with a 200 and nothing to tell them so. This says it.
+        `None` when no radius was asked for, so the key is absent then.
+
+        Mirrors when `candidate_trials` actually filters by radius, which is
+        why it lists more than the missing location: the `all` search goes
+        through `filter_for_admin`, which only annotates distances, and a
+        radius `<= 0` takes the radius branch yet `by_distance` skips it.
+        `test_distance_filter_signal` pins this against real rows.
+        """
+        raw = self.request.query_params.get('distance')
+        if raw is None or not str(raw).strip():
+            return None
+        # Parsed by the same `study_preferences_from_query_params` the queryset
+        # uses: an unparseable value becomes None there and is ignored, and a
+        # non-finite or non-positive one reaches `by_distance`, which skips it.
+        distance = self._resolve_study_preferences().distance
+        if distance is None or not math.isfinite(distance) or distance <= 0:
+            return {'applied': False, 'reason': 'invalid_distance'}
+        if self.request.query_params.get('type') == 'all':
+            return {'applied': False, 'reason': 'search_type'}
+        if patient_info is None:
+            return {'applied': False, 'reason': 'no_patient'}
+        if not getattr(patient_info, 'geo_point', None):
+            return {'applied': False, 'reason': 'no_patient_location'}
+        return {'applied': True}
+
     def get_queryset(self, patient_info=None):
+        # Before the patient round trip: a malformed body should not pay for a
+        # PROMOP fetch to be told it is malformed.
+        trial_ids = self._resolve_trial_ids()
+        if self.action in ('list', 'count', 'search'):
+            self._reject_user_scoped_search_type(
+                self.request.query_params.get('type', None)
+            )
+
         if patient_info is None:
             patient_info = self._resolve_patient_info()
+
+        if self.action in ('list', 'count', 'search'):
+            self._distance_filter = self._distance_filter_status(patient_info)
 
         from trials.services.matching.typed_runtime import resolve_evaluation
         evaluation = resolve_evaluation(self.request, patient_info)
         if evaluation is not None:
-            return self._get_typed_queryset(evaluation)
+            return self._get_typed_queryset(evaluation, trial_ids)
 
         # trial_type is a FK serialized on every trial via StringRelatedField
         # (list, search, detail); without select_related the serializer fetches
@@ -178,6 +507,11 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         study_prefs = self._resolve_study_preferences()
         search_type = self.request.query_params.get('type', None)
 
+        if trial_ids is not None:
+            # Before the matcher: scores, ordering and the total are computed
+            # over the set the caller asked about.
+            queryset = queryset.filter(id__in=trial_ids)
+
         if self.action in ['list', 'count', 'search']:
             queryset, _ = queryset.filtered_trials(
                 search_options=self.request.query_params,
@@ -186,6 +520,20 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
                 add_traces=False,
                 search_type=search_type,
             )
+
+        # A saved trial the patient no longer qualifies for is still their
+        # saved trial. Dropping it made the Favorites tab read "1" over the
+        # words "No trials found" (#568). It comes back here, and the
+        # serializer marks it `not_eligible`; `sunk_first` keeps it below the
+        # rows that still match.
+        self._unmatched_saved_ids = frozenset()
+        if self.action in ('list', 'search') and self._keeps_unmatched_saved(
+            trial_ids, search_type,
+        ):
+            queryset = self._widened_saved(
+                queryset, trial_ids, study_prefs, patient_info,
+            )
+        sunk_first = ('saved_not_matching',) if self._unmatched_saved_ids else ()
 
         if self.action in ['list', 'search', 'retrieve']:
             params = self.request.query_params
@@ -219,12 +567,30 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.with_potential_attrs_count(patient_info)
 
         if self.action == 'list':
-            queryset = queryset.order_by('-match_score', '-posted_date', 'id')
+            # Same contract as `search`: the card shows the canonical criteria
+            # score, so the list orders by that number too. The SQL annotation
+            # remains the fallback when there is no patient to score.
+            if patient_info is not None:
+                ranked_ids = self._criteria_score_ranked_ids(
+                    queryset, patient_info, self.trials_counts,
+                    self.request.query_params.get('type'),
+                )
+                queryset = queryset.annotate(
+                    _criteria_match_rank=RawSQL(
+                        'array_position(%s::int[], "trials_trial"."id")',
+                        [ranked_ids],
+                        output_field=IntegerField(),
+                    )
+                )
+                queryset = queryset.order_by(
+                    *sunk_first, '_criteria_match_rank', 'id'
+                )
+            else:
+                queryset = queryset.order_by(
+                    *sunk_first, '-match_score', '-posted_date', 'id'
+                )
 
         if self.action == 'search':
-            if search_type == 'favorites':
-                queryset = queryset.filter(favorite=True)
-
             counts = self._trials_counts(queryset, patient_info)
             queryset = queryset.with_potential_attrs_count(patient_info, search_type, counts)
 
@@ -254,11 +620,31 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             elif sort_by == 'patientBurdenScore':
                 order.append(F('patient_burden_score').asc(nulls_last=True))
             elif sort_by == 'matchScore':
-                order.append(F('match_score').desc(nulls_last=True))
+                # Rank over the number the cards show, not the SQL annotation.
+                # That annotation counts every mapped column the trial
+                # constrains; the card counts the criteria the detail renders,
+                # so ordering by it put a 100% card on page 2 under an 80% card
+                # on page 1. The scores are only computable per trial in
+                # Python, so the order travels back as an id array and
+                # `array_position` ranks the queryset with one expression.
+                if patient_info is not None:
+                    ranked_ids = self._criteria_score_ranked_ids(
+                        queryset, patient_info, self.trials_counts, search_type,
+                    )
+                    queryset = queryset.annotate(
+                        _criteria_match_rank=RawSQL(
+                            'array_position(%s::int[], "trials_trial"."id")',
+                            [ranked_ids],
+                            output_field=IntegerField(),
+                        )
+                    )
+                    order.append(F('_criteria_match_rank').asc(nulls_last=True))
+                else:
+                    order.append(F('match_score').desc(nulls_last=True))
             else:  # goodnessScore
                 order.append(F('goodness_score').desc(nulls_last=True))
             order.append(F('id').asc())
-            queryset = queryset.order_by(*order)
+            queryset = queryset.order_by(*sunk_first, *order)
 
         if self.action in ['list', 'search']:
             queryset = queryset.prefetch_related(
@@ -268,7 +654,7 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
         return queryset
 
-    def _get_typed_queryset(self, evaluation):
+    def _get_typed_queryset(self, evaluation, trial_ids=None):
         """SQL visibility/search first, complete final evaluation second, pages last."""
         from datetime import date
         from collections import Counter
@@ -281,6 +667,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         params = self.request.query_params
         search_type = params.get('type')
         queryset = Trial.objects.select_related('trial_type')
+        if trial_ids is not None:
+            queryset = queryset.filter(id__in=trial_ids)
         if self.action != 'retrieve':
             queryset, _ = queryset.candidate_trials(params, prefs, patient_info, search_type=search_type)
         # Apply DRF text search to ORM, never to an already finalized sequence.
@@ -368,8 +756,193 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             )
         return self._trials_counts(scope, patient_info)
 
+    #: The requested ids the eligibility filter dropped, which the serializer
+    #: turns into `matchingType: not_eligible`. A frozenset so the default is
+    #: a real answer ("none of them") rather than a missing attribute.
+    _unmatched_saved_ids: frozenset = frozenset()
+
+    #: Whether this view's rows can carry the `not_eligible` mark. False on the
+    #: graph, which buckets its nodes on `match_score` alone and would file a
+    #: widened trial under "fully matched".
+    widens_saved_trials = True
+
+    def _keeps_unmatched_saved(self, trial_ids, search_type) -> bool:
+        """Whether this request lists saved trials the patient fails.
+
+        - **This view can mark them.** See `widens_saved_trials`.
+        - **Ids were asked for.** Without them this is the corpus search, and
+          widening it would answer "which trials match me" with trials that
+          do not.
+        - **No explicit `?type=`.** `eligible` and `potential` name a verdict;
+          handing back rows that hold neither answers a different question.
+          `all` never reaches here — it skips the eligibility filter upstream.
+        """
+        return (
+            self.widens_saved_trials
+            and trial_ids is not None
+            and search_type is None
+        )
+
+    def _widened_saved(self, matched, trial_ids, study_prefs, patient_info):
+        """`matched`, plus the requested ids the eligibility filter dropped.
+
+        Both sets are read off querysets rather than recomputed, so "not
+        eligible" means exactly one thing: the filter that hides a trial is
+        the same one that marks it. The difference is taken against the
+        WIDENED set, not against the ids the caller sent — the two differ by
+        the ids the reader's own filters dropped, and marking one of those
+        `not_eligible` would blame the matcher for the reader's own choice.
+        """
+        matched_ids = set(matched.values_list('id', flat=True))
+        if len(matched_ids) == len(set(trial_ids)):
+            return matched
+
+        widened, _ = Trial.objects.filter(id__in=trial_ids).filtered_trials(
+            search_options=self.request.query_params,
+            study_info=study_prefs,
+            patient_info=patient_info,
+            add_traces=False,
+            search_type=None,
+            narrow_by_patient=False,
+        )
+        self._unmatched_saved_ids = (
+            frozenset(widened.values_list('id', flat=True)) - matched_ids
+        )
+        if not self._unmatched_saved_ids:
+            return matched
+
+        # Sunk to the bottom of whatever order the reader chose: every sort
+        # ranks by a column the widened rows still hold, and the default one
+        # is the `match_score` annotation, which reads 100 on a trial the
+        # patient conflicts with — so the failing bookmark sorted first.
+        return widened.annotate(
+            saved_not_matching=Case(
+                When(id__in=self._unmatched_saved_ids, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+
     def _trials_counts(self, queryset: QuerySet, patient_info: Optional['PatientInfo']) -> dict[str, int]:
         return BlankAttributeRecordsCount().counts(queryset, patient_info)
+
+    @staticmethod
+    def _patient_facts_fingerprint(patient_info):
+        """A digest of the resolved patient context used for scoring.
+
+        The inline payload is not always present (a caller may send only
+        `person_id`), and the adapter drops that id, so the payload/query key
+        alone let two patients with the same candidate set share a cached
+        ranking. Hash the facts the rank was computed from instead.
+        """
+        import hashlib
+        import json
+
+        if patient_info is None:
+            return None
+        material = {
+            key: value for key, value in vars(patient_info).items()
+            if not key.startswith('__')
+        }
+        return hashlib.sha1(
+            json.dumps(material, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()
+
+    def _criteria_rank_cache_key(self, queryset, patient_info, counts, search_type):
+        """Cache key for the ranked id list.
+
+        The queryset's own SQL is not usable as a fingerprint: its bound
+        parameters include expression objects whose `repr` carries addresses,
+        so every request keyed differently and the cache never hit. The
+        inputs that decide the scores are the patient, the counts, the search
+        type, the filter parameters and the candidate set itself (a re-import
+        can change the rows a filter returns under the same query string).
+        """
+        import hashlib
+        import json
+
+        request = self.request
+        payload = None
+        try:
+            data = request.data
+            payload = data.get('patient_info') if hasattr(data, 'get') else None
+        except Exception:  # unparsable body: the resolver will reject it later
+            payload = None
+        if payload is None:
+            payload = (
+                request.query_params.get('person_id')
+                or getattr(patient_info, 'person_id', None)
+            )
+        params = sorted(
+            (key, tuple(values))
+            for key, values in request.query_params.lists()
+            if key not in ('page', 'limit')
+        )
+        candidates = list(
+            queryset.order_by().values_list('id', 'last_update_date')
+        )
+        candidate_ids = sorted(pk for pk, _updated in candidates)
+        # The ids alone miss a criteria edit that keeps the same trials in the
+        # set; the corpus stamps `last_update_date` when a trial changes.
+        candidate_version = max(
+            (str(updated) for _pk, updated in candidates if updated),
+            default=None,
+        )
+        material = json.dumps(
+            [
+                search_type,
+                params,
+                sorted(counts.items()) if counts else None,
+                payload,
+                self._patient_facts_fingerprint(patient_info),
+                candidate_ids,
+                candidate_version,
+            ],
+            sort_keys=True,
+            default=str,
+        )
+        return 'trials.criteria_rank.' + hashlib.sha1(material.encode('utf-8')).hexdigest()
+
+    def _criteria_score_ranked_ids(self, queryset, patient_info, counts, search_type):
+        """The candidate ids in descending order of the score the cards show.
+
+        `TrialSerializer` reports `criteria_match_score`, which builds the
+        trial's rendered eligibility rows. The SQL `match_score` annotation
+        counts a different set of columns, so it cannot order this number.
+        Scoring is per-trial and needs the location prefetch to avoid the
+        `get_distance_obj` N+1, hence the local copy rather than the caller's
+        queryset (which has not been prefetched yet at this point).
+
+        Paging costs one scoring pass per page without this cache; the key
+        covers the patient payload and the filter parameters, so an edit or a
+        changed filter asks a different question and misses.
+        """
+        from django.core.cache import cache
+        from trials.services.trial_details.match_score import criteria_match_score
+
+        cache_key = self._criteria_rank_cache_key(queryset, patient_info, counts, search_type)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        prefetched = queryset.prefetch_related(
+            Prefetch('locationtrial_set', queryset=LocationTrial.objects.select_related('location'))
+        )
+        scored = []
+        for trial in prefetched:
+            if search_type == 'eligible' or getattr(trial, 'match_score', None) == 100:
+                attrs_to_fill_in = []
+            else:
+                attrs_to_fill_in = trial.attrs_to_fill_in(counts, patient_info=patient_info)
+            scored.append((
+                criteria_match_score(trial, patient_info, attrs_to_fill_in),
+                trial.pk,
+            ))
+        # Descending score, ties broken by id so pagination is stable.
+        scored.sort(key=lambda pair: (-pair[0], pair[1]))
+        ranked_ids = [pk for _score, pk in scored]
+        cache.set(cache_key, ranked_ids, timeout=300)
+        return ranked_ids
 
     def get_serializer_class(self):
         return self.serializer_classes.get(self.action, self.default_serializer_class)
@@ -392,6 +965,10 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             'template': template,
             'search_type': search_type,
             'explain': self.request.query_params.get('explain', '').lower() == 'true',
+            # Empty unless `get_queryset` widened a saved-ids search (#568).
+            # `get_queryset` runs first on every action that builds a list, so
+            # by the time a serializer asks, the answer is settled.
+            'unmatched_trial_ids': self._unmatched_saved_ids,
         })
         from trials.services.matching.typed_runtime import resolve_evaluation
         holder = getattr(getattr(self.request, '_request', self.request), '_exact_typed_evaluation', None)
@@ -431,6 +1008,23 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_paginated_response(self, data, extra_keys=None):
         assert self.paginator is not None
+        # `get_queryset` already ranks `sort=matchScore` over the whole
+        # candidate set by this same number. Keep the within-page sort as a
+        # guard: no page can show 66% above 80% even if the rank fell back to
+        # the SQL annotation (no patient, cache, or a future change).
+        request = getattr(self, 'request', None)
+        if (request is not None
+                and request.query_params.get('sort') == 'matchScore'
+                and isinstance(data, list)):
+            data = sorted(
+                data,
+                key=lambda row: (
+                    row.get('matchScore') is None,
+                    -(row.get('matchScore') or 0),
+                ),
+            )
+        if getattr(self, '_distance_filter', None) is not None:
+            extra_keys = {**(extra_keys or {}), 'distanceFilter': self._distance_filter}
         if hasattr(self, '_typed_status_counts'):
             from exact_matching.request_evaluation import RESULT_SCHEMA
             extra_keys = {**(extra_keys or {}), 'schema': RESULT_SCHEMA,
@@ -444,6 +1038,8 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
         # for it: a country scope carries `.distinct()` from `by_location`, and
         # counting it row-wise measured 7.1s against 0.018s (#492).
         data = {'count': count_over_keys(queryset)}
+        if getattr(self, '_distance_filter', None) is not None:
+            data['distanceFilter'] = self._distance_filter
         if hasattr(self, '_typed_status_counts'):
             from exact_matching.request_evaluation import RESULT_SCHEMA
             data.update(schema=RESULT_SCHEMA, matchingCounts=self._typed_status_counts)
@@ -496,6 +1092,192 @@ class TrialsViewSet(viewsets.ReadOnlyModelViewSet):
             return self.get_paginated_response(serializer.data)
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(methods=['post'], detail=False, url_path='search/match',
+            url_name='search-match')
+    def search_match(self, request, *args, **kwargs):
+        """POST alias for `search`, carrying `patient_info` in the body.
+
+        The federated UI's default path is an inline patient payload, and the
+        Fetch spec forbids GET-with-body (axios's XHR adapter also drops it),
+        so the UI posts here. `match` routes to `list`, whose ordering ignores
+        `?sort=`; binding `self.action = 'search'` keeps the search branches
+        (sorting, tab counts) firing exactly as the GET path does.
+        """
+        self.action = 'search'
+        return self.search(request, *args, **kwargs)
+
+    #: What a row of the export holds, as (header, key into the serialized
+    #: trial). The keys are the serializer's own, so the file says what the
+    #: list said — a column that drifts from the screen is worse than a column
+    #: that is missing, because nobody checks it against anything.
+    EXPORT_COLUMNS = (
+        ('Trial ID', 'trialId'),
+        ('Study ID', 'studyId'),
+        ('Title', 'briefTitle'),
+        ('Official title', 'officialTitle'),
+        ('Match', 'matchingType'),
+        ('Matching score', 'matchScore'),
+        ('Suitability score', 'goodnessScore'),
+        ('Status', 'recruitingStatus'),
+        ('Phase', 'phase'),
+        ('Trial type', 'trialType'),
+        ('Disease', 'disease'),
+        ('Stage', 'stage'),
+        ('Treatments', 'interventionTreatments'),
+        ('Sponsor', 'sponsor'),
+        ('Locations', 'location'),
+        ('Distance', 'distance'),
+        ('Distance units', 'distanceUnits'),
+        ('Enrolment', 'enrollmentCount'),
+        ('Posted', 'postedDate'),
+        ('Last update', 'lastUpdateDate'),
+        ('First enrolment', 'firstEnrolment'),
+        ('Link', 'link'),
+    )
+
+    #: Computed per row rather than read from the serializer, and only for the
+    #: disease that has them. Appended after the columns above.
+    EXPORT_MCL_COLUMN = 'High-risk MCL criteria'
+
+    #: Rows fetched per round trip while streaming. Bounds the memory the
+    #: response holds at once without making a query per row.
+    EXPORT_CHUNK = 200
+
+    #: The last line of a complete file, and of one that stopped early. The
+    #: status code cannot carry either — it was sent before the first row.
+    #: Comma-free on purpose: a sentinel the csv writer has to quote is one
+    #: nobody can grep for.
+    EXPORT_END_MARKER = '# end of export —'
+    EXPORT_INCOMPLETE_MARKER = '# EXPORT INCOMPLETE — this file stopped early'
+
+    def _reject_unnarrowed_export(self):
+        """Refuse an export that names nothing to export.
+
+        A search with no patient and no filters is a page of rows; the same
+        export is the entire table, uncapped, once per request. The three
+        things that make it a real question — a patient, a set of ids, or an
+        explicit `type=all` — are exactly the three an intentional caller
+        already sends, so this refuses the accident rather than the use.
+        """
+        if self.request.query_params.get('type') == 'all':
+            return
+        if self._resolve_trial_ids() is not None:
+            return
+        if self._resolve_patient_info() is not None:
+            return
+        raise serializers.ValidationError({
+            'detail': [
+                'An export needs something to narrow it: a patient '
+                '(`patient_info` in the body, or `?person_id=`), a `trial_ids` '
+                'list, or an explicit `?type=all` for the whole catalog.'
+            ]
+        })
+
+    @action(methods=['post'], detail=False, url_path='export')
+    def export(self, request, *args, **kwargs):
+        """The current search, as a CSV file.
+
+        POST, like every other action that needs a patient: GET-with-body is
+        forbidden by the Fetch spec and dropped by axios, and the inline
+        `patient_info` payload is the federated remote's default path. The
+        cost is that the browser cannot simply follow a link — the caller
+        reads the body and saves it — which is the same trade already made
+        for `match` and `search-match`.
+
+        Bound to `search`, so the file is the list: the same filters, the same
+        `?sort=`, the same `trial_ids` narrowing for a Favorites export, and
+        the same 400 on `type=favorites` / `type=my_trials` — those name a
+        search type that narrows nothing here, and a CSV headed "your
+        bookmarks" holding the whole corpus is the worst place to answer a
+        question with the wrong set.
+
+        Streamed rather than assembled: an unfiltered export is the whole
+        corpus, and building that in memory to hand back at once is how an
+        export endpoint takes a server down. Nothing is capped — a truncated
+        file that does not say it was truncated reads as a complete one, and
+        this is a file someone takes to an appointment. Which is also why the
+        last line says the file ended: the response headers go out before the
+        first row, so a failure halfway through arrives as a 200 with a short
+        file, indistinguishable from a small result. The sentinel is how a
+        reader — or a script — can tell the difference.
+        """
+        self.action = 'search'
+        self._reject_unnarrowed_export()
+        queryset = self.filter_queryset(self.get_queryset())
+        # Typed matching finalizes to `EvaluatedTrials`, a materialized
+        # sequence with neither `select_related` nor `iterator`; the legacy
+        # path still streams rows from the database. Both must export the same
+        # list the screen shows (#692).
+        from exact_matching.request_evaluation import EvaluatedTrials
+        evaluated = isinstance(queryset, EvaluatedTrials)
+        evaluation = getattr(queryset, 'evaluation', None) if evaluated else None
+        if not evaluated:
+            # The locations are prefetched by the `search` branch; the trial
+            # type is a plain FK the serializer reads per row, which on a page
+            # is one extra query and on an uncapped export is one per trial.
+            queryset = queryset.select_related('trial_type')
+        # One serializer for the whole stream: `to_representation` reads only
+        # `self.context`, and rebuilding the field map per trial is the
+        # dominant cost on a corpus-sized export.
+        context = self.get_serializer_context()
+        # `explain` reaches this from the query string and would run
+        # `TrialMatchExplainer` for every row — three queries each, measured —
+        # to produce a `matchReasons` the CSV has no column for. On the one
+        # endpoint that is uncapped by design, that is the per-row-query
+        # problem walking back in through a parameter.
+        context['explain'] = False
+        serializer = self.get_serializer_class()(context=context)
+
+        def rows():
+            buffer = _io.StringIO()
+            writer = csv.writer(buffer)
+
+            def flush():
+                value = buffer.getvalue()
+                buffer.seek(0)
+                buffer.truncate(0)
+                return value
+
+            writer.writerow(
+                [header for header, _ in self.EXPORT_COLUMNS] + [self.EXPORT_MCL_COLUMN]
+            )
+            # A BOM, because the audience is someone opening this in Excel —
+            # which ignores `charset=utf-8` on a saved file and decodes as the
+            # system codepage, turning every accented sponsor and location into
+            # mojibake. `utf-8-sig` on the reading side strips it.
+            yield '\ufeff' + flush()
+
+            patient_info = context.get('patient_info')
+            written = 0
+            trials = queryset if evaluated else queryset.iterator(chunk_size=self.EXPORT_CHUNK)
+            try:
+                for trial in trials:
+                    row = serializer.to_representation(trial)
+                    writer.writerow(
+                        [_export_cell(row.get(key)) for _, key in self.EXPORT_COLUMNS]
+                        + [_export_cell(_export_mcl_cell(trial, patient_info, evaluation))]
+                    )
+                    written += 1
+                    yield flush()
+            except Exception:
+                # The 200 is already spent. All that is left is to say the file
+                # is short — and to log it, since the client sees a success.
+                logger.exception('trials export failed after %s rows', written)
+                writer.writerow([f'{self.EXPORT_INCOMPLETE_MARKER} after {written} trials'])
+                yield flush()
+                return
+            writer.writerow([f'{self.EXPORT_END_MARKER} {written} trials'])
+            yield flush()
+
+        filename = f'trials-{timezone.now():%Y-%m-%d}.csv'
+        response = StreamingHttpResponse(rows(), content_type='text/csv; charset=utf-8')
+        # `filename*` as well as `filename`: the name is ASCII today, and a
+        # reader whose browser honours only one of the two still gets it.
+        response['Content-Disposition'] = (
+            f'attachment; filename="{filename}"; filename*=UTF-8\'\'{filename}'
+        )
+        return response
 
 
 # ---------------------------------------------------------------------------

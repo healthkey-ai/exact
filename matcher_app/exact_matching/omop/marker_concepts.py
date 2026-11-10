@@ -41,6 +41,9 @@ MARKER_CONCEPTS = {
     'tp53Mutation': ('35948926',),          # TP53 gene variant (HGNC 11998)
     'krasMutation': ('35948791',),          # KRAS gene variant (HGNC 6407)
     'nrasMutation': ('35950119',),          # NRAS gene variant (HGNC 7989)
+    # Exact OMOP Genomic concept (standard, Measurement): the BTK gene variant
+    # the excluded criterion means. (#5674 gap inventory.)
+    'btkMutation': ('35952290',),           # BTK (Bruton tyrosine kinase) gene variant
     'brafMutation': ('19643612',),          # BRAF exon 15 mutation
     'notch1Mutation': ('35947617',),        # NOTCH1 gene variant (HGNC 7881)
     'ccnd1Alteration': ('35963336',),       # CCND1 gene variant (HGNC 1582)
@@ -92,7 +95,15 @@ TRIAL_MARKER_CONCEPTS = {**MARKER_CONCEPTS, **COMPOSITE_MARKER_CONCEPTS}
 #: marker code itself, never by a guessed concept. ``bcmaExpression`` also has
 #: a local HK-Genomics identity now; it stays here until the trial envelope is
 #: recompiled to emit that feature.
-UNRESOLVED_MARKER_CODES = frozenset({'bcmaExpression'})
+UNRESOLVED_MARKER_CODES = frozenset({
+    'bcmaExpression',
+    # No exact standard concept in the loaded vocabularies (checked against the
+    # OMOP Genomic and LOINC vocabularies, 2026-11-09). Both are exclusion-only
+    # criteria today, so matching the canonical code is the safe direction; a
+    # broader concept would reject patients the trial does not exclude.
+    'chromothripsis',
+    'complexKaryotypeExcludingT1114',
+})
 
 #: Marker criteria and the legacy/typed columns that carry them.
 MARKER_FIELDS = {

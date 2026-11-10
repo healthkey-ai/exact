@@ -32,7 +32,11 @@ class PatientInfoGeoPoint:
 
     @staticmethod
     def point_by_country_and_postal_code(country, postal_code):
-        if len(str(country)) == 0 or len(str(postal_code)) == 0:
+        # `str(None)` is "None", not empty: the old length check let a null
+        # postal code through and made pgeocode download a country extract
+        # (minutes, and it fails offline) on every patient that had only a
+        # country. Treat a missing value as missing.
+        if not country or not postal_code:
             return None
 
         country_code = PatientInfoGeoPoint.country_code_by_country_code_or_name(country)

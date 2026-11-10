@@ -2,55 +2,381 @@
 // patient's trial matches grouped by `matchingType`, with a filter bar,
 // inline detail view, and host-agnostic axios injection. The host
 // supplies either `patientInfo` (inline payload — matches the existing
-// CB contract) or `personId` (PROMOP federation path added in #102).
-import { useEffect, useMemo, useState, useRef } from "react";
+// CB contract) or `personId` (CTOMOP federation path added in #102).
+import { useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 
-function useDebounced<T>(value: T, delay: number): T {
+/** Debounced, unless `immediate` — then the value passes straight through
+ *  AND the held value is kept in step behind it.
+ *
+ *  The delay exists so a keystroke is not a request. A value that arrives
+ *  from the patient's SAVED filters is not a keystroke: held back, it is
+ *  absent for the first 400ms, so the Sponsor box reads "Acme", the badge
+ *  counts it, and the request does not carry it.
+ *
+ *  Keeping the held value in step is the half that is easy to miss. Without
+ *  it, the reader's first edit flips `immediate` off and hands back a held
+ *  value that never caught up — the same window, arriving later. */
+function useDebounced<T>(value: T, delay: number, immediate = false): T {
   const [debounced, setDebounced] = useState<T>(value);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (timer.current) clearTimeout(timer.current);
+    if (immediate) {
+      // No timer to drop, here or in the branch below: React runs the
+      // previous effect's cleanup before this one, so whatever was armed is
+      // already cleared. Clearing it again was a second mechanism for the
+      // same thing, and the suite confirmed both copies were dead.
+      setDebounced(value);
+      return;
+    }
     timer.current = setTimeout(() => setDebounced(value), delay);
     return () => { if (timer.current) clearTimeout(timer.current); };
-  }, [value, delay]);
-  return debounced;
+  }, [value, delay, immediate]);
+  return immediate ? value : debounced;
 }
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { hashKey, QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 
-import { FilterBar } from "./FilterBar";
+import { ActionTooltip } from "./bits";
+import { persistedKeyOf, stateKeyOf } from "./bridgeState";
+import { FilterPanel } from "./FilterPanel";
 import { TrialCard } from "./TrialCard";
 import { TrialDetailPage } from "./TrialDetailPage";
-import { groupByMatchingType } from "./grouping";
-import { useTrials } from "./hooks";
-import { injectStyles } from "./injectStyles";
-import type { FilterState, MatchingType, TrialMatch, TrialMatchesProps } from "./types";
+import { Pagination } from "./Pagination";
+import { SortControl } from "./SortControl";
+import { SuitabilityPreferences } from "./SuitabilityPreferences";
+import { WeightsWizard } from "./WeightsWizard";
+import {
+  initialWizard,
+  isOpen,
+  nextWizard,
+  shouldRead,
+  type WizardEvent,
+} from "./weightsWizardState";
+import type { SegmentSource } from "./SegmentedControl";
+import { ViewModeControl } from "./ViewModeControl";
+import { TrialsGraph } from "./TrialsGraph";
+import { TrialsMap } from "./TrialsMap";
+import { EXPORT_URL_LIFETIME_MS, exportIsComplete, exportTrials } from "./api";
+import { Tabs } from "./Tabs";
+import { hasInlinePatient, inlinePatientId, patientHandleOf } from "./api";
+import {
+  baselineFilters,
+  countActiveFilters,
+  countryFor,
+  normalizeFilterState,
+  sameValue,
+  userOwnedFilters,
+} from "./filters";
+import { MAX_TRIAL_IDS, canEditFields } from "./state";
+import {
+  DEFAULT_WEIGHT,
+  WEIGHT_FIELDS,
+  isUsableWeight,
+  weightsToSave,
+  type WeightKey,
+} from "./weights";
+import {
+  DEFAULT_SORT,
+  PAGE_SIZE,
+  sortOptionsFor,
+  tabValueForType,
+  tabsFor,
+  wideControlsRow,
+  type TabValue,
+} from "./listChrome";
+import {
+  canReadAdvanced,
+  useAdvancedEnrollments,
+  useSavedFilters,
+  useQueuedPatientFields,
+  useWritableFields,
+  useSetTrialState,
+  useStateIds,
+  useTrials,
+  useTrialsGraph,
+} from "./hooks";
+import { injectStylesForHost, warnMissingExactTokens } from "./injectStyles";
+import { ACTION_TOOLTIPS } from "./tooltips";
+import type {
+  FilterState,
+  TabCounts,
+  TrialMatch,
+  TrialMatchesProps,
+} from "./types";
 
-// `not_eligible` is included for forward-compat with a future call that
-// surfaces ineligible matches (e.g. an opt-in "show why these don't fit"
-// path). Today the server-side `TrialSerializer.to_representation`
-// only ever emits `'eligible' | 'potential'`, so the bucket is
-// rendered only when non-empty — empty buckets are hidden below.
-const GROUP_ORDER: MatchingType[] = ["eligible", "potential", "not_eligible"];
+type StateKind = "favorites" | "registered";
+/** Which trials have a write in flight, and which have one that failed. */
+interface WriteState {
+  pending: string[];
+  failed: string[];
+}
 
-const GROUP_LABELS: Record<MatchingType, string> = {
-  eligible: "Eligible",
-  potential: "Potential",
-  not_eligible: "Not eligible",
-};
+/** The four weights with any that are at the server's default removed. */
+function atDefaultsDropped(filters: FilterState): FilterState {
+  const out: FilterState = {};
+  for (const { key } of WEIGHT_FIELDS) {
+    out[key] = isUsableWeight(filters[key]) && filters[key] !== DEFAULT_WEIGHT
+      ? filters[key]
+      : undefined;
+  }
+  return out;
+}
+
+/** The weights the READER owns: set here, or loaded from their own row.
+ *
+ *  Not "every weight in `filters`". A host may mount with weights of its own
+ *  in `initialFilters`, and those are the host's scope for this mount, not the
+ *  reader's standing preference — stored, they would outlive the mount that
+ *  asked for them and follow the reader to hosts that did not. This is the
+ *  same distinction `userOwnedFilters` draws for the panel's fields, drawn
+ *  from the same `owned` set. */
+function ownedWeights(filters: FilterState, owned: ReadonlySet<string>): FilterState {
+  const out: FilterState = {};
+  for (const { key } of WEIGHT_FIELDS) {
+    if (owned.has(key) && isUsableWeight(filters[key])) out[key] = filters[key];
+  }
+  return out;
+}
+
+/** A save payload that carries both halves of what is remembered: the panel
+ *  fields the reader owns, and the weights. Either saver alone would retire
+ *  the other's queued write — see `handleWeightsChange`. */
+function withWeights(
+  owned: FilterState,
+  from: FilterState,
+  ownedKeys: ReadonlySet<string>,
+): FilterState {
+  return { ...owned, ...ownedWeights(from, ownedKeys) };
+}
+
+/** How long the wizard holds itself open waiting for the answer to be
+ *  written, before letting the reader go. Long enough that a normal write and
+ *  one 412-retry fit inside it; short enough that a dead request is not a
+ *  modal nobody can dismiss. */
+export const WIZARD_WRITE_GRACE_MS = 8000;
+
+/** A host page arrives from a URL: normalise it to a positive integer. */
+function normalisePage(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.max(1, Math.floor(value));
+}
 
 function TrialMatchesInner({
   apiClient,
   patientInfo,
+  stateIdentity,
+  credentialIdentity,
+  credentialIdentityNow,
   personId,
   initialFilters,
   onTrialSelect,
+  trialId: hostTrialId,
+  onTrialIdChange,
+  onPatientRecordChanged,
+  onExplicitAnswerChanged,
+  renderMap,
+  state,
+  patientRecord,
+  preferences,
+  capabilities,
+  features,
+  renderGenomicsEditor,
+  renderFieldEditor,
+  fieldEditorOwnsValue,
+  onCompareToSoc,
+  onAuthorHighRiskMcl,
+  onShareTrial,
+  onOpenMissingAttributes,
+  renderRegisterInterest,
+  styles,
+  page: hostPage,
+  onPageChange,
 }: Omit<TrialMatchesProps, "queryClient">) {
-  useEffect(() => {
-    injectStyles();
+  const queryClient = useQueryClient();
+  // Editing can come from the full state adapter or from the narrower record
+  // adapter the self-contained widget has. Favourites still require `state`.
+  const record = patientRecord ?? state;
+  // The admin surface is a HOST decision, never inferred from data: the same
+  // account can be an admin on one deployment and not another.
+  const admin = features?.admin === true;
+  // Same for the navigator's impersonation state: the host knows, EXACT does
+  // not, and a bookmark written through an impersonation token belongs to the
+  // patient rather than to the navigator looking at the page.
+  const hideFavorites = features?.hideFavorites === true;
+  // Read once: the mode is a property of this bundle instance, not of a
+  // render. `injectStylesForHost` latches the first mode, and a second sheet
+  // in the other mode would fight the first in the cascade. The detail
+  // page's later `injectStyles()` (no options) inherits this choice.
+  //
+  // Omitted means "inherit": the self-contained widget has already injected
+  // its unlayered sheet by the time it mounts this component, and passing an
+  // explicit `layered: true` here would add a second sheet instead of
+  // agreeing with it.
+  //
+  // INSERTION effect, not `useEffect`: a deep link renders `TrialDetailPage`
+  // as a child, and child passive effects run before the parent's. The detail
+  // page injects as a fallback, so a parent `useEffect` here would arrive
+  // second and append the layered sheet beside the unlayered one. Insertion
+  // effects run before every passive effect, which is what makes the first
+  // injection on the page the one that decides.
+  const styleMode = useRef(styles);
+  useInsertionEffect(() => {
+    injectStylesForHost(styleMode.current);
   }, []);
 
-  const [filters, setFilters] = useState<FilterState>(initialFilters ?? {});
-  const [selectedTrial, setSelectedTrial] = useState<TrialMatch | null>(null);
+  /** This mount's own root, for the canary below. */
+  const exactRootRef = useRef<HTMLDivElement>(null);
+  const canarySung = useRef(false);
+  // The canary: did `exact.css` reach the page this list is on?
+  //
+  // Run after `injectStyles`, never before — the sheet has to be in the
+  // document for the answer to mean anything — and against THIS mount's
+  // root rather than the first `.exact-root` in the document: a second
+  // EXACT instance that is fine would otherwise answer for one that is not,
+  // and a root inside a shadow tree is not in `document` at all, where a
+  // head-injected sheet cannot reach it either.
+  //
+  // No dependency list, because the root is not there on every first render
+  // (the list renders a plain notice while the profile is loading); the
+  // latch is what keeps it to one look.
+  //
+  // `DEV` is stripped when the REMOTE is built, not when a host is — the two
+  // are compiled separately, which is the point of a remote. So this ships
+  // disabled in the remote's production build, and a production host wired
+  // to a development remote does get the warning. That host is
+  // misconfigured, and a line in the console is the friendliest thing that
+  // can happen to it.
+  //
+  // Not under the unit tests, whose `MODE` is "test": jsdom parses
+  // stylesheets and resolves nothing from them, so every token reads empty
+  // there and the canary would cry on every rendering test while meaning
+  // nothing. What it checks is covered directly in `injectStyles.test.tsx`.
+  useEffect(() => {
+    if (canarySung.current || !exactRootRef.current) return;
+    if (!import.meta.env.DEV || import.meta.env.MODE === "test") return;
+    canarySung.current = true;
+    warnMissingExactTokens(exactRootRef.current);
+  });
+
+  // Normalized on the way in: a host compiles separately, so a pre-#428
+  // `trialPurpose` string in `initialFilters` is not caught by `tsc` here
+  // and would spread into its own letters on the first click (#428).
+  const [filters, setFilters] = useState<FilterState>(() =>
+    normalizeFilterState(initialFilters),
+  );
+  // Which trial is open, when the host is not the one saying. The row it was
+  // opened from is deliberately not kept: a trial can be opened from the
+  // graph, which draws up to fifty while the list holds one page, so "which
+  // trial" is always answerable and "which row" is not — and the detail page
+  // asks for everything it draws by id anyway, which is what makes a reload
+  // straight onto it possible at all.
+  const [ownTrial, setOwnTrial] = useState<number | null>(null);
+  // `undefined` is "the host has no route for a trial"; `null` is "the host
+  // has one and it is on the list". The first keeps today's behaviour, the
+  // second hands navigation over — see `trialId` in `types.ts`.
+  //
+  // BOTH props, because a host that supplies only the id has given us
+  // nowhere to send a change: every call would be an optional-chained
+  // no-op, so opening a trial would do nothing and — worse — the back
+  // button on a detail page would be dead, with the reader stuck on it.
+  // Half a contract reads as the uncontrolled one, which works.
+  const hostOwnsUrl = hostTrialId !== undefined && onTrialIdChange != null;
+  const warnedHalfWired = useRef(false);
+  useEffect(() => {
+    if (hostTrialId === undefined || onTrialIdChange != null) return;
+    if (warnedHalfWired.current) return;
+    warnedHalfWired.current = true;
+    console.warn(
+      "[exact] `trialId` was passed without `onTrialIdChange`, so there is " +
+        "nowhere to report a change to and the remote keeps its own " +
+        "selection instead. Pass both to put the open trial in your URL.",
+    );
+  }, [hostTrialId, onTrialIdChange]);
+  const selectedTrial = hostOwnsUrl ? hostTrialId : ownTrial;
+  // Seeded from the host's `initialFilters.type` rather than defaulted: the
+  // prop is public API, and a host that mounts the remote asking for the
+  // potential subset must not silently get the default tab's result set.
+  const [activeTab, setActiveTab] = useState<TabValue>(() =>
+    tabValueForType(initialFilters?.type, { admin }),
+  );
+  const [sort, setSort] = useState<string>(initialFilters?.sort ?? DEFAULT_SORT);
+  /** Whether the sort is being walked with the arrow keys; see
+   *  `handleSortChange`. */
+  const [sortTyping, setSortTyping] = useState(false);
+  // Controlled pagination (#699): the host owns `?page=`. Both props or
+  // neither — `page` alone would leave the pager unable to report a click,
+  // and `onPageChange` alone has no page to render.
+  const controlledPage = hostPage !== undefined && onPageChange !== undefined;
+  // The notification effects below run once per reset EVENT, not once per
+  // host render. Read through a ref so a host that passes an inline callback
+  // does not look like a new event: a repeated navigation to page 1 is a
+  // history entry, not a no-op.
+  const onPageChangeRef = useRef(onPageChange);
+  useEffect(() => {
+    onPageChangeRef.current = onPageChange;
+  });
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if ((hostPage === undefined) !== (onPageChange === undefined)) {
+      console.warn(
+        "[exact-remote] pass page and onPageChange together; " +
+          "keeping the pager uncontrolled.",
+      );
+    }
+  }, [hostPage, onPageChange]);
+
+  const [ownPage, setOwnPage] = useState(1);
+  // A tab/sort/filter change resets the list to page 1. Uncontrolled, that is
+  // the next render. Controlled, the HOST owns the number, so the effective
+  // page is forced to 1 until its next render says 1 — otherwise the request
+  // for the new query would go out as page N before the host heard about it,
+  // and DRF answers a page past the new end with a 404.
+  const [pageResetPending, setPageResetPending] = useState(false);
+  // Increments once per reset EVENT (not per render). The reporting effect
+  // compares it with what it already told the host, which is what makes the
+  // notification exactly-once without depending on the callback's identity.
+  const [resetRequest, setResetRequest] = useState(0);
+  const lastReportedReset = useRef(0);
+  // The view whose reset the render-phase path already handled, so a patient
+  // switch in the same commit does not report the same reset a second time.
+  const resetHandledForView = useRef<string | null>(null);
+  const currentViewKey = useRef<string>("");
+  const requestedPage = controlledPage ? normalisePage(hostPage) : ownPage;
+  const page = controlledPage && pageResetPending ? 1 : requestedPage;
+  const requestPage = useCallback(
+    (next: number) => {
+      if (!controlledPage) {
+        setOwnPage(next);
+        return;
+      }
+      if (next !== requestedPage) onPageChangeRef.current?.(next);
+    },
+    [controlledPage, requestedPage],
+  );
+  /** A patient switch, a 404 recovery or a query change: back to the first
+   *  page, whether the number is ours or the host's. */
+  const resetToListStart = useCallback(() => {
+    if (!controlledPage) {
+      setOwnPage(1);
+      return;
+    }
+    setPageResetPending(true);
+    setResetRequest((n) => n + 1);
+  }, [controlledPage]);
+  // Ask the host for the reset the render above already applied. If it
+  // ignores the callback, the effective page stays 1 and this does not ask
+  // again: the request token is recorded before the call.
+  useEffect(() => {
+    if (!controlledPage || !pageResetPending) return;
+    if (requestedPage === 1) {
+      setPageResetPending(false);
+      return;
+    }
+    if (lastReportedReset.current === resetRequest) return;
+    lastReportedReset.current = resetRequest;
+    onPageChangeRef.current?.(1);
+  }, [controlledPage, pageResetPending, requestedPage, resetRequest]);
+
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   // Reset detail view when patient context changes so we don't keep a
   // stale trial open from a previous patient. We key on a stable derived
@@ -62,102 +388,2022 @@ function TrialMatchesInner({
     () => (patientInfo ? JSON.stringify(patientInfo) : null),
     [patientInfo],
   );
+
+  // BOTH props, not the precedence winner.
+  //
+  // `patientIdentity` answers "which prop names this patient", which is the
+  // right question for the matcher and the wrong one for a cache key. With
+  // both supplied it resolves to the inline payload — so two readers whose
+  // payload is the same minimal `{disease}` share a key, and the second one
+  // is served the first one's bookmarks for as long as they stay fresh.
+  // A cache key wants maximum discrimination: any difference in either prop
+  // is a different key.
+  // The identity FIRST, and not only for tidiness: it is the half that says
+  // whose row a write will land in. `useSavedFilters` reads this to decide
+  // whether the adapter it was built with is still the right one to write
+  // through, and with the patient alone that question had a wrong answer
+  // whenever the host owned the patient and the account changed underneath.
+  // See `identityKeyOf` for the invariant and what it cost to find.
+  const stateKey = stateKeyOf(stateIdentity, personId, patientInfoKey);
+
+  // Who the reader is looking at, for anything that must survive the payload
+  // being REFRESHED. `patientIdentity` and `stateKey` both hash the whole
+  // inline payload, so a host re-reading the profile — same person, new
+  // object — changes them; a draft keyed on that is discarded for nothing.
+  // The id inside the payload is the stable half when it carries one.
+  //
+  // Who the reader is looking at, as opposed to which payload is in front of
+  // us — see `patientHandleOf` for why it takes both props and why the rest
+  // of the payload is deliberately left out of it.
+  const patientHandle = patientHandleOf(patientInfo, personId);
+  // WHO is looking, not only at whom. Everything that writes — and
+  // everything cached per reader — keys on this rather than on the patient
+  // alone: EXACT's own rows are keyed on the identity in the token, so a
+  // host that switches account while showing the same patient changes the
+  // owner of every row without changing the patient. See the invariant on
+  // `live()` in `hooks.ts` and what it cost to find.
+  //
+  // Built on `patientHandle` rather than `stateKey` on purpose: it must
+  // survive the host re-reading the same profile, or every refresh discards
+  // a draft for nothing.
+  const readerHandle = `${stateIdentity ?? ""}|${patientHandle}`;
+  // What NAMES the patient, one axis at a time. The payload's own id and the
+  // `personId` prop answer different questions — which patient the server
+  // matches, and which record a write is PATCHed into — so a move on either
+  // is a move. Kept apart rather than folded into one string, because the
+  // reset below has to tell "this axis moved" from "this axis went from
+  // saying nothing to saying something", and a single value cannot.
+  const inlineName = inlinePatientId(patientInfo);
+  const personName = personId != null ? String(personId) : null;
+  // A payload that names nobody has no handle to give, so the whole payload
+  // stands in and every refresh reads as a new patient. That is safe, and it
+  // is also the case where `onPatientRecordChanged` does the host no good: a
+  // host obeying the prop's "refresh your payload" closes the trial page the
+  // edit was made from, and any edit made while the refresh is in flight is
+  // written but never reported. Nothing here can tell the two apart, so the
+  // host is told instead of left to find out.
+  const namesPatient = inlinePatientId(patientInfo) != null;
+  const warnedNoId = useRef(false);
   useEffect(() => {
-    setSelectedTrial(null);
-  }, [personId, patientInfoKey]);
+    // The editing PAIR, not merely an adapter: a bookmarks-only one can
+    // never fire this prop either, and warning such a host sends it looking
+    // for a bug it does not have.
+    if (!onPatientRecordChanged || !canEditFields(record) || !hasInlinePatient(patientInfo))
+      return;
+    if (namesPatient) return;
+    if (warnedNoId.current) return;
+    warnedNoId.current = true;
+    console.warn(
+      "[exact] onPatientRecordChanged is wired, but `patientInfo` carries no " +
+        "patient id — personId, person_id, externalId, external_id, " +
+        "patientId, patient_id or id. " +
+        "Refreshing the payload will then read as a change of patient: the " +
+        "open trial closes, and an edit made during the refresh is written " +
+        "but not reported. Include the id in the payload.",
+    );
+  }, [onPatientRecordChanged, record, patientInfo, namesPatient]);
 
-  // Auto-derive `country` from the patient profile. The country filter
-  // was previously a dropdown but in practice was redundant — patients
-  // are matched to trials in their home country. We sync on every
-  // patient change (not just first mount) so swapping `patientInfo`
-  // — e.g. picking another row in the dev harness — re-scopes the
-  // trial list correctly. The equality guard prevents a `setFilters`
-  // re-render storm when the patient's country is already the active
-  // filter. `undefined` clears the param so a patient without a country
-  // gets the disease-agnostic union, not a stale previous country.
-  const patientCountry = useMemo(() => {
-    const c = (patientInfo as Record<string, unknown> | null | undefined)?.["country"];
-    return typeof c === "string" && c.trim() ? c.trim() : undefined;
-  }, [patientInfo]);
+  // The bar depends on whether a host gave us somewhere to keep bookmarks.
+  const tabs = useMemo(
+    () => tabsFor(state != null, activeTab, { admin, hideFavorites }),
+    [state, activeTab, admin, hideFavorites],
+  );
+  // A host can take the adapter away — on logout, or when reconfiguring it.
+  // The tab the reader was on then stops existing, and falling back only in
+  // `activeTabDef` would list the default tab's trials while no tab in the
+  // bar is marked current: the reader is somewhere the UI cannot name.
+  // Adjusting during render rather than in an effect, so the request that
+  // goes out is the one the visible tab describes.
+  if (!tabs.some((t) => t.value === activeTab)) {
+    setActiveTab(tabs[0].value);
+  }
+  const activeTabDef = tabs.find((t) => t.value === activeTab) ?? tabs[0];
+
+  const favorites = useStateIds(state, "favorites", stateKey);
+  const registered = useStateIds(state, "registered", stateKey);
+  // Not a display concern: this is what stops the register control being
+  // drawn for a trial whose enrollment a study team has already advanced,
+  // where "I'm Interested" would write `registered` over `entered`.
+  const advanced = useAdvancedEnrollments(state, stateKey);
+  // The descriptor is about the patient, not the trial, so it is read here
+  // once rather than on every detail page. Its absence is the safe state:
+  // until it arrives, no row draws a control.
+  // On the HANDLE, like the queue below, where the rest of the per-patient
+  // state is on `stateKey`. What PROMOP will take a write to is a fact about
+  // the PERSON's record, not about the payload snapshot in front of us — and
+  // keyed on the payload, a host refreshing it (which this remote now asks
+  // it to, #555) empties the descriptor, withdraws every edit control, and
+  // closes any editor the reader has open. Measured together with the
+  // detail's own `placeholderData`: either one alone still loses the editor.
+  const writableFields = useWritableFields(record, readerHandle);
+  // The host owns the patient payload — ht-phr reads it, normalises it
+  // through this service, and passes it in — and that payload wins
+  // server-side over `personId`. So a field edited here is written, the
+  // record answers with the new value, our own queries re-read carrying the
+  // HOST's copy of it, and the server answers from that: the page keeps
+  // showing what the reader just changed away from (#555). Only the host can
+  // end that, so the host is told.
+  //
+  // An overlay here — the record's values held over the host's until its
+  // payload catches up — was tried first and withdrawn. It changes what the
+  // queries are keyed by, and a new key is a NEW query: the rows unmount and
+  // every open editor goes with them, half-typed value and all. That is the
+  // failure `FieldEdit`'s "does not wipe what the reader is typing" exists
+  // to catch, and it caught it.
+  const patientFields = useQueuedPatientFields(
+    record,
+    readerHandle,
+    onPatientRecordChanged,
+    credentialIdentity,
+    credentialIdentityNow,
+  );
+  // Saved filters. Applied over the host's `initialFilters` rather than in
+  // place of them: the seeded country is the baseline the reader never chose,
+  // and a saved set that omits it must not silently widen the search to every
+  // country. Keys the reader did save win.
+  // Which fields are the reader's rather than the host's. Sticky: seeded from
+  // whatever was loaded, added to on every save, and emptied by Reset. Without
+  // it a saved field that happens to equal the current baseline would look
+  // like host scope on the next edit and be dropped. See `userOwnedFilters`.
+  const ownedFields = useRef<Set<string>>(new Set());
+  // `state` carries the settings too, and wins; `preferences` is for a host
+  // that can answer for the settings and nothing else — see the prop's own
+  // doc. With neither, they go to this browser's `localStorage` — which
+  // outlives the session, and is per browser rather than per patient's
+  // record.
+  const preferenceStore = state ?? preferences;
+  // Named, because a host that switches from one to the other keeps the same
+  // patient and the same "there is a store" — and the transport is otherwise
+  // blind to a new object for the same patient, on purpose. The two stores
+  // do not agree about conditional writes, and the writer's queue belongs to
+  // whichever it was built for.
+  const preferenceSource = state != null ? "state" : "preferences";
+  // What the reader has overruled since a saved set could last have landed.
+  //
+  // NOT `ownedFields`: that is cumulative and answers "whose field is this",
+  // which is a different question from "did they touch it while this read was
+  // in flight". Two places where the two come apart, both found in review:
+  // Reset empties `ownedFields`, so a stale read landing after it would have
+  // passed every value straight back into the panel that was just cleared;
+  // and a host swapping one store for another keeps `ownedFields` (same
+  // patient), so the new store's saved values would be suppressed as though
+  // the reader had just typed them.
+  const overruled = useRef<{ fields: Set<string>; all: boolean }>({
+    fields: new Set(),
+    all: false,
+  });
+  // Every delivered saved set gets a new token. The query key changes when it
+  // lands, and that must not be read as the reader changing a filter: doing
+  // so would drag a controlled host from `?page=3` back to 1 on load, before
+  // they touched anything.
+  //
+  // A token rather than a boolean, because the exception has to expire even
+  // when the delivery changes NOTHING: a late answer repeating values the
+  // panel already had leaves the key untouched, and a flag left standing
+  // would swallow the reader's next filter change.
+  const [savedApplyToken, setSavedApplyToken] = useState(0);
+  const [seenSavedApplyToken, setSeenSavedApplyToken] = useState(0);
+  // The key for disk is built from the parts, not carved out of `stateKey`:
+  // see `persistedKeyOf`. It is the key this page used before an identity
+  // was part of any of them.
+  const persistedKey = persistedKeyOf(personId, patientInfoKey);
+  const savedFilters = useSavedFilters(
+    preferenceStore,
+    stateKey,
+    (saved, applied) => {
+      setSavedApplyToken((n) => n + 1);
+      // Not cleared here: a writer has exactly one read, so the only veto
+      // that can outlive this callback belongs to the NEXT writer's read,
+      // and the effect keyed on `epoch` clears it for that one. Clearing it
+      // in both places is a second mechanism for the same thing, and the one
+      // below is the one that also covers a read which never calls back.
+      const veto = overruled.current;
+      // Snapshotted BEFORE the claim below, for the weight overlay further
+      // down. That overlay exists to protect a weight the reader chose while
+      // this read was in flight — one they owned BEFORE the row landed. The
+      // claim is about to hand ownership to every key the ROW carries, and a
+      // weight owned only because the row just claimed it is the opposite
+      // case: its value in the panel is still the host's mount-time seed, so
+      // overlaying it would put the host's number over the reader's saved one
+      // and then store it as theirs (#546).
+      const ownedBeforeThisRow = new Set(ownedFields.current);
+      // The keys are claimed because ownership is what makes a filter
+      // clearable later — except after a Reset, where this row describes a
+      // panel that no longer exists and the transport has already discarded
+      // it. Claiming them there hands the reader ownership of values they
+      // just threw away, and a later unrelated edit would write the host's
+      // baseline back as their standing preference.
+      if (!veto.all) {
+        for (const field of Object.keys(saved)) ownedFields.current.add(field);
+      }
+      // The VALUES are the half it does. `applied` is false when the reader
+      // edited while this read was in flight, and merging the row over that
+      // edit reverts it in front of them — measured: type "Acme" into
+      // Sponsor during a slow read and the box reads "Stored" a moment
+      // later, with the search already narrowed by a value they never
+      // entered (#537).
+      //
+      // Held back is what they OVERRULED while this read was in flight, and
+      // only that: the rest of the row is theirs too, saved earlier, and
+      // dropping all of it would trade one silent change for another. Reset
+      // is the exception, below — it overrules the whole row, because an
+      // empty panel is what was asked for.
+      const incoming: FilterState = applied
+        ? saved
+        : veto.all
+          ? // Reset overrules the whole row: the reader asked for an empty
+            // panel, and handing them a stale one back is the same silent
+            // change in a louder place. The transport usually agrees — its
+            // generation moves and the row is refused into `stored` and
+            // everything behind the same guard (`believed`, the version) —
+            // but not always: `PreferenceWriter.reset()` bumps only its OWN
+            // generation and queues the transport's behind a write already
+            // in flight. And a refused row is still RETURNED to us either
+            // way. So this is the half that keeps it off the panel, and it
+            // does not lean on the other one.
+            //
+            // No weights spread here. Reset keeps them, but it is
+            // `handleFiltersReset` that does it, by putting them into the
+            // panel; adding them again on this branch is at best a no-op
+            // over the state they already sit in, and at worst writes the
+            // older of two queued values back over the newer.
+            {}
+          : {
+              ...Object.fromEntries(
+                Object.entries(saved).filter(([field]) => !veto.fields.has(field)),
+              ),
+              // The weights on top, and this one is not a no-op: the veto
+              // knows what the reader touched during THIS read, while a
+              // weight they own was theirs before it — and a row that
+              // predates the write still on its way must not put the old
+              // score back (#517).
+              //
+              // `ownedBeforeThisRow`, not the set as it is now: see there.
+              ...ownedWeights(filters, ownedBeforeThisRow),
+            };
+      // A saved trial type came from THIS patient's storage, so it is this
+      // patient's choice. Without claiming it the staleness rule — which
+      // exists to expire a type picked for someone else — would mask the very
+      // type just loaded, and a later edit would overwrite it.
+      if (saved.trialType !== undefined) setTrialTypeOwner(patientIdentity);
+      // Normalized for the same reason as the initial state, and the more
+      // likely source: this is what the PREVIOUS build of this remote saved,
+      // when `trialPurpose` was a single string.
+      setFilters((current) => normalizeFilterState({ ...current, ...incoming }));
+    },
+    preferenceSource,
+    persistedKey,
+    credentialIdentity,
+    credentialIdentityNow,
+  );
+  // Whether the panel has been touched since the last time a saved set
+  // could have arrived — keyed on the same attempt the gate is, and
+  // adjusted during render like `ownedFields` below.
+  //
+  // Three attempts to get this right, each wrong in its own way. One-way,
+  // it stayed true across a patient switch, so the NEXT patient's saved set
+  // came through the debounce after all. Keyed on WHICH patient, coming
+  // back to them turned it on again and their re-loaded set was debounced
+  // for the same 400ms. Keyed on the patient KEY, it missed a host handing
+  // over an adapter mid-session — the key never changes there, and that is
+  // precisely why the gate next to it is keyed on the writer instead.
+  const [typed, setTyped] = useState({ epoch: savedFilters.epoch, yes: false });
+  if (typed.epoch !== savedFilters.epoch) {
+    setTyped({ epoch: savedFilters.epoch, yes: false });
+  }
+  const typing = typed.yes;
+
+  // On the HANDLE, not on the payload hash. The hash changes whenever the
+  // host re-reads the profile — which it now does after every inline edit
+  // (#555) — and keyed on that, saving a field from a trial's detail page
+  // closes the page you saved it from and drops the pager back to 1. The
+  // reader lands on the list, one round trip after asking for the opposite.
+  //
+  // A payload with no id in it still falls back to the whole hash, so a host
+  // that names nobody keeps resetting on any change. That is the safe
+  // direction for what this key guards — a descriptor, a write queue, an
+  // open trial of our own — and NOT for the host's address bar, which is
+  // why the reset below asks a narrower question before touching it.
+  //
+  // Skipped on the first run, and that is load-bearing now rather than a
+  // micro-optimisation: with the host owning the URL, a reload onto
+  // `/trials/123` mounts this remote with the trial already open, and a
+  // reset that fired on mount would ask the host to clear the address it
+  // had just restored. Both resets were no-ops on mount anyway — the
+  // selection starts empty and the pager starts at 1.
+  const lastPatient = useRef(patientHandle);
+  const lastInline = useRef(inlineName);
+  const lastPerson = useRef(personName);
+  const lastHostTrial = useRef(hostTrialId);
   useEffect(() => {
-    if (filters.country === patientCountry) return;
-    setFilters((prev) => ({ ...prev, country: patientCountry }));
-  }, [patientCountry, filters.country]);
-
-  const debouncedTitle = useDebounced(filters.searchTitle, 400);
-  const debouncedTreatment = useDebounced(filters.searchTreatment, 400);
-  const debouncedDistance = useDebounced(filters.distance, 400);
-  const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400);
-  const queryFilters = useMemo(
-    () => ({ ...filters, searchTitle: debouncedTitle, searchTreatment: debouncedTreatment, distance: debouncedDistance, distanceUnits: debouncedDistanceUnits }),
-    [filters, debouncedTitle, debouncedTreatment, debouncedDistance, debouncedDistanceUnits],
-  );
-
-  const query = useTrials({ apiClient, patientInfo, personId, filters: queryFilters });
-
-  const allTrials = useMemo(
-    () => query.data?.pages.flatMap((p) => p.results) ?? [],
-    [query.data],
-  );
-
-  const totalCount = query.data?.pages[0]?.itemsTotalCount ?? null;
-
-  const grouped = useMemo(
-    () => groupByMatchingType(allTrials),
-    [allTrials],
-  );
+    const patientMoved = lastPatient.current !== patientHandle;
+    // An axis moved only if it named somebody on BOTH sides and named
+    // somebody different. Silence on either side is not a switch: it is an
+    // axis that has nothing to say, and a host filling one in is refining
+    // what it told us, not handing over another patient.
+    const moved = (before: string | null, after: string | null) =>
+      before != null && after != null && before !== after;
+    const namedMoved = moved(lastInline.current, inlineName) || moved(lastPerson.current, personName);
+    const hostMoved = lastHostTrial.current !== hostTrialId;
+    lastPatient.current = patientHandle;
+    lastInline.current = inlineName;
+    lastPerson.current = personName;
+    lastHostTrial.current = hostTrialId;
+    if (!patientMoved) return;
+    // The render-phase query-key reset already covers a patient change that
+    // moved the view key. When it did, do not ask the host for page 1 twice.
+    if (resetHandledForView.current !== currentViewKey.current) {
+      resetToListStart();
+    }
+    if (!hostOwnsUrl) {
+      setOwnTrial(null);
+      return;
+    }
+    // Controlled, the bar is higher, because what is being dropped is the
+    // reader's ADDRESS and not a local selection.
+    //
+    // The handle moves for reasons that are not a change of patient: a host
+    // that renders this before its profile fetch lands goes from `personId`
+    // alone to `personId` plus a payload, and a host whose payload names
+    // nobody moves it on every re-read — which is every inline edit (#555).
+    // Either would have cleared the URL a reload had just restored, which is
+    // the failure this whole change exists to remove. So the URL is dropped
+    // only when something that NAMES the patient — the payload's id, or
+    // `personId` — said one thing and now says another.
+    //
+    // And not when the host moved both in one commit — a link from one
+    // patient's trial URL straight to another's. That id is not the stale
+    // one; clearing it would undo the navigation that brought us here.
+    if (namedMoved && !hostMoved) closeRef.current();
+  }, [patientHandle, inlineName, personName, hostTrialId, hostOwnsUrl, resetToListStart]);
 
   const diseaseCode = useMemo(() => {
     const d = (patientInfo as Record<string, unknown> | null | undefined)?.["disease"];
     return typeof d === "string" ? d : undefined;
   }, [patientInfo]);
 
+  // `country` and `trialType` are DERIVED, not stored.
+  //
+  // Seeding them into filter state — even during render — put a request on
+  // the wire before the seeding took effect: the component suite caught two
+  // requests on every mount with a patient country, the first of them
+  // unscoped. A render-phase `setState` re-runs the component but does not
+  // un-send what the query observer has already been told to fetch.
+  //
+  // `country` also no longer has a control at all — its dropdown could not
+  // match anything (#430) — so storing it was storing a copy of a fact.
+  // `trialType` does have one; what is derived there is only whether the
+  // stored choice still applies to the patient on screen.
+  const patientCountry = useMemo(() => {
+    const c = (patientInfo as Record<string, unknown> | null | undefined)?.["country"];
+    return typeof c === "string" && c.trim() ? c.trim() : undefined;
+  }, [patientInfo]);
+  const country = countryFor(patientCountry, initialFilters);
+
+  // A trial type belongs to the PATIENT it was chosen for, not to their
+  // disease. Carried into someone else it narrows their list by a choice
+  // they never made — and across diseases it is worse, because the option
+  // does not exist in their list at all and `by_trial_type` has no leniency
+  // for a value that is not there: an empty result set from a control
+  // rendering blank. Keyed on the disease this leaked between any two
+  // patients who shared one.
+  //
+  // `hasInlinePatient` decides which prop names the patient, because it is
+  // the same function the request uses to decide which one it sends.
+  const patientIdentity = hasInlinePatient(patientInfo)
+    ? patientInfoKey
+    : personId != null
+      ? String(personId)
+      : null;
+
+  // "Unclaimed" is `undefined`, NOT `null` — and the distinction is
+  // load-bearing, because `null` is a real owner here: `patientIdentity` is
+  // `null` for a host placeholder like `patientInfo={}`, or for the render
+  // before the profile arrives, and the panel is live in that window. While
+  // the two shared a sentinel, a type picked there claimed `null`, read back
+  // as unclaimed, never went stale, and followed the reader into every
+  // patient afterwards, across diseases included.
+  //
+  // Unclaimed is also how a host's `initialFilters.trialType` outlives a
+  // patient arriving a render later: nobody has claimed it, so nothing makes
+  // it stale.
+  const [trialTypeOwner, setTrialTypeOwner] = useState<string | null | undefined>(
+    undefined,
+  );
+  const trialTypeIsStale =
+    trialTypeOwner !== undefined && trialTypeOwner !== patientIdentity;
+  // A stale choice falls back to the BASELINE's type, not to nothing.
+  //
+  // What goes stale is the reader's own pick, which was made for one
+  // patient. `initialFilters.trialType` is a different thing — a scope the
+  // host set when it mounted the remote — and `baselineFilters` already
+  // treats a host filter as something Reset restores rather than discards.
+  // Dropping to `undefined` threw it away silently, and cost a second click
+  // besides: Reset wrote the masked baseline into state while clearing the
+  // owner, so the next render's unmasked baseline disagreed with what had
+  // just been stored, the badge counted that disagreement and the button
+  // stayed armed.
+  //
+  // Falling back to the baseline's value makes the two agree by
+  // construction, so the baseline itself needs no mask at all.
+  const trialType = trialTypeIsStale
+    ? initialFilters?.trialType
+    : filters.trialType;
+
+  const effectiveFilters = useMemo(
+    () => ({ ...filters, country, trialType }),
+    [filters, country, trialType],
+  );
+
+  const baseline = useMemo(
+    () => baselineFilters(patientCountry, initialFilters),
+    [patientCountry, initialFilters],
+  );
+  const activeFilterCount = countActiveFilters(effectiveFilters, baseline);
+
+  const debouncedTitle = useDebounced(filters.searchTitle, 400, !typing);
+  const debouncedTreatment = useDebounced(filters.searchTreatment, 400, !typing);
+  const debouncedSponsor = useDebounced(filters.sponsor, 400, !typing);
+  const debouncedDistance = useDebounced(filters.distance, 400, !typing);
+  const debouncedDistanceUnits = useDebounced(filters.distanceUnits, 400, !typing);
+  // Shorter than the 400ms the text boxes take: this is one keypress per
+  // option, not a word being typed.
+  const debouncedSort = useDebounced(sort, 250, !sortTyping);
+  // Ownership is per patient: what the previous one had saved is not evidence
+  // about this one. Kept in step with `stateKey` — the same key the saved-set
+  // load is keyed on, so the clear lands before that patient's answer does.
+  // (The reader's session FILTERS are deliberately kept across the switch; it
+  // is the claim about who owns them that does not carry over.)
+  const lastIdentity = useRef(stateIdentity);
+  useEffect(() => {
+    // The weights are the exception when the PATIENT changes, and for the
+    // same reason the session filters are kept: they are the reader's, not
+    // the patient's. Cleared there, they stayed live on the wire and on the
+    // trigger while quietly ceasing to be owned — so the next Reset dropped
+    // them from the page and wrote nothing back, which is exactly the
+    // silent change this control is not allowed to make.
+    //
+    // They are NOT the exception when the READER changes, and that is the
+    // whole difference. Retained across an account switch they stay owned by
+    // somebody who is no longer here: measured, user 1 sets a weight, the
+    // host switches account, and user 2's first keystroke sends user 1's
+    // four weights into user 2's row alongside their own filter.
+    //
+    // This is a RETENTION rule, not a key, which is why an enumeration of
+    // keys did not find it. `stateKey` cannot answer it either — the
+    // identity is inside it now, so "the key moved" no longer says which
+    // half moved.
+    const readerChanged = lastIdentity.current !== stateIdentity;
+    lastIdentity.current = stateIdentity;
+    ownedFields.current = readerChanged
+      ? new Set()
+      : new Set(
+          WEIGHT_FIELDS.map(({ key }) => key).filter((key) =>
+            ownedFields.current.has(key),
+          ),
+        );
+  }, [stateKey, stateIdentity]);
+  // Per READ, not per patient. A read that fails or is cancelled never calls
+  // back, so without this its veto outlives it — and the next read, from a
+  // store the host swapped in for the same patient, would find fields marked
+  // as overruled that nobody touched while IT was in flight.
+  useEffect(() => {
+    overruled.current = { fields: new Set(), all: false };
+  }, [savedFilters.epoch]);
+
+  // NOTE on switching patients in place: the reader's session filters are
+  // deliberately KEPT, and only the trial-type ownership is re-decided (see
+  // `setTrialTypeOwner` below and "a trial type belongs to the patient it was
+  // chosen for"). Review flagged the saved-set overlay as leaking filters from
+  // one patient to the next; resetting to the seed instead breaks that tested
+  // decision. The filters belong to the reader's search, not to the patient —
+  // what belongs to the patient is the SAVED set, and the overlay applies the
+  // new patient's own saved keys over the top.
+
+  const setFavorite = useSetTrialState(state, "favorites", stateKey);
+  const setRegistered = useSetTrialState(state, "registered", stateKey);
+
+  // What each trial's writes are doing, remembered here rather than read
+  // off the mutation.
+  //
+  // One `useMutation` stands in for a per-trial operation, and it answers
+  // only for the LAST one submitted. Both of its flags were wrong for the
+  // same reason:
+  //
+  //   - `isError` answers "did the last write fail", not "did the write for
+  //     THIS trial fail". Filtering by `variables.trialId` addresses the
+  //     message to the right trial but does not make it durable: a rejection
+  //     that lands after the reader has moved on has no trial on screen to
+  //     belong to, and the next click on any trial discards it. Both cases
+  //     end with a patient who was shown "Saving…" and never told otherwise.
+  //
+  //   - `isPending` with the same filter goes FALSE for trial A as soon as a
+  //     write for trial B is submitted, because `variables` is B's. Reopen A
+  //     and its button is live again, with A's PATCH still on the wire —
+  //     the two-writes-in-flight race the guard exists to prevent.
+  //
+  // And it belongs to a PATIENT as much as to a trial. A host can swap
+  // `personId` or the inline payload at any moment, including while a write
+  // is on the wire; unkeyed, the previous patient's failure became this
+  // one's error message, and a trial id both have in common stayed busy.
+  //
+  // Two mechanisms, and they are not the same one twice: the record is
+  // DROPPED when the patient changes, and a callback that arrives after the
+  // change finds a key that no longer matches and writes nothing. Neither
+  // covers the other's case.
+  const [writes, setWrites] = useState<
+    { key: string } & Record<StateKind, WriteState>
+  >(() => ({
+    key: stateKey,
+    favorites: { pending: [], failed: [] },
+    registered: { pending: [], failed: [] },
+  }));
+  // Adjusted during render, like the tab fallback above, so the messages on
+  // screen belong to the patient on screen. An effect would paint one frame
+  // of the previous patient's failures first.
+  if (writes.key !== stateKey) {
+    setWrites({
+      key: stateKey,
+      favorites: { pending: [], failed: [] },
+      registered: { pending: [], failed: [] },
+    });
+  }
+  const mark = (
+    key: string,
+    kind: StateKind,
+    field: keyof WriteState,
+    trialId: string,
+    on: boolean,
+  ) =>
+    setWrites((prev) => {
+      if (prev.key !== key) return prev;
+      const list = prev[kind][field];
+      if (list.includes(trialId) === on) return prev;
+      return {
+        ...prev,
+        [kind]: {
+          ...prev[kind],
+          [field]: on ? [...list, trialId] : list.filter((id) => id !== trialId),
+        },
+      };
+    });
+  const write = (
+    kind: StateKind,
+    mutation: typeof setFavorite,
+    trialId: string,
+    on: boolean,
+  ) => {
+    if (writes[kind].pending.includes(trialId)) return;
+    const key = stateKey;
+    mark(key, kind, "pending", trialId, true);
+    mutation.mutate(
+      { trialId, on },
+      {
+        onError: () => mark(key, kind, "failed", trialId, true),
+        onSuccess: () => mark(key, kind, "failed", trialId, false),
+        onSettled: () => mark(key, kind, "pending", trialId, false),
+      },
+    );
+  };
+
+  const stateCounts = {
+    favorites: favorites.data?.length,
+    registered: registered.data?.length,
+  };
+
+  // Which ids narrow the list, if the active tab is one of the state tabs.
+  //
+  // `undefined` while the ids are still loading — NOT `[]`, which the server
+  // reads as "none of them" and would answer with an empty list a moment
+  // before the real one arrives. The query waits instead.
+  const stateTab = activeTabDef.needsState;
+  const stateIdsQuery = stateTab === "registered" ? registered : favorites;
+  const savedIds = stateTab ? (stateIdsQuery.data as string[] | undefined) : undefined;
+  // The server refuses a list past its cap, so sending one means the tab
+  // simply never loads while its badge cheerfully reports the count. Say
+  // what happened instead — the plan called for an explicit degradation
+  // here and this is it.
+  const tooManySavedIds = savedIds != null && savedIds.length > MAX_TRIAL_IDS;
+  const trialIds = tooManySavedIds ? undefined : savedIds;
+  // What a set of counts is ABOUT: this patient, and this tab.
+  //
+  // Coarser than the query key on purpose. A sort or a page turn does not
+  // change what the counts describe, and blanking the bar through every
+  // refetch would trade one flicker for a worse one — the rows stay up
+  // through those windows too, dimmed. The filters are left out on the same
+  // terms, and that one IS a real difference rather than a no-op: a filter
+  // change does change `tabCounts`, so the badge holds the previous
+  // response's number until the new answer lands, exactly as the rows do.
+  // What it does NOT leave out is the tab: `itemsTotalCount` belongs to the
+  // tab that asked, so a deep-linked Fully-matched response painted the
+  // corpus badge with the eligible-only total on the way back.
+  //
+  // Through `hashKey`, the function React Query hashes the query key with,
+  // and not `JSON.stringify`: that one is sensitive to the ORDER of an
+  // object's keys and `hashKey` sorts them. A host handing us the same
+  // `patientInfo` spelled `{ref, disease}` instead of `{disease, ref}` gets
+  // the same cache entry — so nothing refetches — and would have got a
+  // different scope here, which never then agrees with the stored one. The
+  // bar goes blank and stays blank, with the rows still on screen. Measured
+  // before this line: no badge at 100ms, 500ms, 1s, 2s, and recovery only
+  // when the reader changes the sort.
+  //
+  // `hashKey` and not the host's client, which is the other way to spell
+  // this (`queryClient.defaultQueryOptions({ queryKey }).queryHash` follows
+  // a custom `queryKeyHashFn`). Deliberate: a host installing a COARSER
+  // hash has a cache that answers one patient with another's response, and
+  // a scope derived from it would agree and paint those counts. Computed
+  // here it disagrees instead, and the bar goes quiet. Blank under a broken
+  // cache is the right way round; the whole point of this file is that a
+  // wrong number costs more than a missing one.
+  //
+  // The saved ids are deliberately NOT in here: a narrowed response is
+  // refused outright below, so their contents could do no work — and it is
+  // 500 ids through a hash on every render to reach the same answer.
+  const countScope = hashKey([personId ?? null, patientInfo ?? null, activeTab]);
+  // `isPending`, not `data === undefined`: a rejected fetch also has no
+  // data, and treating that as "still loading" left the tab on
+  // "Loading trials…" for ever, with the trials query disabled so even its
+  // error branch could never speak.
+  const waitingForIds = stateTab != null && stateIdsQuery.isPending;
+  // `data === undefined` too: a failed REFETCH keeps the ids it had, and
+  // narrowing by slightly stale bookmarks beats blanking the tab and saying
+  // it could not be loaded when it could.
+  const idsFailed =
+    stateTab != null && stateIdsQuery.isError && stateIdsQuery.data === undefined;
+  // Mutually exclusive by construction: a query that has rejected is no
+  // longer pending. Guarding the loading line with `!idsFailed` as well
+  // would be a second mechanism for the same thing, and would make the
+  // first untestable — which is how it was written the first time.
+  const queryFilters = useMemo(
+    () => ({
+      ...effectiveFilters,
+      searchTitle: debouncedTitle,
+      searchTreatment: debouncedTreatment,
+      sponsor: debouncedSponsor,
+      distance: debouncedDistance,
+      distanceUnits: debouncedDistanceUnits,
+      type: activeTabDef.param,
+      sort: debouncedSort as FilterState["sort"],
+      // A weight sitting at the server's own default says nothing, and the
+      // wire already omits it. Left in here it would still move the key:
+      // opening the dialog and pressing Save unchanged wrote 25s over
+      // absences, which is a different FilterState with identical params —
+      // a second full matcher run, and the reader thrown back to page 1.
+      ...atDefaultsDropped(effectiveFilters),
+    }),
+    [
+      effectiveFilters,
+      debouncedTitle,
+      debouncedTreatment,
+      debouncedSponsor,
+      debouncedDistance,
+      debouncedDistanceUnits,
+      activeTabDef.param,
+      debouncedSort,
+    ],
+  );
+
+  // What a COUNT is true for: this patient and these filters, minus the
+  // three things that narrow or order a request without changing how many
+  // trials match — the tab's own `type`, the saved ids a state tab sends,
+  // and the sort. A different question from `countScope`, which asks whether
+  // the response in hand belongs to the view on screen.
+  const { type: _tabNotInCorpus, sort: _orderNotInCorpus, ...corpusFilters } =
+    queryFilters;
+  const corpusKey = hashKey([personId ?? null, patientInfo ?? null, corpusFilters]);
+
+  const query = useTrials({
+    apiClient,
+    patientInfo,
+    personId,
+    filters: queryFilters,
+    page,
+    limit: PAGE_SIZE,
+    trialIds,
+    scope: countScope,
+    corpus: corpusKey,
+    // `!idsFailed` too: without it a failed Favorites read still fires an
+    // ordinary unfiltered search behind the error message — rows nobody
+    // shows, and a full matcher run to produce them.
+    enabled:
+      !waitingForIds &&
+      !tooManySavedIds &&
+      !idsFailed &&
+      // Held until the saved set is in. Otherwise the opening search goes
+      // out with the defaults and a second one follows once it lands — two
+      // matcher runs, and a flash of unfiltered results for a reader who
+      // had narrowed them. A failed read releases it too, so an unreachable
+      // PROMOP costs the defaults, not the list.
+      !savedFilters.pending,
+  });
+
+  // While the ids are loading, the rows on screen belong to the previous
+  // tab. React Query is serving them from its cache — `trialIds` is still
+  // `undefined`, which is the *default* tab's query key — so this is not a
+  // request that can be prevented, it is a render that must not happen:
+  // showing the eligible list under the Favorites heading says those trials
+  // are bookmarked.
+  // On a state tab, rows are shown only when they are THIS tab's rows.
+  //
+  // `waitingForIds` alone closed just the first half of the window: once
+  // the ids arrive it goes false in the same render that changes the query
+  // key, and `keepPreviousData` then hands back the previous key's rows —
+  // so the eligible list was painted under the Favorites heading, which is
+  // precisely the claim it was written to prevent. Worse on a second visit,
+  // where the ids are already cached and the flag is false from the start.
+  // `isPlaceholderData` alone, and only while the query can still resolve.
+  //
+  // Two corrections live in this line. An earlier version also tested
+  // `isFetching`, added while the leak test was failing for an unrelated
+  // reason (the test's fake server ignored the id filter, so the right and
+  // wrong rows were identical). Once that was fixed the clause turned out
+  // to be unnecessary — nothing could be made to leak without it — and it
+  // is not free: it blanked the list on every background refetch, which
+  // includes the window-focus one real hosts have on and the one that
+  // follows every bookmark.
+  //
+  // And the two states that disable the query with nothing of their own to
+  // resolve them are excluded, because a disabled query still resolves
+  // `keepPreviousData`: with no cached data under the fallback key,
+  // `isPlaceholderData` stays true for ever and nothing will ever fetch it,
+  // so "Loading trials…" sat next to the error message permanently. (Both
+  // do clear eventually — a refetch succeeds, a bookmark is removed — but
+  // only on something the READER does.) `savedFilters.pending` disables it
+  // too and is not excluded, because a timer resolves it either way; it is
+  // in `staleResponse` below instead.
+  const showingOtherTabsRows =
+    stateTab != null && !idsFailed && !tooManySavedIds && query.isPlaceholderData;
+  // `savedFilters.pending` belongs here too, not only in `enabled`.
+  //
+  // Disabling a query does not clear what it is holding: with a shared
+  // QueryClient, or across a patient switch with placeholder data, the
+  // previous rows stay on screen under "Loading trials…" — the unfiltered
+  // flash the gate exists to prevent, arriving from the cache instead of
+  // from the network.
+  //
+  // Everything painted FROM that response goes behind the same flag, which
+  // is the part that took two goes to get right: the rows, the total, the
+  // tab counts and the pager. A pager left live is not merely wrong-looking
+  // — it is four clickable pages belonging to the previous patient, and
+  // clicking one sends the NEXT patient's first search as `page=3`.
+  // Written once: three places asked this question and each spelled it out
+  // for itself, which is how the loading line came to disagree with the
+  // message underneath it.
+  const hasPatient = patientInfo != null || personId != null;
+  // Two questions, not one.
+  //
+  // `staleResponse` — what is in hand describes a different view, or no
+  // view at all. Everything painted FROM it goes behind this: the rows, the
+  // total, the tab counts and the pager.
+  //
+  // `staleRows` adds the placeholder window on a state tab, where the rows
+  // in hand belong to another tab.
+  //
+  // The PAGER needs a third answer, and neither flag is it. Hidden through
+  // the whole placeholder window, it unmounts the button under the
+  // reader's cursor on an ordinary page turn — a keyboard user is dropped
+  // to `<body>` on every page they turn. Shown through it, a tab switch or
+  // a filter change paints the PREVIOUS view's page count, and those
+  // numbers are clickable: page 3 of a one-page view is a 404 from DRF,
+  // recovered only afterwards. What distinguishes the two is whether the
+  // count in hand was fetched for the view now on screen — see
+  // `countIsForThisView` below.
+  const staleResponse =
+    savedFilters.pending || waitingForIds || idsFailed || tooManySavedIds;
+  const staleRows = staleResponse || showingOtherTabsRows;
+  const trials = staleRows ? [] : query.data?.results ?? [];
+  // Both questions are asked of the RESPONSE, not of the state around it.
+  // Two ways the two come apart, both measured:
+  //
+  //   - leave Favorites, change the sort, come back: `keepPreviousData`
+  //     still holds the narrowed response, and the corpus badge was painted
+  //     from counts taken over the saved ids — "Eligible, 1
+  //     trial" against a corpus of 19.
+  //   - switch patient with the new request in flight: the badge held the
+  //     PREVIOUS patient's 19 for the whole matcher round trip.
+  //
+  // Neither is reachable by asking which tab is active or which patient is
+  // mounted, because by then both have already changed.
+  const countsDescribeThisView = query.data?.scope === countScope;
+  const totalCount =
+    staleResponse || query.data?.narrowed || !countsDescribeThisView
+      ? null
+      : query.data?.itemsTotalCount ?? null;
+  const tabCounts =
+    staleResponse || query.data?.narrowed || !countsDescribeThisView
+      ? undefined
+      : query.data?.tabCounts;
+
+  // The last counts that described this corpus, kept for the tabs that
+  // cannot ask for them. A state tab's request comes back narrowed to the
+  // saved ids, so its counts are refused above — and the bar then empties
+  // entirely, which is right when there is nothing true to show and wasteful
+  // when there is. Switching tabs does not change the corpus.
+  //
+  // Remembered against the corpus the RESPONSE was fetched for, not the one
+  // on screen. The two come apart for a whole round trip: `keepPreviousData`
+  // holds the previous filters' response while the new ones are in flight,
+  // and `countScope` lets it through on purpose — the rows it carries are
+  // the rows being shown. Painting its count beside those rows is honest;
+  // FILING it under the new filters is not, and it would then outlive the
+  // window, on a state tab, as a number for a corpus nobody counted.
+  //
+  // One slot, so a reader who filters and comes back to the previous set
+  // gets a blank until the answer lands rather than the number they had a
+  // moment ago. Keeping more would mean keeping them per filter set, which
+  // is unbounded; what this is for is the tab switch, which does not change
+  // the corpus at all.
+  const rememberedCounts = useRef<{ key: string; counts: TabCounts } | null>(null);
+  if (
+    tabCounts &&
+    query.data?.corpus === corpusKey &&
+    // Both fields, because this is unvalidated wire data and the corpus
+    // count is their SUM. `barCounts` refuses to paint the NaN that a
+    // missing one makes, but stored it would poison this slot and blank
+    // every state tab for this corpus — a bad response outliving itself.
+    Number.isFinite(tabCounts.eligible) &&
+    Number.isFinite(tabCounts.potential)
+  ) {
+    rememberedCounts.current = { key: corpusKey, counts: tabCounts };
+  }
+  const countsForBar =
+    tabCounts ??
+    (rememberedCounts.current?.key === corpusKey
+      ? rememberedCounts.current.counts
+      : undefined);
+
+  // Reset to the first page whenever the *effective* query changes — tab,
+  // sort, or a filter that has finished debouncing. Adjusting state during
+  // render rather than in an effect (the pattern React documents for derived
+  // state) so the reset is part of the same render that changes the filter:
+  // an effect would let one request go out for page N of the new filter
+  // first, and a request for a page past the new end is a 404 from DRF's
+  // paginator, not an empty list.
+  //
+  // Keyed on the debounced filters for the same reason: resetting the page
+  // the instant a key is pressed would fire a request for page 1 of the
+  // *previous* filter, which the user sees as a flash of unfiltered results.
+  // The tab and the ids belong in this signature, not just the filters.
+  // `queryFilters.type` is `undefined` for the default tab AND for both
+  // state tabs — `JSON.stringify` drops undefined keys, so all three
+  // hashed identically and switching between them never reset the page.
+  // A reader on page 2 then asked for page 2 of their bookmarks.
+  // `stateKey` is in here because the patient is part of "the view": React
+  // Query's own key carries it, so a switch between two patients who share
+  // a country and a trial type leaves everything else identical — and the
+  // pager, which asks this question to decide whether the count in hand is
+  // this view's, would have painted the previous patient's page count.
+  // One spelling, two readers. Written twice, the export's copy stops
+  // tracking the day a fifth dimension joins the list's — which is the bug
+  // the comment above is about, reopened from the other end.
+  const viewKeyFor = (forFilters: FilterState) =>
+    JSON.stringify([stateKey, forFilters, activeTab, trialIds ?? null]);
+  const queryKey = viewKeyFor(queryFilters);
+
+  // The export is a file, not a view: no cache, no retry, and a status the
+  // reader can see. React Query would serve the same bytes back on a second
+  // click, which for a download means the reader gets a stale file.
+  const [exportState, setExportState] = useState<
+    "idle" | "working" | "failed" | "incomplete"
+  >("idle");
+  // Which view is on screen RIGHT NOW, for an export that settles later. A
+  // reader who exports Favorites and then switches tabs must not be handed the
+  // previous tab's rows, nor shown a failure under a view they never exported.
+  // Written during render, so by the time an in-flight export resolves it
+  // already describes where the reader is.
+  const viewKeyRef = useRef<string>("");
+  // On a state tab, `trialIds` is `undefined` in three different ways — the
+  // saved ids are still loading, the read failed, or there are more than the
+  // server will filter by. The list already refuses to search in all three.
+  // The export has to refuse too: sending no ids reaches the same endpoint
+  // with the same filters and returns the whole matched corpus, delivered as
+  // a file the tab has labelled "Favorites". That is the wrong-set answer the
+  // server's own `type=favorites` refusal exists to prevent, arrived at from
+  // the other side.
+  // Two ways the export cannot answer. A state tab whose ids are unavailable
+  // is the first. The second is no patient at all — a supported mode for the
+  // list, but the remote never sends `?type=all`, so every export in it is a
+  // guaranteed 400 surfaced as "please try again", which is advice that cannot
+  // work.
+  const exportUnavailable =
+    capabilities?.export === false ||
+    (stateTab != null && trialIds === undefined) ||
+    (!hasInlinePatient(patientInfo) && personId == null);
+  const exportUnavailableReason =
+    capabilities?.export === false
+      ? "This view doesn't offer exports."
+      : stateTab != null && trialIds === undefined
+        ? "Your saved trials aren't available right now, so this tab can't be exported."
+        : "An export needs a patient, and this view has none.";
+  // Whether the list is still mounted. Work started here that settles on its
+  // own time (an export, the wizard's read and write deadline) must not reach
+  // React after unmount: after a test's environment is torn down, a setState
+  // makes React DOM read `window.event` and throw (#728).
+  const mountedRef = useRef(true);
+  const wizardDeadlines = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    mountedRef.current = true;
+    const deadlines = wizardDeadlines.current;
+    return () => {
+      mountedRef.current = false;
+      for (const deadline of deadlines) clearTimeout(deadline);
+      deadlines.clear();
+    };
+  }, []);
+
+  const handleExport = async () => {
+    if (exportUnavailable) return;
+    setExportState("working");
+    const issuedFor = exportViewKey;
+    try {
+      const { blob, filename } = await exportTrials({
+        apiClient,
+        patientInfo,
+        personId,
+        // What the reader is looking at, tab included — the file has to be
+        // the answer to the question on screen, not to an unnarrowed one.
+        // The narrowing comes from the list, the order from the control:
+        // inside the 250ms hold those disagree, and the segment is the half
+        // the reader can see. See `exportFilters`.
+        filters: exportFilters,
+        trialIds,
+      });
+      // The view moved while this was in flight. Dropping it costs the reader
+      // a click; handing it over downloads one tab's rows while the screen
+      // shows another's, under a filename that says neither.
+      // And not at all once the page is gone: that would start a download for
+      // a reader who has left, and reach React after a test's teardown (#728).
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
+      const complete = await exportIsComplete(blob);
+      // Checked again on the far side of that await: scanning a large export
+      // takes long enough for the reader to change tabs while it runs, and the
+      // file would then be handed over under a view it does not describe.
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
+      if (!complete) {
+        // The server said so on the last line, because its 200 was spent
+        // before the first row. Saving it anyway hands over a file that looks
+        // complete and is not — and this one goes to an appointment.
+        setExportState("incomplete");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      // Attached before the click: Firefox has historically ignored a
+      // download click on an anchor that is not in the document.
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      // Revoked on a timer, not immediately. Some browsers — Safari the one
+      // that bites — start the download after the click handler has returned,
+      // and a URL revoked by then yields an empty or failed download. Not
+      // never, either: the blob is held for the life of the document
+      // otherwise, and an export of a few thousand trials is not small.
+      setTimeout(() => URL.revokeObjectURL(url), EXPORT_URL_LIFETIME_MS);
+      setExportState("idle");
+    } catch {
+      if (!mountedRef.current || viewKeyRef.current !== issuedFor) return;
+      setExportState("failed");
+    }
+  };
+
+  // WHO the rows are about is carried by `stateKey`, inside the key both of
+  // these are built from: a host switching patients with the filters
+  // untouched would otherwise leave the key identical, and the previous
+  // patient's file would pass both staleness checks and be handed over under
+  // the new patient's name — the wrong rows, about the wrong person.
+  //
+  // The export asks for the order the CONTROL shows, not the one the list has
+  // caught up to: an arrow-key change is held back 250ms for the list and not
+  // at all for the segment, so for that quarter second they disagree, and a
+  // file the reader asks for then should answer the order they can see.
+  const exportFilters = { ...queryFilters, sort: sort as FilterState["sort"] };
+  // The order is the one dimension deliberately LEFT OUT of the export's key.
+  //
+  // Keyed on it, an export dies at both edges of that 250ms: held back, the
+  // key moves when the hold lands, and taken from the control, it moves on
+  // the keypress while a file is already on the wire. Either way the arriving
+  // file is read as belonging to a view the reader has left, so it is dropped
+  // and the button returns to idle — a click, a wait, and nothing said. The
+  // keypress version is worse: idle again means enabled again, so a second
+  // full-corpus export can go out beside the first.
+  //
+  // Leaving it out is sound because the sort cannot change WHICH trials are
+  // in the file: an export is the whole matched set, never the page, so the
+  // order moves rows around inside the CSV and takes none out. Everything
+  // that does change the membership — tab, patient, filters, the saved-id
+  // set — is still in the key and still drops a file that has stopped
+  // describing the screen.
+  const { sort: _orderNotInKey, ...exportKeyFilters } = queryFilters;
+  const exportViewKey = viewKeyFor(exportKeyFilters);
+  viewKeyRef.current = exportViewKey;
+  // The failure belonged to the view it happened in. Left standing, it sits
+  // under a list the reader has since changed and reads as a fresh failure of
+  // what they are looking at now.
+  //
+  // The order is the exception, and deliberately: it is not in this key, so
+  // re-sorting leaves the message up. It still describes the same rows — the
+  // sort reorders the file, it does not change what is in it — and clearing
+  // it here would mean keying on the order again, which is what drops the
+  // reader's file mid-flight.
+  useEffect(() => {
+    setExportState("idle");
+  }, [exportViewKey]);
+
+  // Which view the count in hand was fetched for. `queryKey` excludes the
+  // page number by construction (it is what resets the page when anything
+  // else changes), so "the same key" means "the same view, a different
+  // page" — exactly the window where the previous count is still the right
+  // one. Recorded in an effect rather than during render; the fresh-data
+  // path does not consult it.
+  const countKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (!query.isPlaceholderData) countKey.current = queryKey;
+  }, [query.isPlaceholderData, queryKey]);
+  // `!query.isPlaceholderData ||` first, and not as a shortcut: the ref is
+  // written exactly when that is false and read exactly when it is true.
+  // Those two being disjoint is what makes reading a ref during render
+  // safe here — the render that reads it never needs a write that has not
+  // happened yet. Drop the short-circuit and the fresh-data path starts
+  // consulting a ref its own effect has not written yet; the pager would
+  // blank for that frame, and only a second render (React Query settling
+  // `fetchStatus`) would repaint it, which is why the suite cannot see the
+  // difference.
+  const countIsForThisView =
+    !query.isPlaceholderData || countKey.current === queryKey;
+  // The server's own page total (`count`), not `ceil(items / PAGE_SIZE)`:
+  // the two agree only while the client's page size matches what the
+  // server actually applied, and the server is the one that decides.
+  const pageCount =
+    staleResponse || !countIsForThisView ? 0 : query.data?.count ?? 0;
+  // Consumed by the first render after a saved set is delivered. If that
+  // render did not change the key, the token is spent and the next key change
+  // is a reader action again — see the declaration for why this is a token
+  // and not a boolean.
+  const savedApplicationIsNew = savedApplyToken !== seenSavedApplyToken;
+  if (savedApplicationIsNew) setSeenSavedApplyToken(savedApplyToken);
+
+  const [lastQueryKey, setLastQueryKey] = useState(queryKey);
+  currentViewKey.current = queryKey;
+  if (lastQueryKey !== queryKey) {
+    setLastQueryKey(queryKey);
+    if (savedApplicationIsNew) {
+      // The saved set landing is not the reader changing a filter. Resetting
+      // here would take a controlled host from `?page=3` to 1 on load, before
+      // they touched anything.
+    } else {
+      // Force this render's request to page 1 and tell the host afterwards
+      // (the effect below). Calling the host's setter from render would be
+      // the React error this pattern exists to avoid.
+      resetHandledForView.current = queryKey;
+      resetToListStart();
+    }
+  }
+
+  // A page past the end is a 404 (`NotFound` from PageNumberPagination), and
+  // `keepPreviousData` leaves the stale page — and its stale pager — on
+  // screen, so every further click reproduces it. Recover to a page that
+  // exists. Reachable when the host restores a `?page=` from its own URL, or
+  // when a click lands during the window where the pager is still showing
+  // the previous response's page count.
+  const isPageNotFound =
+    query.isError &&
+    (query.error as { response?: { status?: number } })?.response?.status === 404;
+  useEffect(() => {
+    if (isPageNotFound && page !== 1) resetToListStart();
+  }, [isPageNotFound, page, resetToListStart]);
+
+  const handleTabChange = (next: TabValue) => setActiveTab(next);
+  // Arrows choose as they move, so walking from "Suitability" to "Distance"
+  // passes through "Matching" — and every stop on the way is a list request
+  // and a full re-rank under the reader. The keyboard's run is held back
+  // like a typed filter; a click, which chooses once, is not.
+  const handleSortChange = (next: string, source: SegmentSource = "pointer") => {
+    setSortTyping(source === "keyboard");
+    setSort(next);
+  };
+  const handleFiltersChange = (next: FilterState) => {
+    // The reader picking a type claims it for the patient on screen. The
+    // panel is fed `effectiveFilters`, so an unrelated edit hands back the
+    // masked value unchanged and this does not fire.
+    if (next.trialType !== effectiveFilters.trialType) {
+      setTrialTypeOwner(patientIdentity);
+    }
+    setTyped({ epoch: savedFilters.epoch, yes: true });
+    // Exactly what moved, for the read that may be in flight behind this.
+    //
+    // Against `effectiveFilters`, which is what the panel was HANDED, not the
+    // raw state behind it: a stale `trialType` is masked on its way in, so
+    // comparing with the raw value reads the mask itself as an edit — and
+    // then suppresses the new patient's saved type while claiming the old
+    // patient's for them.
+    for (const field of new Set([...Object.keys(next), ...Object.keys(effectiveFilters)])) {
+      const key = field as keyof FilterState;
+      if (!sameValue(next[key], effectiveFilters[key])) overruled.current.fields.add(field);
+    }
+    setFilters(next);
+    // Only what the reader changed. `next` carries the host's mount-time
+    // scope too, and saving that would make one mount's scope their standing
+    // preference — a later mount with a different scope would lose to it.
+    const owned = userOwnedFilters(next, baseline, ownedFields.current);
+    for (const field of Object.keys(owned)) ownedFields.current.add(field);
+    savedFilters.persist(withWeights(owned, next, ownedFields.current));
+  };
+  // Reset goes back to the baseline, not to `{}`: clearing the seeded
+  // country would silently widen the search to every country in the
+  // registry, which is not what "reset" means to the person clicking it.
+  // The owner is deliberately NOT cleared here. Once a stale choice falls
+  // back to the baseline's type, clearing it changes nothing — the two
+  // produce the same value — and a mutation test confirmed the line was
+  // dead. It was load-bearing only under the earlier "mask to undefined"
+  // rule, which is gone.
+  const handleFiltersReset = () => {
+    // A button click is the canonical NON-keystroke: with this left set,
+    // the cleared panel sat over the narrowed rows for 400ms — an empty
+    // box, a badge reading no filters, and the old result set underneath.
+    setTyped({ epoch: savedFilters.epoch, yes: false });
+    overruled.current = { fields: new Set(), all: true };
+    // The weights come through. This button is "Reset filters", the badge
+    // beside it has deliberately never counted them, and the score is not a
+    // filter — so clearing it here would be a change the reader was not
+    // offered and cannot see coming.
+    const keptWeights = ownedWeights(filters, ownedFields.current);
+    setFilters({ ...baseline, ...keptWeights });
+    // Reset gives the PANEL fields back to the host, so nothing there is
+    // owned any more. The weights stay owned: they are still the reader's.
+    ownedFields.current = new Set(Object.keys(keptWeights));
+    // `reset`, not `persist(baseline)`: the row is meant to end up EMPTY, and
+    // writing the baseline would store the host's scope as the reader's
+    // standing preference instead. It also retires a save already on the
+    // wire, which would otherwise land afterwards and restore what was
+    // just cleared.
+    savedFilters.reset();
+    // Written back AFTER the reset, never merged into it: `reset` empties the
+    // row and retires whatever was queued, so a weight persisted before it
+    // would be cleared by the very call meant to keep the panel's fields out.
+    if (Object.keys(keptWeights).length) savedFilters.persist(keptWeights);
+  };
+
+  // The weights are not panel fields: the Filters badge does not count them
+  // and Reset does not clear them, because they change the ORDER of the list
+  // and the number on each card, never which trials are in it. So they are
+  // saved here rather than through `userOwnedFilters`, and all four go at
+  // once — the store merges, and a partial write would leave the reader with
+  // a pair of weights they never chose.
+  const handleWeightsChange = (weights: Record<WeightKey, number>) => {
+    const saved = weightsToSave(weights);
+    const next = { ...filters, ...saved };
+    setFilters(next);
+    for (const field of Object.keys(saved)) ownedFields.current.add(field);
+    // The panel's own fields travel with them. The writer's debounce REPLACES
+    // what is queued rather than merging it, so two savers writing disjoint
+    // halves inside one 400ms window lose one half each: weights saved and
+    // then a filter typed stored no weights at all, and a filter CLEARED and
+    // then weights saved dropped the tombstone, so the cleared filter came
+    // back on the next mount and narrowed the list again.
+    savedFilters.persist(
+      withWeights(
+        userOwnedFilters(next, baseline, ownedFields.current),
+        next,
+        ownedFields.current,
+      ),
+    );
+  };
+
+  // The weights wizard: offered once, to a reader who has never been asked.
+  //
+  // Gated on the host being able to REMEMBER the answer, not on it being able
+  // to store weights. A host with nowhere to record the offer would ask again
+  // every visit, which is worse than never asking — so the absence of
+  // `weightsWizard` is read as "this host does not do this", and nothing is
+  // shown.
+  //
+  // Held until the saved filters have arrived. Opening over a list that is
+  // still settling puts a modal in front of a reader who has not seen what it
+  // is about, and the answer would race the read that tells us whether they
+  // have already been asked.
+  const wizardStore = preferenceStore?.weightsWizard;
+  // WHOSE answer this is, and it is not the patient's. The flag lives in the
+  // row EXACT keys on the identity in the token, so "has this reader been
+  // offered the wizard" is a question about the account, not about who they
+  // are looking at. Keyed on the patient alone, a host that switches account
+  // while showing the same patient carried the previous account's answer
+  // over: theirs had reached `hide`, `shouldRead` therefore refused a second
+  // read, and the new reader was never offered the wizard at all — or worse,
+  // found the previous one's half-filled form still open.
+  //
+  // The patient stays in the subject as well. Two readers of one account can
+  // be looking at different patients, and the weights are per row.
+  //
+  // Same shape as the saved-filter key two hundred lines up, and found the
+  // same way: something keyed on the patient while the data it guards moved
+  // to the identity.
+
+  // The rules about whose answer this is, and when a read may be issued or
+  // believed, live in `weightsWizardState.ts` — written down once, after
+  // three review rounds had each closed a different spelling of the same one.
+  // What is left here is the wiring: when to fire an event, and what to draw.
+  const [wizardState, dispatchWizard] = useReducer(nextWizard, readerHandle, initialWizard);
+
+  /** The machine as of NOW, not as of this render.
+   *
+   *  `useReducer` hands back the state of the last COMMITTED render, which
+   *  is the wrong clock for a click handler: two gestures in one task both
+   *  read the pre-click value, and both think they are the first. That gap
+   *  is what a caller-side "a write is in flight" ref was invented to paper
+   *  over, and #599 is the three ways the paper tore.
+   *
+   *  So the reducer is run here as well, synchronously, and the answer is
+   *  kept in a ref. Same pure function, same events, so the two cannot
+   *  disagree — and the ref is re-synced from the committed state on every
+   *  render, which makes a render React abandoned harmless.
+   *
+   *  An effect was tried first and is the wrong instrument: it moves the
+   *  write to the next COMMIT, and anything that changes the patient or
+   *  unmounts in the same task as the click then means the write never
+   *  happens at all. Measured, against the commit before it: the reader
+   *  answered, nothing was recorded, and they were asked again. */
+  const wizardRef = useRef(wizardState);
+  wizardRef.current = wizardState;
+
+  /** Raise an event, and say whether the machine took it.
+   *
+   *  The return value is the only permission anything needs. Every dispatch
+   *  goes through here so the mirror is never behind. */
+  const send = (event: WizardEvent): boolean => {
+    // Nothing after unmount. Reads and writes started here settle on their
+    // own time (`wasOffered`, the 8-second write deadline), and a dispatch
+    // after the tree is gone makes React DOM read `window.event`: after a
+    // test's environment is torn down that is an uncaught error (#728).
+    if (!mountedRef.current) return false;
+    const before = wizardRef.current;
+    const after = nextWizard(before, event);
+    wizardRef.current = after;
+    dispatchWizard(event);
+    return after !== before;
+  };
+
+  // Re-raised DURING the render that changes the patient, like `typed` above.
+  // An effect would be a render late, and the new patient's read would then
+  // land against a state still naming the old one and be thrown away — with
+  // no second read allowed, so they would never be asked at all.
+  if (wizardState.patient !== readerHandle) {
+    send({ kind: "patient", patient: readerHandle });
+  }
+  // Read off the mirror from here down, so the rest of this render sees the
+  // patient event above rather than the state that preceded it.
+  const wizard = wizardRef.current;
+  // Both read off the model rather than recomputed: this render may still be
+  // holding the previous patient's state, one render before the line above
+  // takes effect, and `isOpen` says no for exactly that reason.
+  const wizardOpen = isOpen(wizard, readerHandle);
+  const wizardBusy = wizard.patient === readerHandle && wizard.at === "saving";
+
+  useEffect(() => {
+    if (!wizardStore || wizard.patient !== readerHandle) return;
+    // `shouldRead` owns the two reasons not to: an answer is already known,
+    // or a read is already out. The second is the one a state value cannot
+    // express — see the module.
+    // Asked of the MIRROR and answered by it. `shouldRead` on the
+    // render-captured state plus an unchecked dispatch was the old shape,
+    // and it claimed a protection it did not give: two runs of this effect
+    // inside one commit both read the same pre-dispatch value, so the mark
+    // the second was supposed to see was not there yet. `send` returning
+    // false IS that mark, so spend it.
+    if (!shouldRead(wizardRef.current, !savedFilters.pending)) return;
+    const patient = readerHandle;
+    if (!send({ kind: "reading", patient })) return;
+    // Every result is dispatched, none suppressed by a cleanup flag: the
+    // reducer decides whether a result still applies, which is the only place
+    // that can know. A failed read is treated as "already offered" — asking a
+    // question whose answer we have just failed to read is asking one we
+    // cannot record.
+    wizardStore
+      .wasOffered()
+      .then((offered) => send({ kind: "read", patient, offered }))
+      .catch(() => send({ kind: "readFailed", patient }));
+  }, [wizardStore, savedFilters.pending, readerHandle, wizard]);
+
+  // Where focus goes when the wizard closes. See the heading itself.
+  const listTitleRef = useRef<HTMLHeadingElement>(null);
+  const wizardWasOpen = useRef(false);
+  useEffect(() => {
+    if (wizardWasOpen.current && !wizardOpen) listTitleRef.current?.focus();
+    wizardWasOpen.current = wizardOpen;
+  }, [wizardOpen]);
+
+  /** Write the flag, and tell the filter writer its tag is stale.
+   *
+   *  The flag goes to the same ROW by a different route, so it moves
+   *  `updated_at` — the tag the writer quotes in `If-Match`. Left alone, every
+   *  save after the wizard costs a refusal and a re-read, and a second tab can
+   *  turn that retry into a dropped edit. See `PreferenceTransport.forget`. */
+  const recordOffer = () =>
+    Promise.resolve(wizardStore?.record())
+      .then(() => savedFilters.forget())
+      .catch(() => {});
+
+  /** Close when the write settles — or when it has had long enough.
+   *
+   *  Nothing in this package times a request out, and while the answer is on
+   *  the wire the dialog is sealed: every control disabled, Escape, Close and
+   *  the scrim all refusing, by design. That used to be because a dismissal
+   *  would otherwise record a decline over a ranking in flight; since #596 a
+   *  dismissal records nothing, and the seal stands for the reason that
+   *  outlived it — the dialog says "Saving your answer…" and must not vanish
+   *  while that is true, nor be closed out from under a settled write about
+   *  to close it itself. Those two together mean a request that
+   *  never settles leaves a modal the reader never opened, sitting over a
+   *  clinical trial list, with no way out but a reload.
+   *
+   *  So the seal has a deadline. The write is not cancelled — it may still
+   *  land, and the flag with it; the reader simply stops being held. If it
+   *  never lands they are asked once more, which is the cost this whole
+   *  feature is willing to pay everywhere else. */
+  const closeWhenSettled = (patient: string, visit: number, work: Promise<unknown>) => {
+    let shut = false;
+    const deadline = setTimeout(() => close(), WIZARD_WRITE_GRACE_MS);
+    wizardDeadlines.current.add(deadline);
+    const close = () => {
+      if (shut) return;
+      shut = true;
+      // Cleared rather than left to fire into a no-op: one dangling eight-
+      // second timer per answer is not a leak anybody would notice in a
+      // browser, and is one per test in a suite that runs thousands. An
+      // unmount clears whatever is still pending (#728).
+      clearTimeout(deadline);
+      wizardDeadlines.current.delete(deadline);
+      send({ kind: "written", patient, visit });
+    };
+    void work.then(close, close);
+  };
+
+  /** Close, Escape, the scrim. Takes the question off the screen and writes
+   *  NOTHING, so the next read asks again — see rule 6 in
+   *  `weightsWizardState.ts`.
+   *
+   *  Nothing of the answer machinery applies. No `closeWhenSettled`: that
+   *  holds the dialog open until a write settles, and there is no write. No
+   *  `savedFilters.forget()`: that is there because recording the flag moves
+   *  the row's `updated_at` out from under the filter writer's `If-Match`,
+   *  and a dismissal touches no row.
+   *
+   *  And no permission to ask for beyond `send`'s. A caller-side "a write is
+   *  in flight" ref used to be consulted here too, which made a dismissal
+   *  refuse while some OTHER patient's write was out — Escape, Close and the
+   *  scrim dead for up to `WIZARD_WRITE_GRACE_MS` against the whole point,
+   *  which is that a dismissal always takes the question off the screen.
+   *  #596 removed the reading and #599 removed the ref; the reducer refuses
+   *  `dismissed` from `saving` on its own, which is the only refusal that
+   *  was ever wanted.
+   *
+   *  Not `wizardOpen && !wizardBusy` either, which lingered here through a
+   *  draft: those are computed from the last committed render, so keeping
+   *  them would have left this the one handler still asking the question
+   *  the rest of this change removes — a comment and a guard saying
+   *  different things. The reducer refuses a `dismissed` that is not from
+   *  `show`, and for this patient, which is the same answer from the only
+   *  clock that is current. */
+  const dismissWizard = () => {
+    send({ kind: "dismissed", patient: readerHandle });
+  };
+
+  /** Say an answer, and write what it means — if the machine took it.
+   *
+   *  THE ONLY PERMISSION IS THE REDUCER'S, and `send` is how it is asked.
+   *  There used to be a second copy of "a write is in flight" here, one slot
+   *  for all patients, read together with a render-scoped `wizardBusy`; the
+   *  reducer's own refusal of a second `answer` was invisible to the write,
+   *  so the two could disagree. Three review rounds on #596 produced three
+   *  spellings of them doing so, each measured, each a different patient
+   *  losing something.
+   *
+   *  `answer` reaches `saving` from `show` and nowhere else, so a refusal
+   *  here is the machine saying this gesture is not the one — a second click
+   *  in the same task, or a click on a dialog already saving. Nothing else
+   *  needs asking, and the write happens in the same task as the click,
+   *  which is what keeps a patient switch arriving in that task from
+   *  swallowing it. */
+  const answerWizard = (work: () => Promise<unknown>) => {
+    const patient = readerHandle;
+    if (!send({ kind: "answer", patient })) return;
+    closeWhenSettled(patient, wizardRef.current.visit, work());
+  };
+
+  const declineWizard = () => {
+    // "Keep them equal" — an answer, and the only dismissal-shaped gesture
+    // that is one.
+    //
+    // A failure is not surfaced — there is nothing for the reader to do about
+    // it, and the cost is being asked once more.
+    answerWizard(() => recordOffer());
+  };
+
+  const finishWizard = (weights: FilterState) => {
+    answerWizard(() => {
+      // Weights first, through the same path the preferences dialog uses, so
+      // the store's belief of what is saved stays true. See
+      // `TrialPreferenceStore.weightsWizard`.
+      //
+      // Inside the payload, not beside the dispatch: it must happen when the
+      // write happens, and a second click that the reducer refuses must not
+      // send the weights again.
+      //
+      // UNPINNED, and said so: hoisting this back out passes every test.
+      // The only way to get a refused second answer carrying weights is two
+      // third-question clicks in one task, and the debounce in front of
+      // `savePreferences` collapses them either way, so the test that would
+      // catch it does not exist rather than has been forgotten. Measured.
+      handleWeightsChange(weights as Record<WeightKey, number>);
+      // The flag second, and ONLY if the weights landed. Both write the same
+      // row, but by different routes: the weights go through the queue, which
+      // refuses a write it cannot base on a fresh read, while the flag is
+      // unconditional and so cannot be refused. Recording regardless marks a
+      // reader as answered while their answer is nowhere, and there is no
+      // second offer to correct it with.
+      return savedFilters
+        .settle()
+        .then((saved) => (saved ? recordOffer() : undefined))
+        .catch(() => {});
+    });
+  };
+
+  // What anything keyed on these filters should see: the weights at their
+  // default say nothing, and saying it differently from `queryFilters` is
+  // what makes two keys for one question.
+  const detailFilters = useMemo(
+    () => ({ ...effectiveFilters, ...atDefaultsDropped(effectiveFilters) }),
+    [effectiveFilters],
+  );
+
+  // Opened on demand: the graph is a second full matcher run over the same
+  // search, so it is not something to have ready just in case.
+  const [graphOpen, setGraphOpen] = useState(false);
+  // A state tab whose saved ids are unavailable — loading, failed, or over the
+  // 500 cap — cannot be mapped. Disabling the QUERY is not enough: with no ids
+  // the key is the default tab's key, so react-query would either hand back
+  // the cached whole-corpus map under a tab that says "Favorites", or, with
+  // nothing cached, sit on "Building the map…" for ever. The control is what
+  // has to refuse.
+  const graphUnavailable =
+    capabilities?.graph === false || (stateTab != null && trialIds === undefined);
+  // Collapsing an open panel when the capability turns false must also take
+  // the toggle's state with it, or the button says expanded over nothing.
+  const graphShown = graphOpen && !graphUnavailable;
+  const graph = useTrialsGraph({
+    apiClient,
+    patientInfo,
+    personId,
+    filters: queryFilters,
+    // The same narrowing the list is under. Favorites and Registered narrow
+    // ONLY by `trial_ids` — their `type` is undefined — so without this the
+    // map drew the whole corpus under a tab that says "Favorites", and its
+    // cache key was identical to the default tab's, which meant it was served
+    // from that tab's cache without a request.
+    trialIds,
+    enabled: graphShown,
+  });
+  // Selecting a trial from the graph opens the same detail page the cards do.
+  // The detail page needs only the id, which is always available; the host's
+  // `onTrialSelect` wants the list ROW, which is not — the graph draws up to
+  // fifty trials and the list holds one page of ten, so off page one, or
+  // under a different sort, the row is simply not here. Opening anyway beats
+  // a click that silently does nothing; calling the host with a fabricated
+  // row would be worse than not calling it.
+  const handleSelectFromGraph = (trialId: number) => {
+    const row = (query.data?.results ?? []).find((t) => t.trialId === trialId);
+    setGraphOpen(false);
+    if (hostOwnsUrl) onTrialIdChange?.(trialId);
+    else setOwnTrial(trialId);
+    if (row) onTrialSelect?.(row);
+  };
+
+  // List or map, over the same page of trials. The map issues no request of
+  // its own: every row already carries its closest site, so a second fetch
+  // would be a second matcher run to learn what is in hand.
+  const [mapOpen, setMapOpen] = useState(false);
+
+  // Does the controls row have room for the view mode, every order and the
+  // three actions side by side? Measured, because this is a remote: the
+  // window is the host's, and the same 1280px window gives this list a 900px
+  // column in ht-phr and the full width in CB. Without a ResizeObserver
+  // (jsdom, an old browser) the answer stays "no", which is the layout that
+  // fits either way.
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  // The measurement is the state; whether it is wide enough is derived from
+  // it. Held the other way round — a boolean set by the observer — a change
+  // in how much room is NEEDED (an order the host asked for is a fourth
+  // segment) has no measurement to re-read and needs a second pass to
+  // re-measure, which paints the wrong layout for a frame first.
+  const [rowWidth, setRowWidth] = useState(0);
+  const wideThreshold = wideControlsRow(sortOptionsFor(sort).length);
+  const wideRow = rowWidth >= wideThreshold;
+  const wideRef = useRef(wideRow);
+  const thresholdRef = useRef(wideThreshold);
+  /** Set when the sort is about to move out from under the keyboard. */
+  const sortHadFocus = useRef(false);
+  useLayoutEffect(() => {
+    wideRef.current = wideRow;
+    thresholdRef.current = wideThreshold;
+  });
+
+  const applyWidth = useCallback((width: number) => {
+    // The sort is about to be rendered in the other slot, which is a
+    // different DOM node: React unmounts this one, and focus on it goes to
+    // <body>. A reader whose host collapsed a sidebar would find their next
+    // Tab starting from the top of the page.
+    if (width >= thresholdRef.current !== wideRef.current) {
+      const sortGroup = rowRef.current?.querySelector(".exact-seg--grow");
+      sortHadFocus.current = !!sortGroup && sortGroup.contains(document.activeElement);
+    }
+    // A drag on a window edge delivers a stream of widths; React drops the
+    // ones that do not change this.
+    setRowWidth(width);
+  }, []);
+
+  // A ref callback, not an effect on mount: opening a trial returns the detail
+  // page from this same component, so the row unmounts while the component
+  // does not. An effect with `[]` would keep watching the detached node — it
+  // reports 0x0, the row goes narrow, and coming back mounts a row nothing
+  // observes, leaving the wide layout dead for the rest of the session however
+  // wide the host's column is. React calls this with null on the way out.
+  const controlsRef = useCallback(
+    (row: HTMLDivElement | null) => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      rowRef.current = row;
+      if (!row || typeof ResizeObserver === "undefined") return;
+      // Observing the row is safe from feedback: its width comes from the list
+      // around it, and moving the sort between its rows does not change it.
+      const observer = new ResizeObserver(([entry]) => applyWidth(entry.contentRect.width));
+      observer.observe(row);
+      observerRef.current = observer;
+    },
+    [applyWidth],
+  );
+
+  // The chosen segment is the group's one tab stop, so it is the one that
+  // takes the focus back after the move.
+  useLayoutEffect(() => {
+    if (!sortHadFocus.current) return;
+    sortHadFocus.current = false;
+    // The move was decided when the width arrived, and this runs on a later
+    // commit: the observer is not a React event, so a reader can Tab or
+    // click in between — a host animating a sidebar delivers widths for a
+    // quarter of a second. Only focus that the unmount dropped is taken
+    // back, and an unmount leaves it on <body>.
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    rowRef.current
+      ?.querySelector<HTMLElement>('.exact-seg--grow [role="radio"][aria-checked="true"]')
+      ?.focus();
+  }, [wideRow]);
+  const handleSelectFromMap = (trial: TrialMatch) => {
+    setMapOpen(false);
+    handleSelect(trial);
+  };
+
   const handleSelect = (trial: TrialMatch) => {
-    setSelectedTrial(trial);
+    if (hostOwnsUrl) onTrialIdChange?.(trial.trialId);
+    else setOwnTrial(trial.trialId);
     onTrialSelect?.(trial);
+  };
+
+  // Kept in a ref so the patient-switch effect — far above, where the reset
+  // lives — can call the host
+  // without listing it as a dependency — a host that rebuilds the callback
+  // every render would otherwise re-run that effect on every render.
+  const closeRef = useRef<() => void>(() => {});
+  closeRef.current = () => {
+    if (hostOwnsUrl) onTrialIdChange?.(null);
+    else setOwnTrial(null);
+  };
+
+  const handleBack = () => {
+    // The host pushed the entry, so the host takes it back; calling
+    // `history.back()` as well would consume an entry nobody added and walk
+    // the reader off the page. Uncontrolled, going back is what CONSUMES
+    // the synthetic entry, and the popstate listener does the closing.
+    if (hostOwnsUrl) closeRef.current();
+    else window.history.back();
   };
 
   // When the detail view opens, push a synthetic history entry so the
   // browser ← back button returns to the trial list instead of navigating
   // to the previous host page. The popstate listener tears itself down
-  // when the detail closes (effect cleanup) or when the patient context
-  // resets (selectedTrial becomes null via the reset effect above).
+  // when the detail closes (effect cleanup) or when the patient changes and
+  // the reset clears the selection. Neither runs while the host owns the
+  // URL: there is no synthetic entry then, and nothing here to clear.
   useEffect(() => {
-    if (!selectedTrial) return;
-    window.history.pushState({ exactTrialDetail: selectedTrial.trialId }, "");
-    const handler = () => setSelectedTrial(null);
+    if (hostOwnsUrl || ownTrial == null) return;
+    window.history.pushState({ exactTrialDetail: ownTrial }, "");
+    const handler = () => setOwnTrial(null);
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
-  }, [selectedTrial]);
+  }, [hostOwnsUrl, ownTrial]);
 
   // Selecting a trial swaps the whole view for the in-remote detail page
   // (CB navigates to its own `/t/:id`; the remote owns the detail itself).
-  // `onBack` calls history.back() so the synthetic entry is consumed and
-  // the popstate listener above fires setSelectedTrial(null).
-  if (selectedTrial) {
+  // Uncontrolled, `onBack` calls `history.back()`, which consumes the
+  // synthetic entry and lets the popstate listener clear the selection;
+  // controlled, it asks the host to change its URL and nothing here moves.
+  if (selectedTrial != null && selectedTrial !== "") {
+    const selectedId = String(selectedTrial);
     return (
       <TrialDetailPage
         apiClient={apiClient}
-        trialId={selectedTrial.trialId}
+        trialId={selectedTrial}
         patientInfo={patientInfo}
         personId={personId}
-        filters={filters}
-        onBack={() => window.history.back()}
+        renderGenomicsEditor={renderGenomicsEditor}
+        renderFieldEditor={renderFieldEditor}
+        fieldEditorOwnsValue={fieldEditorOwnsValue}
+        onCompareToSoc={onCompareToSoc}
+        onAuthorHighRiskMcl={onAuthorHighRiskMcl}
+        onShareTrial={onShareTrial}
+        onOpenMissingAttributes={onOpenMissingAttributes}
+        renderRegisterInterest={renderRegisterInterest}
+        // What actually withholds the controls is the descriptor itself:
+        // `fields` undefined answers "unknown" for every row, which is the
+        // page exactly as it reads today. That covers loading, a failed read
+        // and a host that never had a writer, so no extra guard is needed for
+        // any of them — and a guard claiming to provide one would be
+        // decoration.
+        //
+        // The gate below is about `save`, not about the rows: it is there so
+        // a callback that would dereference a missing `setPatientFields` is
+        // never handed out at all. It matters now in a way it did not before
+        // the queue — the callback is held across renders and fired from a
+        // timer, long after the render that produced it.
+        editing={
+          canEditFields(record)
+            ? {
+                fields: writableFields.data,
+                save: patientFields.save,
+                outstanding: patientFields.outstanding,
+                failed: patientFields.failed,
+                // A finding is written through its own endpoint, not the
+                // PatientRecord PATCH; a host that does not serve it gets no
+                // genetic-findings pencil rather than a dead one.
+                genomics: record?.genomics,
+                onGenomicsChanged: (findings) => {
+                  // A new finding changes both the row and the verdict, and
+                  // the inline-profile host may hold its own copy.
+                  queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
+                  queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+                  onPatientRecordChanged?.({ genetic_mutations: findings });
+                },
+                // Attestations are not scalar fields: the host owns the
+                // endpoint, and the payload has to be re-read after it lands.
+                explicitAnswers: record?.explicitAnswers,
+                onExplicitAnswerChanged: () => {
+                  queryClient.invalidateQueries({ queryKey: ["exact-trial-detail"] });
+                  queryClient.invalidateQueries({ queryKey: ["exact-trials"] });
+                  onExplicitAnswerChanged?.();
+                },
+              }
+            : undefined
+        }
+        // Values and callbacks, not the adapter: this component owns the id
+        // lists and the mutations, so it is the only place that can keep the
+        // star on the card and the star on the detail page saying the same
+        // thing. `undefined` where the answer is not known — the control is
+        // then not drawn at all, rather than drawn wrong for a moment.
+        trialState={
+          state
+            ? {
+                isFavorite: favorites.data
+                  ? favorites.data.includes(selectedId)
+                  : undefined,
+                favoriteBusy: writes.favorites.pending.includes(selectedId),
+                onToggleFavorite: hideFavorites
+                  ? undefined
+                  : (on) => write("favorites", setFavorite, selectedId, on),
+                favoriteFailed:
+                  !hideFavorites && writes.favorites.failed.includes(selectedId),
+                // `data === undefined` too: a query that has errored KEEPS
+                // the data it had, so after a failed background refetch this
+                // was true while the star was still being drawn from the
+                // retained ids — an "unavailable" notice printed underneath
+                // a control that is present and works.
+                favoritesUnavailable:
+                  !hideFavorites &&
+                  favorites.isError &&
+                  favorites.data === undefined,
+                isRegistered:
+                  registered.data && advanced.data
+                    ? registered.data.includes(selectedId)
+                    : undefined,
+                onToggleRegistered: (on) =>
+                  write("registered", setRegistered, selectedId, on),
+                // Pending IS read off the mutation, and is scoped the same
+                // way: it describes a write in flight, which there can only
+                // be one of, and it must not disable a different trial's
+                // button.
+                registerPending: writes.registered.pending.includes(selectedId),
+                registerFailed: writes.registered.failed.includes(selectedId),
+                registeredUnavailable:
+                  (registered.isError && registered.data === undefined) ||
+                  (advanced.isError && advanced.data === undefined) ||
+                  !canReadAdvanced(state),
+                // Absent until the read answers: drawn against an unknown
+                // answer, the control is exactly the one that overwrites an
+                // advanced status.
+                advancedStatus: advanced.data?.[selectedId],
+              }
+            : undefined
+        }
+        // The derived set, not raw state: the detail is scored under the
+        // preferences the list used, and `country` no longer lives in
+        // `filters`. Passing raw state sent the detail request without the
+        // patient's country, so its scores and distance could disagree with
+        // the card the reader clicked.
+        // Normalised like `queryFilters`: four explicit 25s and four absences
+        // ask this endpoint for exactly the same thing, and the detail query
+        // is keyed on what it is handed — so a Save that changed nothing
+        // would re-fetch the open trial and blank it back to loading.
+        filters={detailFilters}
+        onBack={handleBack}
       />
     );
   }
 
   return (
-    <div className="exact-root" style={{ padding: "1rem" }}>
-      <FilterBar
-        apiClient={apiClient}
-        filters={filters}
-        onChange={setFilters}
-        diseaseCode={diseaseCode}
+    <div className="exact-root exact-list" ref={exactRootRef} style={{ padding: "1rem" }}>
+      {/* Above the header, so the modal is the first thing in the tree a
+          screen reader reaches and the first thing `Dialog`'s focus trap can
+          hold. It paints over the page either way — the scrim is fixed. */}
+      {wizardStore && wizardOpen ? (
+        <WeightsWizard
+          onDecline={declineWizard}
+          onDismiss={dismissWizard}
+          onFinish={finishWizard}
+          busy={wizardBusy}
+        />
+      ) : null}
+
+      {/* CB's header block: the title and the preferences button on one
+          line, the tab strip on its own below. CB puts the button on the
+          TAB row from lg up and beside the title below it, rendering it
+          twice and hiding one — two tab stops' worth of markup, and a
+          dialog that vanishes mid-edit when the breakpoint is crossed.
+          One copy, in the position CB uses at the width where the strip
+          needs its whole line, and the strip keeps its rule across the row
+          at every width. */}
+      <div className="exact-list__head">
+        {/* Focusable, for the wizard alone. `Dialog` returns focus to
+            whatever had it when the dialog mounted, which for a modal nobody
+            opened is `document.body` — so answering left focus nowhere and
+            the next Tab started again at the top of the host's page. */}
+        <h1 className="exact-list__title" tabIndex={-1} ref={listTitleRef}>
+          Your Trials
+        </h1>
+        <SuitabilityPreferences
+          filters={filters}
+          readerKey={readerHandle}
+          onChange={handleWeightsChange}
+        />
+      </div>
+
+      <Tabs
+        tabs={tabs}
+        active={activeTab}
+        onChange={handleTabChange}
+        // No `stateTab` guard here any more: a narrowed response — the one
+        // that would read as the corpus, "Fully matched, 1" for a reader
+        // with one bookmarked eligible trial and two hundred matching ones
+        // — is refused above, by the response rather than by the tab. The
+        // guard here answered about the request about to go out, which is
+        // the wrong moment for data already in hand.
+        //
+        // Refused, and then REPLACED where we have something true: the last
+        // counts taken over this same corpus. See `rememberedCounts`.
+        counts={countsForBar}
+        activeTabTotal={totalCount}
+        stateCounts={stateCounts}
       />
 
-      {query.isLoading ? (
+      <div className="exact-list__controls" ref={controlsRef}>
+        {/* CB's row 1 is the view mode on the left and the actions on the
+            right; the sort joins them there when the row is wide enough and
+            takes a row of its own when it is not.
+            
+            Which row it is on decides where it is WRITTEN, not just where it
+            is painted. CSS `order` moves the box and leaves the tab stop
+            behind, so on the narrow layout the keyboard went from row 1 down
+            to the sort and back up to the actions (WCAG 2.4.3). CB solves the
+            same problem by rendering the control twice and hiding one; one
+            control in the right place is the same layout without a second
+            copy of it in the accessibility tree. */}
+        <ViewModeControl
+          value={mapOpen ? "map" : "list"}
+          onChange={(mode) => setMapOpen(mode === "map")}
+        />
+
+        {wideRow ? <SortControl value={sort} onChange={handleSortChange} /> : null}
+
+        <div className="exact-list__triggers">
+        {/* CB's toolbar tooltips. A control that cannot act says why in its
+            tooltip instead, in place of the `title` it used to carry, so
+            there is one box, not a styled one and a native one. */}
+        <ActionTooltip
+          text={
+            capabilities?.graph === false
+              ? "This view doesn't offer the trial map."
+              : graphUnavailable
+                ? "Your saved trials aren't available right now, so this tab can't be mapped."
+                : ACTION_TOOLTIPS.exploreTrials
+          }
+        >
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-filters__trigger${graphShown ? " is-on" : ""}`}
+              aria-expanded={graphShown}
+              aria-describedby={tipId}
+              // A host capability is a permanent answer, and the reason lives
+              // in the tooltip: `disabled` would drop the control out of the
+              // tab order and leave a keyboard reader unable to reach it
+              // (#690). `aria-disabled` keeps it focusable, and the click is
+              // refused below for the same reason. A transient unavailability
+              // (saved ids still loading) stays truly disabled.
+              disabled={graphUnavailable && capabilities?.graph !== false}
+              aria-disabled={graphUnavailable || undefined}
+              onClick={() => {
+                if (graphUnavailable) return;
+                setGraphOpen((open) => !open);
+              }}
+            >
+              Explore Trials
+            </button>
+          )}
+        </ActionTooltip>
+
+        <ActionTooltip
+          text={exportUnavailable ? exportUnavailableReason : ACTION_TOOLTIPS.exportCsv}
+        >
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-list__export${exportState === "working" ? " is-working" : ""}`}
+              aria-describedby={tipId}
+              onClick={() => {
+                if (exportState === "working" || exportUnavailable) return;
+                void handleExport();
+              }}
+              // Said out loud rather than left as a dead control: everything else
+              // in this file names why it cannot answer. A host capability is a
+              // permanent answer whose reason lives in the tooltip, so it uses
+              // `aria-disabled` and stays in the tab order (#690); a busy or
+              // transient refusal stays truly disabled.
+              disabled={
+                exportState === "working" ||
+                (exportUnavailable && capabilities?.export !== false)
+              }
+              aria-disabled={exportState === "working" || exportUnavailable || undefined}
+            >
+              {exportState === "working" ? "Preparing…" : "Export CSV"}
+            </button>
+          )}
+        </ActionTooltip>
+
+        <ActionTooltip text={ACTION_TOOLTIPS.filters}>
+          {(tipId) => (
+            <button
+              type="button"
+              className={`exact-filters__trigger${
+                filtersOpen || activeFilterCount > 0 ? " is-on" : ""
+              }`}
+              aria-expanded={filtersOpen}
+              aria-describedby={tipId}
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              {activeFilterCount > 0
+                ? `Filters (${activeFilterCount})`
+                : "Filter Results"}
+            </button>
+          )}
+        </ActionTooltip>
+        </div>
+
+        {wideRow ? null : (
+          <div className="exact-list__sort">
+            <SortControl value={sort} onChange={handleSortChange} />
+          </div>
+        )}
+      </div>
+
+      {graphShown ? (
+        graph.isPending ? (
+          <p className="exact-graph__status">Building the map…</p>
+        ) : graph.isError ? (
+          <p className="exact-graph__status" role="alert">
+            Couldn't build the map for this search.
+          </p>
+        ) : (
+          <TrialsGraph
+            trials={graph.data?.trials ?? []}
+            onSelectTrial={handleSelectFromGraph}
+            onClose={() => setGraphOpen(false)}
+          />
+        )
+      ) : null}
+
+      {exportState === "failed" || exportState === "incomplete" ? (
+        <p className="exact-list__export-error" role="alert">
+          {exportState === "incomplete"
+            ? "That export stopped partway, so it wasn't saved. Please try again."
+            : "Couldn't prepare that file. Please try again."}
+        </p>
+      ) : null}
+
+      {savedFilters.failed ? (
+        <p className="exact-list__save-warning" role="status">
+          Your filters are shown here but couldn't be saved for next time.
+        </p>
+      ) : null}
+
+      {filtersOpen ? (
+        <FilterPanel
+          apiClient={apiClient}
+          filters={effectiveFilters}
+          onChange={handleFiltersChange}
+          onReset={handleFiltersReset}
+          canReset={activeFilterCount > 0}
+          diseaseCode={diseaseCode}
+          showValidatedOnly={admin}
+        />
+      ) : null}
+
+      {/* `savedFilters.pending` belongs here as much as in `enabled`: a
+          DISABLED query reports `isLoading` false, so while the saved set
+          is being read nothing said the list was loading — and the empty
+          state below fired instead, telling the reader there are no trials
+          before anything had been asked. */}
+      {/* Only when there IS a patient to load for. With none the search
+          never runs, and the line sat next to "Pass a patientInfo payload",
+          each contradicting the other — through `waitingForIds` as well,
+          which is the worse one: the ids query is enabled on the adapter
+          alone, so a hanging favorites read pairs them permanently rather
+          than for a frame. */}
+      {hasPatient &&
+      (query.isLoading ||
+        savedFilters.pending ||
+        waitingForIds ||
+        showingOtherTabsRows) ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>Loading trials…</p>
+      ) : null}
+
+      {tooManySavedIds ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          You have saved {savedIds?.length} trials, and this view can show at
+          most {MAX_TRIAL_IDS} at a time. Remove a few, or use the other tabs
+          to find them.
+        </p>
+      ) : null}
+
+      {idsFailed ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          Couldn't load your saved trials:{" "}
+          {(stateIdsQuery.error as Error)?.message ?? "unknown error"}
+        </p>
+      ) : null}
+
+      {/* The bookmark control is painted from the favorites list, so when
+          that read fails every star vanishes — on EVERY tab, not just the
+          Favorites one, and with nothing on screen to say why. The reader
+          would conclude the feature had been removed. */}
+      {!hideFavorites && favorites.isError && favorites.data === undefined && !idsFailed ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }}>
+          Couldn't load your favorites, so bookmarking is unavailable right
+          now.
+        </p>
+      ) : null}
+
+      {/* A write that failed has to say so. The star is painted from the
+          server's list, so a rejected PATCH leaves it exactly where it was —
+          indistinguishable from a click that never registered.
+
+          From the recorded failures, not from the mutation: a registration
+          that rejects after the reader has gone back to the list had no
+          surface here at all, so the only thing they ever saw was
+          "Saving…". */}
+      {!hideFavorites && writes.favorites.failed.length ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+          Couldn't update your favorites. Please try again.
+        </p>
+      ) : null}
+
+      {writes.registered.failed.length ? (
+        <p style={{ color: "var(--exact-color-not-eligible)" }} role="alert">
+          Couldn't save your interest in {writes.registered.failed.length === 1
+            ? "a trial"
+            : `${writes.registered.failed.length} trials`}
+          . Open the trial to try again.
+        </p>
       ) : null}
 
       {query.isError ? (
@@ -166,66 +2412,74 @@ function TrialMatchesInner({
         </p>
       ) : null}
 
-      {GROUP_ORDER.map((group) => {
-        const trials = grouped[group];
-        if (!trials.length) return null;
-        return (
-          <section key={group} style={{ marginBottom: "1.5rem" }}>
-            <h3
-              style={{
-                fontSize: "0.875rem",
-                fontWeight: 600,
-                color: "var(--exact-color-text-muted)",
-                margin: "0 0 0.5rem",
-              }}
-            >
-              {GROUP_LABELS[group]} ({trials.length})
-            </h3>
-            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              {trials.map((t) => (
-                <TrialCard key={t.trialId} trial={t} onSelect={handleSelect} />
-              ))}
-            </div>
-          </section>
-        );
-      })}
+      {/* `isPlaceholderData`, not `isFetching`: the rows on screen belong to
+          the previous query only while placeholder data is showing. Keyed on
+          `isFetching` this dimmed the whole list on every background refetch
+          — including the window-focus one React Query runs by default after
+          30s away — for a request the reader never asked for.
 
-      {!query.isLoading && patientInfo == null && personId == null ? (
+          The live region is always mounted and swaps its text: several
+          screen readers only announce changes to a region that already
+          existed, so a conditionally-rendered `role="status"` is silent. */}
+      <div className="exact-list__updating-slot" role="status" aria-live="polite">
+        {query.isPlaceholderData ? (
+          <span className="exact-list__updating">Updating…</span>
+        ) : null}
+      </div>
+
+      {mapOpen ? (
+        <TrialsMap
+          // The rows on screen, not a fresh request: every one carries its
+          // closest site already.
+          trials={trials}
+          renderMap={renderMap}
+          onSelectTrial={handleSelectFromMap}
+          onClose={() => setMapOpen(false)}
+        />
+      ) : null}
+
+      {/* The list stays. The map answers "where", the cards answer
+          "what" — CancerBot shows both at once for that reason, and the
+          sticky places panel only means something beside a list that
+          scrolls. */}
+      <div
+        className={`exact-list__rows${query.isPlaceholderData ? " is-stale" : ""}`}
+        aria-busy={query.isPlaceholderData || undefined}
+      >
+        {trials.map((t) => (
+          <TrialCard
+            key={t.trialId}
+            trial={t}
+            onSelect={handleSelect}
+            isFavorite={
+              favorites.data ? favorites.data.includes(String(t.trialId)) : undefined
+            }
+            busy={writes.favorites.pending.includes(String(t.trialId))}
+            onToggleFavorite={
+              state && !hideFavorites
+                ? (on) => write("favorites", setFavorite, String(t.trialId), on)
+                : undefined
+            }
+          />
+        ))}
+      </div>
+
+      {!query.isLoading && !hasPatient ? (
         <p style={{ color: "var(--exact-color-text-muted)" }}>
           Pass a <code>patientInfo</code> payload or <code>personId</code> to load
           trial matches.
         </p>
       ) : null}
 
-      {!query.isLoading &&
-      (patientInfo != null || personId != null) &&
-      allTrials.length === 0 ? (
-        <p style={{ color: "var(--exact-color-text-muted)" }}>
-          No trials matched the current filters.
-        </p>
+      {!query.isLoading && !staleRows && hasPatient && trials.length === 0 ? (
+        <p style={{ color: "var(--exact-color-text-muted)" }}>No trials found</p>
       ) : null}
 
-      {query.hasNextPage ? (
-        <div style={{ textAlign: "center", marginTop: "1rem" }}>
-          <button
-            onClick={() => query.fetchNextPage()}
-            disabled={query.isFetchingNextPage}
-            style={{
-              padding: "0.5rem 1.25rem",
-              borderRadius: "0.375rem",
-              border: "1px solid var(--exact-color-border, #d1d5db)",
-              background: "var(--exact-color-surface, #fff)",
-              color: "var(--exact-color-text, #111827)",
-              cursor: query.isFetchingNextPage ? "wait" : "pointer",
-              fontSize: "0.875rem",
-            }}
-          >
-            {query.isFetchingNextPage
-              ? "Loading…"
-              : `Load more (${allTrials.length} / ${totalCount ?? "…"})`}
-          </button>
-        </div>
-      ) : null}
+      <Pagination
+        page={page}
+        pageCount={pageCount}
+        onChange={requestPage}
+      />
     </div>
   );
 }

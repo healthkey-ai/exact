@@ -533,8 +533,7 @@ _FIELD_MAPS = {
     # a lab ingested in SI units (e.g. hemoglobin g/L) would read 10× off. PROMOP must normalize on ingest;
     # the surface can't (the canonical column doesn't carry its unit). Common case (US/LOINC default unit)
     # is correct, and this is strictly better than the pre-fix read-gap (unknown), so it does not block.
-    'estimated_glomerular_filtration_rate':
-        lambda r: _prefer_direct(r, 'estimated_glomerular_filtration_rate', r.egfr_ml_min_173m2),  # no *_units
+
     'hemoglobin_level':
         lambda r: _prefer_direct(r, 'hemoglobin_level', r.hemoglobin_g_dl),
     'hemoglobin_level_units':
@@ -702,6 +701,48 @@ class PatientRecordSurface:
             return None
         return getattr(object.__getattribute__(self, '_record'),
                        'no_pre_existing_conditions', None)
+
+    @property
+    def estimated_glomerular_filtration_rate(self):
+        """CKD-EPI from the creatinine pair, then a stored answer as fallback.
+
+        The pair is the source: the canonical mg/dL column is quantised to two
+        decimals, and at a threshold that rounding flips the verdict (148.63
+        umol/L -> 59.99, the rounded 1.68 mg/dL -> 60.03). It is also what a
+        patient edits, so the row has to follow it.
+
+        When the inputs are incomplete, the stored answer is returned as before
+        — including a stored 0, which `or` would drop.
+        """
+        from types import SimpleNamespace
+
+        from exact_matching.patient_info.convertors.egfr_calculator import EgfrCalculator
+
+        record = object.__getattribute__(self, '_record')
+        # Read the record's own pair, not `self.serum_creatinine_level`: that
+        # mapping substitutes the canonical mg/dL column when the pair is
+        # cleared, which would resurrect a stale answer after a deliberate clear.
+        value = getattr(record, 'serum_creatinine_level', None)
+        units = getattr(record, 'serum_creatinine_level_units', None)
+        supported = {'mg/dl', 'micromoles/l', 'umol/l', 'µmol/l', 'μmol/l'}
+        computed = None
+        if value is not None and isinstance(units, str) and units.strip().lower() in supported:
+            # Only a unit the converter understands may compute. A missing or
+            # unknown unit is not "mg/dL": `SimpleCToSiConvertor` returns the raw
+            # number for '', and divides anything else by cf.
+            computed = EgfrCalculator.call(SimpleNamespace(
+                serum_creatinine_level=value,
+                serum_creatinine_level_units=units.strip().lower(),
+                patient_age=self.patient_age,
+                gender=self.gender,
+            ))
+        if computed is not None:
+            return computed
+        for name in ('estimated_glomerular_filtration_rate', 'egfr_ml_min_173m2'):
+            stored = getattr(record, name, None)
+            if stored is not None:
+                return stored
+        return None
 
     def _provenance_value(self, name):
         """The record's own value, for provenance checks — never re-derives.

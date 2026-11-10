@@ -1,3 +1,7 @@
+# Both spellings. With the trailing slash git matches a directory only, so a
+# `node_modules` SYMLINK — which is how a worktree borrows one — is not ignored
+# by the slashed pattern and rides into `git add -A`. The bare one catches it.
+node_modules
 node_modules/
 dist/
 *.tsbuildinfo
@@ -7,13 +11,14 @@ dist/
 .env.local
 .env.*.local
 
-# `tsc -b` emits these next to their sources when the node tsconfig is built
-# (running the type-check does it). They are build output, and vite.config.js
-# is worse than clutter: vite prefers it over vite.config.ts, so a stale copy
-# silently becomes the config that `npm run dev` and `npm run build:spa` use
-# while edits to the maintained .ts are ignored.
+# Emitted by `tsc -b` beside the vite configs it typechecks. The build output
+# that ships is `dist/`; these are incidental. They are worse than clutter in
+# one specific case: vite prefers `vite.config.js` over `vite.config.ts`, so a
+# stale copy silently becomes the config that `npm run dev` and
+# `npm run build:spa` use while edits to the maintained .ts are ignored.
 vite.config.js
 vite.config.d.ts
 vite.remote.config.js
 vite.remote.config.d.ts
-
+vitest.config.js
+vitest.config.d.ts

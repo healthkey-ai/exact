@@ -208,3 +208,43 @@ class TestPersonIdLookupGate:
             MockClient.return_value.fetch_patient.return_value = {'person_id': 9001}
             mock_build.return_value = 'pi'
             assert resolve_patient_info(req) == 'pi'
+
+
+@pytest.mark.django_db
+class TestInboundAliases:
+    """#593: the spelling the API documents must reach EXACT's column.
+
+    `pd_l1_tumor_cels` is EXACT's own misspelling; PROMOP and `docs/api.md`
+    both say `pdL1TumorCells`. The value used to be dropped at the model-field
+    filter and the request answered 200 with PD-L1 missing — false positives
+    on every PD-L1 bound, because a `None` returns the whole scope.
+    """
+
+    def test_the_documented_camel_case_key_reaches_the_column(self):
+        pi = resolve_patient_info(_mock_request({
+            'patient_info': {'disease': 'breast cancer', 'pdL1TumorCells': 40},
+        }))
+
+        assert pi.pd_l1_tumor_cels == 40
+
+    def test_exacts_own_spelling_wins_over_the_alias(self):
+        pi = resolve_patient_info(_mock_request({
+            'patient_info': {
+                'disease': 'breast cancer',
+                'pd_l1_tumor_cels': 10,
+                'pdL1TumorCells': 40,
+            },
+        }))
+
+        assert pi.pd_l1_tumor_cels == 10
+
+    def test_a_blank_alias_does_not_erase_a_real_value(self):
+        pi = resolve_patient_info(_mock_request({
+            'patient_info': {
+                'disease': 'breast cancer',
+                'pd_l1_tumor_cels': 10,
+                'pdL1TumorCells': '',
+            },
+        }))
+
+        assert pi.pd_l1_tumor_cels == 10

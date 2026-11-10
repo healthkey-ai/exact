@@ -96,14 +96,6 @@ def _build_code_lookup(model_name):
             model_map[key] = row['code']
     aliases = {
         'HrdStatus': {'positive': 'hrd_positive', 'negative': 'hrd_negative'},
-        'Ethnicity': {
-            'caucasian/white': 'caucasian_or_european',
-            'white': 'caucasian_or_european',
-            'black/african-american': 'african_or_black',
-            'black or african american': 'african_or_black',
-            'hispanic or latino': 'other',
-            'hispanic/latino': 'other',
-        },
     }
     model_map.update(aliases.get(model_name, {}))
     return {model_name: model_map}
@@ -155,6 +147,102 @@ def resolve_therapy_code(display: str) -> str | None:
     return None
 
 
+#: The other direction, for the subform that edits a ULN input: the select is
+#: seeded from the record, so it carries the label PROMOP's `race` options use
+#: rather than EXACT's code. Keep this beside the forward map so the two cannot
+#: drift apart silently.
+RACE_CODE_TO_PROMOP_LABEL = {
+    'caucasian_or_european': 'White',
+    'african_or_black': 'Black or African American',
+    'asian': 'Asian',
+    'native_american': 'American Indian or Alaska Native',
+    'other': 'Other',
+}
+
+#: EXACT's `ethnicity` field holds RACE categories (#4447), while PROMOP stores
+#: the OMOP race label in `race` and OMOP ethnicity in `ethnicity`. Only these
+#: reviewed race labels map to an EXACT code. OMOP ethnicity labels (Hispanic
+#: or Latino / Not Hispanic or Latino), Unknown, and the categories EXACT has no
+#: code for (Native Hawaiian / Other Pacific Islander) stay unknown rather than
+#: being coerced into "Other" (#5556). Values may be labels, CB legacy titles or
+#: already-normalised codes; all three spellings normalise to the same key.
+_RACE_LABEL_TO_CODE = {
+    'caucasian european': 'caucasian_or_european',
+    'caucasian or european': 'caucasian_or_european',
+    'caucasian': 'caucasian_or_european',
+    'european': 'caucasian_or_european',
+    'white': 'caucasian_or_european',
+    'white caucasian': 'caucasian_or_european',
+    # Legacy PROMOP alias "Caucasian/White".
+    'caucasian white': 'caucasian_or_european',
+
+    'african black': 'african_or_black',
+    'african or black': 'african_or_black',
+    'african': 'african_or_black',
+    'black': 'african_or_black',
+    'black or african american': 'african_or_black',
+    'african american': 'african_or_black',
+    # Legacy PROMOP alias "Black/African-American".
+    'black african american': 'african_or_black',
+
+    'asian': 'asian',
+    'asian american': 'asian',
+
+    'native american': 'native_american',
+    'american indian or alaska native': 'native_american',
+    'american indian': 'native_american',
+    'alaska native': 'native_american',
+
+    'other': 'other',
+    'other race': 'other',
+    "other won't say": 'other',
+    'other wont say': 'other',
+}
+
+
+def _normalise_race_label(value) -> str:
+    return ' '.join(
+        str(value or '').strip().casefold()
+        .replace('_', ' ').replace('/', ' ').replace('-', ' ').split()
+    )
+
+
+def _race_code(value) -> str | None:
+    """Map a reviewed race label to an EXACT Ethnicity code, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return _RACE_LABEL_TO_CODE.get(_normalise_race_label(value))
+
+
+def promop_race_label(value):
+    """The label PROMOP's `race` options carry for an EXACT ethnicity value.
+
+    Accepts a code, a CB title or a PROMOP label, because a subform entry is
+    seeded from whichever of those the patient context holds. An unrecognised
+    value is returned unchanged so the select shows what the record has rather
+    than blanking a clinical answer.
+    """
+    code = _race_code(value)
+    if code is None:
+        return value
+    return RACE_CODE_TO_PROMOP_LABEL.get(code, value)
+
+
+def _race_code_from_row(row: dict) -> str | None:
+    """The race-like value EXACT should use for this PROMOP row.
+
+    `race` is the source. A legacy payload may still carry a race label in
+    `ethnicity` while `race` is empty, so map that only in that case. An
+    explicit-but-unmapped race stays unknown and does not fall back: falling
+    back would answer a different question, and an OMOP ethnicity value is
+    never a race.
+    """
+    race = row.get('race')
+    if isinstance(race, str) and race.strip():
+        return _race_code(race)
+    return _race_code(row.get('ethnicity'))
+
+
 def resolve_code_csv(display: str, model_name: str) -> str | None:
     """Resolve a comma-separated PROMOP display string to a comma-joined list of codes.
 
@@ -190,7 +278,8 @@ SKIP_COLUMNS = frozenset({
     'therapy_lines_count', 'line_of_therapy',
     # Legacy duplicate lab fields (EXACT uses named variants)
     'liver_enzyme_levels', 'serum_bilirubin_level',
-    # Legacy viral flags (EXACT uses no_hiv_status / no_hepatitis_*_status)
+    # The positive viral status is translated to EXACT's negated field by
+    # `normalize_promop_row`; it has no PatientInfo column of its own.
     'hiv_status', 'hepatitis_b_status', 'hepatitis_c_status',
     # PROMOP-only fields with no direct PatientInfo equivalent
     # (metastatic_status is derived by normalize.py from stage; lymph_node and
@@ -209,6 +298,87 @@ JSON_FIELDS = frozenset({
     'later_therapies', 'supportive_therapies',
     'genetic_mutations', 'stem_cell_transplant_history',
 })
+
+
+#: PROMOP / SNOMED disease surface names → the title the trial corpus stores.
+#: The list filter is ``disease__iexact`` against the corpus value ("breast
+#: cancer"), so a raw concept name such as "Malignant tumor of breast" matches
+#: nothing at all. Keep this to exact-name aliases; unknown diseases pass through.
+DISEASE_ALIASES = {
+    'malignant tumor of breast': 'Breast Cancer',
+    'malignant tumor of breast (disorder)': 'Breast Cancer',
+    'malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of breast (disorder)': 'Breast Cancer',
+    'carcinoma of breast': 'Breast Cancer',
+    'carcinoma of breast (disorder)': 'Breast Cancer',
+    'primary malignant neoplasm of breast': 'Breast Cancer',
+    'malignant neoplasm of female breast': 'Breast Cancer',
+}
+
+
+#: The record stores the POSITIVE viral status; trials ask the negated question
+#: ("No HIV required"). PROMOP removed the `no_*` columns in #2119, so EXACT
+#: reading them found its own class default (`True`) — a confirmed "does not
+#: have HIV" for every patient, including one with a positive status (#5663).
+#:
+#: The negation is derived here, at the vocabulary boundary. The same pair is
+#: what the descriptor names for an editor (`kind: negated`), and the client
+#: crosses the polarity on display and on save; this module only owns the read
+#: side. Keep the pairs identical on both sides — the read-side table in
+#: `tests/services/patient_info/test_negated_viral_status.py` pins it.
+PROMOP_NEGATED_FIELDS = {
+    'no_hiv_status': 'hiv_status',
+    'no_hepatitis_b_status': 'hepatitis_b_status',
+    'no_hepatitis_c_status': 'hepatitis_c_status',
+}
+
+
+def capture_negated_sources(row: dict) -> dict:
+    """Provenance for the canonical positive fields, captured before the pop (#5667).
+
+    `normalize_promop_row` pops the positive key and `_build_in_memory` strips
+    nulls, and after those two steps "the field was answered null" and "the
+    field was absent" have the same shape. The negated row cannot recover the
+    difference from `uvalue`, so it is recorded here, at the raw boundary.
+
+    Availability is KEY PRESENCE, not truthiness: `{'hiv_status': None}` is an
+    answer of "unknown", while a row without the key says the context never
+    carried it. A negated key alone proves nothing about the positive one. The
+    value is the RAW answer, not the inverted display value.
+    """
+    out = {}
+    for positive in PROMOP_NEGATED_FIELDS.values():
+        entry = {
+            'upatientField': positive,
+            'type': 'boolean',
+            'available': positive in row,
+        }
+        if positive in row:
+            entry['value'] = row[positive]
+        out[positive] = entry
+    return out
+
+_TRUE_ANSWERS = frozenset({'yes', 'true', 'positive', '1'})
+_FALSE_ANSWERS = frozenset({'no', 'false', 'negative', '0'})
+
+
+def _boolean_answer(value):
+    """A stored boolean, 0/1, or a yes/no label; anything else is unknown.
+
+    Deliberately not `bool(value)`: `"False"` is a truthy string, and inventing
+    an answer on an eligibility gate is worse than leaving it unknown.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        label = value.strip().casefold()
+        if label in _TRUE_ANSWERS:
+            return True
+        if label in _FALSE_ANSWERS:
+            return False
+    return None
 
 
 REFRACTORY_MAP = {
@@ -264,6 +434,10 @@ _CANONICAL_WINS = (
     ('white_blood_cell_count', 'wbc_count_thousand_per_ul', 'CELLS/UL', 1000),
     ('absolute_neutrophile_count', 'anc_thousand_per_ul', 'CELLS/UL', 1000),
     ('absolute_lymphocyte_count', 'alc_thousand_per_ul', None, 1000),
+    # LDH is the second pair PROMOP declares as an alias of a canonical column
+    # (`ldh_u_l`), so the mirror must not win when both are present. Ported
+    # from cb-like-trials #557; see the comment on `_normalize_canonical_labs`.
+    ('lactate_dehydrogenase_level', 'ldh_u_l', None, 1),
 )
 
 
@@ -307,6 +481,78 @@ def _cytogenetic_markers(value):
 def _cytogenetic_markers_with_legacy_titles(value):
     """Backward-compatible spelling; both paths use the current CB axis."""
     return _cytogenetic_markers(value)
+
+
+#: One item of PROMOP's `molecular_markers` summary: `"{feature or GENE}: {variant}"`,
+#: joined with `"; "` (promop `patient_record_service.py`, present findings only).
+#: The name has no colon or comma; the variant may be empty or carry brackets.
+_PROMOP_FINDING_ITEM = re.compile(r'^[^:,]+:')
+_TP53_EVIDENCE = re.compile(r'tp53|17p|del\(17|chromosome 17', re.IGNORECASE)
+
+
+def _promop_summary_items(value):
+    """`value` split on `;` outside brackets: `t(11;14)` stays one item."""
+    items, start, depth = [], 0, 0
+    for index, char in enumerate(value):
+        if char in '([{':
+            depth += 1
+        elif char in ')]}':
+            depth = max(depth - 1, 0)
+        elif char == ';' and depth == 0:
+            items.append(value[start:index].strip())
+            start = index + 1
+    items.append(value[start:].strip())
+    return items
+
+
+def _is_promop_findings_summary(value):
+    """Whether `value` is PROMOP's display summary of genomic findings (#723).
+
+    Every `;`-separated item (outside brackets) must read `name: variant`, with
+    a non-empty name free of commas. No marker code or title contains a colon,
+    so a real code list never matches; titles such as `t(11;14) Translocation`
+    hold a semicolon but no colon, and do not either.
+
+    A shape test is a stopgap by nature (#723 reads the structured findings).
+    It errs safe both ways: an unrecognised summary still gets the strict 422,
+    and a recognised one only becomes unknown.
+    """
+    if not isinstance(value, str) or ':' not in value:
+        return False
+    items = _promop_summary_items(value)
+    return all(items) and all(
+        _PROMOP_FINDING_ITEM.match(item) and item.split(':', 1)[0].strip()
+        for item in items
+    )
+
+
+def _summary_names_tp53(value):
+    """Whether the summary may carry TP53-disruption evidence.
+
+    The whole text, not just the item names: an unclosed bracket can swallow
+    a later item, and chromosome-17 losses are spelled several ways. Matching
+    too much only turns PROMOP's False into unknown, which is safe.
+    """
+    return bool(_TP53_EVIDENCE.search(value))
+
+
+def _row_has_tp53_surrogate(row):
+    """Whether the row carries the derivation's other TP53-positive inputs.
+
+    Mirrors `PatientInfoAttributes.tp53_disruption`: del17p13 in the (already
+    translated) cytogenetic markers, or p53 IHC of 50% or more.
+    """
+    cytogenic = row.get('cytogenic_markers')
+    if isinstance(cytogenic, str):
+        cytogenic = cytogenic.split(',')
+    if isinstance(cytogenic, (list, tuple)) and 'del17p13' in [
+        str(code).strip() for code in cytogenic
+    ]:
+        return True
+    try:
+        return float(row.get('p53_ihc')) >= 50
+    except (TypeError, ValueError):
+        return False
 
 
 def _marker_assessment(value, model_name, aliases=None):
@@ -389,10 +635,44 @@ def normalize_promop_row(row: dict) -> dict:
     code values. Transformations are idempotent — already-normalized values
     pass through unchanged.
     """
+    # ── Disease name — PROMOP sends the raw SNOMED concept name ────────
+    disease = row.get('disease')
+    if isinstance(disease, str):
+        row['disease'] = DISEASE_ALIASES.get(
+            disease.strip().lower(), disease.strip()
+        )
+
+    # Provenance for the negated rows (#5667), recorded before the positive
+    # keys are popped below. Kept if a previous pass already recorded it: on
+    # the second call the raw keys are gone, and recapturing would turn
+    # "answered null" into "never in the context". This also carries the
+    # entries through `/normalize-promop-row/`, whose response the federated
+    # host sends back as its inline payload.
+    if '_negated_sources' not in row:
+        sources = capture_negated_sources(row)
+        # Only when the context actually carried one of them: an all-absent
+        # block says nothing a client cannot read from the ordinary absence of
+        # the row, and `/normalize-promop-row/` should not grow a key for every
+        # body it is handed.
+        if any(entry['available'] for entry in sources.values()):
+            row['_negated_sources'] = sources
+
     # PROMOP owns the source name; translate before the DTO drops unknown keys.
     # Explicit null also wins over a stale internal alias supplied alongside it.
     if 'sct_date' in row:
         row['stem_cell_transplant_date'] = row['sct_date']
+
+    # ── Viral status: the record stores the positive answer ─────────────
+    # The trial text is "No Hepatitis B required", and that is what the row
+    # asks; `no_hiv_status` is the negated view of `hiv_status`, not a column.
+    # Popping the positive field keeps this idempotent: a second call has
+    # nothing left to invert. An unreadable or missing answer stays None —
+    # "unknown" is not "No".
+    for negated, positive in PROMOP_NEGATED_FIELDS.items():
+        if positive not in row:
+            continue
+        answer = _boolean_answer(row.pop(positive))
+        row[negated] = None if answer is None else not answer
 
     # ── Receptor statuses ──────────────────────────────────────────────
     # Reuse package semantics: Positive supplies no expression level, and
@@ -429,10 +709,15 @@ def normalize_promop_row(row: dict) -> dict:
     if isinstance(val, str):
         row['histologic_type'] = resolve_code(val, 'HistologicType')
 
-    # ── Ethnicity — PROMOP labels → EXACT codes ────────────────────────
-    val = row.get('ethnicity')
-    if isinstance(val, str):
-        row['ethnicity'] = resolve_code(val, 'Ethnicity')
+    # ── Race — PROMOP keeps race and ethnicity apart ───────────────────
+    # EXACT's `ethnicity` field holds race categories (#4447), while PROMOP
+    # stores the OMOP race label in `race` and OMOP ethnicity in `ethnicity`.
+    # Read the race source here; an OMOP ethnicity answer is never translated
+    # into a race (#5556). See `_race_code_from_row` for the fallback rule.
+    # Only write the field when the payload named one of the sources: a row
+    # without either stays byte-for-byte unchanged for older callers.
+    if 'race' in row or 'ethnicity' in row:
+        row['ethnicity'] = _race_code_from_row(row)
 
     # ── Cytogenetic markers — PROMOP's renamed column and vocabulary ────
     # PROMOP's column is `cytogenetic_markers` (migration 0222); EXACT's field
@@ -456,7 +741,38 @@ def normalize_promop_row(row: dict) -> dict:
     # These fields store comma-separated display names in PROMOP but EXACT
     # expects comma-separated normalized codes for has_any_keys filtering.
     if 'molecular_markers' in row:
-        row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
+        if _is_promop_findings_summary(row['molecular_markers']):
+            # Stopgap for #723. PROMOP's own summary of present findings is
+            # never a list of marker codes, so the strict check below refused
+            # the whole patient (422) for anyone with a finding. Read it as
+            # unknown instead: `''` is blank to `is_attr_blank`, so marker
+            # criteria and the high-risk MCL codes sourced from it stay
+            # unknown (potential), never a confirmed "no". TP53 keeps PROMOP's
+            # own `tp53_disruption`. Anything else still goes through the
+            # strict check and is refused if unsupported. The real fix reads
+            # the structured findings (#723).
+            summary = row['molecular_markers']
+            row['molecular_markers'] = ''
+            # The TP53 derivation reads `tp53Mutation` from these markers and,
+            # with no aggregate supplied, answers a confirmed False. The summary
+            # just dropped may well name TP53, so without PROMOP's own aggregate
+            # the honest answer is unknown: an explicit null, which the adapter
+            # keeps and the derivation honours.
+            row.setdefault('tp53_disruption', None)
+            # PROMOP's False needs a strictly `pathogenic` TP53 finding to turn
+            # True, so del(17p) left uninterpreted or a "likely pathogenic" TP53
+            # reads False while the summary lists that very finding. The markers
+            # used to expose the contradiction (`_tp53_contradiction`); with them
+            # dropped, say unknown instead of a confirmed "no". A True stays.
+            # Only where nothing else on the row says TP53: with a surrogate
+            # (p53 IHC >= 50, del17p13) the derivation would turn a null into a
+            # confirmed True, while a kept False lets `_tp53_contradiction`
+            # answer unknown, as it did when the markers were still readable.
+            if (row['tp53_disruption'] is False and _summary_names_tp53(summary)
+                    and not _row_has_tp53_surrogate(row)):
+                row['tp53_disruption'] = None
+        else:
+            row['molecular_markers'] = _marker_assessment(row['molecular_markers'], 'MolecularMarker')
     for _field, _model in [
         ('planned_therapies',     'PlannedTherapy'),
         ('concomitant_medications', 'ConcomitantMedication'),
@@ -544,6 +860,10 @@ def normalize_promop_row(row: dict) -> dict:
         # internal codes there would silently never match). A line with no concept
         # becomes None / [] (unknown) rather than an unmatchable internal code.
         for _tf in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+            # Keep the human name the matcher code replaces; PROMOP only
+            # sends `_display` for the first two, and the 3L+ line has none.
+            if not row.get(f'{_tf}_display') and row.get(_tf):
+                row[f'{_tf}_display'] = row[_tf]
             cid = row.get(f'{_tf}_id')
             row[_tf] = str(cid) if cid not in _EMPTY_CID else None
         later_ids = row.get('later_therapy_ids') or []
@@ -679,6 +999,8 @@ def build_patient_info_from_promop_row(row: dict):
     from trials.services.patient_info.resolve import translate_language_capabilities
 
     row = normalize_promop_row(row)
+    # Recorded by `normalize_promop_row` before it popped the positive fields.
+    negated_sources = row.pop('_negated_sources', None)
     # Language booleans -> legacy codes/asked and OMOP pairs BEFORE the None-stripping
     # below: an all-NULL row must still drop PROMOP's display string and, on the OMOP
     # path, become [] (asked about nothing), not vanish.
@@ -707,4 +1029,15 @@ def build_patient_info_from_promop_row(row: dict):
     # _build_in_memory handles snake_case→PatientInfo + normalize_patient_info.
     # The adequacy fields are named even though PROMOP has no column for them,
     # so missing liver/blood labs stay unknown instead of becoming a refusal.
-    return _build_in_memory(cleaned, named_null_fields=PROMOP_NAMED_NULL_FIELDS)
+    patient = _build_in_memory(
+        cleaned,
+        named_null_fields=PROMOP_NAMED_NULL_FIELDS,
+        negated_sources=negated_sources,
+    )
+    # OMOP mode normalises the therapy line to its concept id for matching;
+    # the reader-facing name travels beside it as `*_display`. It is not a
+    # matching field, so the PatientInfo class has no column for it — carry
+    # it on the instance for the detail/subform presentation.
+    for field in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+        setattr(patient, f'{field}_display', cleaned.get(f'{field}_display'))
+    return patient
