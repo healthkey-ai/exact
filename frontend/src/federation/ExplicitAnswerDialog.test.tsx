@@ -143,6 +143,40 @@ describe("explicit answers", () => {
     );
   });
 
+  it("shows the categories already recorded when the dialog opens", async () => {
+    const snapshot = vi.fn(async () => ({
+      expectedFlag: false,
+      expectedCategories: ["infections"],
+    }));
+    const answer = vi.fn(async () => undefined);
+    const state = fakeState({
+      writable: DESCRIPTOR,
+      overrides: { explicitAnswers: { snapshot, answer } },
+    });
+    const api = fakeApi();
+    api.setDetail(detailWith([row()]));
+    renderTrialMatches(api, { state: state.adapter });
+    await openDetail();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Answer Pre Existing Conditions Excluded" }),
+    );
+    const infections = await screen.findByLabelText("Infections");
+    await waitFor(() => expect(infections).toBeChecked());
+
+    // The recorded set is a valid answer to save unchanged, not an empty one.
+    const save = screen.getByRole("button", { name: "Save these conditions" });
+    expect(save).toBeEnabled();
+    await userEvent.click(save);
+
+    expect(answer).toHaveBeenCalledWith(
+      "pre_existing_condition_categories",
+      "set_categories",
+      { categories: ["infections"] },
+      { expectedFlag: false, expectedCategories: ["infections"] },
+    );
+  });
+
   it("waits for the open-time snapshot and passes it to the answer", async () => {
     let resolveSnapshot: (value: Record<string, unknown>) => void = () => {};
     const snapshot = vi.fn(
