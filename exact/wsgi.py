@@ -6,6 +6,8 @@ _application = get_wsgi_application()
 
 # Also gate direct Gunicorn/runserver callers that bypass the Docker entrypoint.
 # The inspector closes its dedicated connection before worker forks/preload.
+# Run Gunicorn with --preload (docker/entrypoint.sh does) so this runs once in
+# the master: imported per worker, a failure on a respawn halts the server.
 from trials.schema_contract import require_trials_schema
 require_trials_schema()
 application = _application
