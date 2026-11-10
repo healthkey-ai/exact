@@ -42,6 +42,13 @@ function decide(
 const names = Object.keys(descriptors);
 const ofKind = (kind: string) => names.filter((name) => descriptors[name].kind === kind);
 
+/** The kinds this resolver implements. A producer kind outside this list must
+ *  fail the fixture regeneration, not slip through as `unknown_kind`. */
+const RESOLVER_KINDS = [
+  "direct", "profile", "editable", "selectable", "computed",
+  "alias", "negated", "explicit-answer", "authored", "unmapped",
+];
+
 describe("the pinned PROMOP descriptor fixture", () => {
   it("names the producer revision and the schema it was generated from", () => {
     expect(meta.source).toBe("healthkey-ai/promop");
@@ -60,9 +67,17 @@ describe("the pinned PROMOP descriptor fixture", () => {
 
   it("never leaves a kind on the silent path", () => {
     // `unavailable` means "descriptor has not arrived"; a pinned fixture that
-    // is present must produce a real decision for every kind.
+    // is present must produce a real decision for every kind. An unknown kind
+    // is a contract gap: it is refused loudly AND fails here, so regenerating
+    // the fixture for a new producer kind cannot go green by itself.
+    const unknown = meta.kinds.filter((kind) => !RESOLVER_KINDS.includes(kind));
+    expect(unknown, "descriptor kinds this resolver does not implement").toEqual([]);
     for (const name of names) {
-      expect(decide(name).state, name).not.toBe("unavailable");
+      const decision = decide(name);
+      expect(decision.state, name).not.toBe("unavailable");
+      if (decision.state === "unsupported") {
+        expect(decision.diagnostic, name).not.toMatch(/^unknown_kind:/);
+      }
     }
   });
 });
@@ -129,20 +144,32 @@ describe("permission and operation", () => {
       expect(without.diagnostic).toBe("negated_missing_provenance");
     }
 
-    const withSource = decide("no_hiv_status", {
-      negativeSource: {
-        upatientField: "hiv_status",
-        type: "boolean",
-        available: true,
-        value: false,
-      },
-    });
-    expect(withSource.state).toBe("handled");
-    if (withSource.state === "handled") {
-      expect(withSource.editor.kind).toBe("negated");
-      if (withSource.editor.kind !== "negated") return;
-      expect(withSource.editor.field).toBe("hiv_status");
-      expect(withSource.editor.invert).toBe(true);
+    // Every negated row, not only HIV: each needs its own canonical and the
+    // reviewed answer labels behind it.
+    for (const name of ofKind("negated")) {
+      const entry = descriptors[name];
+      const canonical = String(entry.canonical);
+      const labels = descriptors[canonical].answer_labels as
+        | { true?: string; false?: string }
+        | undefined;
+      expect(labels, `${name}: ${canonical} has no answer_labels`).toBeTruthy();
+
+      const decision = decide(name, {
+        negativeSource: {
+          upatientField: canonical,
+          type: "boolean",
+          available: true,
+          value: false,
+        },
+      });
+      expect(decision.state, name).toBe("handled");
+      if (decision.state !== "handled") continue;
+      expect(decision.editor.kind, name).toBe("negated");
+      if (decision.editor.kind !== "negated") continue;
+      expect(decision.editor.field, name).toBe(canonical);
+      expect(decision.editor.invert, name).toBe(true);
+      expect(decision.editor.positive, name).toBe(labels?.true);
+      expect(decision.editor.negative, name).toBe(labels?.false);
     }
   });
 
@@ -249,7 +276,9 @@ describe("control shape", () => {
   it("carries the toxicity scale as a select over its numeric grades", () => {
     const decision = decide("toxicity_grade");
     expect(decision.state).toBe("handled");
-    if (decision.state !== "handled" || decision.editor.kind !== "scalar") return;
+    if (decision.state !== "handled") return;
+    expect(decision.editor.kind).toBe("scalar");
+    if (decision.editor.kind !== "scalar") return;
     expect(decision.editor.control).toBe("select");
     // The producer's grades are numbers; the resolver normalises every option
     // value to its text form for the control. The server's IntegerField coerces
@@ -267,17 +296,25 @@ describe("control shape", () => {
       row: { utype: "multiselect" },
     });
     expect(decision.state).toBe("handled");
-    if (decision.state !== "handled" || decision.editor.kind !== "scalar") return;
+    if (decision.state !== "handled") return;
+    expect(decision.editor.kind).toBe("scalar");
+    if (decision.editor.kind !== "scalar") return;
     expect(decision.editor.control).toBe("multiselect");
     expect(decision.editor.multiple).toBe(true);
     expect(decision.editor.joined).toBe(false);
-    expect(Array.isArray(descriptors.stem_cell_transplant_history.options)).toBe(true);
+    expect(decision.editor.options.length).toBeGreaterThan(0);
+    for (const option of decision.editor.options) {
+      expect(String(option.value).trim(), "empty option value").not.toBe("");
+      expect(String(option.label).trim(), "empty option label").not.toBe("");
+    }
   });
 
   it("writes a source pair through the source field, not the normalised column", () => {
     const source = decide("hemoglobin_level");
     expect(source.state).toBe("handled");
-    if (source.state === "handled" && source.editor.kind === "scalar") {
+    if (source.state !== "handled") return;
+    expect(source.editor.kind).toBe("scalar");
+    if (source.editor.kind === "scalar") {
       expect(source.editor.field).toBe("hemoglobin_level");
     }
     const canonical = decide("hemoglobin_g_dl");
