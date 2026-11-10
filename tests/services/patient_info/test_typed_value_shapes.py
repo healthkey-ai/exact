@@ -152,7 +152,7 @@ class TestWrongFromSomebodyWhoCanFixIt:
         #
         # `float('nan')` and `Decimal('Infinity')` both construct, so these
         # passed as usable and answered 500 from DRF's renderer, which will
-        # not emit a NaN. `lab_number` in `ctomop_adapter` already refuses
+        # not emit a NaN. `lab_number` in `promop_adapter` already refuses
         # them and gives the quieter reason: every threshold comparison
         # against a NaN is False, so the patient fails criteria nobody can
         # see them failing.
@@ -191,7 +191,7 @@ class TestWrongFromSomebodyWhoCannot:
     """An upstream row, and the batch commands. Dropped, as before.
 
     This is the half the first review round found missing. `'unknown'` and a
-    censored `'<0.5'` are named in `ctomop_adapter` as values it expects; the
+    censored `'<0.5'` are named in `promop_adapter` as values it expects; the
     reader cannot fix PROMOP, and two of the three batch commands have no
     guard, so raising here killed a run on a row that used to print.
     """

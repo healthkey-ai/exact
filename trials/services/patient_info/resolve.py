@@ -417,7 +417,7 @@ def _build_in_memory(data: dict, strict: bool = False, named_null_fields=(),
     # This helper is NOT inline-payload-only — the CTOMOP/PROMOP adapter and
     # four management commands reach it too, and there a null is EXACT's own
     # stored derivation rather than anyone's assertion. What keeps those apart
-    # today is `ctomop_adapter`, which strips None from the row before calling
+    # today is `promop_adapter`, which strips None from the row before calling
     # in; nothing here enforces it. If that strip is ever widened the way
     # `tp53_disruption` is already exempted from it, upstream nulls would start
     # reading as caller assertions.
@@ -546,7 +546,7 @@ def _as_date(key: str, val):
     """A date, a datetime narrowed to its date, or `MalformedPatientValue`.
 
     Every `DateField` here is a date, but a producer may send a datetime:
-    `ctomop_adapter` calls `.isoformat()` on anything that is a `date`, and a
+    `promop_adapter` calls `.isoformat()` on anything that is a `date`, and a
     `datetime` IS one. Parsed as a datetime first and narrowed, so a producer
     that sends the time of day is understood rather than refused.
     """

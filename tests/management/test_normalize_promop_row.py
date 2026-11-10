@@ -30,6 +30,48 @@ def _row(**kwargs):
 
 
 # ---------------------------------------------------------------------------
+# Disease name — raw SNOMED/PROMOP names → the corpus title
+# ---------------------------------------------------------------------------
+
+class TestDiseaseAliases:
+    @pytest.mark.parametrize(
+        'raw',
+        [
+            'Malignant tumor of breast',
+            'Malignant tumor of breast (disorder)',
+            'Malignant neoplasm of breast',
+            'Malignant neoplasm of breast (disorder)',
+            'Carcinoma of breast',
+            'Carcinoma of breast (disorder)',
+            'Primary malignant neoplasm of breast',
+            'Malignant neoplasm of female breast',
+        ],
+    )
+    def test_breast_surface_names_become_the_corpus_title(self, raw):
+        result = _normalize_promop_row(_row(disease=raw))
+        assert result['disease'] == 'Breast Cancer'
+
+    def test_canonical_disease_passes_through(self):
+        result = _normalize_promop_row(_row(disease='Breast Cancer'))
+        assert result['disease'] == 'Breast Cancer'
+
+    def test_alias_is_case_and_whitespace_insensitive(self):
+        result = _normalize_promop_row(
+            _row(disease='  mAlIgNaNt TuMoR oF bReAsT  ')
+        )
+        assert result['disease'] == 'Breast Cancer'
+
+    def test_normalization_is_idempotent(self):
+        once = _normalize_promop_row(_row(disease='Malignant tumor of breast'))
+        twice = _normalize_promop_row(dict(once))
+        assert twice['disease'] == 'Breast Cancer'
+
+    def test_unknown_disease_is_stripped_but_preserved(self):
+        result = _normalize_promop_row(_row(disease='  Some Rare Cancer  '))
+        assert result['disease'] == 'Some Rare Cancer'
+
+
+# ---------------------------------------------------------------------------
 # TNM staging — "T1: Invasive Tumor ≤ 2 cm" → "t1"
 # ---------------------------------------------------------------------------
 
