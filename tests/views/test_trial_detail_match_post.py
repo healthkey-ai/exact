@@ -68,3 +68,28 @@ class TestTrialDetailMatchPost:
         assert response.data['matchScore'] is not None, (
             'matchScore must be annotated on the detail path, not null'
         )
+
+
+@pytest.mark.django_db
+def test_grouped_presentation_does_not_change_the_score(authed_client):
+    """`?view=all_attributes_in_groups` is a presentation, not a different score.
+
+    The grouped view returns named groups and no `trialEligibilityAttributes`;
+    scoring that shape read 0% on a matched trial while the default view showed
+    the real number.
+    """
+    trial = TrialFactory(disease='Multiple Myeloma')
+    patient = {'disease': 'multiple myeloma'}
+    default = authed_client.post(
+        f'/trials/{trial.id}/match/', {'patient_info': patient}, format='json',
+    )
+    grouped = authed_client.post(
+        f'/trials/{trial.id}/match/?view=all_attributes_in_groups',
+        {'patient_info': patient},
+        format='json',
+    )
+    assert default.status_code == grouped.status_code == 200
+    assert grouped.data['matchScore'] == default.data['matchScore']
+    assert grouped.data['matchScore'] > 0
+    assert 'trialEligibilityAttributes' in default.data['details']
+    assert 'trialEligibilityAttributes' not in grouped.data['details']

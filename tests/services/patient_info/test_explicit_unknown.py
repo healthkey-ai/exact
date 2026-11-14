@@ -14,6 +14,7 @@ from trials.services.patient_info.patient_info import PatientInfo
 from trials.services.patient_info.configs import USER_TO_TRIAL_ATTRS_MAPPING
 from trials.services.patient_info.patient_info_attributes import (
     EXPLICIT_UNKNOWN_FIELDS,
+    PatientInfoAttributes,
     explicitly_unknown,
 )
 from trials.services.patient_info.resolve import _build_in_memory
@@ -174,17 +175,22 @@ class TestWhatTheMatcherDoesWithIt:
             'renal_adequacy_status') == 'matched'
 
     def test_an_attribute_that_is_simply_none_is_untouched(self):
-        """The gate is provenance, not the value.
+        """The seam does not WIDEN the set of attributes it governs.
 
         `meets_crab` is None for any myeloma patient who supplied none of its
-        inputs. Reading a bare None as unknown would change matching for twelve
-        such attributes at once, for every patient — so it must not.
+        inputs. #4832 already makes a blank bool_restriction `unknown` for every
+        one of them — a deliberate, measured reconcile against the SQL path (see
+        `tests/matching/test_meets_crab_blank_divergence.py`). What #502 must not
+        do is make `explicitly_unknown` itself fire for these twelve, because the
+        derivations then owe them the legacy `False`.
+
+        So the assertion is on the seam, not on the matcher verdict.
         """
         trial = TrialFactory(disease='multiple myeloma', meets_crab=True)
         pi = _build_in_memory({'disease': 'multiple myeloma', 'patient_age': 40})
 
         assert pi.meets_crab is None
-        assert UserToTrialAttrMatcher(trial, pi).attr_match_status('meets_crab') != 'unknown'
+        assert explicitly_unknown(pi, 'meets_crab') is False
 
 
 def test_a_record_that_never_came_from_a_payload_has_no_provenance():
@@ -196,9 +202,17 @@ def test_a_record_that_never_came_from_a_payload_has_no_provenance():
     pi = PatientInfo(disease='multiple myeloma', renal_adequacy_status=None)
 
     assert not hasattr(pi, '_provided_fields')
+    # The seam must not fire, so the DERIVATION owes this field the legacy
+    # False (a bare None here is EXACT's own un-derivable answer, not the
+    # caller saying "we do not know").
+    assert PatientInfoAttributes(pi).renal_adequacy_status is False
+    # The matcher then answers `unknown` for a blank value against a trial that
+    # requires it — #4832, for every bool_restriction. That verdict is the blank
+    # rule's, not the seam's; it is asserted here only to pin the pairing, and
+    # the seam's own narrower claim is the two lines above.
     assert UserToTrialAttrMatcher(
         TrialFactory(disease='multiple myeloma', renal_adequacy_required=True), pi
-    ).attr_match_status('renal_adequacy_status') == 'not_matched'
+    ).attr_match_status('renal_adequacy_status') == 'unknown'
 
 
 class TestTheSeamStaysOnTheFiveFields:
@@ -261,9 +275,15 @@ class TestTheSeamStaysOnTheFiveFields:
         """The round trip itself, which is how a real client reaches this.
 
         `PatientInfoSerializer` emits `vars(instance)`, so a client that reads a
-        record and posts it back NAMES every attribute. Measured without the
-        gate: 11 of these move from `matched` to `unknown`, `meets_crab` among
-        them — a trial the patient was excluded from turns into a candidate.
+        record and posts it back NAMES every attribute. The round trip must not
+        change the verdict — that is the property worth pinning, and it holds
+        under #4832 because `meets_crab` is blank either way.
+
+        #502's original version of this test asserted `== 'not_matched'`, which
+        was the pre-#4832 answer. #4832 moved it to 'unknown' for EVERY blank
+        bool_restriction (measured: SQL/matcher divergences 224 -> 111 on 3114 MM
+        trials), so the assertion pins the round-trip EQUALITY instead, which is
+        what the test is actually for and is invariant to the blank policy.
         """
         trial = TrialFactory(disease='multiple myeloma', meets_crab=True)
         base = {'disease': 'multiple myeloma', 'patient_age': 40}
@@ -271,7 +291,13 @@ class TestTheSeamStaysOnTheFiveFields:
         lean = _build_in_memory(dict(base))
         echoed = _build_in_memory(dict(base, **{f: None for f in self.ALREADY_NONE}))
 
-        assert UserToTrialAttrMatcher(trial, echoed).attr_match_status('meets_crab') == 'not_matched'
+        # The echo names all twelve; the seam still must not fire for any of them.
+        for field in self.ALREADY_NONE:
+            assert explicitly_unknown(echoed, field) is False, (
+                f'naming {field} as null was read as a caller assertion'
+            )
+        assert (UserToTrialAttrMatcher(trial, echoed).attr_match_status('meets_crab')
+                == UserToTrialAttrMatcher(trial, lean).attr_match_status('meets_crab'))
         assert (UserToTrialAttrMatcher(trial, echoed).match_score_and_status()
                 == UserToTrialAttrMatcher(trial, lean).match_score_and_status())
 

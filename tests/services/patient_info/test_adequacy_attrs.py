@@ -3,7 +3,7 @@ Computed adequacy attributes (port from CB #4390 hepatic, #4392 haematological).
 
 Mirror CB's thresholds:
 - hepatic: bilirubin total <= 1.5 ULN, AST <= 2.5 ULN, ALT <= 2.5 ULN.
-- haematological: ANC >= 1500/uL, platelet >= 100 (10^9/L), hemoglobin >= 9 g/dL.
+- haematological: ANC >= 1000/uL, platelets >= 75000/uL, hemoglobin >= 9 g/dL.
 Missing inputs resolve to False (NO) for both.
 """
 import pytest
@@ -61,23 +61,23 @@ class TestHaematologicalAdequacyStatus:
         return PatientInfoAttributes(PatientInfo(**kwargs)).haematological_adequacy_status
 
     def test_all_at_thresholds_is_true(self):
-        assert self._status(absolute_neutrophile_count=1500, platelet_count=100,
+        assert self._status(absolute_neutrophile_count=1000, platelet_count=75000,
                             hemoglobin_level=9) is True
 
     def test_above_thresholds_is_true(self):
-        assert self._status(absolute_neutrophile_count=3000, platelet_count=250,
+        assert self._status(absolute_neutrophile_count=3000, platelet_count=250000,
                             hemoglobin_level=13) is True
 
     def test_low_anc_is_false(self):
-        assert self._status(absolute_neutrophile_count=1499, platelet_count=100,
+        assert self._status(absolute_neutrophile_count=999, platelet_count=75000,
                             hemoglobin_level=9) is False
 
     def test_low_platelet_is_false(self):
-        assert self._status(absolute_neutrophile_count=1500, platelet_count=99,
+        assert self._status(absolute_neutrophile_count=1000, platelet_count=74999,
                             hemoglobin_level=9) is False
 
     def test_low_hemoglobin_is_false(self):
-        assert self._status(absolute_neutrophile_count=1500, platelet_count=100,
+        assert self._status(absolute_neutrophile_count=1000, platelet_count=75000,
                             hemoglobin_level=8.9) is False
 
     def test_missing_value_is_false(self):

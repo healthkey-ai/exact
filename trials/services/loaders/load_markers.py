@@ -1,29 +1,22 @@
-from trials.models import *
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+
+from trials.models import CytogenicMarker, MolecularMarker
 from trials.services.markers_mapper import MarkersMapper
-from trials.services.therapies_mapper import *
 
 
 class LoadMarkers:
     def load_all(self):
-        # print("\n\n>>>>LoadMarkers.load_all")
-        self.load_categories()
-        self.load_markers()
-
-    def load_categories(self):
-        data = MarkersMapper().categories()
-
-        for code, title in data.items():
-            MarkerCategory.objects.update_or_create(code=code, defaults={'title': title})
-
-    def load_markers(self):
+        # This is a standalone/test fixture, not a catalog repair command.
+        if 'trials' in settings.DATABASES:
+            raise ImproperlyConfigured('Marker seeding is standalone-only; CB owns the trials catalog.')
         data = MarkersMapper().data()
-
-        for code in data.keys():
-            obj = data[code]
-            title = obj['name']
-            descr = obj['description']
-
-            marker, _ = Marker.objects.update_or_create(code=code, defaults={'title': title, 'description': descr})
-
-            categories = MarkerCategory.objects.filter(title__in=obj['categories'])
-            marker.categories.set(categories)
+        for model, category in (
+            (CytogenicMarker, 'Cytogenic Markers'),
+            (MolecularMarker, 'Molecular Markers'),
+        ):
+            for code, obj in data.items():
+                if category in obj['categories']:
+                    model.objects.update_or_create(code=code, defaults={
+                        'title': obj['name'], 'description': obj['description'],
+                    })

@@ -42,11 +42,18 @@ export function ExactLoginForm({ onTokenObtained }: Props) {
     >
       <h2 style={{ margin: 0, fontSize: "1rem" }}>Sign in to EXACT</h2>
       <p style={{ margin: 0, fontSize: "0.75rem", color: "#6b7280" }}>
-        Calls <code>POST /api-token-auth/</code>. The token is stored in{" "}
-        <code>localStorage</code>.
+        Calls <code>POST /api-token-auth/</code>, mounted only under{" "}
+        <code>ENABLE_DRF_TOKEN_AUTH</code>; the token is stored in{" "}
+        <code>localStorage</code>. The subject is a UUID for a locally
+        created identity, the provider's id otherwise — never the email.
       </p>
       <label style={{ display: "flex", flexDirection: "column", fontSize: "0.75rem" }}>
-        Username
+        {/* One span: the label is a flex column, so each contiguous text run
+            and each element child would otherwise become its own flex item
+            and the caption would stack over three lines. */}
+        <span>
+          Subject (<code>sub</code>, not the email)
+        </span>
         <input
           type="text"
           autoComplete="username"

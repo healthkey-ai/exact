@@ -4,9 +4,9 @@ PatientInfo resolver — supports two contract shapes.
 1. Inline payload: `{"patient_info": {...}}` in the request body. No DB
    lookup; PatientInfo is never persisted by this path. CancerBot
    depends on this contract — do not change.
-2. CTOMOP fetch: `?person_id=` query param or `person_id` in the body.
-   Looks up the patient from CTOMOP via `CtomopClient` and feeds the
-   row through `build_patient_info_from_ctomop_row` (#102). Gated behind
+2. PROMOP fetch: `?person_id=` query param or `person_id` in the body.
+   Looks up the patient from PROMOP via `PromopClient` and feeds the
+   row through `build_patient_info_from_promop_row` (#102). Gated behind
    `EXACT_ALLOW_PERSON_ID_LOOKUP` (off by default outside local/DEBUG) —
    see the authorization boundary below.
 
@@ -16,40 +16,68 @@ the migration without breaking).
 
 ## Authorization boundary
 
-The CTOMOP `person_id` path calls CTOMOP with a static service token
-(`CTOMOP_SERVICE_TOKEN`) that is NOT bound to the authenticated caller,
-and CTOMOP does not enforce row-level authz for that token — so honoring
-an arbitrary `person_id` lets any authenticated caller enumerate other
-patients' PHI (IDOR, #150/#108). EXACT also has no model linking users to
-patients (it's stateless for patient data — see project memory
+The PROMOP `person_id` path calls PROMOP with EXACT's own service
+credential, which authenticates EXACT as a service (`urn:service|exact`)
+and is NOT bound to the authenticated caller. PROMOP does not enforce
+row-level authz for a service credential — so honoring an arbitrary
+`person_id` lets any authenticated caller enumerate other patients' PHI
+(IDOR, #150/#108). EXACT also has no model linking users to patients
+(it's stateless for patient data — see project memory
 `feedback_exact_no_own_db.md`), so there's nothing in-tree to verify
 against.
 
 Because no production caller uses this path (the federation host fetches
-the patient from CTOMOP `/patient-info/me/` under the end-user's own token
+the patient from PROMOP `/patient-info/me/` under the end-user's own token
 and forwards it inline), the path is gated OFF by default outside
 local/DEBUG via `EXACT_ALLOW_PERSON_ID_LOOKUP`. A request carrying
 `person_id` while the gate is off gets a 403.
 
 Re-enabling it in production requires BOTH:
-- forwarding the caller's identity to CTOMOP (token exchange / pass-through
-  bearer or actor_iss/actor_sub — see hk-labs `ctomop_client.py`), AND
-- CTOMOP enforcing per-user authz (its `PatientUser`/consent models), or
+- a *verified* end-user identity reaching PROMOP: either the caller's own
+  bearer forwarded through, or a token exchanged for it — matched to
+  PROMOP's audience, token type and scopes. Asserting `actor_iss`/
+  `actor_sub` alongside a service credential is NOT one of the options:
+  PROMOP rejects unsigned actor claims from a service identity outright
+  (#448 / promop #147, #568), and EXACT sends no such field anywhere, AND
+- PROMOP enforcing per-user authz (its `PatientUser`/consent models), or
   using the self-scoped `/patient-info/me/` route.
 
-Tracked as #150/#108.
+Neither exists today, so the gate stays closed in production: the
+service-identity migration does not re-open this path.
+
+Tracked as #150/#108, #448.
 """
 import ast
 import datetime as dt
 import json
 import logging
+import re
 from math import isfinite
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, Optional
 
-from django.db.models import DateField, DateTimeField, DecimalField, FloatField, IntegerField, JSONField
+from django.db.models import (
+    BooleanField, CharField, DateField, DateTimeField, DecimalField, FloatField,
+    IntegerField, JSONField, TextField,
+)
+from rest_framework.exceptions import APIException, ValidationError
 
 from trials.services.patient_info.normalize import normalize_patient_info
+from trials.services.omop.patient_languages import (
+    LANGUAGE_CAPABILITY_FIELDS,
+    _is_false,
+    _is_true,
+    language_skill_concept_ids_from_capabilities,
+)
+
+# Distinguishes "no person_id supplied" from a supplied-but-falsy one.
+_MISSING = object()
+# Bounded on purpose. A person_id is a database primary key, so bigint's range
+# is the honest ceiling — and the bound must be applied *before* int(), because
+# CPython refuses to convert a string of more than 4300 digits at all
+# (ValueError), which would escape the ValidationError below as a 500.
+_MAX_PERSON_ID = 9223372036854775807  # PostgreSQL bigint
+_DIGITS_ONLY = re.compile(r'[0-9]{1,19}')
 
 if TYPE_CHECKING:
     from trials.services.patient_info.patient_info import PatientInfo
@@ -64,22 +92,34 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
 
     Resolution order:
       1. Inline `patient_info` payload (existing contract — unchanged).
-      2. `person_id` query param or body field — fetch from CTOMOP.
+      2. `person_id` query param or body field — fetch from PROMOP. A
+         malformed `person_id` is a 400; a well-formed one whose patient can't
+         be fetched raises `PatientContextUnavailable` (502). Neither ever
+         degrades into case 3.
       3. Return None — caller may proceed without patient context
          (e.g. public trial browsing).
     """
     patient_info_data = _get_body_field(request, 'patient_info')
     if patient_info_data:
-        # The one caller that is a client, so the one that gets 400s.
-        return _build_in_memory(patient_info_data, strict=True)
+        # The one caller that is a client, so the one that gets 400s — and
+        # the only one that is told WHICH field it mistyped (#594).
+        try:
+            return _build_in_memory(patient_info_data, strict=True)
+        except MalformedPatientValue as wrong:
+            raise ValidationError({
+                _as_the_caller_wrote_it(
+                    patient_info_data, wrong.field_name,
+                ): wrong.as_message(),
+            })
 
     person_id = _extract_person_id(request)
-    if person_id:
-        # IDOR gate (#150/#108): the CTOMOP fetch uses a static service token
-        # not bound to the caller, and CTOMOP doesn't enforce row-level authz
-        # for it — so honoring an arbitrary person_id leaks other patients'
-        # PHI. Off by default outside local/DEBUG; reject rather than silently
-        # ignore so the disabled path can't masquerade as a no-patient search.
+    if person_id is not _MISSING:
+        # IDOR gate (#150/#108): the PROMOP fetch uses EXACT's own service
+        # credential, which is not bound to the caller, and PROMOP doesn't
+        # enforce row-level authz for a service identity — so honoring an
+        # arbitrary person_id leaks other patients' PHI. Off by default outside
+        # local/DEBUG; reject rather than silently ignore so the disabled path
+        # can't masquerade as a no-patient search.
         from django.conf import settings
         if not getattr(settings, 'EXACT_ALLOW_PERSON_ID_LOOKUP', False):
             from rest_framework.exceptions import PermissionDenied
@@ -87,7 +127,7 @@ def resolve_patient_info(request) -> Optional['PatientInfo']:
                 'person_id lookup is disabled. Provide an inline patient_info '
                 'payload instead.'
             )
-        return _resolve_from_ctomop(person_id)
+        return _resolve_from_promop(person_id)
 
     return None
 
@@ -100,38 +140,182 @@ def _get_body_field(request, name: str) -> Any:
     return data.get(name)
 
 
-def _extract_person_id(request) -> Optional[Any]:
-    """Return person_id from query params first, then body. None if absent.
+def _extract_person_id(request) -> Any:
+    """Return the supplied person_id, or `_MISSING` when the caller named none.
+
+    Presence, not truthiness. A JSON body can carry `{"person_id": 0}`, and
+    `0` is falsy — reading this field with `or` turned that into "no patient
+    supplied", which meant a bad id was answered with a whole-corpus search
+    (and slipped past the 403 gate, since the gate only fires when a person_id
+    is present). An empty `?person_id=` is the same mistake in the query
+    string. Both are now *supplied but invalid*, and validation rejects them.
 
     The return is `Any` (not `str`) because the body path can carry a JSON
-    integer (e.g. `{"person_id": 9003}`) while the query-string path always
-    yields `str`. `CtomopClient.fetch_patient` coerces both to int before
-    constructing the URL.
+    integer while the query-string path always yields `str`.
     """
     query_params = getattr(request, 'query_params', None)
     if query_params:
-        pid = query_params.get('person_id') or query_params.get('personId')
-        if pid:
-            return pid
+        for key in ('person_id', 'personId'):
+            if key in query_params:
+                return query_params[key]
 
-    body_pid = _get_body_field(request, 'person_id') or _get_body_field(request, 'personId')
-    return body_pid or None
+    data = getattr(request, 'data', None)
+    if isinstance(data, dict):
+        for key in ('person_id', 'personId'):
+            if key in data:
+                return data[key]
+
+    return _MISSING
 
 
-def _resolve_from_ctomop(person_id: Any) -> Optional['PatientInfo']:
-    """Fetch the CTOMOP row and adapt it to a PatientInfo. None on any error."""
-    from trials.services.patient_info.ctomop_adapter import (
-        build_patient_info_from_ctomop_row,
+class PatientContextUnavailable(APIException):
+    """A well-formed `person_id` was named but its patient could not be fetched.
+
+    502 rather than 404: `fetch_patient` collapses every failure to None, and
+    this code deliberately does not take them apart. PROMOP's 404 would say the
+    patient doesn't exist — reporting that back would turn this route into a
+    patient-existence oracle, on a route whose whole problem is that a service
+    credential can read any patient (the IDOR the gate exists for, #150/#108).
+    One conservative code for "we could not get them", whatever the reason:
+    unreachable PROMOP, non-2xx, a body that isn't a row, or (since #448) no
+    usable credential. Operators diagnose the real cause from the WARNING the
+    client logs, which does distinguish them.
+
+    A malformed `person_id` is NOT this error — see `_reject_malformed_person_id`.
+    """
+    status_code = 502
+    default_detail = ('Could not fetch the requested patient from PROMOP. '
+                      'No trial results are returned for an unresolved patient.')
+    default_code = 'patient_context_unavailable'
+
+
+def _reject_malformed_person_id(person_id: Any) -> None:
+    """400 for a `person_id` that isn't a positive integer, before any fetch.
+
+    `PromopClient.fetch_patient` also rejects these — without a network call, as
+    a URL-injection guard — but it reports the rejection as None, which here
+    would read as "PROMOP could not give us the patient" and answer 502. Blaming
+    an upstream that was never called turns a permanently-unsatisfiable client
+    mistake into a 5xx: alert noise, and a retry loop in any client that retries
+    5xx. The shape check belongs to whoever can still tell the caller.
+
+    Checked by type, not by `int()`. A JSON body carries real types, and `int()`
+    *truncates* rather than refusing: `int(1.5)` is 1 and `int(True)` is 1, so
+    `{"person_id": 1.5}` would have quietly fetched and matched patient 1 — a
+    different, real patient's record. Anything that is not an integer, or an
+    all-digit string of at most bigint's 19 digits, is rejected rather than
+    rounded into somebody — or handed to an `int()` that refuses to convert it.
+    """
+    bad = ValidationError({'person_id': (
+        'Must be a positive integer no larger than 9223372036854775807.'
+    )})
+    if isinstance(person_id, bool):
+        # bool is a subclass of int; `True` would otherwise pass as patient 1.
+        raise bad
+    if isinstance(person_id, int):
+        value = person_id
+    elif isinstance(person_id, str) and _DIGITS_ONLY.fullmatch(person_id):
+        # Not str.isdigit(): that accepts non-ASCII digit characters, which
+        # int() then happily converts.
+        value = int(person_id)
+    else:
+        raise bad
+    if not 0 < value <= _MAX_PERSON_ID:
+        raise bad
+
+
+def _resolve_from_promop(person_id: Any) -> 'PatientInfo':
+    """Fetch the PROMOP row and adapt it to a PatientInfo.
+
+    Raises `PatientContextUnavailable` rather than returning None when the row
+    can't be fetched. Returning None here would be read by the caller as "this
+    request has no patient" — and a search with no patient answers with the
+    whole corpus, unscored and unfiltered, which looks like a valid result
+    (#156). A caller that named a `person_id` asked about *that* patient; the
+    honest answer to "we couldn't get them" is an error, not every trial we
+    know. Failing closed on the credential (#448) would otherwise have created
+    exactly this: a dropped secret answering 200 with a full trial list.
+    """
+    from trials.services.patient_info.promop_adapter import (
+        build_patient_info_from_promop_row,
     )
-    from trials.services.patient_info.ctomop_client import CtomopClient
+    from trials.services.patient_info.promop_client import PromopClient
 
-    row = CtomopClient().fetch_patient(person_id)
+    _reject_malformed_person_id(person_id)
+    row = PromopClient().fetch_patient(person_id)
     if not row:
-        return None
-    return build_patient_info_from_ctomop_row(row)
+        raise PatientContextUnavailable()
+    return build_patient_info_from_promop_row(row)
 
 
-def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
+#: PROMOP's machine-readable language capability (promop #827), for the LEGACY path
+#: (#605, porting cb-like-trials #597/#607; fixes #591 on 2omop).
+#:
+#: PROMOP's ``languages_skills`` is a DISPLAY string, "English language: read,
+#: speak; Spanish language: speak", which can never equal a trial code like
+#: ``speak__en``. So a PROMOP patient who recorded any language failed every trial
+#: with a language requirement. The same record carries eight three-valued
+#: booleans; see ``exact_matching.patient_info.language_capability`` for the state
+#: model built from them (H = held codes, A = asked languages).
+_LEGACY_SKILLS = ('speak', 'write')   # the only capabilities trials are written in
+
+
+def _has_value(value):
+    return _is_true(value) or _is_false(value)
+
+
+def languages_skills_from_capabilities(data):
+    """Legacy H and A from PROMOP's eight capability booleans. Keeps the booleans.
+
+    Returns ``data`` unchanged when none of the eight names is present, so a
+    caller that sends CB codes and no booleans is unaffected. Otherwise returns a
+    copy in which:
+
+    * if any boolean has a value (parses as true or false), ``languages_skills``
+      is rebuilt from the True speak/write ones as ``<skill>__<lang>`` codes
+      (``None`` when there are none), and ``languages_asked`` lists the languages
+      with at least one valued boolean. The booleans win over codes sent beside
+      them;
+    * if all of them are NULL or blank, ``languages_skills`` is dropped only when
+      it is PROMOP's display string (it contains ':', which no CB code does), so
+      codes a caller sent alongside a form's empty fields survive.
+
+    The eight booleans are left in place for the OMOP builder
+    (``language_skill_concept_ids_from_capabilities``), which reads the same
+    values; the model-field filter drops them afterwards.
+    """
+    present = [name for name in LANGUAGE_CAPABILITY_FIELDS if name in data]
+    if not present:
+        return data
+    out = dict(data)
+    if not any(_has_value(data[name]) for name in present):
+        current = out.get('languages_skills')
+        if isinstance(current, str) and ':' in current:
+            out['languages_skills'] = None
+        return out
+    held = sorted({
+        f'{skill}__{code}' for name in present
+        for code, skill in [LANGUAGE_CAPABILITY_FIELDS[name]]
+        if skill in _LEGACY_SKILLS and _is_true(data[name])
+    })
+    asked = sorted({LANGUAGE_CAPABILITY_FIELDS[name][0] for name in present if _has_value(data[name])})
+    out['languages_skills'] = ','.join(held) if held else None
+    out['languages_asked'] = ','.join(asked) if asked else None
+    return out
+
+
+def translate_language_capabilities(data):
+    """Both language translations from one read of the booleans (#605, CB #5350).
+
+    The legacy H/A first, which keeps the booleans, then the OMOP pairs, which
+    consume them under ``EXACT_OMOP_LANGUAGES`` + readiness. Each path reads its own
+    fields, so whichever path the readiness snapshot picks has its values.
+    """
+    return language_skill_concept_ids_from_capabilities(languages_skills_from_capabilities(data))
+
+
+def _build_in_memory(data: dict, strict: bool = False, named_null_fields=(),
+                     negated_sources=None) -> 'PatientInfo':
     """Build an unsaved PatientInfo from a dict, compute derived fields.
 
     `strict` refuses a malformed value instead of falling back to the
@@ -140,6 +324,13 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     `resolve_patient_info`, where the caller is a client and 400 is the right
     answer. The CTOMOP adapter and the management commands leave it off —
     there a raise blames the wrong party (see below).
+
+    `named_null_fields` is for a SOURCE that names a derived field but has no
+    column for it. A PROMOP record never carries an adequacy column, so its
+    missing inputs must read as "unknown" instead of the legacy False that
+    means "not adequate" (#5483, #621). Each name is included as an explicit
+    null (so the derivation sees a stated unknown) while a supplied value still
+    wins. Callers that do not pass it keep the legacy behaviour exactly.
     """
     from trials.services.patient_info.patient_info import PatientInfo
     from trials.models import PreExistingConditionCategory
@@ -150,19 +341,69 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
 
     # Convert camelCase keys to snake_case if needed
     snake_data = _to_snake_case(data)
+    # Names the producer spells differently from EXACT's own column (#593).
+    snake_data = _apply_inbound_aliases(snake_data)
+    # Provenance for the negated row's canonical field (#5667). A row that
+    # came through `normalize_promop_row` (the adapter, or the federated host
+    # posting `/normalize-promop-row/`'s response back inline) already carries
+    # it, because by then the positive keys have been popped. An untouched
+    # inline payload is captured from its own spelling, before the model-field
+    # filter drops it.
+    if negated_sources is None:
+        negated_sources = data.pop('_negated_sources', None) if isinstance(data, dict) else None
+    if negated_sources is None:
+        from trials.services.patient_info.promop_adapter import capture_negated_sources
+        negated_sources = capture_negated_sources(snake_data)
+    # PROMOP's language booleans -> legacy codes/asked languages and, on the OMOP
+    # path, concept pairs, before the field filter below drops them (#605, CB #5350).
+    snake_data = translate_language_capabilities(snake_data)
 
     # Filter to known model fields only
     model_fields = {f.name for f in PatientInfo._meta.get_fields() if hasattr(f, 'column')}
     filtered = {k: v for k, v in snake_data.items() if k in model_fields}
 
+    # A source with no column for a derived field still NAMES it. Record that
+    # as an explicit null BEFORE the coercions and normalization below, so the
+    # derivation answers unknown rather than legacy False. A supplied value
+    # keeps precedence.
+    for name in named_null_fields:
+        if name in model_fields:
+            filtered.setdefault(name, None)
+
+    if strict:
+        # Before `_coerce_numerics`, whose non-finite scrub runs over every
+        # field: a NaN sent for a text column would otherwise turn into None
+        # before it could be named (#479).
+        _reject_malformed_text(filtered, PatientInfo)
     # Coerce date strings from JSON into proper date objects
-    _coerce_dates(filtered, PatientInfo)
+    _coerce_dates(filtered, PatientInfo, strict)
     # Coerce numeric strings into proper numeric types (CB API can send "10.20" etc.)
-    _coerce_numerics(filtered, PatientInfo)
+    _coerce_numerics(filtered, PatientInfo, strict)
+    # Normalise JSON 0/1 to bool so the matcher and the SQL pool agree on a
+    # boolean restriction (see _coerce_booleans).
+    _coerce_booleans(filtered, PatientInfo)
     # Coerce string-encoded lists/dicts for JSONField columns (CB can send "[{...}]" as str)
-    _coerce_json_fields(filtered, PatientInfo)
+    _coerce_json_fields(filtered, PatientInfo, strict)
     # Enforce per-field item shape on JSON list fields downstream code iterates as dicts
     _normalize_structured_json_fields(filtered)
+
+    if strict:
+        # A non-boolean in a boolean column used to survive into the matcher:
+        # `0` is not `False`, so the matcher called a required True "not_matched"
+        # while the SQL pool counted the trial as unconstrained and kept it.
+        # 0/1 are normalised above; anything else is malformed input from the
+        # client and gets the 400 that names the right party.
+        bad_booleans = {
+            f.name: 'Expected a boolean or null.'
+            for f in PatientInfo._meta.get_fields()
+            if isinstance(f, BooleanField) and hasattr(f, 'column')
+            and f.name in filtered
+            and f.name != 'tp53_disruption'  # has its own explicit contract below
+            and filtered[f.name] is not None
+            and type(filtered[f.name]) is not bool
+        }
+        if bad_booleans:
+            raise ValidationError({'patient_info': bad_booleans})
 
     pi = PatientInfo(**filtered)
     # Which fields the CALLER named, as opposed to which happen to hold a value.
@@ -176,17 +417,17 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     # This helper is NOT inline-payload-only — the CTOMOP/PROMOP adapter and
     # four management commands reach it too, and there a null is EXACT's own
     # stored derivation rather than anyone's assertion. What keeps those apart
-    # today is `ctomop_adapter`, which strips None from the row before calling
+    # today is `promop_adapter`, which strips None from the row before calling
     # in; nothing here enforces it. If that strip is ever widened the way
     # `tp53_disruption` is already exempted from it, upstream nulls would start
     # reading as caller assertions.
     pi._provided_fields = frozenset(filtered)
+    pi._negated_sources = negated_sources
     if 'tp53_disruption' in filtered:
         value = filtered['tp53_disruption']
         if value is not None and type(value) is not bool and strict:
             # The inline path only: a client sent something that is not an
             # aggregate, and 400 names the right party.
-            from rest_framework.exceptions import ValidationError
             raise ValidationError(
                 {'patient_info': {'tp53_disruption': 'Expected a boolean or null.'}}
             )
@@ -241,31 +482,238 @@ def _build_in_memory(data: dict, strict: bool = False) -> 'PatientInfo':
     pi._pre_existing_condition_categories = categories
     pi._concomitant_medications = concomitant_ids
 
+    # Both person_id and normalize-promop-row -> inline federation inputs
+    # reach this boundary. Source category codes are not category primary keys.
+    codes = snake_data.get('preexisting_conditions')
+    if not pre_existing_ids and isinstance(codes, (list, tuple)):
+        # Preserve the existing explicit category-PK contract if both input
+        # shapes are supplied. A malformed element must not erase known codes.
+        pi._pre_existing_condition_codes_cache = [
+            code for code in codes if isinstance(code, str) and code.strip()
+        ]
+
+    # Newly supported canonical creatinine can activate eGFR recalculation.
+    # Retain a valid supplied source reading on these PatientRecord-shaped
+    # inputs, including zero; ordinary legacy inline normalization is unchanged.
+    from exact_matching.patient_info.patient_info_attributes import _as_reading
+    has_source_renal_labs = any(
+        snake_data.get(field) is not None
+        for field in ('egfr_ml_min_173m2', 'serum_creatinine_mg_dl')
+    )
+    supplied_egfr = _as_reading(pi.estimated_glomerular_filtration_rate) if has_source_renal_labs else None
     normalize_patient_info(pi)
+    if supplied_egfr is not None:
+        pi.estimated_glomerular_filtration_rate = supplied_egfr
+    # OMOP mode replaces the therapy line with its concept id for matching;
+    # the reader-facing name travels beside it as `*_display`. It is not a
+    # PatientInfo column, so carry it on the instance for the detail and
+    # subform presentation.
+    for field in ('first_line_therapy', 'second_line_therapy', 'later_therapy'):
+        display = snake_data.get(f'{field}_display')
+        if display:
+            setattr(pi, f'{field}_display', display)
     return pi
 
 
-def _coerce_dates(data: dict, model_cls):
-    """Parse ISO date strings into datetime.date for all DateField entries."""
+class MalformedPatientValue(ValueError):
+    """A value that cannot be its column's type.
+
+    Three answers for the same mistake used to follow from where it was read:
+    an inline client sending `'abc'` for an integer got a silent `None` (and
+    `eligible_for_min_max_value` returns the WHOLE scope on `None` — false
+    positives), `true` became `1`, and `''` reached the ORM as a 500.
+
+    A plain exception, not a DRF one: `_build_in_memory` has three callers and
+    only the inline payload can be blamed for the value — `resolve_patient_info`
+    translates it into a 400 naming the key the caller sent. An upstream row
+    and the batch commands keep the old drop-and-log behaviour.
+    """
+
+    def __init__(self, field_name: str, expected: str, value):
+        self.field_name = field_name
+        self.expected = expected
+        self.got = type(value).__name__
+        super().__init__(f'{field_name}: expected {expected}, got {self.got}.')
+
+    def as_message(self) -> str:
+        return (
+            f'Expected {self.expected}, got {self.got}. '
+            f'Send null or omit the field if it was not answered.'
+        )
+
+
+def _as_date(key: str, val):
+    """A date, a datetime narrowed to its date, or `MalformedPatientValue`.
+
+    Every `DateField` here is a date, but a producer may send a datetime:
+    `promop_adapter` calls `.isoformat()` on anything that is a `date`, and a
+    `datetime` IS one. Parsed as a datetime first and narrowed, so a producer
+    that sends the time of day is understood rather than refused.
+    """
+    if isinstance(val, dt.datetime):
+        return val.date()
+    if isinstance(val, dt.date):
+        return val
+    if isinstance(val, str):
+        text = val.strip()
+        for parse in (dt.date.fromisoformat, lambda t: dt.datetime.fromisoformat(t).date()):
+            try:
+                return parse(text)
+            except ValueError:
+                continue
+    raise MalformedPatientValue(key, 'an ISO date such as 2026-01-31', val)
+
+
+def _reject_malformed_number(field, val):
+    """Raise for a value that is not a number for this column (#594).
+
+    A BOOLEAN IS WRONG ON A NUMBER, though Python says `True` is an `int` and
+    the ORM would take it as 1. Nobody means one by `true`, and 1 is a
+    plausible enough PD-L1 percentage that nothing downstream looks odd.
+    """
+    if not _says_something(val):
+        return
+    # "a number", not "a whole number": the integer columns accept a decimal
+    # too (the lenient path has kept `10.2` for a long time).
+    expected = 'a number'
+    if isinstance(val, bool):
+        raise MalformedPatientValue(field.name, expected, val)
+    if isinstance(val, str):
+        try:
+            parsed = (
+                float(val) if isinstance(field, (IntegerField, FloatField))
+                else Decimal(val)
+            )
+        except (ValueError, TypeError, InvalidOperation):
+            raise MalformedPatientValue(field.name, expected, val)
+        if isinstance(parsed, float) and not isfinite(parsed):
+            raise MalformedPatientValue(field.name, expected, val)
+        if isinstance(parsed, Decimal) and not parsed.is_finite():
+            raise MalformedPatientValue(field.name, expected, val)
+        return
+    if isinstance(val, Decimal):
+        if not val.is_finite():
+            raise MalformedPatientValue(field.name, expected, val)
+        return
+    if isinstance(val, float):
+        if not isfinite(val):
+            raise MalformedPatientValue(field.name, expected, val)
+        return
+    if not isinstance(val, int):
+        raise MalformedPatientValue(field.name, expected, val)
+
+
+#: Text columns the matcher reads as several values, so a list is how a caller
+#: may send them: the queryset takes a list or a separator-joined string
+#: (`_csv`, `_csv_stripped`, `_as_list_stripped` and the language handler in
+#: `exact_matching/querysets/trial.py`'s dispatch table). Whether every
+#: downstream reader of these is safe with a list is the contract question in
+#: #716; this set only keeps today's behaviour for them.
+#:
+#: Left out on purpose, measured on `cb-like-trials`: a list in
+#: `cytogenic_markers` / `molecular_markers` (`.split` in
+#: patient_info_attributes.py:1076-1077) or in the three therapy-line columns
+#: (patient_info_attributes.py:851-855) already crashes the build, so on the
+#: inline path they become a 400 instead of a 500.
+_TEXT_FIELDS_TAKING_A_LIST = frozenset({
+    'ethnicity', 'languages_skills', 'languages_asked', 'planned_therapies',
+    'histologic_type',
+    'estrogen_receptor_status', 'progesterone_receptor_status', 'her2_status',
+    'hrd_status', 'hr_status', 'tumor_stage', 'nodes_stage',
+    'distant_metastasis_stage', 'staging_modalities', 'protein_expressions',
+    'richter_transformation', 'tumor_burden', 'disease_activity', 'binet_stage',
+    'morphologic_variant', 'disease_behavior', 'disease_subtype', 'mipi_risk',
+    'mipi_c_risk', 'bulky_disease_criteria', 'high_risk_mcl_criteria',
+    # M2M ids, popped before the field filter only under the snake_case key;
+    # a camelCase `concomitantMedications` list reaches this check and used to
+    # pass. Kept as it was; which spelling counts is #717.
+    'concomitant_medications',
+})
+
+
+def _reject_malformed_text(data: dict, model_cls):
+    """Strict (inline) path: a text column holds a string or null (#479).
+
+    A number, boolean or object used to reach `normalize`, and the first
+    `.strip()` on it was a 500 (`disease: 123` at `normalize.py:483`) — and
+    `normalize.py` stays byte-identical to CancerBot, so the boundary is where
+    this is answered. A list is accepted only where the readers take one
+    (`_TEXT_FIELDS_TAKING_A_LIST`), and then only a list of strings. Blank
+    strings are left as they are; what they mean is #716's question.
+    """
+    for f in model_cls._meta.get_fields():
+        if not hasattr(f, 'column') or f.name not in data:
+            continue
+        if not isinstance(f, (TextField, CharField)):
+            continue
+        val = data[f.name]
+        if val is None or isinstance(val, str):
+            continue
+        if f.name in _TEXT_FIELDS_TAKING_A_LIST:
+            if isinstance(val, (list, tuple)) and all(isinstance(v, str) for v in val):
+                continue
+            raise MalformedPatientValue(f.name, 'a string or a list of strings', val)
+        raise MalformedPatientValue(f.name, 'a string', val)
+
+
+def _coerce_dates(data: dict, model_cls, strict: bool = False):
+    """Parse ISO date strings into datetime.date for all DateField entries.
+
+    Absent, a date, or wrong — see `MalformedPatientValue`. `strict` is only
+    set by the inline payload, the one caller who typed the value.
+    """
     date_fields = {
         f.name for f in model_cls._meta.get_fields()
-        if hasattr(f, 'column') and isinstance(f, (DateField, DateTimeField))
+        # `DateTimeField` subclasses `DateField`, so one name covers both.
+        if hasattr(f, 'column') and isinstance(f, DateField)
     }
     for key in date_fields & data.keys():
-        val = data[key]
-        if isinstance(val, str) and val:
-            try:
-                data[key] = dt.date.fromisoformat(val)
-            except ValueError:
-                data[key] = None
+        if not _says_something(data[key]):
+            data[key] = None
+            continue
+        try:
+            data[key] = _as_date(key, data[key])
+        except MalformedPatientValue:
+            if strict:
+                raise
+            logger.warning(
+                'Dropping an unusable value for %s from an upstream row: %r',
+                key, data[key],
+            )
+            data[key] = None
 
 
-def _coerce_numerics(data: dict, model_cls):
-    """Coerce string values to numeric types for IntegerField/FloatField/DecimalField columns."""
+def _coerce_numerics(data: dict, model_cls, strict: bool = False):
+    """Coerce string values to numeric types for IntegerField/FloatField/DecimalField columns.
+
+    `strict` refuses a value that cannot be the column's type instead of
+    dropping it — the inline payload is the one caller who typed it (#594).
+    """
     for f in model_cls._meta.get_fields():
         if not hasattr(f, 'column') or f.name not in data:
             continue
         val = data[f.name]
+        if isinstance(f, (IntegerField, FloatField, DecimalField)) and (
+            isinstance(val, bool) or isinstance(val, (list, dict, tuple, set))
+        ):
+            # A boolean is an `int` to Python and a container is neither: both
+            # used to reach the ORM (1, or a TypeError). Strict names them;
+            # the upstream path drops them, as it dropped everything else.
+            if strict:
+                _reject_malformed_number(f, val)
+            data[f.name] = None
+            continue
+        if strict and isinstance(f, (IntegerField, FloatField, DecimalField)):
+            _reject_malformed_number(f, val)
+        # JSON parsers accept the `NaN`/`Infinity` literals, so a non-finite
+        # value can arrive as a float or Decimal rather than the string forms
+        # handled below. It is never a measurement; make it absent.
+        if isinstance(val, float) and not isfinite(val):
+            data[f.name] = None
+            continue
+        if isinstance(val, Decimal) and not val.is_finite():
+            data[f.name] = None
+            continue
         if not isinstance(val, str):
             continue
         # '' used to short-circuit here (`or val == ''`), which left a `str`
@@ -309,20 +757,54 @@ def _coerce_numerics(data: dict, model_cls):
                     data[f.name] = None
         elif isinstance(f, FloatField):
             try:
-                data[f.name] = float(val)
+                coerced = float(val)
+                if not isfinite(coerced):
+                    # PostgreSQL orders NaN above every number, so a NaN ceiling
+                    # check excludes a trial that the Python matcher (`nan > x`
+                    # is False) calls satisfied. `inf` does the same in reverse.
+                    # Neither is a measurement; make them absent, like ''.
+                    raise ValueError(val)
+                data[f.name] = coerced
             except (ValueError, TypeError):
                 data[f.name] = None
         elif isinstance(f, DecimalField):
             try:
-                data[f.name] = Decimal(val)
+                parsed = Decimal(val)
             except (InvalidOperation, TypeError):
                 data[f.name] = None
+            else:
+                # Decimal('NaN') is constructible but every comparison with it
+                # raises InvalidOperation; absent is the only safe spelling.
+                data[f.name] = parsed if parsed.is_finite() else None
+
+
+def _coerce_booleans(data: dict, model_cls):
+    """Normalise JSON integers 0/1 to bool for BooleanField columns.
+
+    JSON clients (and some serialisers) send integers where the column wants a
+    boolean. `0` is not `False` in Python, so leaving it as an int made the
+    matcher call a required `True` "not_matched" while the SQL pool saw a
+    non-blank value and kept the trial — the search and the verdict disagreed.
+    0/1 are the only integer encodings accepted here; other values are refused
+    by the strict HTTP boundary rather than silently reinterpreted.
+    """
+    for f in model_cls._meta.get_fields():
+        if not hasattr(f, 'column') or not isinstance(f, BooleanField) or f.name not in data:
+            continue
+        if f.name == 'tp53_disruption':
+            # 0/1 are deliberately NOT booleans here: the tp53 aggregate has its
+            # own contract (test_promop_tp53_contract) that distinguishes an
+            # upstream non-boolean from a client's malformed one.
+            continue
+        value = data[f.name]
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value in (0, 1):
+            data[f.name] = bool(value)
 
 
 def _normalize_structured_json_fields(data: dict):
     """Enforce list-of-dicts shape on JSON fields whose consumers call `.get(...)` per item.
 
-    Bare-string items (legacy rows, malformed CTOMOP input) would otherwise crash
+    Bare-string items (legacy rows, malformed PROMOP input) would otherwise crash
     the matcher and trial-details renderer with `'str' object has no attribute 'get'`.
     """
     for key in ('later_therapies', 'supportive_therapies'):
@@ -363,8 +845,13 @@ def _normalize_structured_json_fields(data: dict):
         data[key] = [s.strip() for s in val if isinstance(s, str) and s.strip()]
 
 
-def _coerce_json_fields(data: dict, model_cls):
-    """Parse string-encoded JSON/Python-repr values for JSONField columns."""
+def _coerce_json_fields(data: dict, model_cls, strict: bool = False):
+    """Parse string-encoded JSON/Python-repr values for JSONField columns.
+
+    `strict` refuses a string that is neither instead of discarding it: the
+    inline caller sent a value and was answered as though they had not (#479).
+    A blank string stays an absent value. The upstream path is unchanged.
+    """
     json_fields = {
         f.name for f in model_cls._meta.get_fields()
         if hasattr(f, 'column') and isinstance(f, JSONField)
@@ -376,18 +863,91 @@ def _coerce_json_fields(data: dict, model_cls):
         # Try JSON first, then Python repr (CB stores lists as Python repr strings)
         try:
             data[key] = json.loads(val)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
+            # RecursionError: a deeply nested string escapes json.loads as one,
+            # and was a 500 on the inline path.
             try:
                 data[key] = ast.literal_eval(val)
-            except (ValueError, SyntaxError):
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                if strict and val.strip():
+                    raise MalformedPatientValue(
+                        key, 'a list or object, or a JSON string encoding one', val,
+                    )
                 data[key] = None
+
+
+def camel_to_snake(name: str) -> str:
+    """The key EXACT stores for a caller's spelling (`patientAge` -> `patient_age`)."""
+    import re
+    s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
 
 
 def _to_snake_case(data: dict) -> dict:
     """Convert camelCase dict keys to snake_case."""
-    import re
-    def camel_to_snake(name):
-        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
-        return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
-
     return {camel_to_snake(k): v for k, v in data.items()}
+
+
+def _as_the_caller_wrote_it(payload: dict, field_name: str) -> str:
+    """The key the caller actually sent for this column.
+
+    An error naming `patient_age` at somebody who sent `patientAge` makes them
+    search their payload for a key that is not in it. The alias table is
+    honoured too, so a caller who sent the documented `pd_l1_tumor_cells` is
+    told about that spelling rather than EXACT's misspelled column.
+    """
+    # Exact spelling first: two spellings reach one column, and the value
+    # that failed is the one under EXACT's own key (an alias never
+    # overwrites). Naming whichever came first would blame a field that is
+    # fine and hand back the same 400 after the caller fixes it.
+    for sent in payload:
+        if isinstance(sent, str) and camel_to_snake(sent) == field_name:
+            return sent
+    for sent in payload:
+        if isinstance(sent, str) and _INBOUND_ALIASES.get(camel_to_snake(sent)) == field_name:
+            return sent
+    return field_name
+
+
+#: Names the producer sends for a field EXACT stores under a different one.
+#:
+#: `pd_l1_tumor_cels` is EXACT's own spelling and it is missing an `l` (the
+#: model field and the two trial bounds). PROMOP spells it correctly, and so
+#: does the payload `docs/api.md` publishes, so the documented key was dropped
+#: at the model-field filter and the request answered 200 with the PD-L1
+#: result missing (#593). A dropped PD-L1 is not a missing trial: `min`/`max`
+#: bounds return the whole scope on `None`, so a patient below a trial's
+#: minimum is shown that trial — false positives.
+#:
+#: Aliased inbound rather than renamed: the misspelling is also the stem of
+#: two trial columns, and correcting all of them is a migration plus a data
+#: move for no difference a caller can observe.
+_INBOUND_ALIASES = {
+    'pd_l1_tumor_cells': 'pd_l1_tumor_cels',
+}
+
+
+def _says_something(value) -> bool:
+    """Whether a value tells us anything about a patient.
+
+    `False` and `0` DO — they are answers. `None`, `''` and whitespace do not.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ''
+    return True
+
+
+def _apply_inbound_aliases(data: dict) -> dict:
+    """Copy a producer's spelling onto EXACT's field, without overwriting it.
+
+    The alias only fills a gap: between two usable spellings the existing
+    contract decides. The SOURCE guard keeps an empty string off a typed
+    column, where it would reach Django as `ValueError: expected a number but
+    got ''` instead of reading as blank (#594).
+    """
+    for sent, stored in _INBOUND_ALIASES.items():
+        if _says_something(data.get(sent)) and not _says_something(data.get(stored)):
+            data[stored] = data[sent]
+    return data

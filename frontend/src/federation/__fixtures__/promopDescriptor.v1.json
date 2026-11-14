@@ -1,0 +1,1507 @@
+{
+ "_meta": {
+  "descriptor_entry_count": 424,
+  "kinds": [
+   "alias",
+   "authored",
+   "computed",
+   "direct",
+   "editable",
+   "explicit-answer",
+   "negated",
+   "selectable",
+   "unmapped"
+  ],
+  "note": "Curated contract sample from the full deployment descriptor. Regenerate when the pinned PROMOP SHA changes.",
+  "schema_version": 1,
+  "sha": "5326ea57b1f464790b36478ccf8944d8d90f3c71",
+  "source": "healthkey-ai/promop"
+ },
+ "fields": {
+  "able_to_swallow_tablets_capsules": {
+   "bindings": [],
+   "control": "boolean",
+   "group": "needs-concept-set",
+   "kind": "unmapped",
+   "reason": "Requires an exact approved clinical-input mapping and source vocabulary.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": false
+  },
+  "absolute_neutrophile_count_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "absolute_neutrophile_count",
+   "reason": "Unit of absolute_neutrophile_count; selected alongside that value and stored with it. The canonical 10*3/uL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "cells/\u00b5L",
+     "value": "CELLS/UL"
+    },
+    {
+     "label": "10\u00b3/\u00b5L",
+     "value": "10*3/uL"
+    },
+    {
+     "label": "10\u2079/L",
+     "value": "10*9/L"
+    }
+   ],
+   "writable": false
+  },
+  "activated_partial_thromboplastin_time_uln": {
+   "bindings": [],
+   "control": "number",
+   "group": "needs-concept-set",
+   "kind": "unmapped",
+   "reason": "Requires an exact approved clinical-input mapping and source vocabulary.",
+   "target": "patient_record",
+   "value_kind": "number",
+   "writable": false
+  },
+  "albumin_level_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "albumin_level",
+   "reason": "Unit of albumin_level; selected alongside that value and stored with it. The canonical G/DL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "g/dL",
+     "value": "G/DL"
+    },
+    {
+     "label": "g/L",
+     "value": "G/L"
+    }
+   ],
+   "writable": false
+  },
+  "alkaline_phosphatase": {
+   "bindings": [],
+   "canonical": "alkaline_phosphatase_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors alkaline_phosphatase_u_l; edit that field instead.",
+   "writable": false
+  },
+  "alkaline_phosphatase_u_l": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "U/L",
+     "value": "U/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "alt_u_l": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "U/L",
+     "value": "U/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "ast_u_l": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "U/L",
+     "value": "U/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "blood_urea_nitrogen": {
+   "bindings": [],
+   "canonical": "bun_mg_dl",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors bun_mg_dl; edit that field instead.",
+   "writable": false
+  },
+  "bmi": {
+   "bindings": [
+    "bmi",
+    "bmiMin",
+    "bmiMax"
+   ],
+   "control": "number",
+   "inputs": [
+    "weight",
+    "height"
+   ],
+   "kind": "computed",
+   "reason": "Computed from height, weight.",
+   "writable": false
+  },
+  "bun_mg_dl": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "mg/dL"
+    },
+    {
+     "label": "mmol/L",
+     "value": "mmol/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "calcium_mg_dl": {
+   "bindings": [],
+   "canonical": "serum_calcium_mg_dl",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors serum_calcium_mg_dl; edit that field instead.",
+   "writable": false
+  },
+  "creatinine_clearance_ml_min": {
+   "bindings": [],
+   "control": "number",
+   "kind": "direct",
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mL/min",
+     "value": "mL/min"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "creatinine_clearance_rate": {
+   "bindings": [
+    "creatinineClearanceRate"
+   ],
+   "canonical": "creatinine_clearance_ml_min",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors creatinine_clearance_ml_min; edit that field instead.",
+   "writable": false
+  },
+  "creatinine_mg_dl": {
+   "bindings": [],
+   "canonical": "serum_creatinine_mg_dl",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors serum_creatinine_mg_dl; edit that field instead.",
+   "writable": false
+  },
+  "cytogenetic_markers": {
+   "bindings": [],
+   "control": "text",
+   "kind": "computed",
+   "options": [
+    {
+     "code": "67285006",
+     "value": "del17p"
+    },
+    {
+     "code": "15897004",
+     "value": "t(4;14)"
+    },
+    {
+     "code": "15897004",
+     "value": "t(11;14)"
+    },
+    {
+     "code": "15897004",
+     "value": "t(14;16)"
+    },
+    {
+     "code": "41669009",
+     "value": "1q_gain"
+    },
+    {
+     "code": "41669009",
+     "value": "1q_amp"
+    },
+    {
+     "code": "55597007",
+     "value": "hyperdiploidy"
+    },
+    {
+     "code": "64329008",
+     "value": "del13q"
+    },
+    {
+     "code": "41669009",
+     "value": "MYC rearrangement"
+    }
+   ],
+   "reason": "Legacy cytogenetic summary is read-only. Record individual findings in Genomics.",
+   "target": "genomics",
+   "writable": false
+  },
+  "cytogenic_markers": {
+   "bindings": [],
+   "canonical": "cytogenetic_markers",
+   "control": "text",
+   "kind": "alias",
+   "reason": "Legacy summary of cytogenetic_markers; that column is read-only. Record individual findings in Genomics.",
+   "writable": false
+  },
+  "date_of_birth": {
+   "bindings": [
+    "dateOfBirth"
+   ],
+   "control": "date",
+   "kind": "direct",
+   "projection_target": "person",
+   "target": "patient_record",
+   "value_kind": "date",
+   "writable": true
+  },
+  "egfr": {
+   "bindings": [],
+   "canonical": "egfr_ml_min_173m2",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors egfr_ml_min_173m2; edit that field instead.",
+   "writable": false
+  },
+  "egfr_ml_min_173m2": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mL/min/1.73m2",
+     "value": "mL/min/1.73m2"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "estimated_glomerular_filtration_rate": {
+   "bindings": [],
+   "canonical": "egfr_ml_min_173m2",
+   "control": "number",
+   "inputs": [
+    "serum_creatinine_level",
+    "patient_age",
+    "gender"
+   ],
+   "kind": "alias",
+   "reason": "Mirrors egfr_ml_min_173m2; edit that field instead.",
+   "writable": false
+  },
+  "ethnicity": {
+   "bindings": [],
+   "control": "text",
+   "kind": "direct",
+   "options": [
+    {
+     "code": "Hispanic",
+     "value": "Hispanic or Latino"
+    },
+    {
+     "code": "Not Hispanic",
+     "value": "Not Hispanic or Latino"
+    }
+   ],
+   "projection_target": "person",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "gender": {
+   "bindings": [
+    "gender"
+   ],
+   "control": "text",
+   "kind": "direct",
+   "options": [
+    {
+     "code": "F",
+     "value": "Female"
+    },
+    {
+     "code": "M",
+     "value": "Male"
+    },
+    {
+     "code": "U",
+     "value": "Unknown"
+    }
+   ],
+   "projection_target": "person",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "genetic_mutations": {
+   "bindings": [],
+   "control": "text",
+   "endpoint": "/api/v1/patient-records/{person_id}/genomics/",
+   "kind": "editable",
+   "reason": "This field requires its dedicated structured-data editor.",
+   "target": "genomics",
+   "writable": false
+  },
+  "genomics_atm": {
+   "bindings": [],
+   "control": "text",
+   "kind": "editable",
+   "reason": "This field requires its dedicated structured-data editor.",
+   "target": "patient_record",
+   "writable": false
+  },
+  "genomics_atm_atr": {
+   "bindings": [],
+   "control": "text",
+   "kind": "editable",
+   "reason": "This field requires its dedicated structured-data editor.",
+   "target": "patient_record",
+   "writable": false
+  },
+  "height_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "height",
+   "reason": "Unit of height; selected alongside that value and stored on the measurement.",
+   "unit_options": [
+    {
+     "label": "cm",
+     "value": "cm"
+    },
+    {
+     "label": "in",
+     "value": "in"
+    }
+   ],
+   "writable": false
+  },
+  "hemoglobin_g_dl": {
+   "bindings": [
+    "hemoglobinLevel"
+   ],
+   "control": "number",
+   "dated": true,
+   "inputs": [
+    "hemoglobin_level"
+   ],
+   "kind": "computed",
+   "reason": "Normalised from hemoglobin_level in the default unit (g/dL); edit that field and its unit instead.",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "g/dL",
+     "value": "g/dL"
+    },
+    {
+     "label": "g/L",
+     "value": "g/L"
+    },
+    {
+     "label": "mmol/L",
+     "value": "mmol/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": false
+  },
+  "hemoglobin_level": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "g/dL",
+     "value": "G/DL"
+    },
+    {
+     "label": "g/L",
+     "value": "G/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "hemoglobin_level_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "hemoglobin_level",
+   "reason": "Unit of hemoglobin_level; selected alongside that value and stored with it. The canonical g/dL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "g/dL",
+     "value": "G/DL"
+    },
+    {
+     "label": "g/L",
+     "value": "G/L"
+    }
+   ],
+   "writable": false
+  },
+  "hepatitis_b_status": {
+   "answer_labels": {
+    "false": "No Hepatitis B",
+    "true": "Hepatitis B Positive"
+   },
+   "bindings": [],
+   "control": "boolean",
+   "kind": "direct",
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": true
+  },
+  "hepatitis_c_status": {
+   "answer_labels": {
+    "false": "No Hepatitis C",
+    "true": "Hepatitis C Positive"
+   },
+   "bindings": [],
+   "control": "boolean",
+   "kind": "direct",
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": true
+  },
+  "hiv_status": {
+   "answer_labels": {
+    "false": "No HIV",
+    "true": "HIV Positive"
+   },
+   "bindings": [],
+   "control": "boolean",
+   "kind": "direct",
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": true
+  },
+  "lactate_dehydrogenase_level": {
+   "bindings": [],
+   "canonical": "ldh_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors ldh_u_l; edit that field instead.",
+   "writable": false
+  },
+  "last_treatment": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "date",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "ldh": {
+   "bindings": [],
+   "canonical": "ldh_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors ldh_u_l; edit that field instead.",
+   "writable": false
+  },
+  "ldh_level": {
+   "bindings": [],
+   "canonical": "ldh_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors ldh_u_l; edit that field instead.",
+   "writable": false
+  },
+  "ldh_u_l": {
+   "bindings": [
+    "lactateDehydrogenaseLevel"
+   ],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "U/L",
+     "value": "U/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "line_of_therapy": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "liver_enzyme_levels_alp": {
+   "bindings": [],
+   "canonical": "alkaline_phosphatase_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors alkaline_phosphatase_u_l; edit that field instead.",
+   "writable": false
+  },
+  "liver_enzyme_levels_alt": {
+   "bindings": [],
+   "canonical": "alt_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors alt_u_l; edit that field instead.",
+   "writable": false
+  },
+  "liver_enzyme_levels_ast": {
+   "bindings": [],
+   "canonical": "ast_u_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors ast_u_l; edit that field instead.",
+   "writable": false
+  },
+  "magnesium": {
+   "bindings": [],
+   "canonical": "magnesium_mg_dl",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors magnesium_mg_dl; edit that field instead.",
+   "writable": false
+  },
+  "magnesium_mg_dl": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "mg/dL"
+    },
+    {
+     "label": "mmol/L",
+     "value": "mmol/L"
+    },
+    {
+     "label": "mEq/L",
+     "value": "mEq/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "meets_crab": {
+   "bindings": [
+    "meetsCRAB"
+   ],
+   "control": "boolean",
+   "inputs": [
+    "serum_calcium_mg_dl",
+    "creatinine_clearance_ml_min",
+    "serum_creatinine_mg_dl",
+    "hemoglobin_g_dl",
+    "bone_lesions"
+   ],
+   "kind": "computed",
+   "reason": "Computed from serum_calcium_mg_dl, creatinine_clearance_ml_min, serum_creatinine_mg_dl, hemoglobin_g_dl, bone_lesions.",
+   "writable": false
+  },
+  "meets_lugano": {
+   "bindings": [],
+   "control": "boolean",
+   "kind": "direct",
+   "reason": "Clinician-confirmed Lugano criteria (PET/CT and bone-marrow assessment), entered directly on the record.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": true
+  },
+  "molecular_markers": {
+   "bindings": [],
+   "control": "text",
+   "inputs": [
+    "genetic_mutations"
+   ],
+   "kind": "computed",
+   "reason": "Computed from genetic_mutations.",
+   "writable": false
+  },
+  "no_active_infection_status": {
+   "action_labels": {
+    "confirm_negative": "Confirm no active infection",
+    "withdraw": "Withdraw confirmation"
+   },
+   "actions": [
+    "confirm_negative",
+    "withdraw"
+   ],
+   "answerable": true,
+   "bindings": [],
+   "control": "boolean",
+   "endpoint": "negative-answer",
+   "inputs": [
+    "active_infection_status"
+   ],
+   "kind": "explicit-answer",
+   "reason": "Answered explicitly through the patient-record negative-answer endpoint as an attestation with a snapshot. While confirmed, the answer wins over the no active infection source fact; withdraw it to return to the derived value.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": false
+  },
+  "no_hepatitis_b_status": {
+   "bindings": [],
+   "canonical": "hepatitis_b_status",
+   "control": "text",
+   "inputs": [
+    "hepatitis_b_status"
+   ],
+   "inverted": true,
+   "kind": "negated",
+   "reason": "Inverted view of hepatitis_b_status: the record stores the positive status, and this row asks the negated question. Write hepatitis_b_status with the opposite value.",
+   "value_kind": "boolean",
+   "writable": false
+  },
+  "no_hepatitis_c_status": {
+   "bindings": [],
+   "canonical": "hepatitis_c_status",
+   "control": "text",
+   "inputs": [
+    "hepatitis_c_status"
+   ],
+   "inverted": true,
+   "kind": "negated",
+   "reason": "Inverted view of hepatitis_c_status: the record stores the positive status, and this row asks the negated question. Write hepatitis_c_status with the opposite value.",
+   "value_kind": "boolean",
+   "writable": false
+  },
+  "no_hiv_status": {
+   "bindings": [],
+   "canonical": "hiv_status",
+   "control": "text",
+   "inputs": [
+    "hiv_status"
+   ],
+   "inverted": true,
+   "kind": "negated",
+   "reason": "Inverted view of hiv_status: the record stores the positive status, and this row asks the negated question. Write hiv_status with the opposite value.",
+   "value_kind": "boolean",
+   "writable": false
+  },
+  "no_other_active_malignancies": {
+   "action_labels": {
+    "confirm_negative": "Confirm no other active malignancies",
+    "withdraw": "Withdraw confirmation"
+   },
+   "actions": [
+    "confirm_negative",
+    "withdraw"
+   ],
+   "answerable": true,
+   "bindings": [],
+   "control": "boolean",
+   "endpoint": "negative-answer",
+   "inputs": [
+    "active_malignancies"
+   ],
+   "kind": "explicit-answer",
+   "reason": "Answered explicitly through the patient-record negative-answer endpoint as an attestation with a snapshot. While confirmed, the answer wins over the no other active malignancies source fact; withdraw it to return to the derived value.",
+   "target": "patient_record",
+   "value_kind": "boolean",
+   "writable": false
+  },
+  "patient_age": {
+   "bindings": [
+    "patientAge",
+    "ageMin",
+    "ageMax"
+   ],
+   "control": "number",
+   "inputs": [
+    "date_of_birth"
+   ],
+   "kind": "computed",
+   "reason": "Computed from date_of_birth.",
+   "writable": false
+  },
+  "planned_therapies": {
+   "bindings": [
+    "plannedTherapies"
+   ],
+   "control": "text",
+   "kind": "direct",
+   "multiple": true,
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "platelet_count_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "platelet_count",
+   "reason": "Unit of platelet_count; selected alongside that value and stored with it. The canonical 10*3/uL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "cells/\u00b5L",
+     "value": "CELLS/UL"
+    },
+    {
+     "label": "10\u00b3/\u00b5L",
+     "value": "10*3/uL"
+    },
+    {
+     "label": "10\u2079/L",
+     "value": "10*9/L"
+    }
+   ],
+   "writable": false
+  },
+  "potassium_meq_l": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mEq/L",
+     "value": "mEq/L"
+    },
+    {
+     "label": "mmol/L",
+     "value": "mmol/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "pre_existing_condition_categories": {
+   "action_labels": {
+    "confirm_none": "No pre-existing conditions",
+    "set_categories": "Save these conditions",
+    "withdraw": "Withdraw answer"
+   },
+   "actions": [
+    "confirm_none",
+    "set_categories",
+    "withdraw"
+   ],
+   "answerable": true,
+   "bindings": [],
+   "control": "text",
+   "endpoint": "preexisting-conditions-answer",
+   "kind": "explicit-answer",
+   "multiple": true,
+   "options": [
+    {
+     "label": "Autoimmune and Inflammatory Disorders",
+     "value": "autoimmuneAndInflammatoryDisorders"
+    },
+    {
+     "label": "Cardiac Issues",
+     "value": "cardiacIssues"
+    },
+    {
+     "label": "Hepatic Impairment",
+     "value": "hepaticImpairment"
+    },
+    {
+     "label": "Infections",
+     "value": "infections"
+    },
+    {
+     "label": "Neurological and Psychiatric Conditions",
+     "value": "neurologicalAndPsychiatricConditions"
+    },
+    {
+     "label": "Other Active Malignancies",
+     "value": "otherActiveMalignancies"
+    },
+    {
+     "label": "Performance Status",
+     "value": "performanceStatus"
+    },
+    {
+     "label": "Pregnancy or Breastfeeding",
+     "value": "pregnancyOrBreastfeeding"
+    },
+    {
+     "label": "Prior Therapies",
+     "value": "priorTherapies"
+    },
+    {
+     "label": "Pulmonary Disease",
+     "value": "pulmonaryDisease"
+    },
+    {
+     "label": "Renal Impairment",
+     "value": "renalImpairment"
+    }
+   ],
+   "reason": "Answered explicitly through the patient-record pre-existing-conditions endpoint. The answer is an attestation with a snapshot, not a field PATCH, so a concurrent answer cannot be overwritten.",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": false
+  },
+  "prior_therapy": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "progression": {
+   "bindings": [],
+   "control": "text",
+   "kind": "direct",
+   "options": [
+    {
+     "code": null,
+     "value": "Stable"
+    },
+    {
+     "code": null,
+     "value": "Active"
+    },
+    {
+     "code": null,
+     "value": "Smoldering"
+    },
+    {
+     "code": null,
+     "value": "Progressive"
+    },
+    {
+     "code": null,
+     "value": "Relapsed"
+    },
+    {
+     "code": null,
+     "value": "Refractory"
+    }
+   ],
+   "overridable": true,
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "prothrombin_time_uln": {
+   "bindings": [],
+   "control": "number",
+   "group": "needs-concept-set",
+   "kind": "unmapped",
+   "reason": "Requires an exact approved clinical-input mapping and source vocabulary.",
+   "target": "patient_record",
+   "value_kind": "number",
+   "writable": false
+  },
+  "race": {
+   "bindings": [],
+   "control": "text",
+   "kind": "direct",
+   "options": [
+    {
+     "code": "1",
+     "value": "American Indian or Alaska Native"
+    },
+    {
+     "code": "2",
+     "value": "Asian"
+    },
+    {
+     "code": "3",
+     "value": "Black or African American"
+    },
+    {
+     "code": "4",
+     "value": "Native Hawaiian or Other Pacific Islander"
+    },
+    {
+     "code": "5",
+     "value": "White"
+    }
+   ],
+   "projection_target": "person",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "rbc_million_per_ul": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "10*6/uL",
+     "value": "10*6/uL"
+    },
+    {
+     "label": "10*12/L",
+     "value": "10*12/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "reason_for_discontinuation": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "red_blood_cell_count": {
+   "bindings": [],
+   "canonical": "rbc_million_per_ul",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors rbc_million_per_ul; edit that field instead.",
+   "unit_options": [
+    {
+     "label": "10*6/uL",
+     "value": "10*6/uL"
+    },
+    {
+     "label": "10*12/L",
+     "value": "10*12/L"
+    }
+   ],
+   "writable": false
+  },
+  "red_blood_cell_count_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "red_blood_cell_count",
+   "reason": "Unit of red_blood_cell_count; selected alongside that value and stored on the measurement.",
+   "unit_options": [
+    {
+     "label": "10*6/uL",
+     "value": "10*6/uL"
+    },
+    {
+     "label": "10*12/L",
+     "value": "10*12/L"
+    }
+   ],
+   "writable": false
+  },
+  "serum_bilirubin_level_direct_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "serum_bilirubin_level_direct",
+   "reason": "Unit of serum_bilirubin_level_direct; selected alongside that value and stored with it. The OMOP fact carries this unit.",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "MG/DL"
+    },
+    {
+     "label": "umol/L",
+     "value": "UMOL/L"
+    }
+   ],
+   "writable": false
+  },
+  "serum_bilirubin_level_total_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "serum_bilirubin_level_total",
+   "reason": "Unit of serum_bilirubin_level_total; selected alongside that value and stored with it. The canonical MG/DL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "MG/DL"
+    },
+    {
+     "label": "umol/L",
+     "value": "UMOL/L"
+    }
+   ],
+   "writable": false
+  },
+  "serum_calcium_level_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "serum_calcium_level",
+   "reason": "Unit of serum_calcium_level; selected alongside that value and stored with it. The canonical MG/DL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "MG/DL"
+    },
+    {
+     "label": "mmol/L",
+     "value": "MMOL/L"
+    }
+   ],
+   "writable": false
+  },
+  "serum_calcium_mg_dl": {
+   "bindings": [
+    "serumCalciumLevel"
+   ],
+   "control": "number",
+   "dated": true,
+   "inputs": [
+    "serum_calcium_level"
+   ],
+   "kind": "computed",
+   "reason": "Normalised from serum_calcium_level in the default unit (MG/DL); edit that field and its unit instead.",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "mg/dL"
+    },
+    {
+     "label": "mmol/L",
+     "value": "mmol/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": false
+  },
+  "serum_creatinine_level": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "MG/DL"
+    },
+    {
+     "label": "umol/L",
+     "value": "UMOL/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "serum_creatinine_level_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "serum_creatinine_level",
+   "reason": "Unit of serum_creatinine_level; selected alongside that value and stored with it. The canonical mg/dL value is derived from the pair.",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "MG/DL"
+    },
+    {
+     "label": "umol/L",
+     "value": "UMOL/L"
+    }
+   ],
+   "writable": false
+  },
+  "serum_creatinine_mg_dl": {
+   "bindings": [
+    "serumCreatinineLevel"
+   ],
+   "control": "number",
+   "dated": true,
+   "inputs": [
+    "serum_creatinine_level"
+   ],
+   "kind": "computed",
+   "reason": "Normalised from serum_creatinine_level in the default unit (mg/dL); edit that field and its unit instead.",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mg/dL",
+     "value": "mg/dL"
+    },
+    {
+     "label": "umol/L",
+     "value": "umol/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": false
+  },
+  "serum_potassium": {
+   "bindings": [],
+   "canonical": "potassium_meq_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors potassium_meq_l; edit that field instead.",
+   "writable": false
+  },
+  "serum_sodium": {
+   "bindings": [],
+   "canonical": "sodium_meq_l",
+   "control": "number",
+   "kind": "alias",
+   "reason": "Mirrors sodium_meq_l; edit that field instead.",
+   "writable": false
+  },
+  "sodium_meq_l": {
+   "bindings": [],
+   "control": "number",
+   "dated": true,
+   "kind": "direct",
+   "target": "patient_record",
+   "unit_options": [
+    {
+     "label": "mEq/L",
+     "value": "mEq/L"
+    },
+    {
+     "label": "mmol/L",
+     "value": "mmol/L"
+    }
+   ],
+   "value_kind": "number",
+   "writable": true
+  },
+  "stem_cell_transplant_history": {
+   "bindings": [],
+   "control": "text",
+   "kind": "direct",
+   "multiple": true,
+   "options": [
+    {
+     "value": "allogeneic SCT"
+    },
+    {
+     "value": "autologous SCT"
+    },
+    {
+     "value": "tandem SCT"
+    }
+   ],
+   "overridable": true,
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "supportive_therapy_date": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "date",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "therapy_component_ids": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "therapy_history_complete": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "boolean",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "therapy_ids_provenance": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "therapy_intent": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "therapy_lines_count": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "number",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "therapy_type_ids": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "toxicity_grade": {
+   "bindings": [],
+   "control": "number",
+   "kind": "direct",
+   "options": [
+    {
+     "label": "Grade 0 (None)",
+     "value": 0
+    },
+    {
+     "label": "Grade 1 (Mild)",
+     "value": 1
+    },
+    {
+     "label": "Grade 2 (Moderate)",
+     "value": 2
+    },
+    {
+     "label": "Grade 3 (Severe)",
+     "value": 3
+    },
+    {
+     "label": "Grade 4 (Life-Threatening)",
+     "value": 4
+    }
+   ],
+   "reason": "Written directly to PatientRecord. No OMOP mapping yet.",
+   "target": "patient_record",
+   "value_kind": "number",
+   "writable": true
+  },
+  "treatment_refractory_status": {
+   "bindings": [],
+   "control": "text",
+   "kind": "direct",
+   "options": [
+    {
+     "value": "Unknown"
+    },
+    {
+     "value": "Not Refractory"
+    },
+    {
+     "value": "Primary Refractory"
+    },
+    {
+     "value": "Secondary Refractory"
+    },
+    {
+     "value": "Multi-Refractory"
+    }
+   ],
+   "overridable": true,
+   "reason": "Inferred by default; enter a value to override, or clear to use the inferred value.",
+   "target": "patient_record",
+   "value_kind": "string",
+   "writable": true
+  },
+  "washout_period_duration": {
+   "authored_via": {
+    "asserted_regimen_field": "episode_source_concept",
+    "endpoint": "POST /api/v1/episodes/",
+    "steps": [
+     "POST /api/v1/drug-exposures/ for each drug given in the line",
+     "POST /api/v1/episodes/ with episode_concept=32531 (Treatment Regimen), episode_number=<line number>, and the line start/end dates",
+     "POST /api/v1/episode-events/ linking each drug_exposure_id to the episode with episode_event_field_concept=1147094"
+    ],
+    "target": "episode"
+   },
+   "bindings": [],
+   "control": "text",
+   "group": "therapy-inference",
+   "kind": "authored",
+   "reason": "Derived from the therapy episodes, not from one fact. Author a line as an Episode grouping its drug exposures and this field follows.",
+   "writable": false
+  },
+  "wearable_last_sync_at": {
+   "bindings": [],
+   "control": "text",
+   "group": "wearable-metadata",
+   "kind": "unmapped",
+   "reason": "Bookkeeping about the device feed rather than a reading; follows from ingesting wearable data.",
+   "writable": false
+  },
+  "weight_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "weight",
+   "reason": "Unit of weight; selected alongside that value and stored on the measurement.",
+   "unit_options": [
+    {
+     "label": "kg",
+     "value": "kg"
+    },
+    {
+     "label": "lb",
+     "value": "lb"
+    }
+   ],
+   "writable": false
+  },
+  "white_blood_cell_count_units": {
+   "bindings": [],
+   "control": "text",
+   "kind": "selectable",
+   "qualifies": "white_blood_cell_count",
+   "reason": "Unit of white_blood_cell_count; selected alongside that value and stored on the measurement.",
+   "unit_options": [
+    {
+     "label": "10*3/uL",
+     "value": "10*3/uL"
+    },
+    {
+     "label": "10*9/L",
+     "value": "10*9/L"
+    }
+   ],
+   "writable": false
+  }
+ }
+}

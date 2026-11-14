@@ -144,7 +144,7 @@ ER–: Tumor cells do not express estrogen receptors. (<1 % of cells express ER)
 ER+: Tumor cells express estrogen receptors. (10% or more).
 ER+ with low expression: Small proportion of tumor cells express ER (usually 1–9 %).
 ER+ with high expression: Large proportion of tumor cells express ER.`,
-  "ethnicity": `We use your ethnicity to compute normal levels for creatinine and other diagnostics`,
+  "ethnicity": `We use your race and ethnicity to compute normal levels for creatinine and other diagnostics`,
   "extranodalSites": `Sites outside lymph nodes involved by Mantle Cell Lymphoma, assessed via imaging or biopsy:
 
 None: No extranodal involvement detected.
@@ -650,4 +650,109 @@ T4d : means inflammatory carcinoma.`,
   "variant": `Choose the specific genetic change (Mutation Variant) in the selected gene, written in standard DNA or protein notation.`,
   "weight": `Enter your weight`,
   "whiteBloodCellCount": `What is the total white blood cell count?`,
+};
+
+/** Hover help for the trial actions, from CancerBot's lang/resources.en.json
+ *  (the `trials.*.tooltip` and `trialDetails.*.tooltip` keys named beside each
+ *  entry). Edited where CB's text describes something this remote does not
+ *  do, and said so beside the entry:
+ *  - no promise that the trial team or a study coordinator will be in touch:
+ *    registering here writes a status to the patient's record and notifies
+ *    nobody (see `RegisterInterest` in TrialDetailPage);
+ *  - no Suitability Preferences tab and no Compare to Standard of Care, which
+ *    this remote does not have, so the scores are described as unweighted;
+ *  - no "shared with your doctor or navigator": there is no share action.
+ *  CB has no text for the Fully matched and Potential tabs or the Map/List
+ *  toggle; those are written here. */
+export const ACTION_TOOLTIPS = {
+  // trials.tabs.eligible.tooltip — Suitability Preferences sentence dropped,
+  // and the opening sentence rewritten. CB's text ("meet the key eligibility
+  // criteria") describes an eligible-only set. This tab is the union: it also
+  // holds the trials with information still missing, so CB's wording would
+  // describe only half of what is listed.
+  tabEligible:
+    "Every trial you may be eligible for: the ones that meet every criterion that could be checked, and the ones where some of the information the trial asks for is still missing.\nBy default, these trials are ranked by their Suitability Score, which considers distance, risk, benefit, and patient burden.\nFinal eligibility must always be confirmed by the trial team.",
+  // Not in CB.
+  tabFullyMatched:
+    "Trials where your information meets every eligibility criterion that could be checked.\nFinal eligibility must always be confirmed by the trial team.",
+  // Not in CB.
+  tabPotential:
+    "Trials you may be eligible for, where some of the information the trial asks for is missing from your profile.\nAdding it gives a more accurate match.",
+  // trials.tabs.registered.tooltip — "or shared with your doctor or navigator" dropped.
+  tabRegistered:
+    "Trials you have registered interest in.\nThe number updates automatically each time you register interest after viewing a trial.",
+  // trials.tabs.favorites.tooltip — "after viewing it" dropped: cards bookmark too.
+  tabFavorites:
+    "Trials you saved to review later or discuss with your healthcare team.\nThe number updates automatically each time you mark a trial as a favorite.",
+  // trials.sort.goodnessScore.tooltip — the Suitability Preferences sentence dropped.
+  sortGoodnessScore:
+    "Sort trials by their overall suitability based on distance, potential risks, potential benefits, and patient burden. These factors are weighted equally.",
+  // trials.sort.matchScore.tooltip
+  sortMatchScore:
+    "Sort trials by how closely your medical information matches the trial's eligibility criteria. The more complete your information is, the more accurate your trial matches will be.",
+  // trials.sort.distance.tooltip
+  sortDistance:
+    "Sort trials by how close the trial locations are to your selected location.",
+  // Not in CB, which gives its view-mode segments no tooltip at all. Kept
+  // because these two segments are icons, and an icon that is the only label
+  // is worth a sentence.
+  map: "Show where the trials on this page are, on a map and as a list of places.",
+  list: "Show the trials as a list.",
+  // Not in CB, which gives this button an editable tooltip authored in its
+  // own database — there is no bundled string for it anywhere in the repo, so
+  // a port has nothing to copy. Written here instead, because a button that
+  // changes how everything on the page is ranked should say so before it is
+  // pressed.
+  suitabilityPreferences:
+    "Choose what the Suitability Score weighs: the possible benefit, the demands on you, the risks, and how far you would have to travel.",
+  // trials.exploreTrials.tooltip — "AI" and the graph/list switch dropped.
+  exploreTrials:
+    "Visualize the trials you may be eligible for in a single view.\nSee which eligibility requirements you meet, which are missing, and which trials share them.",
+  // trials.exportCsv.tooltip
+  exportCsv:
+    "Download the list of trials and their details as a spreadsheet file for your records or to share with your healthcare team.",
+  // trials.filters.tooltip
+  filters:
+    "Use filters to narrow down trials by criteria such as location, treatment type, or trial status.\nYou can also use the Title filter to search for a specific trial by its title.",
+  // trials.viewTrial.tooltip
+  viewTrial:
+    "Open the full details of this trial, including eligibility requirements, treatments, and participating locations.",
+  // trialDetails.matchingScore.tooltip
+  matchingScore:
+    "Indicates the percentage of eligibility criteria that are met by your information. Fill out more information to get a better matching score. You can still express interest in a trial without a 100% match score.",
+  // trialDetails.goodnessScore.tooltip — preferences and Standard of Care lines dropped.
+  suitabilityScore:
+    "Indicates how suitable this trial may be for you based on four factors: travel distance, potential risks, potential benefits, and patient burden. These factors are weighted equally.\n\nClick on the score to see an article on how these factors are used in suitability scoring.",
+  // trialDetails.summary.tooltip
+  summary:
+    "A simple overview of the trial, including its purpose, who it is designed for, and a brief explanation of the treatments and how they work.",
+  // trialDetails.eligibilityAttributes.tooltip — last sentence says how this remote marks an unchecked requirement.
+  eligibilityAttributes:
+    "A structured list of the criteria used to determine eligibility.\nCompare the trial requirements with your information to see where you match, do not match, or where information may be missing.\nMatched values are marked with a ✓, and unmatched values are highlighted in red. An attribute this trial places no constraint on is labelled as not a requirement of this trial.",
+  // Not in CB, which has one text for both states.
+  favoriteOn: "This trial is in your Favorites.\nClick again to remove it.",
+  // trialDetails.favorite.tooltip
+  favorite:
+    "Save this trial to your Favorites so you can easily find it later or discuss it with your healthcare team.",
+  // trialDetails.registerInterest.tooltip — the contact and sharing promises dropped.
+  registerInterest:
+    "Learn more about this trial to better understand its risk and patient burden.\nYou can then register your interest to keep track of it.",
+  // trialDetails.registered.tooltip — the coordinator promise dropped.
+  registered:
+    "Your interest in this trial is marked in your record.\nClick again to withdraw it.",
+} as const;
+
+/** Tab and sort-option tooltips by value; a value without one gets none. */
+export const TAB_TOOLTIPS: Partial<Record<string, string>> = {
+  eligible_and_potential: ACTION_TOOLTIPS.tabEligible,
+  eligible: ACTION_TOOLTIPS.tabFullyMatched,
+  potential: ACTION_TOOLTIPS.tabPotential,
+  registered: ACTION_TOOLTIPS.tabRegistered,
+  favorites: ACTION_TOOLTIPS.tabFavorites,
+};
+
+export const SORT_TOOLTIPS: Partial<Record<string, string>> = {
+  goodnessScore: ACTION_TOOLTIPS.sortGoodnessScore,
+  matchScore: ACTION_TOOLTIPS.sortMatchScore,
+  distance: ACTION_TOOLTIPS.sortDistance,
 };

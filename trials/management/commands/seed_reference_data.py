@@ -15,6 +15,9 @@ from trials.services.loaders.load_supportive_therapies import LoadSupportiveTher
 from trials.services.loaders.load_tnm_options import LoadTnmOptions
 from trials.services.loaders.load_toxicity_grade_options import LoadToxicityGradeOptions
 from trials.services.loaders.load_trial_taxonomy import LoadTrialTaxonomy
+from trials.services.loaders.reconcile_genetic_mutations import (
+    reconcile_mutation_catalog,
+)
 
 
 BC_TRIAL_TYPES = [
@@ -115,6 +118,9 @@ class Command(BaseCommand):
 
         self.stdout.write('Seeding planned therapy options...')
         LoadPlannedTherapyOptions().load_all(skip_diseases=False)
+
+        self.stdout.write('Reconciling retired genetic mutations...')
+        reconcile_mutation_catalog()
 
         self.stdout.write('Seeding genetic mutations...')
         LoadGeneticMutations().load_all(skip_genes_origins=False)

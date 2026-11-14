@@ -1,7 +1,2 @@
-from trials.services.patient_info.convertors.simple_c_to_si_convertor import SimpleCToSiConvertor
-
-
-class BilirubinConvertor:
-    @staticmethod
-    def call(value, from_unit, to_unit):
-        return SimpleCToSiConvertor.call(value, from_unit, to_unit, cf=17.1)
+"""Back-compat shim — moved to exact_matching.patient_info.convertors.bilirubin_convertor (E1.3b)."""
+from exact_matching.patient_info.convertors.bilirubin_convertor import *  # noqa: F401,F403
