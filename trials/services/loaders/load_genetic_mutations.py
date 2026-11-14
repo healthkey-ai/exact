@@ -1,4 +1,5 @@
 from trials.models import *
+from trials.services.genetic_mutation_catalog import V422DEL_CODE, V422DEL_TITLE
 
 
 class LoadGeneticMutations:
@@ -60,10 +61,25 @@ class LoadGeneticMutations:
         def value_to_code(value: str) -> str:
             return value.replace('>', '_').replace(' ', '_').lower()
 
-        def load_mutations_group(gene_code: str, mutation_titles: list[str]):
+        def load_mutations_group(gene_code: str, mutation_titles: list):
             gene = MutationGene.objects.get(code=gene_code)
-            for m_title in mutation_titles:
-                m_code = value_to_code(m_title)
+            for entry in mutation_titles:
+                # A (code, title) pair pins the stored identity: the label may
+                # change without minting a new option code. Plain strings keep
+                # the historical label -> code derivation.
+                if isinstance(entry, tuple):
+                    m_code, m_title = entry
+                    # The corrected label may already be held by another code
+                    # (curator edit or a partially released build). EXACT's
+                    # PROMOP adapter always emits the canonical code, so
+                    # converge on that identity instead of adopting a code it
+                    # cannot produce; only the row is removed, nothing rewrites
+                    # a trial.
+                    MutationCode.objects.filter(title=m_title).exclude(
+                        code=m_code,
+                    ).delete()
+                else:
+                    m_code, m_title = value_to_code(entry), entry
                 MutationCode.objects.update_or_create(code=m_code, defaults={'title': m_title, 'gene': gene})
 
         brca1 = [
@@ -151,52 +167,45 @@ class LoadGeneticMutations:
             'c.853G>A (E285K)',
             'c.733G>A (G245S)',
             'c.451C>T (P151S)',
-            'c.472G>T (R158L)',
+            'c.473G>T (R158L)',
             'c.524G>A (R175H)',
             'c.586C>T (R196*)',
             'c.743G>A (R248Q)',
-            'c.743G>T (R248W)',
-            'c.746C>G (R249S)',
+            'c.742C>T (R248W)',
+            'c.747G>T (R249S)',
             'c.818G>A (R273H)',
             'c.844C>T (R282W)',
             'c.469G>T (V157F)',
-            'c.658T>C (Y220C)',
+            'c.659A>G (Y220C)',
             'c.487T>A (Y163N)',
             'c.841G>C (D281H)',
-            'c.578C>T (H193Y)',
+            'c.577C>T (H193Y)',
             'c.535C>T (H179Y)',
             'c.638G>T (R213L)',
             'c.637C>T (R213*)',
-            'c.637C>A (R213Q)',
+            'c.638G>A (R213Q)',
             'c.329G>T (R110L)',
             'c.476C>T (A159V)',
             'c.461G>T (G154V)',
-            'c.500C>A (Q167K)',
+            'c.499C>A (Q167K)',
             'c.584T>C (I195T)',
             'c.701A>G (Y234C)',
-            'c.489A>G (Y163C)',
+            'c.488A>G (Y163C)',
             'c.332T>A (L111Q)',
             'c.833C>T (P278L)',
-            'c.818G>C (R273C)',
+            'c.817C>T (R273C)',
             'c.329G>A (R110H)',
             'c.404G>T (C135F)',
             'c.818G>T (R273L)',
-            'c.847G>C (R282G)',
+            'c.844C>G (R282G)',
             'c.587G>A (R196Q)',
-            'c.476G>A (R158H)',
-            'c.514G>T (Q172H)',
-            'c.742C>T (R248Q)',
+            'c.473G>A (R158H)',
             'c.332T>G (L111R)',
-            'c.844C>A (R282S)',
-            'c.904C>T (R302W)',
             'c.916C>T (R306*)',
             'c.713G>T (C238F)',
-            'c.796G>T (G266V)',
-            'c.700C>T (Q234*)',
+            'c.797G>T (G266V)',
             'c.917G>A (R306Q)',
-            'c.865C>T (R289W)',
-            'c.877A>G (K292E)',
-            'c.886C>T (Y296*)'
+            'c.874A>G (K292E)',
         ]
 
         pik3ca = [
@@ -206,7 +215,7 @@ class LoadGeneticMutations:
             'c.1633G>C (p.E545Q)',
             'c.1637A>C (p.Q546P)',
             'c.1637A>G (p.Q546R)',
-            'c.1637A>T (p.Q546K)',
+            'c.1636C>A (p.Q546K)',
             'c.3140A>C (p.H1047P)',
             'c.3140A>G (p.H1047R)',
             'c.3140A>T (p.H1047L)',
@@ -215,51 +224,18 @@ class LoadGeneticMutations:
             'c.3144T>G (p.H1048Q)',
             'c.3145G>A (p.G1049S)',
             'c.3145G>C (p.G1049R)',
-            'c.3146G>C (p.G1049A)',
-            'c.3146G>T (p.G1049V)',
-            'c.3147G>A (p.G1049D)',
-            'c.3147G>C (p.G1049E)',
-            'c.3147G>T (p.G1049F)',
-            'c.3148G>A (p.G1049N)',
-            'c.3148G>C (p.G1049T)',
-            'c.3148G>T (p.G1049Y)',
-            'c.3149G>A (p.G1049C)',
-            'c.3149G>C (p.G1049W)',
-            'c.3149G>T (p.G1049H)',
-            'c.3150G>A (p.G1049L)',
-            'c.3150G>C (p.G1049M)',
-            'c.3150G>T (p.G1049I)',
-            'c.3151G>A (p.G1049K)',
-            'c.3151G>C (p.G1049R)',
-            'c.3151G>T (p.G1049S)',
-            'c.3152G>A (p.G1049T)',
-            'c.3152G>C (p.G1049V)',
-            'c.3152G>T (p.G1049Y)',
-            'c.3153G>A (p.G1049D)',
-            'c.3153G>C (p.G1049E)',
-            'c.3153G>T (p.G1049F)',
-            'c.3154G>A (p.G1049N)',
-            'c.3154G>C (p.G1049T)',
-            'c.3154G>T (p.G1049Y)',
-            'c.3155G>A (p.G1049C)',
-            'c.3155G>C (p.G1049W)',
-            'c.3155G>T (p.G1049H)',
-            'c.3156G>A (p.G1049L)',
-            'c.3156G>C (p.G1049M)',
-            'c.3156G>T (p.G1049I)',
-            'c.3157G>A (p.G1049K)',
-            'c.3157G>C (p.G1049R)',
-            'c.3157G>T (p.G1049S)'
         ]
 
         esr1 = [
             'c.1138G>C (E380Q)',
-            'c.1264_1266delGTG (V422del)',
+            (V422DEL_CODE, V422DEL_TITLE),
             'c.1387T>C (S463P)',
             'c.1604C>A (P535H)',
             'c.1607T>A (L536H)',
-            'c.1607T>A (L536Q)',
-            'c.1609A>C (Y537S)',
+            'c.1607T>C (L536P)',
+            'c.1607T>G (L536R)',
+            'c.1607_1608delinsAG (L536Q)',
+            'c.1610A>C (Y537S)',
             'c.1609T>A (Y537N)',
             'c.1610A>G (Y537C)',
             'c.1613A>G (D538G)',

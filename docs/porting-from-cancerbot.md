@@ -121,6 +121,16 @@ Keep it thin: an operations profile with the items above, two concrete profiles,
 These already differ from CB on purpose. Leave them; do not try to re-sync them to CB:
 - EXACT uses **dispatch tables** for custom_search (`trials/querysets/trial.py` `_CUSTOM_SEARCH_*`,
   matcher `_CUSTOM_SEARCH_NAMED_HANDLERS`) vs CB's `if/elif` chain.
+- **Mutation catalog (#5297).** `trials/services/genetic_mutation_catalog.py` is a verbatim
+  copy of CB's module and the loader lists match CB. The EXACT-only parts are:
+  `trials/services/loaders/reconcile_genetic_mutations.py` (deletes the codes CB's migrations
+  0456-0460 retire, because EXACT owns no trials-DB data migrations; `seed_reference_data` calls
+  it before loading), the loader's tuple guard (it removes a row that already holds the corrected
+  `V422del` label under another code and keeps the canonical code, since `promop_adapter` always
+  emits that code; the module's `PREVIOUS_LABELS` carries that derived code so an answer stored
+  against it still renders a label), and `promop_adapter._mutation_code` (normalizes PROMOP's
+  display labels through the catalog transform, case-insensitively for the stable `V422del`
+  title). The mutation lists carry no PALB2; #4812 is a separate port.
 - EXACT extracted `_match_therapy_related_things` / `_match_therapy_things` helpers.
 - `websearch_to_tsquery` (EXACT) vs legacy tsquery (CB).
 - `expand_receptor_values()` for ER/PR/HR (EXACT only).

@@ -14,6 +14,9 @@ from trials.services.patient_info.normalize import (
 )
 from trials.services.patient_info.configs import THERAPY_LINES_ATTRS_UNDERSCORED, ATTR_MAPPING_TYPE_COMPUTED, \
     THERAPIES_ATTRS_UNDERSCORED, THERAPY_LINES_ATTRS
+from trials.services.genetic_mutation_catalog import (
+    label_for_stored_code, with_stored_labels,
+)
 from trials.services.therapy_match_profile import (
     THERAPY_MATCH_PROFILE, omop_therapy_enabled, omop_therapy_types_enabled)
 from trials.services.trial_details.configs import *
@@ -281,7 +284,7 @@ class TrialAttributes:
             origins_options = {x['value']: x['label'] for x in self.all_options['mutationOriginsRequired']['options']}
             interpretations_options = {x['value']: x['label'] for x in self.all_options['mutationInterpretationsRequired']['options']}
             options = {**genes_options, **variants_options, **origins_options, **interpretations_options}
-            return [styled_value(options.get(x), bool(x in matched_value)) for x in value]
+            return [styled_value(options.get(x) or label_for_stored_code(x), bool(x in matched_value)) for x in value]
         else:
             return value
 
@@ -306,6 +309,13 @@ class TrialAttributes:
             res = self._all_value_options.get(field_name)
             if res:
                 res = res['options']
+        # Stored trial answers whose catalog row CancerBot's #5297 passes
+        # retired keep their label in this trial's own option list, not in
+        # everyone's.
+        if field_name == 'mutationVariantsRequired':
+            res = with_stored_labels(res, self._trial.mutation_variants_required)
+        elif field_name == 'mutationOriginsRequired':
+            res = with_stored_labels(res, self._trial.mutation_origins_required)
         return res
 
     def get_options_for(self, therapy_line):
@@ -870,6 +880,14 @@ class TrialAttributes:
             variant = val.get('variant')
             origin = val.get('origin')
             interpretation = val.get('interpretation')
+            # A stored answer may name a value the corrected catalog retired;
+            # keep it visible on this row without offering it to new selections.
+            variant_options = with_stored_labels(
+                variant_options, [variant] if variant else [],
+            )
+            origin_options = with_stored_labels(
+                origin_options, [origin] if origin else [],
+            )
             row_complete = gene and (variant or origin or interpretation)
             return row_complete, {
                 'gene': {

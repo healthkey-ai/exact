@@ -28,11 +28,23 @@ from math import isfinite
 
 from exact_matching.patient_record import receptor_status_code
 from rest_framework.exceptions import APIException
+from trials.services.genetic_mutation_catalog import (
+    STABLE_TITLES, code as mutation_code,
+)
 from trials.services.patient_vocabulary import PatientVocabularyUnavailable, catalog_rows
 from trials.services.therapy_match_profile import omop_therapy_enabled
 
 
 logger = logging.getLogger(__name__)
+
+#: The stable-title table is keyed by the catalog's exact spelling; PROMOP free
+#: text may lower-case the protein (`(v422del)`), so resolve case-insensitively
+#: before falling back to the label transform.
+_STABLE_BY_LOWER = {title.lower(): stored for title, stored in STABLE_TITLES.items()}
+
+
+def _mutation_code(value: str) -> str:
+    return _STABLE_BY_LOWER.get(value.strip().lower()) or mutation_code(value)
 
 
 class UnsupportedPatientVocabulary(APIException):
@@ -836,13 +848,15 @@ def normalize_promop_row(row: dict) -> dict:
             if m.get('origin'):
                 raw_origin = m['origin'].lower()
                 m['origin'] = raw_origin if raw_origin in ('somatic', 'germline') else None
-            # Rename 'mutation' → 'variant' and normalize to EXACT code format
+            # Rename 'mutation' → 'variant' and normalize to EXACT code format.
+            # `mutation_code` honours the preserved V422del identity, so the
+            # corrected label lands on the stored code the catalog still has.
             if 'mutation' in m and 'variant' not in m:
                 raw = m.pop('mutation')
                 if isinstance(raw, str):
-                    m['variant'] = raw.replace('>', '_').replace(' ', '_').lower()
+                    m['variant'] = _mutation_code(raw)
             elif m.get('variant') and isinstance(m['variant'], str):
-                m['variant'] = m['variant'].replace('>', '_').replace(' ', '_').lower()
+                m['variant'] = _mutation_code(m['variant'])
             normalized.append(m)
         row['genetic_mutations'] = normalized
 
