@@ -22,7 +22,11 @@ class ValueOptions:
         # the 1h TTL expires.
         # v3: #5521 adds the MM MyelomaRelatedDisorder vocabulary keys.
         # v4: CB-owned marker axes; myeloma labels no longer require a table.
-        return 'ValueOptions.all_options.v4'
+        # v5: #5297 corrects the TP53/PIK3CA/ESR1 mutation catalog and relabels
+        # V422del without changing its stored code. The options blob is keyed
+        # only by this string and nothing invalidates it on catalog writes, so
+        # a code-only deploy would serve the old rows for an hour without this.
+        return 'ValueOptions.all_options.v5'
 
     @staticmethod
     def to_value_and_label(data):
