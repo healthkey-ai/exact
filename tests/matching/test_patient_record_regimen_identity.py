@@ -93,7 +93,7 @@ def test_an_unknown_line_is_no_evidence_even_with_a_concept():
         [str(DARA_RD), str(KD)], id='rows-without-concept-key-align-with-ids'),
     pytest.param(
         dict(later_therapies=[{'therapy': 'Dara-Rd'}, {'therapy': 'Kd'}], later_therapy_ids=[DARA_RD]),
-        ['Dara-Rd', 'Kd'], id='counts-disagree-so-nothing-aligns'),
+        [str(DARA_RD), 'Dara-Rd', 'Kd'], id='counts-disagree-so-ids-come-as-a-set'),
     pytest.param(
         dict(later_therapies=None, later_therapy='Dara-Rd', later_therapy_ids=[DARA_RD, KD]),
         [str(DARA_RD), str(KD)], id='oldest-ids-only'),
@@ -156,3 +156,17 @@ def test_a_trial_excluding_a_prior_regimen_excludes_the_promop_patient(omop, exc
         verdict = matcher._match_therapy_related_things(matcher.patient_info_attr.get_user_therapies(), False)
 
     assert (verdict == 'not_matched') is excluded
+
+
+@pytest.mark.django_db
+@override_settings(EXACT_OMOP_THERAPY=True)
+def test_an_id_no_row_can_be_pinned_to_still_excludes():
+    """Two older rows, one id: the id is not lost because the counts disagree."""
+    TherapyFactory(code='test_kd', omop_concept_id=KD)
+    trial = TrialFactory(therapies_excluded=['test_kd'], omop_therapies_excluded=[str(KD)])
+    record = _record(later_therapies=[{'therapy': 'Dara-Rd'}, {'therapy': 'Kd'}], later_therapy_ids=[KD])
+
+    matcher = UserToTrialAttrMatcher(trial, HostSurface(record))
+    verdict = matcher._match_therapy_related_things(matcher.patient_info_attr.get_user_therapies(), False)
+
+    assert verdict == 'not_matched'

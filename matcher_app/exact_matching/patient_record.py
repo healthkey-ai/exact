@@ -659,9 +659,12 @@ def _later_line_identities(record):
 
     Current rows carry their own `concept_id` (an absent key and None both mean unresolved).
     Older rows carry none; their ids are in `later_therapy_ids` and line up by position only when
-    the counts agree. The oldest records have no list, only `later_therapy_ids`. A record with
-    neither has only the flat `later_therapy` name. This follows PROMOP's own reader
-    (`omop_core/services/patient_matching.py`, `_iter_release_lines`).
+    the counts agree. When they do not, no id can be pinned to a row, but each is still a regimen
+    the patient received: the ids are offered as a set beside every row's name. The oldest
+    records have no list, only `later_therapy_ids`. A record with neither has only the flat
+    `later_therapy` name. These are the shapes PROMOP's own reader handles
+    (`omop_core/services/patient_matching.py`, `_iter_release_lines`); that reader needs each
+    line's resolution, so it drops unaligned ids, while a regimen set does not need the line.
     """
     rows = [row for row in (getattr(record, 'later_therapies', None) or []) if isinstance(row, dict)]
     ids = list(getattr(record, 'later_therapy_ids', None) or [])
@@ -671,7 +674,8 @@ def _later_line_identities(record):
         elif len(ids) == len(rows):
             concept_ids = ids
         else:
-            concept_ids = [None] * len(rows)
+            return ([str(cid) for cid in ids if cid not in _EMPTY_CONCEPT_IDS]
+                    + [_line_identity(row.get('therapy'), None) for row in rows])
         return [_line_identity(row.get('therapy'), cid) for row, cid in zip(rows, concept_ids)]
     if ids:
         return [str(cid) for cid in ids if cid not in _EMPTY_CONCEPT_IDS]
