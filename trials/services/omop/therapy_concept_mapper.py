@@ -7,16 +7,29 @@ by the batch backfill command (and the shadow-comparison harness #4446).
 Ported from CancerBot (CB epic #4447); CB owns the upstream conversion. EXACT is
 the downstream that runs the backfill locally / against CB's read-only trials DB.
 
-Scope: the three therapy levels whose vocab has ``omop_concept_id`` today —
-regimen (``Therapy``), drug component (``TherapyComponent``), drug class
-(``TherapyComponentCategory``). ``planned_*`` / ``supportive_*`` are excluded
-until their vocabs gain ``omop_concept_id``.
+Scope: the therapy levels whose vocab has ``omop_concept_id`` today — regimen
+(``Therapy``), drug component (``TherapyComponent``), and supportive therapies
+(cb#4590: EXACT stores supportive codes as ``Therapy`` (regimen) rows that carry
+``omop_concept_id``, e.g. zoledronic_acid, so ``omop_supportive_therapies_*`` is
+now populated here via Therapy concept_ids — the eventual matcher flip must first
+validate coverage, since regimen-only supportive codes may under-populate). Drug-class "types" (``TherapyComponentCategory``) are
+intentionally NOT OMOP-mapped (EXACT ADR 0001 decision A, #4502): a patient never
+carries a class concept, so an omop_therapy_types_* column could never overlap;
+types stay a CB-hierarchy construct matched in CB-category-code space via
+``therapy_types_*``. ``planned_*`` is still excluded (``PlannedTherapy`` has no
+``omop_concept_id`` and most codes are drug-classes, cb#4590 follow-up).
+
+NOTE: this module only POPULATES ``omop_supportive_therapies_*``. In EXACT the
+matcher flip is already done (#228 — the TherapyMatchProfile OMOP profile reads the
+omop supportive columns). It is a safe no-op until promop emits supportive
+concept_ids (promop#230): the patient supportive list is empty, so the filter
+fail-opens. Coverage must be validated (#221) before the prod flip. See #231.
 
 Conventions (per the plan review): concept_ids are stored as STRINGS; output
 arrays are de-duplicated and stably sorted; unknown or unmapped (null
 ``omop_concept_id``) codes are dropped and reported; the mapping is idempotent.
 """
-from trials.models import Therapy, TherapyComponent, TherapyComponentCategory
+from trials.models import Therapy, TherapyComponent
 
 # (vocab model, legacy required col, legacy excluded col, omop required col, omop excluded col)
 THERAPY_LEVELS = [
@@ -26,9 +39,16 @@ THERAPY_LEVELS = [
     (TherapyComponent,
      'therapy_components_required', 'therapy_components_excluded',
      'omop_therapy_components_required', 'omop_therapy_components_excluded'),
-    (TherapyComponentCategory,
-     'therapy_types_required', 'therapy_types_excluded',
-     'omop_therapy_types_required', 'omop_therapy_types_excluded'),
+    # Supportive therapies (cb#4590): EXACT stores supportive codes as Therapy
+    # (regimen) rows — LoadSupportiveTherapies connects Therapy objects and
+    # value_options.supportive_* returns Therapy.code — so resolve them via Therapy
+    # concept_ids to populate omop_supportive_therapies_*. Single-drug supportive
+    # codes (e.g. zoledronic_acid) carry the drug concept at the Therapy level.
+    # Matching still reads the legacy supportive_therapies_* columns until the
+    # coordinated flip; the flip must validate omop_supportive coverage first.
+    (Therapy,
+     'supportive_therapies_required', 'supportive_therapies_excluded',
+     'omop_supportive_therapies_required', 'omop_supportive_therapies_excluded'),
 ]
 
 
@@ -61,8 +81,8 @@ def build_omop_columns(trial):
     """Compute the trial's OMOP therapy column values from its legacy codes.
 
     Returns ``(values, unmapped)``:
-    - ``values``: ``{omop_column_name: [concept_id_str, ...]}`` for all 6 mapped
-      columns (3 levels x required/excluded).
+    - ``values``: ``{omop_column_name: [concept_id_str, ...]}`` for all 4 mapped
+      columns (2 levels x required/excluded).
     - ``unmapped``: ``{legacy_column_name: [code, ...]}`` for codes that could not
       be mapped (only non-empty entries included).
     """

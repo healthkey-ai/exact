@@ -2,7 +2,7 @@
 
 The None/[] distinction is load-bearing for OMOP therapy matching:
   None  = field absent from PatientInfo → fail-closed (return 'unknown', don't filter)
-  []    = explicitly empty list sent by CTOMOP → known-empty, no components
+  []    = explicitly empty list sent by PROMOP → known-empty, no components
   [ids] = known list → filter by overlap
 """
 import pytest

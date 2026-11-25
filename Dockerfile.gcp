@@ -1,8 +1,9 @@
 # EXACT Cloud Run image — adds a Node build stage to the backend image so
 # the Module Federation remote (remoteEntry.js + chunks) is built and served
-# by WhiteNoise alongside the API. Mirrors ctomop/soc Dockerfile.gcp.
+# by WhiteNoise alongside the API. Mirrors promop/soc Dockerfile.gcp.
 #
-# The plain Dockerfile is backend-only (no frontend) for local dev/compose.
+# The plain Dockerfile also builds the frontend remote (since 9b2c85b), but on
+# its own Node major; this one follows frontend/.nvmrc.
 #
 # Build:
 #   docker build --platform linux/amd64 -f Dockerfile.gcp -t exact:gcp .
@@ -10,7 +11,8 @@
 # syntax=docker/dockerfile:1
 
 # ── Stage 1: Frontend federation remote ──────────────────────────────
-FROM node:20-slim AS frontend
+# Same major as frontend/.nvmrc and the frontend CI job (node-version "22").
+FROM node:22-slim AS frontend
 
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
@@ -42,6 +44,11 @@ RUN useradd -m -d /app -u 1000 app
 USER app
 WORKDIR /app
 ENV PATH="$PATH:/app/.local/bin"
+
+# requirements.txt installs the converged matcher as an editable local package
+# (`-e ./matcher_app`), so that directory must exist at pip time. Copy it in
+# before the install; the later `COPY . /app` still brings the full tree.
+COPY --chown=app:app matcher_app /app/matcher_app
 
 RUN python3 -m pip install --upgrade pip \
     && pip install --no-cache-dir -r /tmp/requirements.txt

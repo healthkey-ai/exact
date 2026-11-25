@@ -1,0 +1,1001 @@
+// The per-user state seam.
+//
+// EXACT held no per-user trial state when this was written, and the comment
+// said it never would. That was reversed on 2026-09-26: saved filters and
+// score weights now live in EXACT's own `user_state` app, keyed on the
+// identity in the token, and bookmarks and registered interest follow. The
+// seam below is what makes that a host decision rather than a rewrite — it
+// outlived the assumption it was built under, which is the point of a seam.
+// Bookmarks and registered interest still live in PROMOP today, and this
+// remote runs in two hosts that reach PROMOP differently — HealthTree PHR mints an OAuth token, CB runs the promop apps
+// in-process behind its own endpoint — so the component takes an interface
+// and the host supplies the transport.
+//
+// Everything here is optional. A host that passes no `state` gets the list,
+// the filters and the detail page exactly as before; what disappears is the
+// Favorites and Registered tabs and the bookmark control, because those
+// cannot work without somewhere to keep the answer. Rendering them against
+// nothing would be a button that forgets.
+
+import type { AxiosInstance } from "axios";
+
+import type { FilterState } from "./types";
+import { splitJoined } from "./writable";
+import type { WritableFields } from "./writable";
+
+/** Trial ids, as PROMOP stores them — strings, because they are opaque keys
+ *  to it. EXACT's `trial_ids` filter accepts numeric strings. */
+export type TrialId = string;
+
+/** The most ids EXACT will accept in one `trial_ids` filter.
+ *
+ *  The server's number, mirrored here so the UI can say something useful
+ *  instead of sending a request it knows will be refused. Each id becomes
+ *  part of an `IN (...)`, which is why there is a cap at all (EXACT #419).
+ */
+export const MAX_TRIAL_IDS = 500;
+
+/** The enrollment statuses a patient must not be able to overwrite from
+ *  here. Set by a study team, not by the patient. */
+export type AdvancedStatus = "entered" | "completed";
+
+/** A preferences read that also yields the row's version.
+ *
+ *  The entity-tag is PROMOP's, quoted as the header wants it —
+ *  `"2026-09-14T13:46:38.625960Z"`. It is `updated_at` verbatim rather than
+ *  a hash precisely so a client that reads the LIST, which carries no
+ *  `ETag` header, can still build one (promop#1312).
+ */
+export interface VersionedPreferences {
+  filters: FilterState;
+  /** The row's tag; `null` when there is NO row; `undefined` when a row
+   *  exists but this read cannot describe it.
+   *
+   *  The third state is not pedantry. Collapsing it into `null` tells the
+   *  caller "no row", which makes the next write send `If-None-Match: *` at
+   *  a row that plainly exists — refused, re-read, refused again, and every
+   *  save for that patient fails from then on. One missing optional field
+   *  in a list response must not switch saved filters off. */
+  version?: string | null;
+}
+
+/** What a conditional write asks of the row before it lands.
+ *
+ *  A discriminated union rather than two optional fields, because "match
+ *  this version" and "there must be no row" are mutually exclusive and
+ *  sending both would leave the server to pick — which it does, by
+ *  evaluating `If-Match` first (RFC 9110 §13.2.2), but a caller should not
+ *  have to know that to be correct.
+ */
+export type Precondition =
+  | { kind: "ifMatch"; version: string }
+  | { kind: "ifNoneMatch" }
+  | { kind: "none" };
+
+/** Thrown by a versioning transport when the server refused the write.
+ *
+ *  `version` is what the row holds now; `null` when there is no row to
+ *  describe. The caller still has to re-read for the CONTENT — a tag says
+ *  nothing about what the other writer put there — but it is the tag of
+ *  last resort when that read comes back unable to describe the row.
+ *
+ *  The marker property, not `instanceof`, is the supported test: this
+ *  module can be loaded twice in a federated page — once in the host, once
+ *  in the remote — and two copies of the class would fail `instanceof`
+ *  against each other while being the same error.
+ */
+export class PreconditionFailed extends Error {
+  readonly isPreconditionFailed = true as const;
+
+  constructor(
+    readonly version: string | null,
+    message = "saved filters changed since they were read",
+  ) {
+    super(message);
+    this.name = "PreconditionFailed";
+  }
+
+  static is(error: unknown): error is PreconditionFailed {
+    return (
+      typeof error === "object" &&
+      error !== null &&
+      (error as { isPreconditionFailed?: unknown }).isPreconditionFailed === true
+    );
+  }
+}
+
+/** Conditional reads and writes, when the transport can do them.
+ *
+ *  Kept off `TrialStateAdapter`'s own methods and behind one optional
+ *  property so that widening the contract breaks nothing: a host adapter
+ *  written before this — ht-phr's, CB's — simply does not set it, and the
+ *  caller falls back to the unconditional path it used before. The
+ *  `localStorage` transport never sets it either, having no second writer
+ *  to race.
+ */
+export interface PreferenceVersioning {
+  read(): Promise<VersionedPreferences>;
+  /** Returns the row's NEW version, so a caller need not re-read to earn
+   *  the right to write again. `null` if the transport cannot say. */
+  write(filters: FilterState, precondition: Precondition): Promise<string | null>;
+  clear(precondition: Precondition): Promise<string | null>;
+}
+
+/** Where the patient's saved search state lives — the half of the adapter
+ *  that is about SETTINGS rather than about trials.
+ *
+ *  Its own interface because a host can be able to answer this and nothing
+ *  else. The standalone widget build is exactly that host: CancerBot mounts
+ *  it with plain values, and CB keeps these settings on its own user row
+ *  while the favorites and registrations below live in PROMOP, which that
+ *  page does not talk to. Asking such a host for a whole `TrialStateAdapter`
+ *  would mean asking it to implement six methods it has no store for — and
+ *  the tabs gated on `state` would then appear and be unable to answer.
+ *
+ *  A host may persist a SUBSET: what comes back from `getPreferences` is
+ *  what the reader gets, and anything the host dropped is simply not
+ *  remembered. Nothing here promises a round trip. */
+export interface TrialPreferenceStore {
+  /** The patient's saved search filters, or `{}` when they have none. */
+  getPreferences(): Promise<FilterState>;
+  /** Store the filters. */
+  savePreferences(filters: FilterState): Promise<void>;
+  /** Clear them. Its own call rather than `savePreferences({})` because the
+   *  two are different requests on the PROMOP side — `reset` empties the row,
+   *  while `upsert` with `{}` is a partial update that leaves `preferences`
+   *  untouched. */
+  resetPreferences(): Promise<void>;
+  /** Whether this patient has been offered the suitability-weights wizard,
+   *  and how to record that they have.
+   *
+   *  Optional, and the offer is gated on it: a host with nowhere to remember
+   *  the answer would ask again on every visit, which is worse than not
+   *  asking. It is not part of `getPreferences` because the flag is not a
+   *  filter — `resetPreferences` clears those, and a reader who pressed Reset
+   *  has not un-answered this.
+   *
+   *  `record` carries no weights, though the endpoint behind it can take
+   *  them in the same write. Those go through `savePreferences` like every
+   *  other weight change, because this store keeps its own belief of what is
+   *  stored and writing round it would leave that belief wrong — the next
+   *  filter save would then be built from it and drop the weights.
+   *
+   *  So finishing is two writes, and the caller SEQUENCES them rather than
+   *  merely ordering them: the weights go first and the flag only if they
+   *  landed. An earlier version fired them together and called the weights
+   *  "first" — they are not, since `savePreferences` is debounced 400ms and
+   *  the flag's PATCH is unconditional and immediate, so the flag reached the
+   *  server first and would survive a weights write that never did. The
+   *  reader would then be marked answered with their answer nowhere, and
+   *  there is no second offer to put it right.
+   *
+   *  The flag is also written to the same ROW by a different route, so it
+   *  moves `updated_at` — the tag the filter writer quotes in `If-Match`.
+   *  `TrialMatches` tells the writer to forget it afterwards; see
+   *  `PreferenceTransport.forget`. */
+  weightsWizard?: {
+    wasOffered(): Promise<boolean>;
+    record(): Promise<void>;
+  };
+
+  /** Conditional preference access, when this transport supports it.
+   *
+   *  Optional: absent means the caller writes unconditionally, exactly as
+   *  every client did before promop#1312. Present means it can send a
+   *  precondition and be told 412 rather than silently overwriting a
+   *  concurrent writer — which is the whole point, since one client
+   *  implementation is not one writer: two tabs instantiate it twice. */
+  preferenceVersioning?: PreferenceVersioning;
+}
+
+export interface TrialStateAdapter extends TrialPreferenceStore {
+  /** The patient's bookmarked trial ids. */
+  listFavoriteIds(): Promise<TrialId[]>;
+  /** Bookmark or un-bookmark one trial. */
+  setFavorite(trialId: TrialId, isFavorite: boolean): Promise<void>;
+  /** The trials the patient has registered interest in. */
+  listRegisteredIds(): Promise<TrialId[]>;
+  /** Register (or withdraw) interest in one trial. */
+  setRegistered(trialId: TrialId, registered: boolean): Promise<void>;
+  /** The trials whose enrollment a study team has already moved past
+   *  "registered", by status.
+   *
+   *  Required, not optional, because what depends on it is not a nicety:
+   *  `listRegisteredIds` asks for `status=registered` exactly, so a patient
+   *  a coordinator has advanced to `entered` reads back as NOT registered —
+   *  and a control that then offers "I'm Interested" writes `registered`
+   *  over the advanced status when clicked. An adapter that cannot answer
+   *  this cannot safely be given the register control. */
+  listAdvancedEnrollments(): Promise<Record<TrialId, AdvancedStatus>>;
+  /** Which patient attributes this caller may edit for this patient, and how.
+   *
+   *  Asked rather than derived: EXACT names the attribute a row is about but
+   *  cannot know whether PROMOP will accept a write to it — that depends on a
+   *  reviewed concept set, on the field's kind, and on who is asking. See
+   *  `writable.ts`.
+   *
+   *  Optional, and paired with `setPatientFields`: a host that implements
+   *  neither gets the read-only detail page it has today. Implementing only
+   *  one is refused by `canEditFields` rather than half-honoured — a
+   *  descriptor with no writer draws pencils that lead nowhere, and a writer
+   *  with no descriptor has to guess what is writable, which is the guess this
+   *  whole seam exists to avoid. */
+  getWritableFields?(): Promise<WritableFields>;
+  /** Write attributes. Several at once, because that is how the queue sends
+   *  them: a reader who fills in three gaps in a row should cost one request
+   *  and one re-derivation, not three of each.
+   *
+   *  The answer is per field — see `WriteOutcome` for why each is three
+   *  states rather than resolved-or-rejected. A field the response does not
+   *  mention is `unconfirmed`; it does not make the others unconfirmed. */
+  setPatientFields?(fields: Record<string, unknown>): Promise<Record<string, WriteOutcome>>;
+  /** The structured genomic findings, when the host serves the dedicated
+   *  genomics endpoint. `genetic_mutations` is not a scalar field, so this is
+   *  separate from `setPatientFields`; a host that cannot serve it gets no
+   *  findings editor rather than a half-working PATCH. */
+  genomics?: GenomicsAdapter;
+  /** The host's explicit-answer writer, when it serves one. Without it the
+   *  attestation rows stay read-only rather than offering a dead control. */
+  explicitAnswers?: ExplicitAnswerAdapter;
+}
+
+/** One finding in `genetic_mutations`. The endpoint uses the same keys. */
+export interface GenomicFinding {
+  id?: number;
+  gene?: string;
+  genomic_feature?: string;
+  feature_type?: string;
+  variant?: string;
+  variant_name?: string;
+  genomic_dna_change?: string;
+  amino_acid_change?: string;
+  finding_category?: string;
+  origin?: string;
+  interpretation?: string;
+  status?: string;
+  marker_key?: string | null;
+  [key: string]: unknown;
+}
+
+/** One priority marker from `genomics-catalog`, used for the gene choices. */
+export interface GenomicCatalogMarker {
+  key: string;
+  field_name: string;
+  gene: string;
+  label: string;
+  kind: string;
+  genomic_feature?: string;
+  feature_type?: string;
+  finding_category?: string;
+  writable: boolean;
+}
+
+/** Explicit attestations are not scalar writes.
+ *
+ * `explicit-answer` fields (pre-existing conditions, the two derived
+ * negatives) live behind dedicated endpoints with snapshot/concurrency
+ * semantics; a PATCH would overwrite an answer it does not own. The host
+ * adapter owns the endpoint and expected-value fields; EXACT only names the
+ * field, the descriptor's action and the action's payload.
+ */
+export interface ExplicitAnswerAdapter {
+  /** The snapshot the answer will be compared against, read when the dialog
+   *  opens rather than when it submits. Optional: an adapter that omits it
+   *  still works, but its concurrency window is the submit request. */
+  snapshot?(field: string): Promise<Record<string, unknown>>;
+  answer(
+    field: string,
+    action: string,
+    payload?: Record<string, unknown>,
+    snapshot?: Record<string, unknown>,
+  ): Promise<void>;
+}
+
+export interface GenomicsAdapter {
+  list(): Promise<GenomicFinding[]>;
+  catalog(): Promise<{ markers: GenomicCatalogMarker[]; attributes?: string[] }>;
+  create(finding: GenomicFinding): Promise<GenomicFinding>;
+  update(id: number, finding: GenomicFinding): Promise<GenomicFinding>;
+  remove(id: number): Promise<void>;
+}
+
+/** The editing half of a state adapter, without bookmarks or saved filters.
+ *
+ *  The self-contained widget has no place to keep favourites or preferences
+ *  (CB's federation surface does not serve them), but it can still edit the
+ *  patient record. A host hands this narrower object to `TrialMatches` and
+ *  gets the pencils without lighting up tabs that have nowhere to write. */
+export type PatientRecordAdapter = Pick<
+  TrialStateAdapter,
+  "getWritableFields" | "setPatientFields" | "genomics" | "explicitAnswers"
+>;
+
+/** What the record showed after a write.
+ *
+ *  Three states, because PROMOP's `PATCH /patient-records/{id}/` answers 200
+ *  for a field it did not write: unknown and read-only fields are dropped
+ *  silently (the older 405 was removed deliberately). A seam that reported
+ *  that as success would let the page say "saved" over a value the record
+ *  never took — the exact failure this phase is here to prevent.
+ *
+ *  `differs` is deliberately NOT called "rejected", because most of the time
+ *  it is not. The record is a projection re-derived from the OMOP facts the
+ *  write produced, and the derivation canonicalises on the way back: free
+ *  light chains return in mg/L whatever unit they were entered in, WBC units
+ *  are normalised, a date comes back as a datetime, and clearing a field may
+ *  echo `null` where `""` was sent. All of those are successful writes whose
+ *  stored value is not character-for-character what was posted. `differs`
+ *  means re-read the record, not tell the reader they failed.
+ *
+ *  `unconfirmed` means the response did not mention the field at all, which
+ *  is rare — the endpoint returns the whole serialized record — but is not a
+ *  failure either.
+ *
+ *  None of the three covers a REFUSED write: the call rejects for those.
+ *  403 for a caller without write access, 404 for an unknown person, 400 for
+ *  a value the serializer will not take (too many decimal places, an
+ *  unrecognised choice). Every caller needs a catch. */
+export type WriteOutcome =
+  | { status: "saved"; value: unknown }
+  | { status: "differs"; value: unknown }
+  | { status: "unconfirmed" };
+
+/** Both halves, or neither. Mirrors `canPersistFilters`. */
+export function canEditFields(
+  adapter: PatientRecordAdapter | undefined,
+): adapter is PatientRecordAdapter &
+  Required<Pick<PatientRecordAdapter, "getWritableFields" | "setPatientFields">> {
+  return Boolean(adapter?.getWritableFields && adapter?.setPatientFields);
+}
+
+interface PromopStateArgs {
+  /** Axios instance the host has already authenticated against PROMOP.
+   *  HT mints an OAuth token for it; CB points it at its own endpoint over
+   *  the in-process plugin. */
+  client: AxiosInstance;
+  /** Whose state this is. */
+  personId: string | number;
+  /** Base path, for a host that mounts the API elsewhere. */
+  basePath?: string;
+}
+
+/** The default adapter, speaking PROMOP's REST API (promop#1142).
+ *
+ *  A host with a plain PROMOP client can use this directly; one that reaches
+ *  the same data another way implements `TrialStateAdapter` instead. */
+/** The columns of `trial_search_preferences` this client reads. */
+interface PreferencesRow {
+  preferences?: FilterState;
+  updated_at?: string;
+  weights_wizard_offered?: boolean;
+}
+
+/** A write PROMOP refused, naming the fields it objected to.
+ *
+ *  DRF rejects the WHOLE request on a 400, so nothing in the batch was
+ *  written — but its body says which field it objected to, and that is the
+ *  difference between "your three edits are gone" and "two of them are
+ *  saved and this one needs another look". The queue uses it to send the
+ *  rest again; see `PatientFieldWriter`.
+ *
+ *  Raised here rather than sniffed there, so knowledge of what an axios
+ *  error looks like stays in the adapter that made the request. A host with
+ *  its own adapter throws whatever it likes and the queue falls back to
+ *  failing the batch, which is where it was before.
+ */
+export class PatientFieldsRefused extends Error {
+  /** The fields the server named, intersected with what was sent. */
+  readonly fields: string[];
+
+  /** The transport error underneath. Its own property rather than
+   *  `Error.cause`, which needs a lib target this project does not set. */
+  readonly reason: unknown;
+
+  constructor(fields: string[], reason: unknown) {
+    super(`[exact-remote] the record refused ${fields.join(", ")}`);
+    this.name = "PatientFieldsRefused";
+    this.fields = fields;
+    this.reason = reason;
+  }
+}
+
+/** The fields a DRF error body names, restricted to the ones we sent.
+ *
+ *  A 400 body is `{field: ["message"]}`. It can also be `{"detail": "..."}`
+ *  or carry `non_field_errors`, and a 500 carries nothing useful at all —
+ *  in every one of those the answer is an empty list, which the caller
+ *  reads as "blame the whole batch", i.e. exactly today's behaviour.
+ */
+function refusedFields(error: unknown, sent: Record<string, unknown>): string[] {
+  const body = (error as { response?: { data?: unknown } })?.response?.data;
+  if (!body || typeof body !== "object") return [];
+  // No array guard: `Object.keys` of one gives indices, and `"0"` is not a
+  // field anybody sent, so the intersection already refuses it. A guard
+  // there would be a line no test can kill — which is how it was found.
+  return Object.keys(body).filter((field) => field in sent);
+}
+
+export function createPromopState({
+  client,
+  personId,
+  basePath = "/api/v1",
+}: PromopStateArgs): TrialStateAdapter {
+  const person = String(personId);
+  const enrollments = `${basePath}/trial-enrollments`;
+  const preferences = `${basePath}/trial-search-preferences`;
+  const records = `${basePath}/patient-records`;
+
+  const ids = async (params: Record<string, string>): Promise<TrialId[]> => {
+    const response = await client.get<{ trial_ids: TrialId[]; count: number }>(
+      `${enrollments}/ids/`,
+      { params: { person_id: person, ...params } },
+    );
+    return response.data.trial_ids ?? [];
+  };
+
+  // One endpoint sets either field; what is not sent is not touched
+  // (promop#1142). PATCH rather than POST because a session-authenticated
+  // patient is granted safe methods and PATCH only.
+  const upsert = (trialId: TrialId, body: Record<string, unknown>) =>
+    client
+      .patch(`${enrollments}/upsert/`, { trial_id: trialId, ...body }, {
+        params: { person_id: person },
+      })
+      .then(() => undefined);
+
+  // The row's entity-tag, as PROMOP spells it: `updated_at` quoted verbatim.
+  // Built here rather than read from an `ETag` header because the read is a
+  // LIST, and one header cannot describe a collection — which is exactly why
+  // promop#1312 made the tag a value the body already carries.
+  const tagOf = (updatedAt: unknown): string | null =>
+    typeof updatedAt === "string" && updatedAt ? `"${updatedAt}"` : null;
+
+  const conditionalHeaders = (precondition: Precondition): Record<string, string> => {
+    if (precondition.kind === "ifMatch") return { "If-Match": precondition.version };
+    if (precondition.kind === "ifNoneMatch") return { "If-None-Match": "*" };
+    return {};
+  };
+
+  // A 412 is the mechanism working, not a transport failure, so it is
+  // translated into something the caller can act on. The current tag comes
+  // back in the header and the body both; the body is the one that survives
+  // a proxy that strips headers, and it is null exactly when there is no row.
+  const asPrecondition = (error: unknown): never => {
+    // Guarded because this is the sole error gateway for four call sites,
+    // and reading `.response` off a null rejection would replace the real
+    // failure with a TypeError.
+    if (typeof error !== "object" || error === null) throw error;
+    const response = (error as {
+      response?: { status?: number; headers?: Record<string, string>; data?: { etag?: string | null; error?: string } };
+    }).response;
+    if (response?.status !== 412) throw error;
+    const fromBody = response.data?.etag ?? null;
+    const fromHeader = response.headers?.etag ?? response.headers?.ETag ?? null;
+    throw new PreconditionFailed(
+      fromBody ?? fromHeader ?? null,
+      response.data?.error ?? "saved filters changed since they were read",
+    );
+  };
+
+  /** The preferences row, or `undefined` when the patient has none.
+   *
+   *  The SHAPE of the GET, shared by the two readers below, which want
+   *  different columns off it — the filters, and whether the weights wizard
+   *  has been offered. Not the same request: each issues its own, so a
+   *  wizard-capable mount reads this row at least twice.
+   *
+   *  At least, not exactly: `TrialMatches` holds the wizard's read until the
+   *  filters have arrived, but that gate also opens on a timeout
+   *  (`SAVED_FILTERS_GRACE_MS`), so against a slow PROMOP the two reads do
+   *  overlap. They disagree about nothing that matters — one reads
+   *  `preferences`, the other one boolean column — and the second read is
+   *  what makes the flag current rather than as-of-mount, which is what a
+   *  second tab having just answered requires. */
+  const readRow = async () => {
+    const response = await client.get<{
+      results?: PreferencesRow[];
+    }>(`${preferences}/`, { params: { person_id: person } });
+    const rows = response.data?.results ?? (response.data as unknown as PreferencesRow[]);
+    return Array.isArray(rows) ? rows[0] : undefined;
+  };
+
+  const readPreferences = async (): Promise<VersionedPreferences> => {
+    const first = await readRow();
+    return {
+      filters: first?.preferences ?? {},
+      // `first` is what separates the two nulls: no row at all, versus a row
+      // whose `updated_at` this response did not carry.
+      version: first === undefined ? null : tagOf(first.updated_at) ?? undefined,
+    };
+  };
+
+  const writePreferences = async (
+    filters: FilterState,
+    precondition: Precondition,
+  ): Promise<string | null> => {
+    const response = await client
+      .patch<{ updated_at?: string }>(
+        `${preferences}/upsert/`,
+        { preferences: filters },
+        { params: { person_id: person }, headers: conditionalHeaders(precondition) },
+      )
+      .catch(asPrecondition);
+    // Prefer the body's `updated_at` over the `ETag` header for the same
+    // reason `read` does: it is the value this client can always see.
+    return tagOf(response.data?.updated_at) ?? response.headers?.etag ?? null;
+  };
+
+  const clearPreferences = async (precondition: Precondition): Promise<string | null> => {
+    const response = await client
+      .patch<{ updated_at?: string }>(
+        `${preferences}/reset/`,
+        {},
+        { params: { person_id: person }, headers: conditionalHeaders(precondition) },
+      )
+      .catch(asPrecondition);
+    return tagOf(response.data?.updated_at) ?? response.headers?.etag ?? null;
+  };
+
+  return {
+    listFavoriteIds: () => ids({ is_favorite: "true" }),
+    setFavorite: (trialId, isFavorite) => upsert(trialId, { is_favorite: isFavorite }),
+    // `registered` exactly, which means a patient a coordinator has moved
+    // to `entered` drops off the Registered tab — at the moment they most
+    // want to see the trial. Whether the label should cover the later
+    // states is a product question, filed as EXACT #434; answering it also
+    // needs PROMOP's `?status=` to accept more than one value.
+    listRegisteredIds: () => ids({ status: "registered" }),
+    // Two requests because `?status=` takes one value. Ids only, like the
+    // others — the status is the map's value, so the UI can say which of
+    // the two it is rather than guessing.
+    listAdvancedEnrollments: async () => {
+      const [entered, completed] = await Promise.all([
+        ids({ status: "entered" }),
+        ids({ status: "completed" }),
+      ]);
+      const out: Record<TrialId, AdvancedStatus> = {};
+      for (const id of entered) out[id] = "entered";
+      // Completed last: a row can only be one status, but if the two reads
+      // straddle a change, the later state is the better answer.
+      for (const id of completed) out[id] = "completed";
+      return out;
+    },
+    // Withdrawing is a status of its own rather than a deletion: the row is
+    // the record that the patient was once interested, and PROMOP's enum
+    // has `withdrawn` precisely so that fact survives.
+    setRegistered: (trialId, registered) =>
+      upsert(trialId, { status: registered ? "registered" : "withdrawn" }),
+
+    getPreferences: async () => (await readPreferences()).filters,
+    savePreferences: (filters) =>
+      writePreferences(filters, { kind: "none" }).then(() => undefined),
+    resetPreferences: () =>
+      clearPreferences({ kind: "none" }).then(() => undefined),
+    preferenceVersioning: {
+      read: readPreferences,
+      write: writePreferences,
+      clear: clearPreferences,
+    },
+
+    weightsWizard: {
+      // Three answers, not two, and the third is the one that matters.
+      //
+      //  - no row: this patient has never been offered anything. Not an error
+      //    and not a reason to stay quiet — it is the commonest shape of the
+      //    reader this exists for.
+      //  - a row with the column: its value.
+      //  - a row WITHOUT the column: this PROMOP does not have the field, so
+      //    nothing we write will be remembered. Answered `true` — "do not
+      //    ask" — because the alternative is asking on every visit forever,
+      //    which is the outcome the whole gate exists to prevent.
+      //
+      // The gate in `TrialMatches` cannot catch this on its own: it tests
+      // whether the store has a `weightsWizard`, and this adapter always
+      // supplies one. Only the row can say whether the SERVER kept it. A
+      // deployment behind the column therefore asks a patient at most once —
+      // the visit on which their row is created — and never again, rather
+      // than every visit.
+      wasOffered: async () => {
+        const row = await readRow();
+        if (!row) return false;
+        return "weights_wizard_offered" in row
+          ? row.weights_wizard_offered === true
+          : true;
+      },
+      // Unconditional, like `savePreferences`. A precondition would make the
+      // answer to a question the reader has already given race a filter save
+      // and lose — and the column takes only one value, so there is nothing
+      // for a concurrent writer to disagree with. PROMOP refuses to unset it,
+      // so a stale client echoing `false` cannot undo this either.
+      record: () =>
+        client
+          .patch(
+            `${preferences}/upsert/`,
+            { weights_wizard_offered: true },
+            { params: { person_id: person } },
+          )
+          .then(() => undefined),
+    },
+
+    // The dedicated findings endpoint, not a PatientRecord PATCH. The catalog
+    // supplies the gene choices; a host that does not serve it still gets the
+    // free-text gene input and the core origin/interpretation answers.
+    genomics: {
+      list: async () => {
+        const response = await client.get<GenomicFinding[]>(
+          `${records}/${person}/genomics/`,
+        );
+        return response.data ?? [];
+      },
+      catalog: async () => {
+        const response = await client.get<{
+          markers: GenomicCatalogMarker[];
+          attributes?: string[];
+        }>(`${records}/${person}/genomics-catalog/`);
+        return response.data ?? { markers: [] };
+      },
+      create: async (finding) => {
+        const response = await client.post<GenomicFinding>(
+          `${records}/${person}/genomics/`,
+          finding,
+        );
+        return response.data;
+      },
+      update: async (id, finding) => {
+        const response = await client.patch<GenomicFinding>(
+          `${records}/${person}/genomics/${id}/`,
+          finding,
+        );
+        return response.data;
+      },
+      remove: async (id) => {
+        await client.delete(`${records}/${person}/genomics/${id}/`);
+      },
+    },
+
+    // Explicit attestations have their own endpoints and snapshots. The POST
+    // carries the values the dialog was opened against, so PROMOP can refuse
+    // a concurrent answer instead of overwriting it.
+    explicitAnswers: {
+      snapshot: async (field) => {
+        if (field === "pre_existing_condition_categories") {
+          const response = await client.get<{
+            no_pre_existing_conditions?: boolean | null;
+            preexisting_conditions?: string[] | null;
+          }>(`${records}/${person}/preexisting-conditions-answer/`);
+          return {
+            kind: "preexisting",
+            expectedFlag: response.data?.no_pre_existing_conditions ?? null,
+            expectedCategories: response.data?.preexisting_conditions ?? null,
+          };
+        }
+        if (
+          field === "no_active_infection_status"
+          || field === "no_other_active_malignancies"
+        ) {
+          const response = await client.get<{
+            fields?: Record<string, { value?: unknown; source?: unknown }>;
+            field?: string;
+            value?: unknown;
+            source?: unknown;
+          }>(`${records}/${person}/negative-answer/`, {
+            // CB returns one snapshot for both fields; PROMOP answers one
+            // field per request. Sending `field` is ignored by CB and required
+            // by PROMOP.
+            params: { field },
+          });
+          const current = response.data?.fields?.[field]
+            ?? (response.data?.field === field ? response.data : {});
+          return {
+            kind: "negative",
+            expectedValue: current.value ?? null,
+            expectedSource: current.source ?? null,
+          };
+        }
+        throw new Error(`No explicit-answer snapshot for ${field}.`);
+      },
+      answer: async (field, action, payload, known) => {
+        if (field === "pre_existing_condition_categories") {
+          const url = `${records}/${person}/preexisting-conditions-answer/`;
+          const snapshot = known ?? await (async () => {
+            const response = await client.get<{
+              no_pre_existing_conditions?: boolean | null;
+              preexisting_conditions?: string[] | null;
+            }>(url);
+            return {
+              expectedFlag: response.data?.no_pre_existing_conditions ?? null,
+              expectedCategories: response.data?.preexisting_conditions ?? null,
+            };
+          })();
+          const body: Record<string, unknown> = {
+            action,
+            // `null` is a stored value and must stay null: both backends
+            // compare it strictly, and replacing it with [] turns every
+            // answer into a stale-snapshot conflict.
+            expected_flag: snapshot.expectedFlag ?? null,
+            expected_categories: snapshot.expectedCategories ?? null,
+          };
+          if (action === "set_categories") {
+            body.categories = Array.isArray(payload?.categories)
+              ? payload.categories
+              : [];
+          }
+          await client.post(url, body);
+          return;
+        }
+        if (
+          field === "no_active_infection_status"
+          || field === "no_other_active_malignancies"
+        ) {
+          const url = `${records}/${person}/negative-answer/`;
+          const snapshot = known ?? await (async () => {
+            const response = await client.get<{
+              fields?: Record<string, { value?: unknown; source?: unknown }>;
+              field?: string;
+              value?: unknown;
+              source?: unknown;
+            }>(url, { params: { field } });
+            const current = response.data?.fields?.[field]
+              ?? (response.data?.field === field ? response.data : {});
+            return {
+              expectedValue: current.value ?? null,
+              expectedSource: current.source ?? null,
+            };
+          })();
+          await client.post(url, {
+            field,
+            action,
+            expected_value: snapshot.expectedValue ?? null,
+            expected_source: snapshot.expectedSource ?? null,
+          });
+          return;
+        }
+        throw new Error(`No explicit-answer endpoint for ${field}.`);
+      },
+    },
+
+    // `person_id` is not optional here even though the endpoint accepts its
+    // absence. Without it the answer describes the deployment — "could
+    // someone write this" — and an analyst holding read-only access to every
+    // patient would be handed a typeable box whose every save is refused.
+    getWritableFields: async () => {
+      const response = await client.get<WritableFields>(
+        `${records}/writable-fields/`,
+        { params: { person_id: person } },
+      );
+      return response.data ?? {};
+    },
+
+    // No `person_id` param here, unlike the calls above: this endpoint takes
+    // the person in the path and reads nothing from the query string, so
+    // sending it would encode the same id twice with only one of them
+    // consulted.
+    setPatientFields: async (fields) => {
+      const response = await client
+        .patch<Record<string, unknown>>(`${records}/${person}/`, fields)
+        .catch((error: unknown) => {
+          // Named, when the server named them. The queue can then send the
+          // rest again instead of losing them alongside.
+          const refused = refusedFields(error, fields);
+          throw refused.length > 0 ? new PatientFieldsRefused(refused, error) : error;
+        });
+      const body = response.data;
+      const outcomes: Record<string, WriteOutcome> = {};
+      for (const [field, value] of Object.entries(fields)) {
+        if (!body || typeof body !== "object" || !(field in body)) {
+          outcomes[field] = { status: "unconfirmed" };
+          continue;
+        }
+        const echoed = body[field];
+        // Stringified, because the wire does not preserve the distinction: a
+        // number sent as 12 comes back as "12" from a decimal column, and an
+        // option sent as a string may return as one of several equal spellings
+        // of the same value. Both are the value the record took.
+        outcomes[field] = sameValue(echoed, value)
+          ? { status: "saved", value: echoed }
+          : { status: "differs", value: echoed };
+      }
+      return outcomes;
+    },
+  };
+}
+
+/** Loose equality for a value that has been through JSON and a database.
+ *
+ *  Element-wise for lists, position included. Wrapping is normalised in ONE
+ *  direction only — see the function.
+ *
+ *  Objects compare structurally rather than through `String`, which renders
+ *  every one of them as "[object Object]" and would have called any two of
+ *  them equal. That is not academic: the record has 62 JSON columns, several
+ *  of them writable — `genetic_mutations`, `sct_eligibility`,
+ *  `active_malignancies`, the `genomics_*` family — and PROMOP handles some
+ *  of those specially on the way in, so they are the fields most likely to
+ *  come back as something other than what was sent. */
+function sameValue(echoed: unknown, sent: unknown): boolean {
+  // A list written to a multi-valued column comes back as one comma-joined
+  // string — PROMOP's serializer joins on read whatever the write sent — so
+  // comparing the two shapes directly would report every such write as
+  // differing, and send the page for a re-read it does not need.
+  if (!Array.isArray(echoed) && typeof echoed === "string" && Array.isArray(sent)) {
+    const parts = splitJoined(echoed);
+    return parts.length === sent.length
+      && parts.every((v, i) => sameValue(v, sent[i]));
+  }
+  // One direction only, and the arguments are named so it stays that way. A
+  // single value written to a multi-valued column comes back wrapped, and
+  // that is the same value. The reverse is not: a list that comes back as a
+  // scalar means the record holds a different shape than was sent, which is
+  // worth re-reading rather than confirming.
+  if (Array.isArray(echoed) && !Array.isArray(sent) && echoed.length === 1) {
+    return sameValue(echoed[0], sent);
+  }
+  if (Array.isArray(echoed) !== Array.isArray(sent)) return false;
+  if (Array.isArray(echoed) && Array.isArray(sent)) {
+    // Position included: the record echoes what it stored, and a reordered
+    // list is not proof the write landed as sent.
+    return echoed.length === sent.length
+      && echoed.every((v, i) => sameValue(v, sent[i]));
+  }
+  if (echoed == null || sent == null) return echoed == null && sent == null;
+  if (isObject(echoed) || isObject(sent)) {
+    return isObject(echoed) && isObject(sent) && canonical(echoed) === canonical(sent);
+  }
+  if (isNumeric(echoed) && isNumeric(sent)) return Number(echoed) === Number(sent);
+  return String(echoed) === String(sent);
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** JSON with the keys sorted, so two objects that differ only in key order
+ *  compare equal — Postgres `jsonb` does not preserve the order they arrived
+ *  in, so insisting on it would report every JSON write as differing. */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (isObject(v)) {
+    const keys = Object.keys(v).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v ?? null);
+}
+
+/** A number, or a string that is one.
+ *
+ *  Booleans and empty strings are deliberately excluded even though `Number`
+ *  is happy to convert them: `Number(false)` is 0 and `Number("")` is 0, so
+ *  admitting either would make `false` equal to "0" and an emptied field equal
+ *  to zero. For a lab value that is the difference between "not measured" and
+ *  "measured as none". */
+function isNumeric(v: unknown): boolean {
+  if (typeof v === "number") return Number.isFinite(v);
+  if (typeof v !== "string" || v.trim() === "") return false;
+  return Number.isFinite(Number(v));
+}
+
+/** Preferences from EXACT's own store, keyed on the identity in the token.
+ *
+ *  Phase 1 of moving per-identity trials state out of PROMOP. Only the
+ *  preferences half: favourites and registration interest still come from
+ *  PROMOP, so `composeState` below joins the two rather than replacing the
+ *  adapter wholesale.
+ *
+ *  NO `personId`, and that is the point rather than a simplification. EXACT
+ *  derives the row's owner from the token it verified, so there is no id in
+ *  any of these URLs to point at somebody else. The `person_id` this file
+ *  passes to PROMOP everywhere else arrives from the host bound to nothing,
+ *  which is a read hazard there and would be a write hazard here.
+ *
+ *  NO `preferenceVersioning`, also deliberately: last writer wins. The
+ *  caller already handles a store without it and that path is exercised
+ *  (`hooks.preferenceSeam.test.ts`), so two tabs can overwrite each other's
+ *  filter set and nobody is told. It is not quite "what every client did
+ *  before promop#1312", though: the unconditional path is a seeded read
+ *  then a replace, and it refuses outright when it could not read the row. That is an accepted cost for a filter set and is worth
+ *  revisiting before registration interest moves here. The design it replaces
+ *  is not free either: promop#1602 is an `If-Match` whose headers never
+ *  reached the CORS allowlist, so no browser ever completed one.
+ */
+export function createExactPreferences(
+  /** A GETTER, not an instance, and not a union of the two.
+   *
+   *  The adapter has to survive a token refresh WITHOUT being rebuilt —
+   *  rebuilding it drops the writes already queued against it, which a test
+   *  pins — while the client it writes through IS rebuilt on exactly that
+   *  event. Resolving per call is how those two facts coexist; holding the
+   *  instance would send the previous credential for the rest of the
+   *  session.
+   *
+   *  A union accepting either would not have worked and would not have said
+   *  so: an `AxiosInstance` is itself callable, so `typeof client ===
+   *  "function"` narrows nothing. A caller with an instance writes
+   *  `() => client`, which is one word and unambiguous. */
+  now: () => AxiosInstance,
+  basePath = "/user-state",
+): TrialPreferenceStore {
+  const preferences = `${basePath}/trial-search-preferences`;
+
+  const read = async (): Promise<{
+    filters: FilterState;
+    offered: boolean | undefined;
+  }> => {
+    const response = await now().get<{
+      preferences?: unknown;
+      weights_wizard_offered?: unknown;
+    }>(`${preferences}/`);
+    const stored = response.data?.preferences;
+    return {
+      // An object or nothing. The column is opaque by design and a row
+      // written by another client — or by a shell — is not this page's
+      // problem to interpret, only its problem not to crash on.
+      filters: (stored && typeof stored === "object" && !Array.isArray(stored)
+        ? (stored as FilterState)
+        : {}),
+      offered:
+        typeof response.data?.weights_wizard_offered === "boolean"
+          ? response.data.weights_wizard_offered
+          : undefined,
+    };
+  };
+
+  return {
+    getPreferences: async () => (await read()).filters,
+    savePreferences: async (filters) => {
+      await now().post(`${preferences}/`, { preferences: filters });
+    },
+    // Its own call rather than `savePreferences({})`, for the same reason it
+    // is on PROMOP: the endpoint keeps what is not a filter — the score
+    // weights ride in the same column — and an empty partial write would
+    // leave the filters alone instead.
+    //
+    // One divergence from PROMOP's, worth knowing before it bites somebody:
+    // PROMOP's reset EMPTIES the row and EXACT's keeps `NOT_FILTERS`, while
+    // the caller's belief (`preferences.ts`) is cleared to `{}` either way.
+    // So after a reset the client thinks the row is empty and the row still
+    // holds the weights. Normally harmless — the page re-persists owned
+    // weights immediately, and a later load claims whatever the row carried
+    // — but a Reset pressed before the row was ever read leaves a belief
+    // that the next full save writes through, deleting them. Fixing it
+    // properly means the transport learning that a reset is partial, which
+    // is a change to the shared seam and not to this store.
+    resetPreferences: async () => {
+      await now().post(`${preferences}/reset/`, {});
+    },
+    weightsWizard: {
+      // The same three answers the PROMOP adapter distinguishes, and the
+      // third for the same reason. Here the column always exists, so a
+      // response without it means a server older than the store — answered
+      // "already offered", because the alternative is asking on every visit
+      // forever, which is what the gate exists to prevent.
+      wasOffered: async () => (await read()).offered ?? true,
+      record: async () => {
+        await now().post(`${preferences}/`, { weights_wizard_offered: true });
+      },
+    },
+  };
+}
+
+/** One adapter from two stores, for as long as the migration has two.
+ *
+ *  Phases 2 and 3 move favourites and registration interest, and each shrinks
+ *  this function until it is an identity. It exists so the switch is one
+ *  place and one line per phase, rather than a host-side decision repeated in
+ *  every host.
+ */
+export function composeState(
+  base: TrialStateAdapter,
+  preferences: TrialPreferenceStore,
+): TrialStateAdapter {
+  return {
+    ...base,
+    getPreferences: preferences.getPreferences,
+    savePreferences: preferences.savePreferences,
+    resetPreferences: preferences.resetPreferences,
+    weightsWizard: preferences.weightsWizard,
+    // Spread would carry PROMOP's over, and with it a conditional write
+    // against a tag EXACT's store never issues. Deleted explicitly rather
+    // than left to the reader to notice it is absent from the literal.
+    preferenceVersioning: preferences.preferenceVersioning,
+  };
+}

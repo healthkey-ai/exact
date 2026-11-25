@@ -1,0 +1,430 @@
+"""The trials page's own store: who a row belongs to, and who can reach it.
+
+What is worth testing here is not the CRUD. It is the three conditions rule 5
+now puts on any per-user table in EXACT — the key comes from the token, the
+row lives on `default`, and erasure exists — plus the one thing that makes the
+key safe in practice: there is no route that can name somebody else.
+"""
+import pytest
+from django.urls import NoReverseMatch, Resolver404, resolve, reverse
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
+
+from accounts.models import Identity
+from rest_framework.authtoken.models import Token
+from user_state.models import TrialSearchPreferences, forget_identity
+
+
+def client_for(sub):
+    identity, _ = Identity.objects.get_or_create(issuer='urn:local', sub=sub)
+    token, _ = Token.objects.get_or_create(user=identity)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+    return identity, client
+
+
+@pytest.fixture
+def authed(db):
+    return client_for('prefs-owner')
+
+
+PREFS = '/user-state/trial-search-preferences/'
+
+
+@pytest.mark.django_db
+class TestWhoTheRowBelongsTo:
+    def test_unauthenticated_gets_nothing(self):
+        assert APIClient().get(PREFS).status_code in (401, 403)
+
+    def test_the_row_is_keyed_on_the_token_identity(self, authed):
+        identity, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        row = TrialSearchPreferences.objects.get()
+        assert row.identity_id == identity.pk
+
+    def test_two_identities_do_not_share_a_row(self, db):
+        _, mine = client_for('reader-a')
+        _, theirs = client_for('reader-b')
+        mine.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        assert theirs.get(PREFS).data['preferences'] == {}
+        assert mine.get(PREFS).data['preferences'] == {'phase': 'II'}
+
+    def test_no_route_can_name_another_identity(self, db):
+        # The guarantee is structural, not a permission check somebody has to
+        # remember: a route with no id in it cannot be pointed at a stranger.
+        # `?person_id=` is the cautionary tale — see `exact/settings.py`.
+        with pytest.raises(NoReverseMatch):
+            reverse('user_state:trial-search-preferences-detail', args=[1])
+
+        # And no URL that reaches one either, named or typed by hand.
+        with pytest.raises(Resolver404):
+            resolve(PREFS + '1/')
+
+
+@pytest.mark.django_db
+class TestWhereTheRowLives:
+    def test_it_is_not_routed_to_the_trials_database(self, settings):
+        # The `trials` alias is dropped and restored from CB dumps ("must DROP
+        # all schemas"), so a user-scoped row there disappears at the next
+        # restore.
+        #
+        # Asked of the ROUTER CHAIN, not of our router object, and with the
+        # alias actually configured. The first version of this test did
+        # neither: test settings define only `default`, so our router returns
+        # None for everything, and `None` means "no opinion" rather than
+        # "default" — it passed for a `trials` model too, and would pass with
+        # a second router in the chain sending these rows to the wrong place.
+        from django.db import router as chain
+
+        from trials.models import Trial
+
+        settings.DATABASES = {
+            **settings.DATABASES,
+            'trials': dict(settings.DATABASES['default']),
+        }
+
+        assert chain.db_for_write(TrialSearchPreferences) == 'default'
+        # The contrast is the point: with the alias up, a trials model DOES
+        # go there, so this is measuring the branch rather than its absence.
+        assert chain.db_for_write(Trial) == 'trials'
+
+
+@pytest.mark.django_db
+class TestWhatItStores:
+    def test_reading_before_writing_answers_defaults(self, authed):
+        _, client = authed
+        body = client.get(PREFS).data
+
+        assert body['preferences'] == {}
+        assert body['weights_wizard_offered'] is False
+        assert body['non_default_filter_count'] == 0
+
+    def test_reading_does_not_write(self, authed):
+        # EXACT's first row about somebody must not appear because they opened
+        # a page. It is also what makes GET safe and idempotent — cacheable,
+        # and servable from a replica.
+        _, client = authed
+
+        assert client.get(PREFS).status_code == 200
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_a_write_that_fails_after_validation_leaves_no_row(self, authed, monkeypatch):
+        # The invariant, held against something validation cannot see. Three
+        # rounds each found a new way for a failed request to leave EXACT's
+        # first row about somebody behind — a GET, then a 400, then a 500 from
+        # a string `jsonb` refuses. The last of those is now a 400, but the
+        # rule has to survive the next unknown too, so the handler is atomic
+        # and this proves it rather than the one input we happen to know.
+        _, client = authed
+
+        def boom(self, instance, validated_data):
+            raise RuntimeError('the database went away')
+
+        monkeypatch.setattr(
+            'user_state.serializers.TrialSearchPreferencesSerializer.update', boom,
+        )
+
+        with pytest.raises(RuntimeError):
+            client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_a_deeply_nested_payload_is_refused_rather_than_crashing(self, authed):
+        # 100 KB, far under Django's 2.5 MB body limit, and `JSONParser`
+        # recurses building it: unbounded, this is a 500 at 300 requests a
+        # minute. The cap cannot fix the parser — every JSON endpoint shares
+        # that — but this column is the one aimed at.
+        _, client = authed
+        nested = {'a': [[[['too deep']]]]}
+
+        assert client.post(PREFS, {'preferences': nested}, format='json').status_code == 400
+
+    def test_a_non_object_payload_is_refused(self, authed):
+        _, client = authed
+        assert client.post(PREFS, {'preferences': ['phase']}, format='json').status_code == 400
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_it_refuses_a_payload_that_is_not_a_filter_set(self, authed):
+        # `StudyPreferences` has 20 fields and the page adds `sort` and
+        # `type`; both caps are far above that, so a reader never meets them.
+        # They exist because this is the first writable surface in EXACT and
+        # an opaque column with no bound is a place to put anything.
+        _, client = authed
+        too_many = {f'filter{i}': 'x' for i in range(65)}
+        too_big = {'searchTitle': 'x' * (16 * 1024 + 1)}
+
+        assert client.post(PREFS, {'preferences': too_many}, format='json').status_code == 400
+        assert client.post(PREFS, {'preferences': too_big}, format='json').status_code == 400
+        # No row at all, not merely an empty one. The first version of this
+        # asserted the KEY was absent, which was true of the empty row a
+        # refused write used to leave behind — a test passing for the wrong
+        # reason, over the same defect as the GET that wrote.
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_the_count_ignores_the_tab_and_the_sort(self, authed):
+        # Ported verbatim from PROMOP's copy, which answers the same badge
+        # while both stores exist. Switching tab must not tick it up.
+        _, client = authed
+        body = client.post(
+            PREFS,
+            {'preferences': {'phase': 'II', 'sort': 'distance', 'type': 'all',
+                             'searchTitle': '', 'nearMe': False, 'distance': 0}},
+            format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_the_count_reads_a_distance_and_its_unit_as_one_filter(self, authed):
+        # `distanceUnits` qualifies `distance` and cannot be set without it.
+        # The client says so and excludes it; counting it here made the
+        # commonest filter there is read as two — the badge disagreeing with
+        # the page it labels, which is the thing this count exists to avoid.
+        _, client = authed
+        body = client.post(
+            PREFS, {'preferences': {'distance': 50, 'distanceUnits': 'miles'}},
+            format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_the_count_ignores_the_score_weights(self, authed):
+        # They change the ORDER of the list, never which trials are in it —
+        # `weights.ts`: "the Filters badge does not count them". Four weights
+        # reading as four filters is the badge disagreeing with the page.
+        _, client = authed
+        body = client.post(
+            PREFS,
+            {'preferences': {'phase': 'II', 'benefitWeight': 40, 'riskWeight': 30,
+                             'patientBurdenWeight': 20, 'distancePenaltyWeight': 10}},
+            format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_the_count_ignores_an_emptied_object_too(self, authed):
+        # Sibling of the list case below, and it had no test: `{} not in
+        # (None, '', False, 0)` is True, so without saying so an emptied
+        # object reads as a filter that is set.
+        _, client = authed
+        body = client.post(
+            PREFS, {'preferences': {'nested': {}, 'phase': 'II'}}, format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_the_count_ignores_a_cleared_multi_select(self, authed):
+        # `therapy_id` and `trialPurpose` are list-valued. Clearing one leaves
+        # `[]`, which is not None, '', False or 0 — so it needed saying, and
+        # without it the badge read "Filters (1)" for a filter set to nothing.
+        _, client = authed
+        body = client.post(
+            PREFS, {'preferences': {'therapy_id': [], 'phase': 'II'}}, format='json',
+        ).data
+
+        assert body['non_default_filter_count'] == 1
+
+    def test_reset_keeps_the_weights_and_the_wizard_answer(self, authed):
+        # Reset is a sentence about filters. The weights ride in the same
+        # column and are not filters; emptying it sent a reader who had set
+        # them back to 25/25/25/25 silently, with no second offer of the
+        # wizard to put it right because the flag is deliberately kept.
+        _, client = authed
+        client.post(
+            PREFS,
+            {'preferences': {'phase': 'II', 'benefitWeight': 40, 'sort': 'distance'},
+             'weights_wizard_offered': True},
+            format='json',
+        )
+
+        body = client.post(PREFS + 'reset/', {}, format='json').data
+
+        assert body['preferences'] == {'benefitWeight': 40, 'sort': 'distance'}
+        # "Reset my filters" is a sentence about filters. Offering the wizard
+        # again because of it would be a surprise, and the flag exists to make
+        # that offer exactly once.
+        assert body['weights_wizard_offered'] is True
+
+
+@pytest.mark.django_db
+class TestWhoCanReachIt:
+    def test_a_service_token_cannot_write_human_state(self, db, settings):
+        # The project's default auth chain puts the service token FIRST, so
+        # without pinning, any service holding the shared secret writes a row
+        # as `urn:service`: a machine credential on a human-state surface,
+        # shared by every holder, and one erasure is never called for.
+        settings.SERVICE_AUTH_TOKEN = 'svc-secret'
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION='Bearer svc-secret')
+
+        assert client.get(PREFS).status_code in (401, 403)
+        assert not TrialSearchPreferences.objects.exists()
+
+
+@pytest.mark.django_db
+class TestErasure:
+    def test_it_empties_every_table_this_app_owns(self, db):
+        # Enumerated, not listed. Say plainly what this is: with one model in
+        # the app it CANNOT fail today — a hardcoded implementation passes it
+        # too. It is a tripwire for phase 2 and phase 3, which add favourites
+        # and registration interest, and it fires the day one of them lands
+        # unwired, which is exactly when nobody will be looking at erasure.
+        # Do not read it as coverage of the code as it stands.
+        from django.apps import apps
+
+        identity, client = client_for('prefs-owner')
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+        models = list(apps.get_app_config('user_state').get_models())
+        assert models, 'the app has no models; this test would prove nothing'
+
+        result = forget_identity('urn:local', 'prefs-owner')
+
+        assert result['found'] is True
+        assert set(result['removed']) == {m._meta.db_table for m in models}
+        for model in models:
+            assert not model.objects.filter(identity=identity).exists()
+
+    def test_a_failure_part_way_through_changes_nothing(self, authed, monkeypatch):
+        # Guarantee 1 of the receipt contract, and the one the code cannot be
+        # trusted on without a test: half an erasure is worse than none —
+        # it destroys the data and leaves the subject on file. The first
+        # version of this function raised mid-loop by design, after deleting
+        # some tables and before deleting the identity.
+        identity, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        class Exploding:
+            # Only this module's handle on Token. Patching the manager CLASS
+            # would break every model's `.filter`, including the ones the
+            # assertions below use — which is how the first version of this
+            # test managed to fail on its own assertion.
+            class objects:
+                @staticmethod
+                def filter(*args, **kwargs):
+                    raise RuntimeError('the database went away')
+
+        monkeypatch.setattr('user_state.models.Token', Exploding)
+
+        with pytest.raises(RuntimeError):
+            forget_identity('urn:local', 'prefs-owner')
+
+        assert TrialSearchPreferences.objects.filter(identity=identity).exists()
+        assert Identity.objects.filter(pk=identity.pk).exists()
+
+    def test_it_takes_the_identity_and_its_tokens_too(self, authed):
+        # Leaving them is not tidiness. `Identity` itself records that this
+        # person exists here, and a live token lets an in-flight request write
+        # the row back moments after it was erased.
+        identity, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        forget_identity('urn:local', 'prefs-owner')
+
+        assert not Identity.objects.filter(pk=identity.pk).exists()
+        assert not Token.objects.filter(user_id=identity.pk).exists()
+
+    def test_an_identity_that_was_never_here_reports_nothing_removed(self, db):
+        # Named for what it checks. Its previous name — "tells never existed
+        # from already gone" — described a promise an earlier version made
+        # and this one deliberately refuses; the test three below asserts the
+        # two are identical, and the pair read as a contradiction.
+        assert forget_identity('urn:local', 'never-here') == {
+            'found': False, 'removed': {},
+        }
+
+    def test_the_offline_path_works_without_a_token_or_promop(self, authed):
+        # The endpoint needs SERVICE_AUTH_TOKEN configured and PROMOP calling
+        # it. A right to erasure that a missing environment variable can block
+        # is not one, so there is a way to do it by hand.
+        from django.core.management import call_command
+
+        _, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        call_command('forget_identity', issuer='urn:local', sub='prefs-owner')
+
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_the_offline_path_can_be_run_twice(self, authed):
+        # An erasure runbook loops over subjects and re-runs after a failure.
+        # "Nothing here" is the end state asked for, so it is success — and
+        # after an erasure there is deliberately nothing left that could tell
+        # a typo from a job already done. See the receipt contract in
+        # `forget_identity`; an earlier version raised here and promised a
+        # distinction the same commit had made impossible.
+        from django.core.management import call_command
+
+        _, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        call_command('forget_identity', issuer='urn:local', sub='prefs-owner')
+        call_command('forget_identity', issuer='urn:local', sub='prefs-owner')
+
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_it_says_nothing_here_the_same_way_however_it_got_that_way(self, authed):
+        # State, not history. Telling "erased a minute ago" from "never here"
+        # would mean keeping a record that this person was once here, which is
+        # the thing being deleted.
+        _, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+        forget_identity('urn:local', 'prefs-owner')
+
+        assert forget_identity('urn:local', 'prefs-owner') == forget_identity(
+            'urn:local', 'never-here'
+        )
+
+    def test_the_endpoint_erases_for_a_service_token(self, authed, settings):
+        # The happy path PROMOP will actually call, over HTTP. Nothing tested
+        # it: the only endpoint test asserted a 400 for a missing field.
+        settings.SERVICE_AUTH_TOKEN = 'svc-secret'
+        _, owner = authed
+        owner.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        service = APIClient()
+        service.credentials(HTTP_AUTHORIZATION='Bearer svc-secret')
+        resp = service.post(
+            '/user-state/internal/forget/',
+            {'issuer': 'urn:local', 'sub': 'prefs-owner'},
+            format='json',
+        )
+
+        assert resp.status_code == 200
+        assert resp.data['found'] is True
+        assert not TrialSearchPreferences.objects.exists()
+
+    def test_the_endpoint_refuses_an_end_user_token(self, authed):
+        # Erasing somebody is PROMOP's call, not a reader's. Asserted on the
+        # row surviving as well as on the status: a 403 that deleted first
+        # would pass a status-only check.
+        _, client = authed
+        client.post(PREFS, {'preferences': {'phase': 'II'}}, format='json')
+
+        resp = client.post(
+            '/user-state/internal/forget/',
+            {'issuer': 'urn:local', 'sub': 'prefs-owner'},
+            format='json',
+        )
+
+        assert resp.status_code in (401, 403)
+        assert TrialSearchPreferences.objects.count() == 1
+
+    def test_the_endpoint_is_not_rate_limited(self, db, settings):
+        # Every caller here is the one shared `urn:service` identity, so the
+        # project default of 300/minute is 300 for the whole fleet: a sweep
+        # clearing a backlog of deleted patients would start getting 429s,
+        # and a fire-and-forget caller would not see them. The credential is
+        # the control on this endpoint.
+        from user_state.views import ForgetIdentityView
+
+        assert ForgetIdentityView.throttle_classes == []
+
+    def test_the_endpoint_needs_both_halves_of_the_identity(self, db, settings):
+        settings.SERVICE_AUTH_TOKEN = 'svc-secret'
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION='Bearer svc-secret')
+
+        resp = client.post('/user-state/internal/forget/', {'issuer': 'urn:local'}, format='json')
+
+        assert resp.status_code == 400
