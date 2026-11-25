@@ -474,6 +474,11 @@ class PatientInfoAttributes:
                 if therapy_code:
                     out.append(therapy_code)
 
+        line_identities = self._omop_regimen_identities()
+        if line_identities is not None:
+            out.extend(line_identities)
+            return list(set(out))
+
         if not self.is_attr_blank('later_therapies'):
             for item in self.get_value('later_therapies'):
                 therapy_code = item.get('therapy')
@@ -487,6 +492,23 @@ class PatientInfoAttributes:
                     out.append(value)
 
         return list(set(out))
+
+    def _omop_regimen_identities(self):
+        """The therapy lines from a host that keeps each line's regimen concept beside its name.
+
+        PROMOP's `PatientRecordSurface` names lines ("RVD") and offers their concept_ids through
+        `omop_regimen_identities()` (cb#5554); under OMOP therapy those are what the regimen match
+        reads. None means read the line attributes: legacy mode, or a host without the method
+        (CB's `PatientInfo`). Looked up on the class, because a surface delegates unknown
+        instance attributes to its record.
+        """
+        from exact_matching.therapy_match_profile import omop_therapy_enabled
+
+        if getattr(type(self.patient_info), 'omop_regimen_identities', None) is None:
+            return None
+        if not omop_therapy_enabled():
+            return None
+        return self.patient_info.omop_regimen_identities()
 
     def get_supportive_therapy_codes(self):
         """Supportive-therapy codes the patient selected.
