@@ -14,8 +14,9 @@ from exact_matching.patient_record import PatientRecordSurface
 from tests.factories import TherapyFactory
 from trials.services.patient_info.patient_info import PatientInfo
 
-RVD = 35806260
-DARA_RD = 35806311
+# Concept ids no seeded catalogue row carries, so the factory rows below are the only candidates.
+RVD = 999000001
+DARA_RD = 999000002
 
 
 class Record:
@@ -93,13 +94,13 @@ def test_later_therapy_without_a_matching_row_keeps_its_name():
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('omop, expected_codes', [
-    (True, {'vrd', 'dara_rd'}),
+    (True, {'test_rvd', 'test_dara_rd'}),
     (False, set()),      # legacy: PROMOP names are not CB codes, unchanged by this change
 ])
 def test_the_matcher_resolves_a_promop_patients_regimens(omop, expected_codes):
-    TherapyFactory(code='vrd', omop_concept_id=RVD)
-    TherapyFactory(code='dara_rd', omop_concept_id=DARA_RD)
-    TherapyFactory(code='unrelated', omop_concept_id=1)
+    TherapyFactory(code='test_rvd', omop_concept_id=RVD)
+    TherapyFactory(code='test_dara_rd', omop_concept_id=DARA_RD)
+    TherapyFactory(code='test_unrelated', omop_concept_id=999000003)
 
     with override_settings(EXACT_OMOP_THERAPY=omop):
         therapies = PatientInfoAttributes(HostSurface(_record())).get_user_therapies()
