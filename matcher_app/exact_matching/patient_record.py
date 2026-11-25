@@ -29,6 +29,8 @@ It never persists anything and lives for one request.
 """
 from django.core.exceptions import ObjectDoesNotExist
 
+from exact_matching.therapy_match_profile import omop_therapy_enabled
+
 #: PROMOP's unknown date-of-birth sentinel. `patient_age` derived from it is not
 #: an age (#4887). Kept as a module constant rather than injected: it is a
 #: PROMOP data convention, not host configuration, and a host that disagreed
@@ -636,6 +638,53 @@ def without_unknown_lines(rows):
     ]
 
 
+#: The record's regimen concept column for each single-line name column. `later_therapy` has
+#: none: it is the first 3L+ line's name, and that line's concept is in its `later_therapies` row.
+_THERAPY_LINE_CONCEPT_FIELDS = {
+    'first_line_therapy': 'first_line_therapy_id',
+    'second_line_therapy': 'second_line_therapy_id',
+}
+
+
+def _regimen_identity(name, concept_id):
+    """What the matcher should see for a line: its regimen concept_id under OMOP therapy, else its name.
+
+    Under ``EXACT_OMOP_THERAPY`` the matcher resolves a patient's regimens by concept_id
+    (`resolve_regimens`) and overlaps them with the trial's `omop_therapies_*`; a PROMOP regimen
+    name never matches there. A line PROMOP did not resolve to a concept keeps its name, so it
+    still counts as a line, as it does today. Legacy mode is unchanged.
+    """
+    if _is_unknown_therapy(name):
+        return None
+    if concept_id and omop_therapy_enabled():
+        return str(concept_id)
+    return name
+
+
+def _later_rows_for_matching(rows):
+    """`later_therapies` with each resolved row's `therapy` replaced by its concept_id under OMOP."""
+    rows = without_unknown_lines(rows)
+    if not isinstance(rows, list) or not omop_therapy_enabled():
+        return rows
+    return [
+        {**row, 'therapy': _regimen_identity(row.get('therapy'), row.get('concept_id'))}
+        if isinstance(row, dict) and row.get('therapy') is not None
+        else row
+        for row in rows
+    ]
+
+
+def _first_later_concept(record, name):
+    """The concept_id of the `later_therapies` row that `later_therapy` names (the first 3L+ line)."""
+    rows = getattr(record, 'later_therapies', None)
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get('therapy') == name:
+            return row.get('concept_id')
+    return None
+
+
 class PatientRecordSurface:
     #: Fields this surface NAMES but derives itself. A null derivation then means
     #: "unknown", not "the caller never supplied it": PROMOP has no adequacy
@@ -762,9 +811,12 @@ class PatientRecordSurface:
         if name in _THERAPY_LINE_NAME_FIELDS:
             # Unknown composition is no evidence, not a regimen named "Unknown" (#5485).
             value = getattr(record, name, None)
-            return None if _is_unknown_therapy(value) else value
+            concept_field = _THERAPY_LINE_CONCEPT_FIELDS.get(name)
+            concept_id = (getattr(record, concept_field, None) if concept_field
+                          else _first_later_concept(record, value))
+            return _regimen_identity(value, concept_id)
         if name == 'later_therapies':
-            return without_unknown_lines(getattr(record, name, None))
+            return _later_rows_for_matching(getattr(record, name, None))
         if name in _FIELD_MAPS:
             # §6 conversion (each map embeds prefer-direct-else-convert + unit coherence).
             return _FIELD_MAPS[name](record)
