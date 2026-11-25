@@ -17,6 +17,7 @@ from trials.services.patient_info.patient_info import PatientInfo
 # Concept ids no seeded catalogue row carries, so the factory rows below are the only candidates.
 RVD = 999000001
 DARA_RD = 999000002
+KD = 999000004
 
 
 class Record:
@@ -45,8 +46,9 @@ def _record():
             {'lineNumber': 3, 'therapy': 'Dara-Rd', 'concept_id': DARA_RD},
             {'lineNumber': 4, 'therapy': 'Unknown', 'concept_id': None},
             {'lineNumber': 5, 'therapy': 'Free text line', 'concept_id': None},
+            {'lineNumber': 6, 'therapy': 'Kd', 'concept_id': KD},   # reaches the matcher only as a row
         ],
-        later_therapy_ids=[DARA_RD],
+        later_therapy_ids=[DARA_RD, KD],
     )
 
 
@@ -61,6 +63,7 @@ def test_legacy_mode_still_sees_the_names():
         {'lineNumber': 3, 'therapy': 'Dara-Rd', 'concept_id': DARA_RD},
         {'lineNumber': 4, 'therapy': None, 'concept_id': None},
         {'lineNumber': 5, 'therapy': 'Free text line', 'concept_id': None},
+        {'lineNumber': 6, 'therapy': 'Kd', 'concept_id': KD},
     ]
 
 
@@ -75,6 +78,7 @@ def test_omop_mode_offers_resolved_lines_by_concept_id_and_keeps_the_rest():
         {'lineNumber': 3, 'therapy': str(DARA_RD), 'concept_id': DARA_RD},
         {'lineNumber': 4, 'therapy': None, 'concept_id': None},       # unknown stays no evidence
         {'lineNumber': 5, 'therapy': 'Free text line', 'concept_id': None},
+        {'lineNumber': 6, 'therapy': str(KD), 'concept_id': KD},
     ]
 
 
@@ -94,12 +98,13 @@ def test_later_therapy_without_a_matching_row_keeps_its_name():
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('omop, expected_codes', [
-    (True, {'test_rvd', 'test_dara_rd'}),
+    (True, {'test_rvd', 'test_dara_rd', 'test_kd'}),
     (False, set()),      # legacy: PROMOP names are not CB codes, unchanged by this change
 ])
 def test_the_matcher_resolves_a_promop_patients_regimens(omop, expected_codes):
     TherapyFactory(code='test_rvd', omop_concept_id=RVD)
     TherapyFactory(code='test_dara_rd', omop_concept_id=DARA_RD)
+    TherapyFactory(code='test_kd', omop_concept_id=KD)
     TherapyFactory(code='test_unrelated', omop_concept_id=999000003)
 
     with override_settings(EXACT_OMOP_THERAPY=omop):
